@@ -1,0 +1,9 @@
+{"t":1789954157251,"type":"plan","plan":{"objective":"Mine the dirt 2 blocks away until you hold at least 4 dirt, then go to the waypoint at x=380, z=16.","targets":{"dirt":4},"waypoint":{"x":380,"z":16},"notes":"Inventory is empty; nearest dirt is at (367,19,20), directly below. Mine dirt first, collect any drops, then travel ~13 blocks east to the waypoint. Avoid the water at (366,20,20). Keep the waypoint until within 2 blocks XZ."}}
+{"t":1789954157637,"type":"decision","step":1,"key":"mine_dirt"}
+{"t":1789954158991,"type":"action","step":1,"action":"mine_dirt","result":{"ok":true,"mined":"dirt","drops":1},"position":{"x":367,"y":21,"z":20},"ms":1354}
+{"t":1789954159256,"type":"decision","step":2,"key":"collect_drop"}
+{"t":1789954162321,"type":"action","step":2,"action":"collect_drop","result":{"ok":true,"picked":3,"inventory":{"dirt":3}},"position":{"x":368,"y":19,"z":20},"ms":3065}
+{"t":1789954162574,"type":"decision","step":3,"key":"mine_dirt"}
+{"t":1789954163926,"type":"action","step":3,"action":"mine_dirt","result":{"ok":true,"mined":"dirt","drops":0},"position":{"x":368,"y":18,"z":20},"ms":1352}
+{"t":1789954164177,"type":"decision","step":4,"key":"goto_waypoint"}
+{"t":1789954171155,"type":"action","step":4,"action":"goto_waypoint","result":{"ok":true,"position":{"x":379,"y":24,"z":16}},"position":{"x":379,"y":24,"z":16},"ms":6978}

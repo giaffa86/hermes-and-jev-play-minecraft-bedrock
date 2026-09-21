@@ -1,0 +1,9 @@
+{"t":1789941400631,"type":"plan","plan":{"objective":"collect 4 dirt then go to waypoint","targets":{"dirt":4},"waypoint":{"x":380,"y":21,"z":16}}}
+{"t":1789941404741,"type":"decision","step":1,"key":"mine_dirt"}
+{"t":1789941406095,"type":"action","step":1,"action":"mine_dirt","result":{"ok":true,"mined":"dirt","drops":1},"position":{"x":382,"y":21,"z":28},"ms":1354}
+{"t":1789941410134,"type":"decision","step":2,"key":"collect_drop"}
+{"t":1789941413187,"type":"action","step":2,"action":"collect_drop","result":{"ok":true,"picked":3,"inventory":{"dirt":3}},"position":{"x":382,"y":19,"z":27},"ms":3053}
+{"t":1789941417822,"type":"decision","step":3,"key":"mine_dirt"}
+{"t":1789941419176,"type":"action","step":3,"action":"mine_dirt","result":{"ok":true,"mined":"dirt","drops":0},"position":{"x":382,"y":19,"z":27},"ms":1354}
+{"t":1789941429231,"type":"decision","step":4,"key":"goto_waypoint"}
+{"t":1789941433841,"type":"action","step":4,"action":"goto_waypoint","result":{"ok":true,"position":{"x":380,"y":24,"z":17}},"position":{"x":380,"y":24,"z":17},"ms":4610}

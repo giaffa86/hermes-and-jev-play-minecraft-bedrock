@@ -1,0 +1,17 @@
+{
+  "name": "hermes-jev-play-minecraft",
+  "version": "0.1.0",
+  "description": "Hermes Agent plans, Jev (TypeSafe) picks bounded actions, a Mineflayer harness executes them — Minecraft with no screenshots and no keypresses from a model.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "harness": "node harness.mjs",
+    "play": "node controller.mjs"
+  },
+  "dependencies": {
+    "flying-squid": "^1.12.0",
+    "mineflayer": "^4.39.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "vec3": "^0.2.0"
+  }
+}
