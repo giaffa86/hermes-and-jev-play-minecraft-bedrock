@@ -13,24 +13,48 @@ The split is the one [rmalde/minecraft-agent](https://github.com/rmalde/minecraf
 | `skills/minecraft-bounded-agent/SKILL.md` | Hermes skill: how to drive the harness directly from a Hermes session (`hermes chat -t terminal`). |
 | `docs/REPRODUCTION-REPORT.md` | Full report of reproducing the original Ender Dragon result on Linux with the exact models (GPT-6 Astra via Nous Portal, Jev via OpenRouter): **7:45**, 6 bed blasts, 0 deaths, **$0.96** — vs the author's 8:43 and $0.97. |
 
-## Quick start
+## Setup with your Hermes install
+
+Prerequisites:
+
+- **Node.js 18+** (tested on 26). No Java: the Minecraft server is pure Node.
+- **Hermes Agent** installed and logged in to any provider — `hermes chat -Q --oneshot -q hi` must answer. Nous Portal, OpenRouter, Anthropic, OpenAI, a local model: anything works, Hermes is only the planner.
+- **`OPENROUTER_API_KEY`** for the Jev controller (Jev is served through OpenRouter's decisions endpoint; ~$0.00004 per decision, the demo below costs well under a cent). Skip it and use `CONTROLLER=hermes` if you don't have one.
 
 ```bash
+git clone https://github.com/teknium1/hermes-and-jev-play-minecraft && cd hermes-and-jev-play-minecraft
 npm install
-# terminal 1 — server + bot + API (about 25 s to boot, no Java)
+
+# terminal 1 — server + bot + API. First boot generates the world, ~25 s. Prints "harness api on 3077" when ready.
 RUN_ID=demo node harness.mjs
+
 # terminal 2 — Hermes plans, Jev acts
-export OPENROUTER_API_KEY=...          # Jev is served through OpenRouter
+export OPENROUTER_API_KEY=sk-or-...
 RUN_ID=demo WAYPOINT='{"x":380,"z":16}' TARGETS='{"dirt":4}' MAX_STEPS=14 node controller.mjs
 ```
 
-`hermes` must be on `PATH` and logged in to any provider (Nous Portal, OpenRouter, Anthropic, ...). No other model key is needed; Jev decisions cost about $0.00004 each.
+Expected output ends with `GOAL MET after N actions {...}`; the full trail is in `runs/demo/controller.jsonl` (plans + every Jev decision with probabilities, confidence, latency, cost) and `runs/demo/events.jsonl` (harness-side actions and results).
 
-Or let Hermes drive the harness itself, with the skill installed:
+Knobs (all env vars): `GOAL` (free text for the planner), `TARGETS` (`{item: minCount}`), `WAYPOINT` (`{x, z}` or unset), `MAX_STEPS`, `REPLAN_EVERY` (default 8), `CONTROLLER=jev|hermes`, `JEV_MODEL` (default `typesafe/jev-1.13`), `MC_PORT`/`API_PORT` if 25599/3077 are taken.
+
+### Let Hermes drive the harness itself
+
+Install the skill into your Hermes, then hand the goal to a normal Hermes session with the terminal tool:
 
 ```bash
-hermes chat -Q --oneshot -t terminal -q "Using the minecraft-bounded-agent skill and the harness on 127.0.0.1:3077: hold >=4 dirt and reach waypoint (380,16) in at most 14 actions."
+hermes skills install https://raw.githubusercontent.com/teknium1/hermes-and-jev-play-minecraft/main/skills/minecraft-bounded-agent/SKILL.md
+RUN_ID=demo node harness.mjs   # terminal 1
+hermes chat -Q --oneshot -t terminal -q "Use the minecraft-bounded-agent skill against the harness on 127.0.0.1:3077: hold >=4 dirt and reach waypoint (380,16) in at most 14 actions, then report each step."
 ```
+
+In this mode Hermes is planner and controller (one session, ~10 s per action, roughly $0.20 per demo on a frontier model). It is the easiest way to watch the loop; the Jev controller is the fast, cheap way to run it.
+
+### Troubleshooting
+
+- `bot could not join`: the server is still generating chunks; the harness retries for ~30 s, then give it a second start.
+- Controller dies with `other side closed`: an old harness build; both sides now use `Connection: close`, `git pull`.
+- Jev returns `{"error": ...}`: the OpenRouter key lacks credit or the decisions endpoint is briefly down; the controller surfaces the raw error. Re-run.
+- Nothing happens after `PLAN ...`: the harness is `busy` with a long pathfinding action (up to 45 s); wait.
 
 ## Results
 
@@ -48,15 +72,18 @@ Two things surfaced while building it, both fixed in the harness rather than the
 
 ### Reproduction of the original Ender Dragon run
 
-`docs/REPRODUCTION-REPORT.md` covers running the original project end to end on Linux (Temurin JDK 17, vanilla 1.16.5 server, the author's seed) with a small relay that routes his exact model calls: `openai/gpt-6-astra` through the Nous Portal OAuth login Hermes already has, `typesafe/jev-1.13` through OpenRouter.
+Full write-up: [`docs/REPRODUCTION-REPORT.md`](docs/REPRODUCTION-REPORT.md) (environment, per-stage timeline, verification, cost by lane for every run, what could not be reproduced and why). Summary: the original project was run end to end on Linux (Temurin JDK 17, vanilla 1.16.5 server, the author's seed) with a small relay that routes his exact model calls: `openai/gpt-6-astra` through the Nous Portal OAuth login Hermes already has, `typesafe/jev-1.13` through OpenRouter.
 
-| | Original (`nether-final-08`) | Reproduction (`repro-02`) |
-|---|---|---|
-| First decision → exit portal | 8:43 | **7:45** |
-| Jev decisions / Astra calls | 131 / 35 | 119 / 35 |
-| Bed blasts | 6 | 6 |
-| Deaths | 0 | 0 |
-| Cost | $0.97 ($0.01 Jev, $0.96 Astra) | **$0.963** ($0.010 Jev, $0.953 Astra) |
+| | Original (`nether-final-08`) | Reproduction (`repro-02`, exact models) | Reproduction (`repro-01`, substitute models) |
+|---|---|---|---|
+| First decision → exit portal | 8:43 | **7:45** | 12:37 |
+| Controller decisions / planner calls | 131 / 35 | 119 / 35 | 140 / 52 |
+| Bed blasts to kill | 6 | 6 | 6 |
+| Deaths | 0 | 0 | 0 |
+| Controller median latency | ~0.2 s | 227 ms (Jev) | 1.8 s (Gemini 3.8 Flash emulating Jev) |
+| Cost | $0.97 ($0.01 Jev, $0.96 Astra) | **$0.963** ($0.010 Jev, $0.953 Astra) | $0.572 |
+
+Total spend across every run in the report (two dragon runs, the Hermes-native test, probes): **$1.96**.
 
 Not reproduced: the video (the original recorder is a macOS-only native client).
 

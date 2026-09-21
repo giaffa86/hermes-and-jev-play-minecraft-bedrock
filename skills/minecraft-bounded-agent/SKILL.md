@@ -1,6 +1,6 @@
 ---
 name: minecraft-bounded-agent
-description: Use when asked to play or test Minecraft through the hermes-jev-play-minecraft harness. Hermes plans in JSON; every action is one key chosen from the harness's current valid-option list.
+description: Use when asked to play or test Minecraft through the hermes-and-jev-play-minecraft harness. Hermes plans in JSON; every action is one key chosen from the harness's current valid-option list.
 ---
 
 # Minecraft bounded agent (Hermes planner, Jev or Hermes controller)

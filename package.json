@@ -1,5 +1,5 @@
 {
-  "name": "hermes-jev-play-minecraft",
+  "name": "hermes-and-jev-play-minecraft",
   "version": "0.1.0",
   "description": "Hermes Agent plans, Jev (TypeSafe) picks bounded actions, a Mineflayer harness executes them — Minecraft with no screenshots and no keypresses from a model.",
   "type": "module",
