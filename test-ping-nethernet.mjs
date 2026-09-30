@@ -1,6 +1,5 @@
-// Ping del server Bedrock via NetherNet.
-// bedrock-protocol@3.60.1 carica raknet-native anche quando si richiede transport:'nethernet',
-// quindi usiamo direttamente NethernetClient per evitare il binding nativo.
+// Ping diretto via NetherNet, bypassando il caricamento di raknet-native in bedrock-protocol/src/createClient.js.
+// Questo test non richiede autenticazione Xbox Live.
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -11,8 +10,8 @@ const port = +(process.env.BEDROCK_PORT || 19132);
 (async () => {
   const client = new NethernetClient({ host, port });
   try {
-    const res = await client.ping(10000);
-    console.log('PING OK', JSON.stringify(res, (k, v) => typeof v === 'bigint' ? v.toString() : v, 2));
+    const ad = await client.ping(10000);
+    console.log('PING OK', JSON.stringify(ad, (k, v) => typeof v === 'bigint' ? v.toString() : v, 2));
   } catch (e) {
     console.error('PING FAILED', e.message, e.stack);
     process.exitCode = 1;

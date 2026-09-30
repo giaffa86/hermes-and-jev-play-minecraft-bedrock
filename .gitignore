@@ -6,3 +6,7 @@ runs/
 .env
 .env.local
 .env.*.local
+
+# Private project notes and runbooks not meant for the public repo
+.private/
+.private/*

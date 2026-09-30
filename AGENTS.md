@@ -1,4 +1,4 @@
-> **Nota Bedrock (WIP)** — Questo repository e' un fork di `teknium1/hermes-and-jev-play-minecraft` per portare l'agente su Minecraft Bedrock. Il goal completo, i dettagli del server e la checklist di lancio sono in [`GOAL.md`](./GOAL.md). Continuare il lavoro solo dopo aver letto quel file.
+> **Nota Bedrock (WIP)** — Questo repository e' un fork di `teknium1/hermes-and-jev-play-minecraft` per portare l'agente su Minecraft Bedrock. Il goal completo, i dettagli del server e la checklist di lancio sono nel runbook privato locale `.private/GOAL.md` (escluso da git). Continuare il lavoro solo dopo aver letto quel file.
 
 # Agent notes
 
