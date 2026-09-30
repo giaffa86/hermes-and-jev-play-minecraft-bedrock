@@ -1,4 +1,8 @@
 node_modules/
 runs/
 *.log
+
+# Secrets / environment — never commit real credentials
 .env
+.env.local
+.env.*.local

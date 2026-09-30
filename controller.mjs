@@ -13,7 +13,7 @@ const WAYPOINT = process.env.WAYPOINT ? JSON.parse(process.env.WAYPOINT) : null;
 const TARGETS = process.env.TARGETS ? JSON.parse(process.env.TARGETS) : {dirt: 4}; // item -> min count
 const MAX_STEPS = +(process.env.MAX_STEPS || 20);
 const CONTROLLER = process.env.CONTROLLER || 'jev';
-const JEV_MODEL = process.env.JEV_MODEL || 'typesafe/jev-1.13';
+const JEV_MODEL = process.env.JEV_MODEL || (process.env.TYPESAFE_API_KEY ? 'jev-latest' : 'typesafe/jev-1.13');
 const REPLAN_EVERY = +(process.env.REPLAN_EVERY || 8);
 
 mkdirSync(`runs/${RUN}`, {recursive: true});
@@ -42,10 +42,12 @@ function hermesPlan(observation) {
   return plan;
 }
 
-// ---- controller: Jev via OpenRouter -----------------------------------------------------------
+// ---- controller: Jev via TypeSafe or OpenRouter ---------------------------------------------
 async function jevDecide(observation, options, plan) {
-  const key = process.env.OPENROUTER_API_KEY;
-  if (!key) throw new Error('OPENROUTER_API_KEY is required for CONTROLLER=jev');
+  const typesafeKey = process.env.TYPESAFE_API_KEY;
+  const openrouterKey = process.env.OPENROUTER_API_KEY;
+  const key = typesafeKey || openrouterKey;
+  if (!key) throw new Error('TYPESAFE_API_KEY or OPENROUTER_API_KEY is required for CONTROLLER=jev');
   const criteria = Object.fromEntries(options.map((o, i) => [`a${i}`, o.description]));
   const body = {
     model: JEV_MODEL,
@@ -56,12 +58,19 @@ async function jevDecide(observation, options, plan) {
       criteria}},
   };
   const started = Date.now();
-  const r = await fetch('https://openrouter.ai/api/alpha/decisions', {method: 'POST', headers: {Authorization: `Bearer ${key}`, 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-  const data = await r.json();
-  if (data.error) throw new Error(JSON.stringify(data.error));
+  let data;
+  if (typesafeKey) {
+    const r = await fetch('https://api.typesafe.ai/v1/systemone', {method: 'POST', headers: {Authorization: `Bearer ${key}`, 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    data = await r.json();
+    if (!r.ok) throw new Error(`TypeSafe error ${r.status}: ${JSON.stringify(data)}`);
+  } else {
+    const r = await fetch('https://openrouter.ai/api/alpha/decisions', {method: 'POST', headers: {Authorization: `Bearer ${key}`, 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    data = await r.json();
+    if (data.error) throw new Error(JSON.stringify(data.error));
+  }
   const ans = data.answers.action;
   const idx = +ans.choice.slice(1);
-  log('decision', {controller: 'jev', model: data.model, choice: ans.choice, key: options[idx].key, probabilities: ans.probabilities, confidence: ans.confidence, cost: data.usage?.cost, ms: Date.now() - started});
+  log('decision', {controller: 'jev', provider: typesafeKey ? 'typesafe' : 'openrouter', model: data.model, choice: ans.choice, key: options[idx].key, probabilities: ans.probabilities, confidence: ans.confidence, cost: data.usage?.cost, ms: Date.now() - started});
   return options[idx].key;
 }
 
