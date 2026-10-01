@@ -1,0 +1,50 @@
+# Docker Compose per l'agente Hermes + Jev Bedrock su host Docker.
+# Il container si connette al BDS via NetherNet e comunica con il servizio Hermes
+# esistente sulla rete Docker condivisa `hermes-internal`.
+#
+# Prima di avviare:
+#   1. Creare .env nella stessa directory (vedi .env.example).
+#   2. Verificare che esista la rete Docker `hermes-internal` di Hermes:
+#        docker network ls | grep hermes-internal
+#   3. Se il nome e' diverso, aggiornare networks.hermes-internal.name qui sotto.
+
+services:
+  hermes-jev-bedrock:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hermes-jev-bedrock
+    env_file:
+      - .env
+    environment:
+      # Docker publishes this listener only on the VM loopback address below.
+      - API_HOST=0.0.0.0
+      # URL del harness visto dal controller.
+      # Se il controller gira sulla VM (fuori Docker): http://127.0.0.1:3077
+      # Se il controller gira in un altro container sulla stessa rete: http://hermes-jev-bedrock:3077
+      - HARNESS=http://127.0.0.1:3077
+    ports:
+      # Espone il harness solo su localhost della VM (non su LAN/internet).
+      # Se vuoi esporlo alla LAN, sostituire 127.0.0.1 con 0.0.0.0 o l'IP della VM.
+      - "127.0.0.1:3077:3077"
+    volumes:
+      # Log, eventi e mondi di test
+      - ./runs:/app/runs
+      # Persistenza cache token Xbox Live (importante per non rifare l'auth ogni volta).
+      # La prima volta puo' essere popolata copiando ~/.minecraft/nmp-cache dal nodo
+      # nella directory ./nmp-cache accanto a questo file.
+      - ./nmp-cache:/root/.minecraft/nmp-cache:rw
+    networks:
+      # Rete con accesso esterno: BDS (<ip-server-bedrock>:19132) e API remote (TypeSafe/OpenRouter)
+      - hermes-jev-bedrock
+      # Rete interna condivisa con il container Hermes esistente (non modificato)
+      - hermes-internal
+    restart: unless-stopped
+
+networks:
+  hermes-jev-bedrock:
+    driver: bridge
+  hermes-internal:
+    external: true
+    # Nome reale della rete Docker di Hermes (verificare su host Docker)
+    name: hermes-internal
