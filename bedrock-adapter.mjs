@@ -66,6 +66,13 @@ export class BedrockAdapter {
     this._motion = null;
     this._openDoors = new Set();       // celle di porte aperte (fisica passabile)
     this._doorWatchers = new Map();    // key -> runtime id della porta chiusa
+    this.recipes = null;               // output -> ricette da crafting_data
+    this.craftingData = null;
+    this._stackRequestId = -861;       // id dispari negativi come il client vanilla
+    this._openContainer = null;        // { id, type } del container UI aperto
+    this._containerWaiters = [];
+    this._craftingGrid = new Map();    // gridSlot -> { network_id, count, stack_id }
+    this._cursor = null;               // { network_id, count, stack_id }
     this.world = new BedrockWorld({ version: VERSION, onError: error => this.log('world_error', { message: error.message }) });
   }
 
@@ -145,6 +152,23 @@ export class BedrockAdapter {
       this.client.on('error', (err) => {
         this.connectError = err;
         this.log('client_error', { message: err.message || String(err) });
+      });
+
+      // Il server invia l'elenco ricette subito dopo start_game, prima dello spawn.
+      this.client.on('crafting_data', (packet) => this._indexRecipes(packet));
+
+      this.client.on('item_stack_response', (packet) => {
+        this.lastStackResponse = packet;
+        this.log('item_stack_response', { packet });
+      });
+
+      client.on('container_open', (packet) => {
+        this._openContainer = { id: packet.window_id, type: packet.window_type };
+        this.log('container_open', { windowId: packet.window_id, windowType: packet.window_type });
+        for (const waiter of this._containerWaiters.splice(0)) {
+          if (waiter.predicate(packet)) waiter.resolve(packet);
+          else this._containerWaiters.push(waiter);
+        }
       });
 
       this.client.on('kick', (packet) => {
@@ -291,6 +315,17 @@ export class BedrockAdapter {
           this.inventorySlots = packet.input || packet.contents || [];
           this._refreshInventory();
         }
+        // Il contenuto del container aperto è la verità sulla griglia di crafting.
+        if (this._openContainer && packet.window_id === this._openContainer.id && Array.isArray(packet.input)) {
+          const gridSlots = this._openContainer.type === 'workbench'
+            ? [32, 33, 34, 35, 36, 37, 38, 39, 40]
+            : [28, 29, 30, 31];
+          for (const slot of gridSlots) {
+            const item = packet.input[slot];
+            if (item?.network_id) this._craftingGrid.set(slot, { network_id: item.network_id, count: item.count, stack_id: item.stack_id });
+            else this._craftingGrid.delete(slot);
+          }
+        }
       });
       client.on('inventory_slot', packet => {
         if (packet.window_id !== 'inventory' && packet.window_id !== 0) return;
@@ -410,6 +445,27 @@ export class BedrockAdapter {
     }
   }
 
+  // ---- ricette -----------------------------------------------------------------------
+
+  _indexRecipes (packet) {
+    const byOutput = new Map();
+    const add = (kind, recipe) => {
+      for (const out of recipe.output || []) {
+        const name = out.name || this.world.registry?.items[out.network_id]?.name;
+        if (!name) continue;
+        const list = byOutput.get(name) || [];
+        list.push({ kind, recipe_id: recipe.recipe_id, network_id: recipe.network_id, output: out.count || 1 });
+        byOutput.set(name, list);
+      }
+    };
+    for (const recipe of packet.shaped_recipes || []) add('shaped', recipe);
+    for (const recipe of packet.shapeless_recipes || []) add('shapeless', recipe);
+    this.craftingData = packet;
+    this.recipes = byOutput;
+    const counts = { shaped: packet.shaped_recipes?.length || 0, shapeless: packet.shapeless_recipes?.length || 0, multi: packet.multi_recipes?.length || 0 };
+    this.log('crafting_data', { ...counts, indexedOutputs: byOutput.size });
+  }
+
   pos () {
     if (!this.position) return null;
     // Posizione esatta (2 decimali): il vecchio harness riportava interi, ma con
@@ -458,6 +514,26 @@ export class BedrockAdapter {
         o.push({ key: `mine_${blockName}`, description: `Mine ${blockName} at ${JSON.stringify(nearest.position)} (${nearest.distance} blocks away)` });
       }
     }
+    // Crafting: solo le ricette utili alla progressione, con materiali disponibili.
+    if (this.recipes && this.craftingData) {
+      const logs = Object.keys(this.inventory).filter(name => /(_log|_stem|_hyphae)$/.test(name));
+      for (const log of logs) {
+        const planks = `${log.replace(/(_log|_stem|_hyphae)$/, '')}_planks`;
+        if (this.recipes.has(planks)) o.push({ key: `craft_${planks}`, description: `Craft ${planks} from ${log}` });
+      }
+      const planksHeld = Object.keys(this.inventory).find(name => /_planks$/.test(name));
+      if (planksHeld) {
+        o.push({ key: 'craft_stick', description: 'Craft sticks from planks' });
+        o.push({ key: 'craft_crafting_table', description: 'Craft a crafting table from 4 planks' });
+      }
+      if (planksHeld && (this.inventory.stick || 0) >= 2 && (this.inventory[planksHeld] || 0) >= 3) {
+        o.push({ key: 'craft_wooden_pickaxe', description: 'Craft a wooden pickaxe (uses a crafting table)' });
+      }
+    }
+    // Piazzamento: solo ciò che serve alla progressione.
+    if ((this.inventory.crafting_table || 0) > 0 && !this.world.findBlocks('crafting_table', this.position, 6, 1).length) {
+      o.push({ key: 'place_crafting_table', description: 'Place a crafting table next to the bot' });
+    }
     // Fallback
     if (!o.length) o.push({ key: 'wait', description: 'Wait 2 seconds for fresh observations' });
     return o;
@@ -486,6 +562,11 @@ export class BedrockAdapter {
         if (!candidates.length) throw new Error(`no ${blockName} found nearby`);
         const target = candidates[0];
         result = await this._mineBlock(target);
+      } else if (key.startsWith('craft_')) {
+        result = await this._craftItem(key.slice('craft_'.length));
+      } else if (key.startsWith('place_')) {
+        const itemName = key.slice('place_'.length);
+        result = await this._placeBlock(itemName, itemName);
       } else {
         result = { ok: false, error: 'unknown_action', reason: `unknown or invalid action ${key}` };
       }
@@ -558,6 +639,472 @@ export class BedrockAdapter {
       if (entry) entry.failedAt = Date.now();
     }
     return { ok: false, error: 'item_not_collected', inventory: this.inventory };
+  }
+
+  // ---- crafting e piazzamento --------------------------------------------------------
+
+  _nextStackRequest () {
+    this._stackRequestId -= 2;
+    return this._stackRequestId;
+  }
+
+  _slotInfo (container, slot, stack = 0) {
+    // dynamic_container_id va omesso: con il campo presente BDS considera il
+    // container come dinamico e rifiuta lo slot (status 49).
+    return { slot_type: { container_id: container }, slot, stack_id: stack };
+  }
+
+  _invSlotToSlotInfo (index) {
+    return index < 9
+      ? { container: 'hotbar', slot: index }
+      : { container: 'inventory', slot: index - 9 };
+  }
+
+  _sendStackRequest (actions, { outputs = false, timeoutMs = 4000 } = {}) {
+    if (!this.client) return Promise.reject(new Error('connection_lost'));
+    const requestId = this._nextStackRequest();
+    const prepared = actions.map(action => {
+      if (outputs && action.source?.slot_type?.container_id === 'creative_output') {
+        return { ...action, source: { ...action.source, stack_id: requestId } };
+      }
+      return action;
+    });
+    return new Promise((resolve, reject) => {
+      const finish = (error, response) => {
+        clearTimeout(timer);
+        this.client?.off('item_stack_response', onResponse);
+        if (error) reject(error); else resolve(response);
+      };
+      const onResponse = packet => {
+        const response = packet.responses?.find(r => r.request_id === requestId);
+        if (response) finish(null, response);
+      };
+      const timer = setTimeout(() => finish(new Error('stack_request_timeout')), timeoutMs);
+      this.client.on('item_stack_response', onResponse);
+      this.client.write('item_stack_request', { requests: [{ request_id: requestId, actions: prepared, custom_names: [], cause: 'chat_public' }] });
+    });
+  }
+
+  _responseSlotStack (response, container, slot) {
+    return response?.containers
+      ?.find(c => c.slot_type?.container_id === container)
+      ?.slots?.find(s => s.slot === slot)?.item_stack_id;
+  }
+
+  _applyStackResponse (response, { networkId = null } = {}) {
+    for (const container of response.containers || []) {
+      const cid = container.slot_type?.container_id;
+      for (const slot of container.slots || []) {
+        if (cid === 'cursor') {
+          if (slot.count === 0) this._cursor = null;
+          else this._cursor = {
+            network_id: this._cursor?.network_id ?? networkId ?? 0,
+            count: slot.count,
+            stack_id: slot.item_stack_id,
+          };
+          continue;
+        }
+        if (cid === 'crafting_input') {
+          if (slot.count === 0) this._craftingGrid.delete(slot.slot);
+          else this._craftingGrid.set(slot.slot, {
+            network_id: this._craftingGrid.get(slot.slot)?.network_id ?? networkId ?? 0,
+            count: slot.count,
+            stack_id: slot.item_stack_id,
+          });
+          continue;
+        }
+        let index = null;
+        if (cid === 'hotbar') index = slot.slot;
+        else if (cid === 'inventory') index = slot.slot + 9;
+        else if (cid === 'hotbar_and_inventory') index = slot.slot;
+        if (index == null || index < 0 || index > 35) continue;
+        if (slot.count === 0) {
+          this.inventorySlots[index] = undefined;
+          continue;
+        }
+        const existing = this.inventorySlots[index] || {};
+        this.inventorySlots[index] = {
+          ...existing,
+          network_id: existing.network_id || networkId || 0,
+          count: slot.count,
+          stack_id: slot.item_stack_id,
+          has_stack_id: true,
+        };
+      }
+    }
+    this._refreshInventory();
+  }
+
+  _waitForContainerOpen (predicate, timeoutMs = 3000) {
+    return new Promise((resolve, reject) => {
+      const waiter = { predicate, resolve: packet => { clearTimeout(timer); resolve(packet); } };
+      const timer = setTimeout(() => {
+        this._containerWaiters = this._containerWaiters.filter(w => w !== waiter);
+        reject(new Error('container_open_timeout'));
+      }, timeoutMs);
+      this._containerWaiters.push(waiter);
+    });
+  }
+
+  async _ensureInventoryOpen () {
+    if (this._openContainer?.type === 'inventory') return;
+    if (this._openContainer) await this._closeContainer();
+    const wait = this._waitForContainerOpen(p => p.window_type === 'inventory', 3000);
+    this.client.write('interact', { action_id: 'open_inventory', target_entity_id: this.client.entityId, has_position: false });
+    await wait;
+    await delay(200); // lascia arrivare inventory_content con lo stato della griglia
+  }
+
+  async _closeContainer () {
+    const open = this._openContainer;
+    if (!open || !this.client) return;
+    this.client.write('container_close', { window_id: open.id, window_type: 'none', server: false });
+    this._openContainer = null;
+    // Il server restituisce o fa cadere gli item rimasti nella griglia: lo stato locale non è più valido.
+    if (this._craftingGrid.size) this.log('grid_leftovers_discarded', { slots: [...this._craftingGrid.keys()] });
+    this._craftingGrid.clear();
+    await delay(80);
+  }
+
+  async _returnCursorToInventory () {
+    let guard = 0;
+    while (this._cursor?.count > 0 && guard++ < 5) {
+      const networkId = this._cursor.network_id;
+      const dest = this._findOutputSlot(networkId);
+      if (dest < 0) return false;
+      const info = this._invSlotToSlotInfo(dest);
+      const response = await this._sendStackRequest([{
+        type_id: 'place', legacy_type_id: 1, count: this._cursor.count,
+        source: this._slotInfo('cursor', 0, this._cursor.stack_id),
+        destination: this._slotInfo(info.container, info.slot,
+          this.inventorySlots[dest]?.network_id === networkId ? this.inventorySlots[dest].stack_id || 0 : 0),
+      }], { timeoutMs: 2500 });
+      if (String(response.status) !== 'ok' && response.status !== 0) return false;
+      this._applyStackResponse(response, { networkId });
+    }
+    return this._cursor == null;
+  }
+
+  // ---- ricette: selezione e piazzamento nella griglia ---------------------------------
+
+  _recipeBody (entry) {
+    return this.craftingData?.shaped_recipes?.find(r => r.network_id === entry.network_id)
+      || this.craftingData?.shapeless_recipes?.find(r => r.network_id === entry.network_id);
+  }
+
+  _slotItemName (slot) {
+    if (!slot?.network_id) return null;
+    return slot.name || this.world.registry?.items[slot.network_id]?.name || null;
+  }
+
+  _ingredientMatches (ingredient, name) {
+    if (!name || ingredient.type !== 'valid') return false;
+    if (ingredient.descriptor_type === 'name') {
+      return name === String(ingredient.name).replace(/^minecraft:/, '');
+    }
+    if (ingredient.descriptor_type === 'item_tag') {
+      const tag = String(ingredient.tag).replace(/^minecraft:/, '');
+      if (tag === 'planks') return /_planks$/.test(name);
+      if (tag === 'logs' || tag === 'log') return /(_log|_stem|_hyphae)$/.test(name);
+      return true; // tag non mappato: lascia decidere al server
+    }
+    return false;
+  }
+
+  _gridSlotFor (recipe, inputIndex, table) {
+    const width = recipe.width || 1;
+    const x = inputIndex % width;
+    const y = Math.floor(inputIndex / width);
+    const tableYOffset = table && (recipe.height || 1) < 3 ? 1 : 0;
+    const proto = (y + tableYOffset) * (table ? 3 : 2) + x;
+    return table ? 32 + proto : [30, 31, 28, 29][proto] ?? 30 + proto;
+  }
+
+  _planGrid (recipe, table) {
+    const slots = [];
+    const inputs = recipe.input || [];
+    for (let i = 0; i < inputs.length; i++) {
+      const ingredient = inputs[i];
+      if (ingredient.type !== 'valid') continue;
+      slots.push({ gridSlot: this._gridSlotFor(recipe, i, table), ingredient });
+    }
+    return slots;
+  }
+
+  _hasMaterials (recipe) {
+    if (!recipe.output?.length) return false;
+    const grid = this._planGrid(recipe, (recipe.width || 1) > 2 || (recipe.height || 1) > 2);
+    const available = this.inventorySlots.map(s => s ? { name: this._slotItemName(s), count: s.count } : null);
+    for (const { ingredient } of grid) {
+      let remaining = ingredient.count || 1;
+      for (let i = 0; i < available.length && remaining > 0; i++) {
+        const slot = available[i];
+        if (!slot || slot.count <= 0) continue;
+        if (!this._ingredientMatches(ingredient, slot.name)) continue;
+        const used = Math.min(slot.count, remaining);
+        slot.count -= used;
+        remaining -= used;
+      }
+      if (remaining > 0) return false;
+    }
+    return true;
+  }
+
+  _findSourceSlot (ingredient) {
+    for (let i = 0; i < this.inventorySlots.length; i++) {
+      const slot = this.inventorySlots[i];
+      if (!slot?.network_id || !slot.count) continue;
+      if (this._ingredientMatches(ingredient, this._slotItemName(slot))) return i;
+    }
+    return -1;
+  }
+
+  _itemStackSize (networkId) {
+    const item = this.world.registry?.items?.[networkId];
+    if (!item) return 64;
+    if ((item.maxDurability || 0) > 0) return 1;
+    return item.stackSize || item.maxStackSize || 64;
+  }
+
+  _findOutputSlot (networkId, count = 1) {
+    const stackSize = this._itemStackSize(networkId);
+    for (let i = 0; i < 9; i++) {
+      const slot = this.inventorySlots[i];
+      if (slot?.network_id === networkId && (slot.count || 0) + count <= stackSize) return i;
+    }
+    for (let i = 0; i < 9; i++) if (!this.inventorySlots[i]?.network_id) return i;
+    for (let i = 9; i < 36; i++) {
+      const slot = this.inventorySlots[i];
+      if (slot?.network_id === networkId && (slot.count || 0) + count <= stackSize) return i;
+    }
+    for (let i = 9; i < 36; i++) if (!this.inventorySlots[i]?.network_id) return i;
+    return -1;
+  }
+
+  async _takeToCursor (slotIndex, count) {
+    const item = this.inventorySlots[slotIndex];
+    if (!item?.network_id) throw new Error('missing_ingredients');
+    const info = this._invSlotToSlotInfo(slotIndex);
+    const response = await this._sendStackRequest([{
+      type_id: 'take', legacy_type_id: 0, count,
+      source: this._slotInfo(info.container, info.slot, item.stack_id || 0),
+      destination: this._slotInfo('cursor', 0, 0),
+    }]);
+    if (String(response.status) !== 'ok' && response.status !== 0) throw new Error(`take_failed_${response.status}`);
+    this._applyStackResponse(response);
+    this._cursor = { network_id: item.network_id, count, stack_id: this._responseSlotStack(response, 'cursor', 0) ?? 0 };
+    return this._cursor.stack_id;
+  }
+
+  async _placeFromCursor (gridSlot, count, cursorStack) {
+    const response = await this._sendStackRequest([{
+      type_id: 'place', legacy_type_id: 1, count,
+      source: this._slotInfo('cursor', 0, cursorStack),
+      destination: this._slotInfo('crafting_input', gridSlot, this._craftingGrid.get(gridSlot)?.stack_id || 0),
+    }]);
+    if (String(response.status) !== 'ok' && response.status !== 0) throw new Error(`place_failed_${response.status}`);
+    this._applyStackResponse(response);
+    return this._responseSlotStack(response, 'crafting_input', gridSlot) ?? 0;
+  }
+
+  async _clearCraftingGrid () {
+    if (!this._craftingGrid.size) return true;
+    for (const [slot, entry] of [...this._craftingGrid]) {
+      if (!entry?.count) { this._craftingGrid.delete(slot); continue; }
+      const takeResp = await this._sendStackRequest([{
+        type_id: 'take', legacy_type_id: 0, count: entry.count,
+        source: this._slotInfo('crafting_input', slot, entry.stack_id),
+        destination: this._slotInfo('cursor', 0, 0),
+      }], { timeoutMs: 2000 }).catch(() => null);
+      if (!takeResp || (String(takeResp.status) !== 'ok' && takeResp.status !== 0)) {
+        this._craftingGrid.clear();
+        return false;
+      }
+      this._applyStackResponse(takeResp, { networkId: entry.network_id });
+      this._cursor = { network_id: entry.network_id, count: entry.count, stack_id: this._responseSlotStack(takeResp, 'cursor', 0) ?? 0 };
+    }
+    return this._returnCursorToInventory();
+  }
+
+  async _placeGridIngredients (recipe, table) {
+    const gridStackIds = new Map();
+    for (const { gridSlot, ingredient } of this._planGrid(recipe, table)) {
+      const count = ingredient.count || 1;
+      for (let unit = 0; unit < count; unit++) {
+        const source = this._findSourceSlot(ingredient);
+        if (source < 0) throw new Error('missing_ingredients');
+        const cursorStack = await this._takeToCursor(source, 1);
+        gridStackIds.set(gridSlot, await this._placeFromCursor(gridSlot, 1, cursorStack));
+      }
+    }
+    return gridStackIds;
+  }
+
+  _craftActions (recipe, gridStackIds) {
+    const result = recipe.output[0];
+    const name = `minecraft:${this.world.registry?.items[result.network_id]?.name || 'item'}`;
+    const descriptor = {
+      type: 'name', legacy_type: 1, name,
+      metadata: 0, count: result.count || 1,
+      block_runtime_id: result.block_runtime_id || 0,
+      extra: { has_nbt: 0, can_place_on: [], can_destroy: [] },
+    };
+    const destinationIndex = this._findOutputSlot(result.network_id);
+    if (destinationIndex < 0) throw new Error('inventory_full');
+    const destination = this._invSlotToSlotInfo(destinationIndex);
+    const destinationItem = this.inventorySlots[destinationIndex];
+    const destinationStack = destinationItem?.network_id === result.network_id ? destinationItem.stack_id || 0 : 0;
+    const actions = [
+      { type_id: 'craft_recipe', legacy_type_id: 12, recipe_network_id: recipe.network_id, times_crafted: 1 },
+      { type_id: 'results_deprecated', legacy_type_id: 19, result_items: [descriptor], times_crafted: 1 },
+    ];
+    for (const [gridSlot, stackId] of gridStackIds) {
+      actions.push({
+        type_id: 'consume', legacy_type_id: 5, count: 1,
+        source: this._slotInfo('crafting_input', gridSlot, stackId),
+      });
+    }
+    actions.push({
+      type_id: 'place', legacy_type_id: 1, count: result.count || 1,
+      source: this._slotInfo('creative_output', 50, 0),
+      destination: this._slotInfo(destination.container, destination.slot, destinationStack),
+    });
+    return { actions, result };
+  }
+
+  async _ensureCraftingTableOpen () {
+    if (this._openContainer?.type === 'workbench') return;
+    if (this._openContainer) await this._closeContainer();
+    const table = this.world.findBlocks('crafting_table', this.position, 16, 1)[0];
+    if (!table) throw new Error('crafting_table_not_found');
+    if (table.distance > 3.5) {
+      await this._moveTo({ x: table.position.x + 0.5, y: this.position.y, z: table.position.z + 0.5 }, 3, 20000);
+    }
+    const wait = this._waitForContainerOpen(p => p.window_type === 'workbench', 3000);
+    const yaw = this._yawTo(this._feet, { x: table.position.x + 0.5, z: table.position.z + 0.5 });
+    await this._queueAuthInput({ yaw, pitch: 0, transaction: this._blockUseTransaction(table.position) });
+    await wait;
+    await delay(200); // lascia arrivare inventory_content con lo stato della griglia
+  }
+
+  async _craftItem (itemName) {
+    if (!this.recipes || !this.craftingData) return { ok: false, error: 'recipes_unavailable' };
+    const candidates = this.recipes.get(itemName) || [];
+    for (const entry of candidates) {
+      const recipe = this._recipeBody(entry);
+      if (!recipe || !this._hasMaterials(recipe)) continue;
+      const table = (recipe.width || 1) > 2 || (recipe.height || 1) > 2;
+      try {
+        if (table) await this._ensureCraftingTableOpen();
+        else await this._ensureInventoryOpen();
+        await this._clearCraftingGrid();
+        const gridStackIds = await this._placeGridIngredients(recipe, table);
+        const { actions, result } = this._craftActions(recipe, gridStackIds);
+        const response = await this._sendStackRequest(actions, { outputs: true });
+        const status = response.status;
+        if (String(status) !== 'ok' && status !== 0) return { ok: false, error: 'craft_failed', status };
+        this._applyStackResponse(response, { networkId: result.network_id });
+        return { ok: true, crafted: itemName, count: result.count || 1 };
+      } catch (error) {
+        return { ok: false, error: error.message };
+      } finally {
+        await this._clearCraftingGrid().catch(() => {});
+        await this._returnCursorToInventory().catch(() => {});
+        await this._closeContainer().catch(() => {});
+      }
+    }
+    return { ok: false, error: candidates.length ? 'missing_ingredients' : 'craft_recipe_missing' };
+  }
+
+  // ---- piazzamento blocchi -----------------------------------------------------------
+
+  _selectHotbarSlot (index) {
+    const item = this.inventorySlots[index];
+    if (!item?.network_id) return false;
+    this.client.write('mob_equipment', {
+      runtime_entity_id: this.client.entityId, item,
+      slot: index, selected_slot: index, window_id: 'inventory',
+    });
+    this.selectedHotbar = index;
+    return true;
+  }
+
+  _findPlacementTarget (blockName) {
+    const feet = this._feet;
+    const bx = Math.floor(feet.x), by = Math.floor(feet.y + 0.1), bz = Math.floor(feet.z);
+    const dirs = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+    for (const [dx, dz] of dirs) {
+      const target = { x: bx + dx, y: by, z: bz + dz };
+      const support = { x: target.x, y: target.y - 1, z: target.z };
+      if (this._solidAt(target.x, target.y, target.z)) continue;
+      if (!this._solidAt(support.x, support.y, support.z)) continue;
+      return { target, support, face: 1, clickPos: { x: 0.5, y: 1, z: 0.5 }, blockName };
+    }
+    return null;
+  }
+
+  async _placeBlock (itemName, blockName) {
+    const slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && s.count > 0);
+    if (slotIndex < 0) return { ok: false, error: 'missing_item' };
+    if (slotIndex > 8) {
+      // Sposta uno stack nella hotbar con uno swap richiesto dal client.
+      const free = this.inventorySlots.findIndex((s, i) => i < 9 && !s?.network_id);
+      if (free < 0) return { ok: false, error: 'hotbar_full' };
+      const item = this.inventorySlots[slotIndex];
+      const src = this._invSlotToSlotInfo(slotIndex);
+      const dst = this._invSlotToSlotInfo(free);
+      const response = await this._sendStackRequest([{
+        type_id: 'swap', legacy_type_id: 2,
+        source: this._slotInfo(src.container, src.slot, item.stack_id || 0),
+        destination: this._slotInfo(dst.container, dst.slot, 0),
+      }]);
+      if (String(response.status) !== 'ok' && response.status !== 0) return { ok: false, error: `swap_failed_${response.status}` };
+      this._applyStackResponse(response);
+      return this._placeBlock(itemName, blockName);
+    }
+
+    const spot = this._findPlacementTarget(blockName);
+    if (!spot) return { ok: false, error: 'no_place_spot' };
+    if (this._openContainer) await this._closeContainer();
+    this._selectHotbarSlot(slotIndex);
+    const held = this.inventorySlots[slotIndex];
+    const runtimeId = this.world.runtimeIdAt(spot.support);
+    const yaw = this._yawTo(this._feet, { x: spot.target.x + 0.5, z: spot.target.z + 0.5 });
+    await this._queueAuthInput({
+      yaw,
+      pitch: this._lookAt({ x: spot.target.x + 0.5, y: spot.target.y + 0.5, z: spot.target.z + 0.5 }).pitch,
+      transaction: {
+        legacy: { legacy_request_id: 0 },
+        actions: [],
+        data: {
+          action_type: 'click_block',
+          trigger_type: 'player_input',
+          block_position: spot.support,
+          face: spot.face,
+          hotbar_slot: this.selectedHotbar,
+          hand: 'main_hand',
+          held_item: held,
+          player_pos: { ...this.position },
+          click_pos: spot.clickPos,
+          block_runtime_id: runtimeId >>> 0,
+          client_prediction: 'success',
+          client_cooldown_state: 'off',
+        },
+      },
+    });
+    const deadline = Date.now() + 2500;
+    while (Date.now() < deadline) {
+      const placed = this.world.blockAt(spot.target);
+      if (placed && placed.name === blockName) {
+        this._refreshNearby();
+        return { ok: true, block: blockName, position: spot.target };
+      }
+      if (placed && placed.name !== 'air' && placed.name !== 'unknown') {
+        return { ok: false, error: `unexpected_block_${placed.name}` };
+      }
+      await delay(100);
+    }
+    return { ok: false, error: 'place_not_confirmed' };
   }
 
   // ---- mining ------------------------------------------------------------------------
