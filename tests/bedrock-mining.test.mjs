@@ -51,7 +51,8 @@ test('timed mining starts once and predicts on the final progress tick', async (
   const { adapter, block, packets } = miningAdapter(true, 'air', 0.1);
   assert.equal((await adapter._mineBlock(block)).ok, true);
   assert.deepEqual(packets.map(packet => packet.block_action?.map(action => action.action)), [
-    ['start_break'], ['continue_break'], ['continue_break'], ['continue_break', 'predict_break'], ['stop_break'],
+    ['start_break'], ['continue_break'], ['continue_break'], ['continue_break'],
+    ['continue_break'], ['continue_break'], ['continue_break', 'predict_break'], ['stop_break'],
   ]);
 });
 
@@ -60,8 +61,8 @@ test('held tools encode mine-block variant and compatibility ID separately', asy
   adapter.inventorySlots[0] = { network_id: 1, stack_id: 80, metadata: 0 };
   adapter.world.registry = { items: { 1: { name: 'iron_sword', maxDurability: 250 } } };
   assert.equal((await adapter._mineBlock(block)).ok, true);
-  const request = packets[3].item_stack_request;
-  assert.equal(packets[3].input_data.includes('item_stack_request'), true);
+  const request = packets.at(-2).item_stack_request;
+  assert.equal(packets.at(-2).input_data.includes('item_stack_request'), true);
   assert.deepEqual(request.actions[0], { type_id: 'mine_block', legacy_type_id: 11,
     hotbar_slot: 0, predicted_durability: 2, network_id: 80 });
 });
@@ -90,6 +91,20 @@ for (const [name, expected] of [['potatoes', 'block_still_present'], [null, 'blo
     assert.equal(client.listenerCount('level_event'), 0);
   });
 }
+
+test('dig time follows the held tool tier and the block material', () => {
+  const adapter = new BedrockAdapter({ logger: { log () {} } });
+  const stone = { name: 'stone', diggable: true, hardness: 1.5, harvestTools: { 941: true }, material: 'mineable/pickaxe' };
+  adapter.inventorySlots = [{ network_id: 341, name: 'wooden_pickaxe' }];
+  adapter.selectedHotbar = 0;
+  assert.equal(adapter._digTime(stone), (23 + 3) * 50);
+  adapter.inventorySlots = [{ network_id: 345, name: 'stone_pickaxe' }];
+  assert.equal(adapter._digTime(stone), (12 + 3) * 50);
+  adapter.inventorySlots = [];
+  assert.equal(adapter._digTime(stone), (150 + 3) * 50, 'a mano la pietra è lentissima');
+  const dirt = { name: 'dirt', diggable: true, hardness: 0.5, material: 'mineable/shovel' };
+  assert.equal(adapter._digTime(dirt), (15 + 3) * 50);
+});
 
 test('heartbeat emits queued actions once per tick', async () => {
   const { adapter, packets } = miningAdapter(true);

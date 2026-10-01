@@ -19,6 +19,7 @@ function craftAdapter () {
       shaped(1581, 'minecraft:stick', 1, 2, [tag('planks'), tag('planks')], { networkId: 323, count: 4 }),
       shaped(1218, 'minecraft:WorkBench_recipeId', 2, 2, [tag('planks'), tag('planks'), tag('planks'), tag('planks')], { networkId: 58, count: 1 }),
       shaped(1729, 'minecraft:wooden_pickaxe', 3, 3, [tag('planks'), tag('planks'), tag('planks'), null, name('stick'), null, null, name('stick'), null], { networkId: 312, count: 1 }),
+      shaped(1586, 'minecraft:stone_pickaxe', 3, 3, [tag('stone_tool_materials'), tag('stone_tool_materials'), tag('stone_tool_materials'), null, name('stick'), null, null, name('stick'), null], { networkId: 345, count: 1 }),
     ],
     shapeless_recipes: [],
   };
@@ -27,8 +28,9 @@ function craftAdapter () {
     ['stick', [{ kind: 'shaped', network_id: 1581 }]],
     ['crafting_table', [{ kind: 'shaped', network_id: 1218 }]],
     ['wooden_pickaxe', [{ kind: 'shaped', network_id: 1729 }]],
+    ['stone_pickaxe', [{ kind: 'shaped', network_id: 1586 }]],
   ]);
-  adapter.world.registry = { items: { 5: { name: 'oak_planks' }, 323: { name: 'stick' }, 58: { name: 'crafting_table' }, 312: { name: 'wooden_pickaxe' } } };
+  adapter.world.registry = { items: { 5: { name: 'oak_planks' }, 323: { name: 'stick' }, 58: { name: 'crafting_table' }, 312: { name: 'wooden_pickaxe' }, 345: { name: 'stone_pickaxe' } } };
   return adapter;
 }
 
@@ -56,6 +58,23 @@ test('ingredient matching understands names and item tags', () => {
   assert.equal(adapter._ingredientMatches(tag('planks'), 'oak_planks'), true);
   assert.equal(adapter._ingredientMatches(tag('planks'), 'oak_log'), false);
   assert.equal(adapter._ingredientMatches(tag('logs'), 'spruce_log'), true);
+  assert.equal(adapter._ingredientMatches(tag('stone_tool_materials'), 'cobblestone'), true);
+  assert.equal(adapter._ingredientMatches(tag('stone_tool_materials'), 'cobbled_deepslate'), true);
+  assert.equal(adapter._ingredientMatches(tag('stone_tool_materials'), 'dirt'), false);
+});
+
+test('stone tool recipes accept cobblestone through the vanilla item tag', () => {
+  const adapter = craftAdapter();
+  const stone = recipe(adapter, 1586);
+  assert.equal(adapter._hasMaterials(stone), false, 'senza materiali non è craftabile');
+  adapter.inventorySlots = [
+    { network_id: 17, name: 'oak_log', count: 1, stack_id: 1 },
+    { network_id: 4, name: 'cobblestone', count: 3, stack_id: 2 },
+    { network_id: 323, name: 'stick', count: 2, stack_id: 3 },
+  ];
+  assert.equal(adapter._hasMaterials(stone), true);
+  const slots = adapter._planGrid(stone, true).map(({ gridSlot, ingredient }) => [gridSlot, ingredient.descriptor_type]);
+  assert.deepEqual(slots, [[32, 'item_tag'], [33, 'item_tag'], [34, 'item_tag'], [36, 'name'], [39, 'name']]);
 });
 
 test('material planning is used up across slots and rejects shortages', () => {
@@ -106,6 +125,71 @@ test('craft actions pick an empty slot when the output item is not held yet', ()
   const { actions } = adapter._craftActions(recipe(adapter, 1218), new Map());
   const place = actions.at(-1);
   assert.deepEqual(place.destination, { slot_type: { container_id: 'hotbar' }, slot: 1, stack_id: 0 });
+});
+
+test('stale slot detection compares aggregate pickups with tracked slots', () => {
+  const adapter = craftAdapter();
+  adapter.inventory = { cobblestone: 3, stick: 2 };
+  adapter.inventorySlots = [{ network_id: 323, name: 'stick', count: 2, stack_id: 1 }];
+  assert.equal(adapter._slotsLookStaleFor(recipe(adapter, 1586)), true);
+  adapter.inventorySlots.push({ network_id: 4, name: 'cobblestone', count: 3, stack_id: 2 });
+  assert.equal(adapter._slotsLookStaleFor(recipe(adapter, 1586)), false);
+});
+
+test('pickups stay visible in the aggregate until a resync absorbs them', () => {
+  const adapter = craftAdapter();
+  adapter.inventorySlots = [{ network_id: 17, name: 'oak_log', count: 1 }];
+  adapter.pickups = { oak_log: 1 };
+  adapter._refreshInventory();
+  assert.equal(adapter.inventory.oak_log, 2);
+});
+
+test('craft retries once after an inventory resync when pickups are untracked', async () => {
+  const adapter = craftAdapter();
+  let attempts = 0;
+  let resyncs = 0;
+  adapter._craftAttempt = async () => (++attempts === 1
+    ? { ok: false, error: 'missing_ingredients' }
+    : { ok: true, crafted: 'stone_pickaxe', count: 1 });
+  adapter._candidatesLookUntracked = () => true;
+  adapter._resyncByReconnect = async () => { resyncs++; };
+  const result = await adapter._craftItem('stone_pickaxe');
+  assert.equal(result.ok, true);
+  assert.equal(attempts, 2);
+  assert.equal(resyncs, 1);
+});
+
+test('craft resyncs when a take fails on a stale stack id', async () => {
+  const adapter = craftAdapter();
+  let attempts = 0;
+  let resyncs = 0;
+  adapter._craftAttempt = async () => (++attempts === 1
+    ? { ok: false, error: 'take_failed_49' }
+    : { ok: true, crafted: 'stone_pickaxe', count: 1 });
+  adapter._candidatesLookUntracked = () => { throw new Error('not needed for 49'); };
+  adapter._resyncByReconnect = async () => { resyncs++; };
+  const result = await adapter._craftItem('stone_pickaxe');
+  assert.equal(result.ok, true);
+  assert.equal(attempts, 2);
+  assert.equal(resyncs, 1);
+});
+
+test('craft failures unrelated to sync are returned as-is', async () => {
+  const adapter = craftAdapter();
+  adapter._craftAttempt = async () => ({ ok: false, error: 'craft_failed', status: 35 });
+  adapter._resyncByReconnect = async () => { throw new Error('should not reconnect'); };
+  const result = await adapter._craftItem('stone_pickaxe');
+  assert.equal(result.error, 'craft_failed');
+  assert.equal(result.status, 35);
+});
+
+test('craft does not reconnect when materials are genuinely missing', async () => {
+  const adapter = craftAdapter();
+  adapter._craftAttempt = async () => ({ ok: false, error: 'missing_ingredients' });
+  adapter._candidatesLookUntracked = () => false;
+  adapter._resyncByReconnect = async () => { throw new Error('should not reconnect'); };
+  const result = await adapter._craftItem('stone_pickaxe');
+  assert.equal(result.error, 'missing_ingredients');
 });
 
 test('stack responses update the local inventory and clear emptied slots', () => {

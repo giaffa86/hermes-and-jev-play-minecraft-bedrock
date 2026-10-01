@@ -30,7 +30,7 @@ function hermesPlan(observation) {
     `Overall goal: ${GOAL}`,
     WAYPOINT ? `Required waypoint (keep it unless reached): ${JSON.stringify(WAYPOINT)}` : '',
     `Required targets: ${JSON.stringify(TARGETS)}`,
-    'The controller can only: goto_waypoint, mine_<dirt|stone|sand>, collect_drop, wait. Keep the objective to one sentence the controller can act on now.',
+    'The harness exposes the currently valid actions (typical keys: goto_waypoint, dig_down, mine_<block>, collect_drop, craft_<item>, place_<item>, wait); the controller will pick one of them. Keep the objective to one sentence the controller can act on now.',
     `Observation: ${JSON.stringify(observation)}`,
   ].filter(Boolean).join('\n');
   const started = Date.now();

@@ -169,10 +169,33 @@ sudo docker cp hermes:/opt/data/runs /home/<utente-ssh>/hermes-jev-bedrock/runs-
 |---|---|---|
 | `wait` | ✅ Funzionante | |
 | `goto_waypoint` | ✅ Funzionante | Movimento server-authoritative via `player_auth_input` (fisica locale: gravità, collisioni, gradini, salti) + pathfinding A* sul mondo caricato; apre le porte sul percorso. |
-| `collect_drop` | ✅ Funzionante | Traccia gli item entity (`move_entity`/`move_entity_delta`), cammina fino al drop e verifica il pickup (`take_item_entity`). |
-| `mine_*` | ✅ Funzionante | Rottura reale con `player_auth_input` + `block_action`, conferma dal server e evento di distruzione (patate, pietra, terra, `oak_log`). |
-| `craft_*` | ✅ Funzionante | Ricette da `crafting_data` (network id), griglia 2×2 nell'inventario e 3×3 al tavolo da lavoro; item_stack_request `craft_recipe` con consumi e output. |
-| `place_*` | ✅ Base | Piazzamento con transazione `click_block`; usato per il tavolo da lavoro. |
+| `collect_drop` | ✅ Funzionante | Traccia gli item entity (`move_entity`/`move_entity_delta`), cammina fino al drop e verifica il pickup (`take_item_entity`). La ricerca del nodo usa la quota del drop, altrimenti un drop sotto il bot non viene mai raggiunto. |
+| `mine_*` | ✅ Funzionante | Rottura reale con `player_auth_input` + `block_action`, conferma dal server e evento di distruzione. Prima di rompere, l'adapter seleziona l'utensile giusto (piccone/ascia/pala/ zappa, miglior tier) e i tempi di rottura seguono la formula vanilla (pietra col piccone di legno ≈ 1,3 s). Senza piccone le opzioni `mine_stone`/`mine_cobblestone` non vengono offerte (nessun drop). |
+| `dig_down` | ✅ Funzionante | Scava un gradino (testa, fronte e cella sotto il fronte), poi avanza e scende; i gradini restano percorribili anche in salita. Rifiuta blocchi protetti (tavoli, contenitori, stazioni, e materiali da costruzione: assi, lastre, scale, lana, vetro, mattoni). Se il gradino è già aperto scende soltanto. |
+| `craft_*` | ✅ Funzionante | Ricette da `crafting_data` (network id), griglia 2×2 nell'inventario e 3×3 al tavolo da lavoro; item_stack_request `craft_recipe` con consumi e output. I tag `stone_tool_materials`/`stone_crafting_materials` sono mappati (cobblestone/cobbled_deepslate/blackstone). |
+| `place_*` | ✅ Base | Piazzamento con transazione `click_block`; usato per tavoli da lavoro. Lo swap in hotbar rilegge l'inventario dal server (riconnessione) se lo stack id è stantio. |
+
+### Fase pietra della milestone (aggiornamento 01/10/2026)
+
+Catena `legno → piccone di legno → scavo → pietra → piccone di pietra` completata dal loop Hermes → Jev → Bedrock:
+
+1. `dig_down` scava la scalinata nel terreno (dirt/grass) e scende di un blocco per azione; quando il gradino è `stone` viene usato il piccone di legno e la discesa raccoglie automaticamente il cobblestone.
+2. `mine_stone`/`mine_cobblestone` con `wooden_pickaxe` in mano: conferma server + evento di distruzione con tempo vanilla (≈ 1,3 s con piccone di legno); i drop vengono raccolti con `collect_drop`.
+3. `craft_stone_pickaxe` (3 cobblestone + 2 bastoni) alla griglia 3×3 di un tavolo da lavoro.
+
+Run di riferimento: `runs/e2e-stone6/controller.jsonl` — `GOAL MET after 33 actions`, inventario con `stone_pickaxe: 1` (avvio da inventario senza utensili: legno, craft del piccone di legno, scavo e piccone di pietra). Evidenze dello scavo con discesa: `runs/e2e-stone1/controller.jsonl`.
+
+### Inventario e stack id (aggiornamento 01/10/2026)
+
+BDS 1.26 non invia aggiornamenti slot al pickup (`take_item_entity` aggiorna solo i conteggi aggregati). Se un pickup si fonde con uno stack esistente, il server assegna un nuovo `stack_id` che il client non conosce: `take`/`place`/`swap` falliscono con status 49/50 (`FailedToValidateSrc/DstSlot`).
+
+L'adapter gestisce il caso in modo auto-riparante:
+
+1. i pickup sono accumulati in `pickups` e mostrati nell'aggregato (`/observe`) finché non vengono riconciliati;
+2. se un craft fallisce con `missing_ingredients` (aggregato > slot) o `take_failed_49/50`/`place_failed_49/50`, l'adapter si riconnette una volta (`inventory_resync` nei log): al login BDS invia sempre `inventory_content` completo con gli stack id aggiornati;
+3. poi ritenta il craft con gli id freschi.
+
+Lo stesso resync viene usato quando uno swap in hotbar o un piazzamento trova uno stack id stantio.
 
 ### Crafting e piazzamento (aggiornamento 01/10/2026)
 
@@ -220,9 +243,12 @@ Hermes → Jev → Bedrock con `GOAL MET` (`oak_log` 9 → 10).
 - **Blocchi parziali**: l'adapter non conosce l'altezza esatta di letti, lastre e gradini; la fisica locale li approssima come cubi pieni e il server riporta la quota corretta con `correct_player_move_prediction`. Il movimento resta fluido, ma la quota può oscillare di ~0,5 blocchi su questi blocchi.
 - **Inventario server-authoritative**: BDS non invia aggiornamenti di inventario al pickup; l'adapter aggiorna il conteggio dal pacchetto `take_item_entity` (conferma di raccolta) e riconcilia con `inventory_content` alla connessione successiva.
 - **Inventario persistente**: l'account del bot è lo stesso usato dal giocatore umano; l'inventario sopravvive tra le sessioni. I target del controller vanno scelti sopra il conteggio corrente.
-- **Crafting**: supportate le ricette shaped/shapeless con ingredienti per nome o tag (`planks`, `logs`); ricette senza output noto (multi) e ricette speciali (fucina, incudine, telai) non sono implementate. Il craft usa sempre un oggetto per volta (niente `times_crafted > 1`).
+- **Crafting**: supportate le ricette shaped/shapeless con ingredienti per nome o tag (`planks`, `logs`, `stone_tool_materials`); ricette senza output noto (multi) e ricette speciali (fucina, incudine, telai) non sono implementate. Il craft usa sempre un oggetto per volta (niente `times_crafted > 1`).
 - **Piazzamento**: piazzamento solo su una faccia superiore adiacente al bot; nessuna scalatura o orientamento dei blocchi.
 - **Item nel mondo**: un craft fallito può lasciare item davanti al tavolo (chiusura del container con griglia piena). L'adapter ripulisce la griglia prima di chiudere quando può tracciarla.
+- **Stack id dopo un pickup**: vedi "Inventario e stack id". Se l'aggregato ha più materiali degli slot, un craft tenta una riconnessione automatica (`inventory_resync`) prima di arrendersi.
+- **NetherNet instabile (01/10 sera)**: in alcune fasce orarie la sessione cade ogni pochi secondi (log BDS: `Player disconnected` dopo 3-20 s, nessun errore lato server). L'harness riconnette da solo; durante la riconnessione `/options` offre solo `wait`. Il rimedio documentato è un riavvio BDS a zero giocatori, che ripristina il servizio per qualche minuto. Nei run lunghi conviene alzare `MAX_STEPS` perché i flap consumano passi.
+- **`dig_down` e blocchi costruiti**: il passo viene rifiutato (`protected_*`) se testa/fronte/gradino contengono tavoli, contenitori, stazioni o materiali da costruzione (assi, lastre, scale, lana, vetro, mattoni, cemento). Evita di distruggere la base; usare `mine_*` per blocchi naturali.
 
 ### Collaudi e passaggio tra client
 

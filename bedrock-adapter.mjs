@@ -29,6 +29,14 @@ const PLAYER_HALF_WIDTH = 0.3;
 const PLAYER_HEIGHT = 1.8;
 const PATH_MAX_NODES = 5000;    // tetti di ricerca A*
 const MAX_CORRECTION_DRIFT = 0.75; // oltre questa distanza la correzione è autoritativa su X/Z
+// Velocità degli utensili per materiale (vanilla, secondi-blocco/tick): il
+// registry Bedrock usa id diversi da quelli di rete, quindi la corrispondenza
+// utensile/materiale va dedotta dal nome.
+const TOOL_TIER_SPEED = { wooden: 2, golden: 12, stone: 4, copper: 6, iron: 6, diamond: 8, netherite: 9 };
+const TOOL_MATERIAL = { 'mineable/pickaxe': 'pickaxe', 'mineable/axe': 'axe', 'mineable/shovel': 'shovel', 'mineable/hoe': 'hoe' };
+// Blocchi funzionali o costruiti che dig_down non deve mai scavare per errore
+// (tavoli, contenitori, stazioni): il passo verrebbe rifiutato invece che distruggerli.
+const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|_bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$)/;
 
 export class BedrockAdapter {
   constructor ({ logger = console, onLog, onDisconnect } = {}) {
@@ -43,6 +51,7 @@ export class BedrockAdapter {
     this.food = 20;
     this.inventory = {};
     this.inventorySlots = [];
+    this.pickups = {};             // conteggi raccolti dai drop (non ancora negli slot server)
     this.selectedHotbar = 0;
     this._authInputQueue = [];
     this._tickAnchor = null;
@@ -63,6 +72,8 @@ export class BedrockAdapter {
     this._onGround = true;
     this._collidedHorizontally = false;
     this._lastSimTick = null;
+    this._lastYaw = 0;
+    this._lastPitch = 0;
     this._motion = null;
     this._openDoors = new Set();       // celle di porte aperte (fisica passabile)
     this._doorWatchers = new Map();    // key -> runtime id della porta chiusa
@@ -159,7 +170,11 @@ export class BedrockAdapter {
 
       this.client.on('item_stack_response', (packet) => {
         this.lastStackResponse = packet;
-        this.log('item_stack_response', { packet });
+        const responses = packet.responses || [];
+        const failed = responses.filter(r => String(r.status) !== 'ok' && r.status !== 0);
+        this.log('item_stack_response', failed.length
+          ? { failed: JSON.stringify(failed).slice(0, 600) }
+          : { statuses: responses.map(r => r.status) });
       });
 
       client.on('container_open', (packet) => {
@@ -201,6 +216,7 @@ export class BedrockAdapter {
         this.status = 'spawned';
         this.position = client.startGameData?.player_position;
         this.dimension = client.startGameData?.dimension || 'overworld';
+        this.drops = [];
         this._syncFeetFromPosition();
         this._velocity = { x: 0, y: 0, z: 0 };
         this._onGround = true;
@@ -233,6 +249,7 @@ export class BedrockAdapter {
         this.serverAuthBlockBreaking = packet.server_authoritative_block_breaking ?? false;
         this.inventorySlots = [];
         this.inventory = {};
+        this.pickups = {};
         this.selectedHotbar = 0;
         this._nextStackRequestId = -1;
         this.tick = BigInt(packet.current_tick || 0);
@@ -311,9 +328,29 @@ export class BedrockAdapter {
       });
 
       this.client.on('inventory_content', (packet) => {
+        const containerId = packet.container?.container_id;
         if (packet.window_id === 'inventory' || packet.window_id === 0 || packet.inventory_id === 0) {
-          this.inventorySlots = packet.input || packet.contents || [];
-          this._refreshInventory();
+          this.log('inventory_content', {
+            window_id: packet.window_id,
+            container: containerId ?? null,
+            slots: (packet.input || packet.contents || []).length,
+            stackIds: (packet.input || []).filter(s => s?.network_id)
+              .map(s => `${s.name || this.world.registry?.items[s.network_id]?.name || s.network_id}:${s.stack_id ?? 'none'}`).join(' ').slice(0, 400),
+            raw: JSON.stringify({ ...packet, input: packet.input?.slice(0, 2) }).slice(0, 400),
+          });
+          // La griglia di crafting arriva come contenuto separato (container
+          // crafting_input): non è l'inventario del giocatore e non va copiato.
+          const slotList = packet.input || packet.contents || [];
+          const isPlayerContainer = containerId == null || containerId === 'hotbar' || containerId === 'inventory' || containerId === 'hotbar_and_inventory';
+          // Alcuni sync etichettano il contenuto del giocatore con un container
+          // inatteso ma 36 slot pieni: accettali; gli stessi pacchetti vuoti
+          // vanno applicati solo se non c'è nulla da perdere (altrimenti wipe).
+          const isFullPlayerInventory = slotList.length === 36 && slotList.some(s => s?.network_id);
+          const clearWhenEmpty = slotList.length === 36 && !this.inventorySlots.some(s => s?.network_id);
+          if (containerId !== 'crafting_input' && (isPlayerContainer || isFullPlayerInventory || clearWhenEmpty)) {
+            this.inventorySlots = slotList;
+            this._refreshInventory();
+          }
         }
         // Il contenuto del container aperto è la verità sulla griglia di crafting.
         if (this._openContainer && packet.window_id === this._openContainer.id && Array.isArray(packet.input)) {
@@ -328,8 +365,14 @@ export class BedrockAdapter {
         }
       });
       client.on('inventory_slot', packet => {
-        if (packet.window_id !== 'inventory' && packet.window_id !== 0) return;
-        this.inventorySlots[packet.slot] = packet.item;
+        const containerId = packet.container?.container_id;
+        this.log('inventory_slot', {
+          window_id: packet.window_id, container: containerId ?? null, slot: packet.slot,
+          item: packet.item ? `${packet.item.name || this.world.registry?.items[packet.item.network_id]?.name || packet.item.network_id}:${packet.item.count}:${packet.item.stack_id ?? 'none'}` : null,
+        });
+        const index = this._playerSlotIndex(containerId, packet.window_id, packet.slot);
+        if (index == null || index < 0 || index > 35) return;
+        this.inventorySlots[index] = packet.item;
         this._refreshInventory();
       });
       client.on('mob_equipment', packet => {
@@ -373,7 +416,8 @@ export class BedrockAdapter {
         const target = packet.target ?? packet.runtime_entity_id;
         if (drop && String(target) === String(client.entityId)) {
           const name = drop.item;
-          this.inventory[name] = (this.inventory[name] || 0) + (drop.count || 1);
+          this.pickups[name] = (this.pickups[name] || 0) + (drop.count || 1);
+          this._refreshInventory();
         }
         this.drops = this.drops.filter(d => String(d.runtime_id) !== String(packet.runtime_entity_id) && String(d.id) !== String(packet.runtime_entity_id));
       });
@@ -429,7 +473,7 @@ export class BedrockAdapter {
   _refreshNearby () {
     if (!this.position) return;
     this.nearbyBlocks = {};
-    for (const name of ['dirt', 'grass_block', 'stone', 'oak_log', 'spruce_log', 'cherry_log', 'potatoes', 'carrots', 'wheat', 'beetroots']) {
+    for (const name of ['dirt', 'grass_block', 'stone', 'cobblestone', 'oak_log', 'spruce_log', 'cherry_log', 'potatoes', 'carrots', 'wheat', 'beetroots']) {
       this.nearbyBlocks[name] = this.world.findBlocks(name, this.position, 96, 4).map(block => ({ name: block.name, position: block.position, distance: +block.distance.toFixed(1), diggable: block.diggable, hardness: block.hardness }));
     }
     // Bedrock player_position is at eye height (1.62 blocks above the feet).
@@ -437,7 +481,7 @@ export class BedrockAdapter {
   }
 
   _refreshInventory () {
-    this.inventory = {};
+    this.inventory = { ...this.pickups };
     for (const item of this.inventorySlots) {
       if (!item?.network_id) continue;
       const name = item.name || this.world.registry?.items[item.network_id]?.name || `item_${item.network_id}`;
@@ -464,6 +508,19 @@ export class BedrockAdapter {
     this.recipes = byOutput;
     const counts = { shaped: packet.shaped_recipes?.length || 0, shapeless: packet.shapeless_recipes?.length || 0, multi: packet.multi_recipes?.length || 0 };
     this.log('crafting_data', { ...counts, indexedOutputs: byOutput.size });
+    // Campione di ricette di progressione: i descrittori live decidono la scelta variante.
+    for (const sample of ['wooden_pickaxe', 'stone_pickaxe']) {
+      const entries = (byOutput.get(sample) || []).map(entry => {
+        const body = this._recipeBody(entry);
+        return {
+          network_id: entry.network_id, kind: entry.kind,
+          width: body?.width, height: body?.height,
+          input: (body?.input || []).map(ingredient => ingredient.type !== 'valid' ? null
+            : (ingredient.descriptor_type === 'item_tag' ? `tag:${ingredient.tag}` : `name:${ingredient.name}`)),
+        };
+      });
+      this.log('recipe_sample', { item: sample, entries: JSON.stringify(entries) });
+    }
   }
 
   pos () {
@@ -487,6 +544,7 @@ export class BedrockAdapter {
       dimension: this.dimension,
       standingOn: this.standingOn,
       inventory: this.inventory,
+      held: this._slotItemName(this.inventorySlots[this.selectedHotbar]),
       drops: this.drops.slice(0, 8),
       plan: this.plan,
       nearby: this.nearbyBlocks,
@@ -498,6 +556,11 @@ export class BedrockAdapter {
   }
 
   options () {
+    // Durante una riconnessione NetherNet l'unica azione sensata è attendere:
+    // le opzioni calcolate sul mondo vecchio fallirebbero comunque.
+    if (!this.spawned || this.status !== 'spawned') {
+      return [{ key: 'wait', description: 'Wait for the Bedrock connection to be re-established' }];
+    }
     const o = [];
     const p = this.pos();
     if (this.plan?.waypoint && p && Math.hypot(this.plan.waypoint.x - p.x, this.plan.waypoint.z - p.z) > 2) {
@@ -507,12 +570,26 @@ export class BedrockAdapter {
     if (drop) {
       o.push({ key: 'collect_drop', description: `Walk onto the nearest dropped item (${drop.distance.toFixed(1)} blocks away)` });
     }
-    // Mining: offri un'opzione per ogni tipo di blocco scavabile nelle vicinanze
+    // Mining: offri un'opzione per ogni tipo di blocco scavabile nelle vicinanze.
+    // Se il blocco più vicino è sepolto (nessuna faccia raggiungibile) non va offerto:
+    // per raggiungerlo serve prima dig_down. Senza piccone la pietra non lascia drop.
+    const hasPickaxe = Object.keys(this.inventory).some(name => name.endsWith('_pickaxe'));
     for (const [blockName, blocks] of Object.entries(this.nearbyBlocks || {})) {
-      const nearest = blocks?.[0];
-      if (nearest && nearest.diggable) {
-        o.push({ key: `mine_${blockName}`, description: `Mine ${blockName} at ${JSON.stringify(nearest.position)} (${nearest.distance} blocks away)` });
+      if ((blockName === 'stone' || blockName === 'cobblestone') && !hasPickaxe) continue;
+      const target = this._pickMineTarget(blocks);
+      if (target) {
+        o.push({ key: `mine_${blockName}`, description: `Mine ${blockName} at ${JSON.stringify(target.position)} (${target.distance} blocks away)` });
       }
+    }
+    // Discesa: scavare un gradino verso il basso (testa, fronte e cella sotto il
+    // fronte), poi avanzare di un blocco e scendere. Serve a raggiungere lo stone
+    // quando è coperto; i gradini restano percorribili per tornare su.
+    const dig = this._digTargets();
+    if (!dig.error) {
+      const description = dig.targets.length
+        ? `Dig one step down through ${[...new Set(dig.targets.map(t => t.block.name))].join(', ')} to reach deeper layers`
+        : 'Step down into the opening ahead';
+      o.push({ key: 'dig_down', description });
     }
     // Crafting: solo le ricette utili alla progressione, con materiali disponibili.
     if (this.recipes && this.craftingData) {
@@ -523,15 +600,21 @@ export class BedrockAdapter {
       }
       const planksHeld = Object.keys(this.inventory).find(name => /_planks$/.test(name));
       if (planksHeld) {
-        o.push({ key: 'craft_stick', description: 'Craft sticks from planks' });
-        o.push({ key: 'craft_crafting_table', description: 'Craft a crafting table from 4 planks' });
+        if ((this.inventory.stick || 0) < 2) o.push({ key: 'craft_stick', description: 'Craft sticks from planks' });
+        if (!(this.inventory.crafting_table > 0) && !this.world.findBlocks('crafting_table', this.position, 8, 1).length) {
+          o.push({ key: 'craft_crafting_table', description: 'Craft a crafting table from 4 planks' });
+        }
       }
       if (planksHeld && (this.inventory.stick || 0) >= 2 && (this.inventory[planksHeld] || 0) >= 3) {
         o.push({ key: 'craft_wooden_pickaxe', description: 'Craft a wooden pickaxe (uses a crafting table)' });
       }
+      if (this.recipes.has('stone_pickaxe') && (this.inventory.cobblestone || 0) >= 3 && (this.inventory.stick || 0) >= 2 &&
+          this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
+        o.push({ key: 'craft_stone_pickaxe', description: 'Craft a stone pickaxe at the crafting table (3 cobblestone + 2 sticks)' });
+      }
     }
     // Piazzamento: solo ciò che serve alla progressione.
-    if ((this.inventory.crafting_table || 0) > 0 && !this.world.findBlocks('crafting_table', this.position, 6, 1).length) {
+    if ((this.inventory.crafting_table || 0) > 0 && !this.world.findBlocks('crafting_table', this.position, 8, 1).length) {
       o.push({ key: 'place_crafting_table', description: 'Place a crafting table next to the bot' });
     }
     // Fallback
@@ -540,8 +623,11 @@ export class BedrockAdapter {
   }
 
   async executeAction (key) {
-    if (!this.client || this.status === 'disconnected') return { ok: false, error: 'not_connected' };
     if (this.busy) return { ok: false, error: 'busy' };
+    // 'wait' resta eseguibile durante una riconnessione; le altre azioni no.
+    if (key !== 'wait' && (!this.client || !this.spawned || this.status !== 'spawned')) {
+      return { ok: false, error: 'not_connected' };
+    }
     this.busy = true;
     const started = Date.now();
     let result;
@@ -556,11 +642,12 @@ export class BedrockAdapter {
         result = { ok: true, ...moveResult };
       } else if (key === 'collect_drop') {
         result = await this._collectDrop();
+      } else if (key === 'dig_down') {
+        result = await this._digDown();
       } else if (key.startsWith('mine_')) {
         const blockName = key.slice('mine_'.length);
-        const candidates = this.world.findBlocks(blockName, this.position, 48, 8);
-        if (!candidates.length) throw new Error(`no ${blockName} found nearby`);
-        const target = candidates[0];
+        const target = this._pickMineTarget(this.world.findBlocks(blockName, this.position, 96, 8));
+        if (!target) throw new Error(`no reachable ${blockName} found nearby`);
         result = await this._mineBlock(target);
       } else if (key.startsWith('craft_')) {
         result = await this._craftItem(key.slice('craft_'.length));
@@ -618,6 +705,7 @@ export class BedrockAdapter {
       try {
         await this._moveTo(drop.position, 0.6, Math.max(2500, deadline - Date.now()));
       } catch (error) {
+        this.log('collect_move_failed', { item: drop.item, position: drop.position, error: error.message });
         if (!/movement timeout|target_not_found|path_failed|stuck/.test(error.message)) throw error;
       }
       moved = true;
@@ -658,6 +746,19 @@ export class BedrockAdapter {
     return index < 9
       ? { container: 'hotbar', slot: index }
       : { container: 'inventory', slot: index - 9 };
+  }
+
+  // Mappa (container, slot) della finestra giocatore verso l'indice 0..35 usato
+  // internamente. I label possono arrivare come nome o come window id storico.
+  _playerSlotIndex (containerId, windowId, slot) {
+    if (containerId === 'hotbar') return slot;
+    if (containerId === 'inventory') return slot + 9;
+    if (containerId === 'hotbar_and_inventory') return slot;
+    if (containerId == null) {
+      if (windowId === 'hotbar') return slot;
+      if (windowId === 'inventory' || windowId === 0 || windowId === 2) return slot;
+    }
+    return null;
   }
 
   _sendStackRequest (actions, { outputs = false, timeoutMs = 4000 } = {}) {
@@ -805,7 +906,11 @@ export class BedrockAdapter {
     if (ingredient.descriptor_type === 'item_tag') {
       const tag = String(ingredient.tag).replace(/^minecraft:/, '');
       if (tag === 'planks') return /_planks$/.test(name);
-      if (tag === 'logs' || tag === 'log') return /(_log|_stem|_hyphae)$/.test(name);
+      if (tag === 'logs' || tag === 'log' || tag === 'wooden_logs') return /(_log|_stem|_hyphae)$/.test(name);
+      // Il tag degli utensili di pietra è quello che usa la ricetta vanilla del piccone.
+      if (tag === 'stone_tool_materials' || tag === 'stone_crafting_materials') {
+        return /^(cobblestone|cobbled_deepslate|blackstone)$/.test(name);
+      }
       return true; // tag non mappato: lascia decidere al server
     }
     return false;
@@ -885,6 +990,7 @@ export class BedrockAdapter {
     const item = this.inventorySlots[slotIndex];
     if (!item?.network_id) throw new Error('missing_ingredients');
     const info = this._invSlotToSlotInfo(slotIndex);
+    this.log('take_request', { slotIndex, name: this._slotItemName(item), count, stack_id: item.stack_id ?? null, has_stack_id: item.has_stack_id ?? null });
     const response = await this._sendStackRequest([{
       type_id: 'take', legacy_type_id: 0, count,
       source: this._slotInfo(info.container, info.slot, item.stack_id || 0),
@@ -975,21 +1081,87 @@ export class BedrockAdapter {
   async _ensureCraftingTableOpen () {
     if (this._openContainer?.type === 'workbench') return;
     if (this._openContainer) await this._closeContainer();
-    const table = this.world.findBlocks('crafting_table', this.position, 16, 1)[0];
+    const table = this.world.findBlocks('crafting_table', this.position, 32, 1)[0];
     if (!table) throw new Error('crafting_table_not_found');
     if (table.distance > 3.5) {
-      await this._moveTo({ x: table.position.x + 0.5, y: this.position.y, z: table.position.z + 0.5 }, 3, 20000);
+      // Bersaglio a quota tavolo: i piedi accanto al tavolo stanno alla stessa
+      // quota del blocco (il tavolo è appoggiato al terreno).
+      await this._moveTo({ x: table.position.x + 0.5, y: table.position.y, z: table.position.z + 0.5 }, 3, 30000);
     }
-    const wait = this._waitForContainerOpen(p => p.window_type === 'workbench', 3000);
-    const yaw = this._yawTo(this._feet, { x: table.position.x + 0.5, z: table.position.z + 0.5 });
-    await this._queueAuthInput({ yaw, pitch: 0, transaction: this._blockUseTransaction(table.position) });
-    await wait;
+    await delay(100);
+    let lastError = null;
+    for (let attempt = 1; attempt <= 3 && this._openContainer?.type !== 'workbench'; attempt++) {
+      const wait = this._waitForContainerOpen(p => p.window_type === 'workbench', 2500);
+      const yaw = this._yawTo(this._feet, { x: table.position.x + 0.5, z: table.position.z + 0.5 });
+      const pitch = this._lookAt({ x: table.position.x + 0.5, y: table.position.y + 0.5, z: table.position.z + 0.5 }).pitch;
+      await this._queueAuthInput({ yaw, pitch, transaction: this._blockUseTransaction(table.position) });
+      try {
+        await wait;
+      } catch (error) {
+        lastError = error;
+        if (this._openContainer?.type === 'workbench') break;
+        await delay(300);
+      }
+    }
+    if (this._openContainer?.type !== 'workbench') throw lastError || new Error('crafting_table_not_opened');
     await delay(200); // lascia arrivare inventory_content con lo stato della griglia
   }
 
   async _craftItem (itemName) {
     if (!this.recipes || !this.craftingData) return { ok: false, error: 'recipes_unavailable' };
     const candidates = this.recipes.get(itemName) || [];
+    if (!candidates.length) return { ok: false, error: 'craft_recipe_missing' };
+    const first = await this._craftAttempt(itemName, candidates);
+    if (first.ok) return first;
+    // Un pickup (anche auto) può fondersi con uno stack e cambiargli stack id:
+    // take/place falliscono con 49/50 oppure i materiali mancano dagli slot.
+    // Una riconnessione riporta l'inventory_content completo dal server.
+    const syncable = /^(missing_ingredients|take_failed_(49|50)|place_failed_(49|50))$/.test(String(first.error));
+    if (!syncable) return first;
+    if (first.error === 'missing_ingredients' && !this._candidatesLookUntracked(candidates)) return first;
+    try {
+      await this._resyncByReconnect();
+    } catch (error) {
+      this.log('inventory_resync_failed', { message: error.message });
+      return first;
+    }
+    return this._craftAttempt(itemName, candidates);
+  }
+
+  _slotsLookStaleFor (recipe) {
+    // Confronta i materiali dell'aggregato (aggiornato dai pickup) con quelli degli
+    // slot: un eccesso nell'aggregato indica stack id locali mancanti/inattuali.
+    for (const { ingredient } of this._planGrid(recipe, true)) {
+      let aggregate = 0;
+      for (const [name, count] of Object.entries(this.inventory)) {
+        if (this._ingredientMatches(ingredient, name)) aggregate += count;
+      }
+      let tracked = 0;
+      for (const slot of this.inventorySlots) {
+        const name = this._slotItemName(slot);
+        if (name && this._ingredientMatches(ingredient, name)) tracked += slot.count || 0;
+      }
+      if (aggregate > tracked) return true;
+    }
+    return false;
+  }
+
+  _candidatesLookUntracked (candidates) {
+    return candidates.some(entry => {
+      const recipe = this._recipeBody(entry);
+      return recipe && this._slotsLookStaleFor(recipe);
+    });
+  }
+
+  async _resyncByReconnect () {
+    if (!this.client || !this.spawned) throw new Error('not_connected');
+    this.log('inventory_resync', { reason: 'slot ids stale after pickups; reconnecting for fresh inventory_content' });
+    await this.disconnect('inventory resync');
+    await this.connect();
+    this.log('inventory_resync_done', { trackedSlots: this.inventorySlots.filter(s => s?.network_id).length });
+  }
+
+  async _craftAttempt (itemName, candidates) {
     for (const entry of candidates) {
       const recipe = this._recipeBody(entry);
       if (!recipe || !this._hasMaterials(recipe)) continue;
@@ -1002,7 +1174,15 @@ export class BedrockAdapter {
         const { actions, result } = this._craftActions(recipe, gridStackIds);
         const response = await this._sendStackRequest(actions, { outputs: true });
         const status = response.status;
-        if (String(status) !== 'ok' && status !== 0) return { ok: false, error: 'craft_failed', status };
+        if (String(status) !== 'ok' && status !== 0) {
+          this.log('craft_failed_detail', { detail: JSON.stringify({
+            item: itemName, network_id: recipe.network_id, width: recipe.width, height: recipe.height,
+            input: (recipe.input || []).map(i => i.type === 'valid' ? (i.descriptor_type === 'item_tag' ? `tag:${i.tag}` : `name:${i.name}`) : null),
+            grid: [...this._craftingGrid.entries()].map(([slot, entry]) => ({ slot, name: this.world.registry?.items[entry.network_id]?.name || entry.network_id, count: entry.count })),
+            status,
+          }) });
+          return { ok: false, error: 'craft_failed', status };
+        }
         this._applyStackResponse(response, { networkId: result.network_id });
         return { ok: true, crafted: itemName, count: result.count || 1 };
       } catch (error) {
@@ -1013,7 +1193,7 @@ export class BedrockAdapter {
         await this._closeContainer().catch(() => {});
       }
     }
-    return { ok: false, error: candidates.length ? 'missing_ingredients' : 'craft_recipe_missing' };
+    return { ok: false, error: 'missing_ingredients' };
   }
 
   // ---- piazzamento blocchi -----------------------------------------------------------
@@ -1044,23 +1224,17 @@ export class BedrockAdapter {
   }
 
   async _placeBlock (itemName, blockName) {
-    const slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && s.count > 0);
-    if (slotIndex < 0) return { ok: false, error: 'missing_item' };
+    let slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && s.count > 0);
+    if (slotIndex < 0) {
+      // Un item appena raccolto può non essere ancora nella copia locale: la
+      // riconnessione forza un inventory_content completo dal server.
+      try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
+      slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && s.count > 0);
+      if (slotIndex < 0) return { ok: false, error: 'missing_item' };
+    }
     if (slotIndex > 8) {
-      // Sposta uno stack nella hotbar con uno swap richiesto dal client.
-      const free = this.inventorySlots.findIndex((s, i) => i < 9 && !s?.network_id);
-      if (free < 0) return { ok: false, error: 'hotbar_full' };
-      const item = this.inventorySlots[slotIndex];
-      const src = this._invSlotToSlotInfo(slotIndex);
-      const dst = this._invSlotToSlotInfo(free);
-      const response = await this._sendStackRequest([{
-        type_id: 'swap', legacy_type_id: 2,
-        source: this._slotInfo(src.container, src.slot, item.stack_id || 0),
-        destination: this._slotInfo(dst.container, dst.slot, 0),
-      }]);
-      if (String(response.status) !== 'ok' && response.status !== 0) return { ok: false, error: `swap_failed_${response.status}` };
-      this._applyStackResponse(response);
-      return this._placeBlock(itemName, blockName);
+      try { slotIndex = await this._moveSlotToHotbar(slotIndex); }
+      catch (error) { return { ok: false, error: error.message }; }
     }
 
     const spot = this._findPlacementTarget(blockName);
@@ -1109,6 +1283,100 @@ export class BedrockAdapter {
 
   // ---- mining ------------------------------------------------------------------------
 
+  // ---- scelta dell'utensile e del bersaglio di scavo ---------------------------------
+
+  _blockInReach (candidate) {
+    if (!this.position || !candidate?.position) return false;
+    const p = candidate.position;
+    return Math.hypot(this.position.x - (p.x + 0.5), this.position.y - (p.y + 0.5), this.position.z - (p.z + 0.5)) <= 5.1;
+  }
+
+  _blockExposed (candidate) {
+    const p = candidate?.position;
+    if (!p) return false;
+    for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+      const neighbor = this.world.blockAt({ x: p.x + dx, y: p.y + dy, z: p.z + dz });
+      if (neighbor && this._passableForPath(neighbor)) return true;
+    }
+    return false;
+  }
+
+  // Sceglie il candidato più vicino già a portata oppure, se nessuno lo è, il
+  // primo con una faccia scoperta: un blocco sepolto non è minabile senza scavare.
+  _pickMineTarget (blocks) {
+    const candidates = (blocks || []).filter(b => b?.diggable);
+    if (!candidates.length) return null;
+    return candidates.find(b => this._blockInReach(b)) || candidates.find(b => this._blockExposed(b)) || null;
+  }
+
+  _requiredToolKind (block) {
+    const material = String(block?.material || '');
+    for (const [needle, kind] of Object.entries(TOOL_MATERIAL)) {
+      if (material.includes(needle)) return kind;
+    }
+    return null;
+  }
+
+  _toolRank (name) {
+    return TOOL_TIER_SPEED[String(name).split('_')[0]] || 1;
+  }
+
+  async _moveSlotToHotbar (slotIndex) {
+    const name = this._slotItemName(this.inventorySlots[slotIndex]);
+    if (!name) throw new Error('missing_item');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (slotIndex <= 8) return slotIndex;
+      const free = this.inventorySlots.findIndex((s, i) => i < 9 && !s?.network_id);
+      if (free < 0) throw new Error('hotbar_full');
+      const item = this.inventorySlots[slotIndex];
+      const src = this._invSlotToSlotInfo(slotIndex);
+      const dst = this._invSlotToSlotInfo(free);
+      this.log('swap_request', { name, slot: slotIndex, stack_id: item.stack_id ?? null, free });
+      const response = await this._sendStackRequest([{
+        type_id: 'swap', legacy_type_id: 2,
+        source: this._slotInfo(src.container, src.slot, item.stack_id || 0),
+        destination: this._slotInfo(dst.container, dst.slot, 0),
+      }]);
+      if (String(response.status) === 'ok' || response.status === 0) {
+        this._applyStackResponse(response);
+        // Se la risposta non riporta gli slot, applica lo scambio localmente.
+        if (!response.containers?.length) {
+          this.inventorySlots[free] = this.inventorySlots[slotIndex];
+          this.inventorySlots[slotIndex] = undefined;
+        }
+        return free;
+      }
+      // Stack id locale stantio (tipico dopo un pickup): rileggi l'inventario
+      // riconnettendosi, il login porta sempre l'inventory_content completo.
+      this.log('swap_retry', { name, slot: slotIndex, stack_id: item.stack_id ?? null, status: response.status });
+      try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
+      slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === name && s.count > 0);
+      if (slotIndex < 0) throw new Error('missing_item');
+    }
+    throw new Error('swap_failed');
+  }
+
+  // Porta in mano l'utensile giusto (miglior tier disponibile) per il blocco:
+  // senza la scelta corretta BDS non fa cadere i drop (es. stone -> cobblestone).
+  async _selectToolFor (block) {
+    const kind = this._requiredToolKind(block);
+    if (!kind) return null;
+    let best = null;
+    for (let i = 0; i < Math.min(this.inventorySlots.length, 36); i++) {
+      const slot = this.inventorySlots[i];
+      if (!slot?.network_id) continue;
+      const name = this._slotItemName(slot);
+      if (!name || !name.endsWith(`_${kind}`)) continue;
+      const rank = this._toolRank(name);
+      if (!best || rank > best.rank) best = { index: i, name, rank };
+    }
+    if (!best) return null;
+    if (best.index > 8) best.index = await this._moveSlotToHotbar(best.index);
+    this._selectHotbarSlot(best.index);
+    this.log('tool_selected', { tool: best.name, hotbar: best.index, block: block.name });
+    return best.name;
+  }
+
   _sendBlockAction (action, blockPos, face, { yaw, pitch }) {
     const actionMap = { start_break: 0, stop_break: 2, abort_break: 1, crack_break: 18, predict_break: 26, continue_break: 27 };
     const actionId = typeof action === 'string' ? (actionMap[action] ?? action) : action;
@@ -1121,11 +1389,16 @@ export class BedrockAdapter {
     const hardness = block.hardness;
     if (hardness < 0) return Infinity;
     if (hardness === 0) return 0;
+    // Tempi vanilla: durezza * moltiplicatore / velocità dell'utensile giusto,
+    // più un margine per la validazione server (predict mai troppo presto).
     const held = this.inventorySlots[this.selectedHotbar];
-    if (typeof block.digTime === 'function') return block.digTime(held?.network_id ?? null, false, false, false);
-    const damage = 1 / hardness / (block.harvestTools ? 100 : 30);
-    const ticks = Math.ceil(1 / damage);
-    return ticks * 50;
+    const toolName = held ? this._slotItemName(held) : null;
+    const kind = this._requiredToolKind(block);
+    const hasCorrectTool = !!kind && !!toolName && toolName.endsWith(`_${kind}`);
+    const canHarvest = block.harvestTools ? hasCorrectTool : true;
+    const blockSpeed = hasCorrectTool ? this._toolRank(toolName) : 1;
+    const ticks = Math.ceil(hardness * (canHarvest ? 30 : 100) / blockSpeed);
+    return (Math.max(1, ticks) + 3) * 50;
   }
 
   _lookAt (target) {
@@ -1155,6 +1428,8 @@ export class BedrockAdapter {
     const pos = block.position;
     const blockData = this.world.blockAt(pos);
     if (!blockData || blockData.name !== block.name) throw new Error(`block ${block.name} not found at ${JSON.stringify(pos)}`);
+    // Utensile giusto in mano: senza il piccone la pietra non lascia cadere cobblestone.
+    await this._selectToolFor(blockData);
 
 
     // Approach only outside survival mining reach, measured from the eyes.
@@ -1245,7 +1520,7 @@ export class BedrockAdapter {
           await send({ blockAction: action('stop_break') });
           this._refreshNearby();
           return { ok: true, block: block.name, position: pos, confirmedBy: 'server_world',
-            destroyedEvent, ms: Date.now() - started };
+            destroyedEvent, tool: this.world.registry?.items[held.network_id]?.name || null, ms: Date.now() - started };
         }
         await delay(50);
       }
@@ -1255,6 +1530,85 @@ export class BedrockAdapter {
     } finally {
       client.off('level_event', onEvent);
     }
+  }
+
+  // ---- discesa a gradini -------------------------------------------------------------
+
+  _digDirection () {
+    // Direzione cardinale della direzione in cui il bot guarda; i gradini
+    // consecutivi restano sulla stessa linea e la risalita usa gli stessi nodi.
+    const yaw = Number.isFinite(this._lastYaw) ? this._lastYaw : 0;
+    const rad = yaw * Math.PI / 180;
+    const dx = -Math.sin(rad), dz = Math.cos(rad);
+    return Math.abs(dx) >= Math.abs(dz)
+      ? { dx: Math.sign(dx) || 1, dz: 0 }
+      : { dx: 0, dz: Math.sign(dz) || 1 };
+  }
+
+  // Celle di un gradino discendente: testa e piedi davanti al bot, più la cella
+  // sotto il fronte che diventa il gradino. Scavarle tutte lascia un profilo a
+  // scalini percorribile anche in salita (a differenza di un pozzo verticale).
+  _digTargets () {
+    if (!this.position || !this._feet) return { error: 'no_position' };
+    const feet = this._feet;
+    const fy = Math.floor(feet.y + 0.1);
+    const fx = Math.floor(feet.x), fz = Math.floor(feet.z);
+    const d = this._digDirection();
+    const front = { x: fx + d.dx, y: fy, z: fz + d.dz };
+    const head = { x: front.x, y: fy + 1, z: front.z };
+    const step = { x: front.x, y: fy - 1, z: front.z };
+    const support = { x: front.x, y: fy - 2, z: front.z };
+    const targets = [];
+    for (const [cell, label] of [[head, 'head'], [front, 'front'], [step, 'step']]) {
+      const block = this.world.blockAt(cell);
+      if (!block) return { error: 'world_not_loaded' };
+      if (block.name === 'unknown') return { error: 'block_unknown' };
+      if (this._passableForPath(block)) continue;
+      if (/water|lava/.test(block.name)) return { error: `unsafe_block_${label}` };
+      if (DIG_PROTECTED.test(block.name)) return { error: `protected_${label}`, block: block.name };
+      if (!block.diggable || !(block.hardness >= 0)) return { error: `not_diggable_${label}` };
+      targets.push({ cell, block, label });
+    }
+    // Nessun blocco da scavare (gradino già aperto: discesa interrotta o scalino
+    // naturale): resta valida la sola discesa, con lo stesso controllo di appoggio.
+    const supportBlock = this.world.blockAt(support);
+    if (!supportBlock || !this._solidAt(support.x, support.y, support.z)) return { error: 'no_support_ahead' };
+    return { direction: d, front, head, step, support, targets };
+  }
+
+  async _digDown (timeoutMs = 30000) {
+    const plan = this._digTargets();
+    if (plan.error) return { ok: false, error: plan.error };
+    const dug = [];
+    for (const { cell, block, label } of plan.targets) {
+      const result = await this._mineBlock(block, timeoutMs);
+      if (!result.ok) return { ...result, dug };
+      dug.push({ label, block: block.name, position: cell, tool: result.tool ?? null });
+    }
+    try {
+      const moved = await this._descendStair(plan);
+      return { ok: true, dug, moved, position: this.pos() };
+    } catch (error) {
+      return { ok: false, error: `step_move_failed: ${error.message}`, dug, position: this.pos() };
+    }
+  }
+
+  // Un semplice _moveTo verso il centro del gradino si ferma sul bordo (metà del
+  // corpo resta sopra la cella ancora solida). Qui la spinta continua oltre il
+  // centro finché i piedi non scendono di un blocco, poi si aspetta l'atterraggio.
+  async _descendStair (plan, { moveMs = 8000, settleMs = 2000 } = {}) {
+    const startY = this._feet.y;
+    const stepCenter = { x: plan.step.x + 0.5, y: plan.step.y, z: plan.step.z + 0.5 };
+    const beyond = { x: plan.step.x + plan.direction.dx * 2, y: plan.step.y, z: plan.step.z + plan.direction.dz * 2 };
+    const path = [this._startNode(), plan.step, beyond];
+    const motion = this._startMotion(path, beyond, stepCenter, 0.2, Date.now() + moveMs);
+    const timedOut = await Promise.race([motion.then(() => false), delay(moveMs).then(() => true)]);
+    if (timedOut) this._finishMotion('timeout');
+    await motion;
+    this._stopMotion();
+    const settleUntil = Date.now() + settleMs;
+    while (Date.now() < settleUntil && this._feet.y > startY - 0.9) await delay(50);
+    return this._feet.y <= startY - 0.9;
   }
 
   // ---- low-level movement / auth input -----------------------------------------------
@@ -1667,16 +2021,18 @@ export class BedrockAdapter {
 
   _findGoalNodes (target) {
     const gx = Math.floor(target.x), gz = Math.floor(target.z);
-    const baseY = Math.floor(this._feet.y + 1e-3);
+    // La quota di riferimento è quella del bersaglio: con quella dei piedi un
+    // drop sotto il bot verrebbe "raggiunto" senza scendere.
+    const baseY = Math.floor((Number.isFinite(target.y) ? target.y : this._feet.y) + 1e-3);
     const candidates = [];
     for (let r = 0; r <= 3; r++) {
       for (let dx = -r; dx <= r; dx++) {
         for (let dz = -r; dz <= r; dz++) {
           if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
-          for (let dy = -6; dy <= 6; dy++) {
+          for (let dy = -10; dy <= 10; dy++) {
             const x = gx + dx, y = baseY + dy, z = gz + dz;
             if (!this._standable(x, y, z)) continue;
-            const score = Math.hypot(x + 0.5 - target.x, z + 0.5 - target.z) + Math.abs(dy) * 0.25;
+            const score = Math.hypot(x + 0.5 - target.x, z + 0.5 - target.z) + Math.abs(dy) * 0.5;
             candidates.push({ x, y, z, score });
           }
         }
