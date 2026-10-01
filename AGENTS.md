@@ -4,6 +4,16 @@
 
 Compact guidance for working in this repo.
 
+## Privacy rules — never push personal data to GitHub
+
+This repository is **public**. Before any `git push`:
+
+- Never commit or push personal data: real gamertags or account emails, Microsoft/Xbox credentials or token caches (`nmp-cache/`, `auth.json`), API keys (`.env*`), SSH key paths or key files, xuid/account IDs, allowlists, chat logs.
+- Use placeholders in examples and docs (`<gamertag_o_email>`, `<chiave-ssh>`, `<api-key>`), never real values.
+- `.env`, `.private/`, `runs/`, `nmp-cache/`, `auth.json` are gitignored — never `git add -f` them.
+- Audit before pushing: `git log -p origin/main..HEAD` plus a `git grep` for the patterns above. If a value already sits in unpushed commits, rewrite the history (scrub it) instead of pushing it or adding a "remove secret" commit.
+- If unsure whether something is personal, ask the user before pushing.
+
 ## What this is
 
 A minimal reproduction of the rmalde/minecraft-agent planner/controller split: **Hermes** plans milestones, **Jev** (or Hermes) picks one bounded action at a time, and a **Mineflayer + flying-squid harness** executes it. No screenshots, no keypresses, no generated code.
