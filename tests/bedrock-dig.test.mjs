@@ -184,10 +184,10 @@ test('options do not offer stone mining without a pickaxe (no drops)', () => {
   adapter.drops = [];
   adapter.inventory = {};
   adapter.nearbyBlocks = { stone: [{ name: 'stone', position: { x: 92, y: 67, z: 148 }, distance: 3, diggable: true }] };
-  blocks['92,67,148'] = solid('stone', { material: 'mineable/pickaxe', hardness: 1.5 });
+  blocks['92,67,148'] = solid('stone', { material: 'mineable/pickaxe', hardness: 1.5, harvestTools: { 941: true, 956: true, 946: true, 951: true, 961: true, 966: true, 971: true } });
   blocks['92,68,148'] = air;
   assert.equal(adapter.options().some(o => o.key === 'mine_stone'), false);
-  adapter.inventory = { stone_pickaxe: 1 };
+  adapter.inventorySlots = [{ network_id: 345, name: 'stone_pickaxe' }];
   assert.equal(adapter.options().some(o => o.key === 'mine_stone'), true);
 });
 
@@ -246,6 +246,105 @@ test('goal node search prefers the target level (drop below the bot)', () => {
   });
   const nodes = adapter._findGoalNodes({ x: 92.65, y: 67.125, z: 147.53 });
   assert.equal(nodes[0].y, 67, 'il nodo al livello del drop vince sul nodo corrente');
+});
+
+test('harvest rank rules: coal by wooden, iron by stone, gold by iron', () => {
+  const adapter = new BedrockAdapter({ logger: { log () {} } });
+  const mk = (name, tools) => ({ name, diggable: true, hardness: 3, material: 'mineable/pickaxe', harvestTools: tools });
+  const woodenPlus = { 941: true, 956: true, 946: true, 951: true, 961: true, 966: true, 971: true };
+  const stonePlus = { 946: true, 951: true, 961: true, 966: true, 971: true };
+  const ironPlus = { 961: true, 966: true, 971: true };
+  const coal = mk('coal_ore', woodenPlus);
+  const iron = mk('iron_ore', stonePlus);
+  const gold = mk('gold_ore', ironPlus);
+  assert.equal(adapter._blockHarvestable(coal, 'wooden_pickaxe'), true);
+  assert.equal(adapter._blockHarvestable(coal, 'golden_pickaxe'), true);
+  assert.equal(adapter._blockHarvestable(coal, null), false, 'a mano niente drop');
+  assert.equal(adapter._blockHarvestable(iron, 'wooden_pickaxe'), false);
+  assert.equal(adapter._blockHarvestable(iron, 'stone_pickaxe'), true);
+  assert.equal(adapter._blockHarvestable(iron, 'copper_pickaxe'), true);
+  assert.equal(adapter._blockHarvestable(gold, 'stone_pickaxe'), false);
+  assert.equal(adapter._blockHarvestable(gold, 'iron_pickaxe'), true);
+  assert.equal(adapter._blockHarvestable(mk('stone', woodenPlus), null), false);
+  assert.equal(adapter._blockHarvestable({ name: 'dirt', diggable: true, hardness: 0.5 }, null), true);
+});
+
+test('options require the right pickaxe tier for ore drops', () => {
+  const { adapter, blocks } = digAdapter();
+  adapter.drops = [];
+  adapter.nearbyBlocks = { iron_ore: [{ name: 'iron_ore', position: { x: 92, y: 67, z: 148 }, distance: 6, diggable: true }] };
+  blocks['92,67,148'] = solid('iron_ore', { material: 'incorrect_for_wooden_tool', hardness: 3, harvestTools: { 946: true, 951: true, 961: true, 966: true, 971: true } });
+  blocks['92,68,148'] = air;
+  adapter.inventorySlots = [{ network_id: 341, name: 'wooden_pickaxe' }];
+  assert.equal(adapter.options().some(o => o.key === 'mine_iron_ore'), false, 'col piccone di legno niente drop');
+  adapter.inventorySlots = [{ network_id: 345, name: 'stone_pickaxe' }];
+  assert.equal(adapter.options().some(o => o.key === 'mine_iron_ore'), true);
+});
+
+test('ores with incorrect_for_wooden_tool material still require a pickaxe', () => {
+  const adapter = new BedrockAdapter({ logger: { log () {} } });
+  const copper = { name: 'copper_ore', diggable: true, hardness: 3, material: 'incorrect_for_wooden_tool', harvestTools: { 946: true, 951: true, 961: true, 966: true, 971: true } };
+  assert.equal(adapter._requiredToolKind(copper), 'pickaxe');
+  assert.equal(adapter._blockHarvestable(copper, 'stone_pickaxe'), true);
+  assert.equal(adapter._blockHarvestable(copper, 'wooden_pickaxe'), false);
+});
+
+test('tool damage is read from the Bedrock NBT Damage field', () => {
+  const adapter = new BedrockAdapter({ logger: { log () {} } });
+  const withNbt = { network_id: 341, metadata: 0, extra: { nbt: { nbt: { value: { Damage: { value: 52 } } } } } };
+  assert.equal(adapter._itemDamage(withNbt), 52);
+  assert.equal(adapter._itemDamage({ network_id: 341, metadata: 3 }), 3);
+  assert.equal(adapter._itemDamage(undefined), 0);
+});
+
+test('observe exposes the held tool durability', () => {
+  const adapter = new BedrockAdapter({ logger: { log () {} } });
+  adapter.position = { x: 0, y: 0, z: 0 };
+  adapter.world.registry = { items: { 341: { name: 'wooden_pickaxe', maxDurability: 59 } } };
+  adapter.inventorySlots = [{ network_id: 341, metadata: 7, count: 1 }];
+  adapter.selectedHotbar = 0;
+  const obs = adapter.observe();
+  assert.equal(obs.held, 'wooden_pickaxe');
+  assert.deepEqual(obs.heldDurability, { damage: 7, max: 59 });
+});
+
+test('options offer torch and furnace crafts when materials are held', () => {
+  const { adapter } = digAdapter();
+  adapter.drops = [];
+  adapter.nearbyBlocks = {};
+  adapter.inventorySlots = [];
+  adapter.recipes = new Map([['torch', []], ['furnace', []]]);
+  adapter.craftingData = { shaped_recipes: [], shapeless_recipes: [] };
+  adapter.world.findBlocks = () => [];
+  adapter.inventory = { coal: 1, stick: 2, cobblestone: 8 };
+  let keys = adapter.options().map(o => o.key);
+  assert.equal(keys.includes('craft_torch'), true);
+  assert.equal(keys.includes('craft_furnace'), false, 'senza tavolo la fornace non è craftabile');
+  adapter.world.findBlocks = name => name === 'crafting_table' ? [{ position: { x: 1, y: 1, z: 1 } }] : [];
+  keys = adapter.options().map(o => o.key);
+  assert.equal(keys.includes('craft_furnace'), true);
+  adapter.inventory = { charcoal: 1, stick: 2 };
+  assert.equal(adapter.options().some(o => o.key === 'craft_torch'), true, 'la carbonella vale come il carbone');
+});
+
+test('tool selection prefers a harvest-capable pickaxe over a faster golden one', async () => {
+  const adapter = new BedrockAdapter({ logger: { log () {} } });
+  adapter.client = { write: () => {} };
+  adapter.inventorySlots[0] = { network_id: 356, name: 'golden_pickaxe', count: 1, stack_id: 1 };
+  adapter.inventorySlots[1] = { network_id: 345, name: 'stone_pickaxe', count: 1, stack_id: 2 };
+  const iron = { name: 'iron_ore', diggable: true, hardness: 3, material: 'incorrect_for_wooden_tool', harvestTools: { 946: true, 951: true, 961: true, 966: true, 971: true } };
+  const coal = { name: 'coal_ore', diggable: true, hardness: 3, material: 'mineable/pickaxe', harvestTools: { 941: true, 956: true, 946: true, 951: true, 961: true, 966: true, 971: true } };
+  assert.equal(await adapter._selectToolFor(iron), 'stone_pickaxe', 'il piccone d\'oro è più veloce ma non raccoglie il ferro');
+  assert.equal(await adapter._selectToolFor(coal), 'golden_pickaxe', 'sul carbone vince il più veloce');
+});
+
+test('coals item tag matches coal and charcoal only', () => {
+  const adapter = new BedrockAdapter({ logger: { log () {} } });
+  const tag = { type: 'valid', descriptor_type: 'item_tag', tag: 'minecraft:coals' };
+  assert.equal(adapter._ingredientMatches(tag, 'coal'), true);
+  assert.equal(adapter._ingredientMatches(tag, 'charcoal'), true);
+  assert.equal(adapter._ingredientMatches(tag, 'stick'), false);
+  assert.equal(adapter._ingredientMatches(tag, 'oak_planks'), false);
 });
 
 test('options collapse to wait while the Bedrock connection is being re-established', async () => {

@@ -34,6 +34,11 @@ const MAX_CORRECTION_DRIFT = 0.75; // oltre questa distanza la correzione è aut
 // utensile/materiale va dedotta dal nome.
 const TOOL_TIER_SPEED = { wooden: 2, golden: 12, stone: 4, copper: 6, iron: 6, diamond: 8, netherite: 9 };
 const TOOL_MATERIAL = { 'mineable/pickaxe': 'pickaxe', 'mineable/axe': 'axe', 'mineable/shovel': 'shovel', 'mineable/hoe': 'hoe' };
+// Livello di raccolta per utensile (per i drop serve il tier giusto).
+const TOOL_HARVEST_RANK = { wooden: 1, golden: 1, stone: 2, copper: 2, iron: 3, diamond: 4, netherite: 5 };
+// Chiavi di harvestTools nel data Bedrock (id del data, non network id). Mappate
+// per rango confrontando gli insiemi di stone/iron/gold ore nel registry 1.26.
+const HARVEST_TOOL_RANK = { 941: 1, 956: 1, 946: 2, 951: 2, 961: 3, 966: 4, 971: 5 };
 // Blocchi funzionali o costruiti che dig_down non deve mai scavare per errore
 // (tavoli, contenitori, stazioni): il passo verrebbe rifiutato invece che distruggerli.
 const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|_bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$)/;
@@ -473,7 +478,7 @@ export class BedrockAdapter {
   _refreshNearby () {
     if (!this.position) return;
     this.nearbyBlocks = {};
-    for (const name of ['dirt', 'grass_block', 'stone', 'cobblestone', 'oak_log', 'spruce_log', 'cherry_log', 'potatoes', 'carrots', 'wheat', 'beetroots']) {
+    for (const name of ['dirt', 'grass_block', 'stone', 'cobblestone', 'coal_ore', 'deepslate_coal_ore', 'iron_ore', 'deepslate_iron_ore', 'copper_ore', 'oak_log', 'spruce_log', 'cherry_log', 'potatoes', 'carrots', 'wheat', 'beetroots']) {
       this.nearbyBlocks[name] = this.world.findBlocks(name, this.position, 96, 4).map(block => ({ name: block.name, position: block.position, distance: +block.distance.toFixed(1), diggable: block.diggable, hardness: block.hardness }));
     }
     // Bedrock player_position is at eye height (1.62 blocks above the feet).
@@ -536,6 +541,8 @@ export class BedrockAdapter {
   }
 
   observe () {
+    const heldSlot = this.inventorySlots[this.selectedHotbar];
+    const heldInfo = heldSlot?.network_id ? this.world.registry?.items[heldSlot.network_id] : null;
     return {
       step: this.recent.length,
       position: this.pos(),
@@ -544,7 +551,10 @@ export class BedrockAdapter {
       dimension: this.dimension,
       standingOn: this.standingOn,
       inventory: this.inventory,
-      held: this._slotItemName(this.inventorySlots[this.selectedHotbar]),
+      held: this._slotItemName(heldSlot),
+      heldDurability: heldInfo?.maxDurability
+        ? { damage: this._itemDamage(heldSlot), max: heldInfo.maxDurability }
+        : null,
       drops: this.drops.slice(0, 8),
       plan: this.plan,
       nearby: this.nearbyBlocks,
@@ -572,14 +582,18 @@ export class BedrockAdapter {
     }
     // Mining: offri un'opzione per ogni tipo di blocco scavabile nelle vicinanze.
     // Se il blocco più vicino è sepolto (nessuna faccia raggiungibile) non va offerto:
-    // per raggiungerlo serve prima dig_down. Senza piccone la pietra non lascia drop.
-    const hasPickaxe = Object.keys(this.inventory).some(name => name.endsWith('_pickaxe'));
+    // per raggiungerlo serve prima dig_down. Se l'inventario non ha l'utensile col
+    // rango giusto, il blocco non lascerebbe drop: non va offerto.
     for (const [blockName, blocks] of Object.entries(this.nearbyBlocks || {})) {
-      if ((blockName === 'stone' || blockName === 'cobblestone') && !hasPickaxe) continue;
       const target = this._pickMineTarget(blocks);
-      if (target) {
-        o.push({ key: `mine_${blockName}`, description: `Mine ${blockName} at ${JSON.stringify(target.position)} (${target.distance} blocks away)` });
+      if (!target) continue;
+      const probe = this.world.blockAt(target.position);
+      if (probe) {
+        const kind = this._requiredToolKind(probe);
+        const tool = kind ? this._bestInventoryTool(kind)?.name : null;
+        if (!this._blockHarvestable(probe, tool)) continue;
       }
+      o.push({ key: `mine_${blockName}`, description: `Mine ${blockName} at ${JSON.stringify(target.position)} (${target.distance} blocks away)` });
     }
     // Discesa: scavare un gradino verso il basso (testa, fronte e cella sotto il
     // fronte), poi avanzare di un blocco e scendere. Serve a raggiungere lo stone
@@ -611,6 +625,13 @@ export class BedrockAdapter {
       if (this.recipes.has('stone_pickaxe') && (this.inventory.cobblestone || 0) >= 3 && (this.inventory.stick || 0) >= 2 &&
           this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
         o.push({ key: 'craft_stone_pickaxe', description: 'Craft a stone pickaxe at the crafting table (3 cobblestone + 2 sticks)' });
+      }
+      if (this.recipes.has('torch') && ((this.inventory.coal || 0) + (this.inventory.charcoal || 0)) >= 1 && (this.inventory.stick || 0) >= 1) {
+        o.push({ key: 'craft_torch', description: 'Craft torches from coal or charcoal and sticks' });
+      }
+      if (this.recipes.has('furnace') && (this.inventory.cobblestone || 0) >= 8 &&
+          this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
+        o.push({ key: 'craft_furnace', description: 'Craft a furnace from 8 cobblestone (uses a crafting table)' });
       }
     }
     // Piazzamento: solo ciò che serve alla progressione.
@@ -911,6 +932,8 @@ export class BedrockAdapter {
       if (tag === 'stone_tool_materials' || tag === 'stone_crafting_materials') {
         return /^(cobblestone|cobbled_deepslate|blackstone)$/.test(name);
       }
+      // Torce e fornaci da carbone: il tag è "coals" (carbone + carbonella).
+      if (tag === 'coals' || tag === 'coal') return /^(coal|charcoal)$/.test(name);
       return true; // tag non mappato: lascia decidere al server
     }
     return false;
@@ -1314,7 +1337,53 @@ export class BedrockAdapter {
     for (const [needle, kind] of Object.entries(TOOL_MATERIAL)) {
       if (material.includes(needle)) return kind;
     }
+    // Materiali come "incorrect_for_wooden_tool" non nominano il tipo: le chiavi
+    // dei picconi dentro harvestTools lo implicano.
+    if (block?.harvestTools && Object.keys(block.harvestTools).some(key => key in HARVEST_TOOL_RANK)) return 'pickaxe';
     return null;
+  }
+
+  _itemDamage (item) {
+    // In Bedrock la durabilità consumata sta nell'NBT Damage; metadata resta 0.
+    const nbtDamage = item?.extra?.nbt?.nbt?.value?.Damage?.value;
+    if (typeof nbtDamage === 'number') return nbtDamage;
+    return item?.metadata || 0;
+  }
+
+  _harvestRank (toolName) {
+    return TOOL_HARVEST_RANK[String(toolName || '').split('_')[0]] || 0;
+  }
+
+  // Rank minimo che il data Bedrock associa al blocco (0 = a mano).
+  _requiredHarvestRank (block) {
+    if (!block?.harvestTools) return 0;
+    let min = Infinity;
+    for (const key of Object.keys(block.harvestTools)) {
+      const rank = HARVEST_TOOL_RANK[key];
+      if (rank != null) min = Math.min(min, rank);
+    }
+    return Number.isFinite(min) ? min : 1;
+  }
+
+  // True se il blocco lascia il drop con l'utensile dato (o a mano).
+  _blockHarvestable (block, toolName) {
+    if (!block?.harvestTools) return true;
+    const kind = this._requiredToolKind(block);
+    if (kind && toolName && toolName.endsWith(`_${kind}`)) {
+      return this._harvestRank(toolName) >= this._requiredHarvestRank(block);
+    }
+    return false;
+  }
+
+  _bestInventoryTool (kind) {
+    let best = null;
+    for (const slot of this.inventorySlots) {
+      const name = this._slotItemName(slot);
+      if (!name || !name.endsWith(`_${kind}`)) continue;
+      const rank = this._harvestRank(name);
+      if (!best || rank > best.rank) best = { name, rank };
+    }
+    return best;
   }
 
   _toolRank (name) {
@@ -1361,15 +1430,20 @@ export class BedrockAdapter {
   async _selectToolFor (block) {
     const kind = this._requiredToolKind(block);
     if (!kind) return null;
-    let best = null;
+    let best = null;         // più veloce tra quelli che lasciano il drop
+    let fallback = null;     // più veloce in assoluto, se nessuno può raccogliere
     for (let i = 0; i < Math.min(this.inventorySlots.length, 36); i++) {
       const slot = this.inventorySlots[i];
       if (!slot?.network_id) continue;
       const name = this._slotItemName(slot);
       if (!name || !name.endsWith(`_${kind}`)) continue;
       const rank = this._toolRank(name);
-      if (!best || rank > best.rank) best = { index: i, name, rank };
+      const candidate = { index: i, name, rank };
+      if (!fallback || rank > fallback.rank) fallback = candidate;
+      if (!this._blockHarvestable(block, name)) continue;
+      if (!best || rank > best.rank) best = candidate;
     }
+    if (!best) best = fallback;
     if (!best) return null;
     if (best.index > 8) best.index = await this._moveSlotToHotbar(best.index);
     this._selectHotbarSlot(best.index);
@@ -1395,7 +1469,7 @@ export class BedrockAdapter {
     const toolName = held ? this._slotItemName(held) : null;
     const kind = this._requiredToolKind(block);
     const hasCorrectTool = !!kind && !!toolName && toolName.endsWith(`_${kind}`);
-    const canHarvest = block.harvestTools ? hasCorrectTool : true;
+    const canHarvest = this._blockHarvestable(block, toolName);
     const blockSpeed = hasCorrectTool ? this._toolRank(toolName) : 1;
     const ticks = Math.ceil(hardness * (canHarvest ? 30 : 100) / blockSpeed);
     return (Math.max(1, ticks) + 3) * 50;
@@ -1478,7 +1552,7 @@ export class BedrockAdapter {
     const itemStackRequest = this.serverAuthBlockBreaking && tool?.maxDurability && damage > 0 ? {
       request_id: this._nextStackRequestId--,
       actions: [{ type_id: 'mine_block', legacy_type_id: 11,
-        hotbar_slot: this.selectedHotbar, predicted_durability: (held.metadata || 0) + damage,
+        hotbar_slot: this.selectedHotbar, predicted_durability: this._itemDamage(held) + damage,
         network_id: held.stack_id || 0 }],
       custom_names: [], cause: 'chat_public',
     } : null;

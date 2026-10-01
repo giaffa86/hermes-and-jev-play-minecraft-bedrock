@@ -60,6 +60,7 @@ Use `CONTROLLER=hermes` if you lack an OpenRouter key; it is slower and costlier
 - `REPLAN_EVERY` — replan every N actions (default `8`).
 - `CONTROLLER` — `jev` (default) or `hermes`.
 - `JEV_MODEL` — default `typesafe/jev-1.13`.
+- `HERMES_TIMEOUT_MS` — planner timeout before falling back to a static plan (default `180000`).
 - `MC_PORT` / `API_PORT` — defaults `25599` / `3077`.
 - `OPENROUTER_API_KEY` — required for `CONTROLLER=jev`.
 

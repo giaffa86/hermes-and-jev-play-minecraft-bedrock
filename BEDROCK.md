@@ -170,9 +170,9 @@ sudo docker cp hermes:/opt/data/runs /home/<utente-ssh>/hermes-jev-bedrock/runs-
 | `wait` | ✅ Funzionante | |
 | `goto_waypoint` | ✅ Funzionante | Movimento server-authoritative via `player_auth_input` (fisica locale: gravità, collisioni, gradini, salti) + pathfinding A* sul mondo caricato; apre le porte sul percorso. |
 | `collect_drop` | ✅ Funzionante | Traccia gli item entity (`move_entity`/`move_entity_delta`), cammina fino al drop e verifica il pickup (`take_item_entity`). La ricerca del nodo usa la quota del drop, altrimenti un drop sotto il bot non viene mai raggiunto. |
-| `mine_*` | ✅ Funzionante | Rottura reale con `player_auth_input` + `block_action`, conferma dal server e evento di distruzione. Prima di rompere, l'adapter seleziona l'utensile giusto (piccone/ascia/pala/ zappa, miglior tier) e i tempi di rottura seguono la formula vanilla (pietra col piccone di legno ≈ 1,3 s). Senza piccone le opzioni `mine_stone`/`mine_cobblestone` non vengono offerte (nessun drop). |
+| `mine_*` | ✅ Funzionante | Rottura reale con `player_auth_input` + `block_action`, conferma dal server e evento di distruzione. Prima di rompere, l'adapter seleziona l'utensile giusto (piccone/ascia/pala/ zappa, miglior tier) e i tempi di rottura seguono la formula vanilla (pietra col piccone di legno ≈ 1,3 s). Senza piccone le opzioni `mine_stone`/`mine_cobblestone` non vengono offerte (nessun drop). Per i minerali serve anche il rango giusto: `_blockHarvestable` confronta il rango del piccone (legno/oro = 1, pietra/rame = 2, ferro = 3, diamante = 4, netherite = 5) con l'insieme `harvestTools` del blocco; `mine_iron_ore` non è offerto col piccone di legno. |
 | `dig_down` | ✅ Funzionante | Scava un gradino (testa, fronte e cella sotto il fronte), poi avanza e scende; i gradini restano percorribili anche in salita. Rifiuta blocchi protetti (tavoli, contenitori, stazioni, e materiali da costruzione: assi, lastre, scale, lana, vetro, mattoni). Se il gradino è già aperto scende soltanto. |
-| `craft_*` | ✅ Funzionante | Ricette da `crafting_data` (network id), griglia 2×2 nell'inventario e 3×3 al tavolo da lavoro; item_stack_request `craft_recipe` con consumi e output. I tag `stone_tool_materials`/`stone_crafting_materials` sono mappati (cobblestone/cobbled_deepslate/blackstone). |
+| `craft_*` | ✅ Funzionante | Ricette da `crafting_data` (network id), griglia 2×2 nell'inventario e 3×3 al tavolo da lavoro; item_stack_request `craft_recipe` con consumi e output. I tag `stone_tool_materials`/`stone_crafting_materials` sono mappati (cobblestone/cobbled_deepslate/blackstone) e `minecraft:coals` (carbone + carbonella) per le torce; `craft_furnace` usa 8 cobblestone al tavolo. |
 | `place_*` | ✅ Base | Piazzamento con transazione `click_block`; usato per tavoli da lavoro. Lo swap in hotbar rilegge l'inventario dal server (riconnessione) se lo stack id è stantio. |
 
 ### Fase pietra della milestone (aggiornamento 01/10/2026)
@@ -184,6 +184,28 @@ Catena `legno → piccone di legno → scavo → pietra → piccone di pietra` c
 3. `craft_stone_pickaxe` (3 cobblestone + 2 bastoni) alla griglia 3×3 di un tavolo da lavoro.
 
 Run di riferimento: `runs/e2e-stone6/controller.jsonl` — `GOAL MET after 33 actions`, inventario con `stone_pickaxe: 1` (avvio da inventario senza utensili: legno, craft del piccone di legno, scavo e piccone di pietra). Evidenze dello scavo con discesa: `runs/e2e-stone1/controller.jsonl`.
+
+### Fase minerali e durabilità (aggiornamento 01/10/2026)
+
+Dopo la pietra il passo successivo sono i minerali: carbone (qualsiasi piccone) e ferro/rame (piccone di pietra o superiore). La validità resta nell'harness:
+
+1. **Rango di raccolta**: gli insiemi `harvestTools` del registry 1.26, confrontati con le versioni precedenti (in 1.21.42 non esistono strumenti di rame), danno il rango per materiale: legno/oro = 1, pietra/rame = 2, ferro = 3, diamante = 4, netherite = 5. `_blockHarvestable` rifiuta il blocco se nessun utensile in inventario copre il rango; le opzioni `mine_*` non vengono offerte per il tier sbagliato.
+2. **Scelta dell'utensile**: `_selectToolFor` preferisce il piccone più veloce *tra quelli che lasciano il drop* e usa il più veloce in assoluto solo come ripiego. Sul carbone vince il piccone d'oro (veloce), sul ferro scatta quello di pietra.
+3. **Durabilità**: BDS tiene il consumo nell'NBT `Damage` (il metadata resta 0); `/observe` espone `heldDurability: {damage, max}` per l'oggetto in mano e le richieste di rottura inviano `predicted_durability` coerente.
+4. **Craft propedeutici**: mappato il tag `minecraft:coals` (carbone + carbonella) per `craft_torch`; `craft_furnace` compare con 8 cobblestone e un tavolo vicino.
+5. **Rilevamento minerali**: `/observe.nearby` include carbone, ferro e rame (anche varianti deepslate).
+
+Evidenza live (host Docker, container `hermes-jev-bedrock`): run `runs/e2e-minerals1/controller.jsonl` — `GOAL MET after 2 actions`, `mine_copper_ore` con `stone_pickaxe`, `collect_drop` → `raw_copper: 1` in inventario; 68 test unitari verdi.
+
+Limite: carbone e ferro sono sepolti nell'area di base e il percorso di scavo non ha ancora raggiunto un filone esposto; la finestra NetherNet instabile della serata ha fermato il collaudo. Da riprendere quando il trasporto è stabile.
+
+### Controller robusto (aggiornamento 01/10/2026)
+
+`controller.mjs` non si blocca più se il planner Hermes è indisponibile o lento:
+
+1. la CLI viene lanciata con `spawn` detached e, a `HERMES_TIMEOUT_MS` (default 180000), l'intero process group viene terminato (`SIGKILL`) — lo shim `hermes` fork-a un processo che altrimenti tiene aperto lo stdout e fa attendere `spawnSync`/`execFileSync` per sempre;
+2. se la CLI non risponde, il controller degrada a un piano statico costruito da `GOAL`/`TARGETS`/`WAYPOINT` (`plan_fallback` nei log) e prosegue con Jev;
+3. l'azione appena fallita viene esclusa dalla scelta successiva, così un `goto_waypoint` senza percorso non consuma tutto il budget.
 
 ### Inventario e stack id (aggiornamento 01/10/2026)
 
@@ -249,6 +271,8 @@ Hermes → Jev → Bedrock con `GOAL MET` (`oak_log` 9 → 10).
 - **Stack id dopo un pickup**: vedi "Inventario e stack id". Se l'aggregato ha più materiali degli slot, un craft tenta una riconnessione automatica (`inventory_resync`) prima di arrendersi.
 - **NetherNet instabile (01/10 sera)**: in alcune fasce orarie la sessione cade ogni pochi secondi (log BDS: `Player disconnected` dopo 3-20 s, nessun errore lato server). L'harness riconnette da solo; durante la riconnessione `/options` offre solo `wait`. Il rimedio documentato è un riavvio BDS a zero giocatori, che ripristina il servizio per qualche minuto. Nei run lunghi conviene alzare `MAX_STEPS` perché i flap consumano passi.
 - **`dig_down` e blocchi costruiti**: il passo viene rifiutato (`protected_*`) se testa/fronte/gradino contengono tavoli, contenitori, stazioni o materiali da costruzione (assi, lastre, scale, lana, vetro, mattoni, cemento). Evita di distruggere la base; usare `mine_*` per blocchi naturali.
+- **Bot in un pozzo**: dopo lo scavo del rame il bot è rimasto in una buca profonda 2-3 blocchi dove l'A* non trova il primo passo (supporta salite di 1 blocco): `/options` continua a offrire `goto_waypoint` ma ogni tentativo risponde `path_failed`. Recupero: scavare (`dig_down`/`mine_*`) o raggiungere la scalinata esistente. Da migliorare con un'azione di risalita dedicata.
+- **Planner Hermes**: il provider primario può esaurire la quota e il fallback può non rispondere; il controller ora degrada al piano statico (vedi "Controller robusto") e logga `plan_fallback`.
 
 ### Collaudi e passaggio tra client
 

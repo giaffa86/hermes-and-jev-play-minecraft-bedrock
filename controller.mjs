@@ -3,7 +3,7 @@
 //   Controller ("System One"): Jev (TypeSafe) via OpenRouter's decisions endpoint, ONE bounded action per step.
 //                              Set CONTROLLER=hermes to let Hermes pick actions too (slower, ~10x the cost).
 // The model never sends keypresses or code: it chooses one key from the list the harness says is valid right now.
-import {execFileSync} from 'node:child_process';
+import {spawn} from 'node:child_process';
 import {appendFileSync, mkdirSync} from 'node:fs';
 
 const HARNESS = process.env.HARNESS || 'http://127.0.0.1:3077';
@@ -24,7 +24,30 @@ const api = async (method, path, body) => {
 };
 
 // ---- planner: Hermes ------------------------------------------------------------------------
-function hermesPlan(observation) {
+// `hermes` è uno shim che fork-a il vero processo: uccidere solo il figlio
+// diretto lascia il nipote vivo che tiene aperto lo stdout (spawnSync non
+// ritorna mai). Spawn detached + kill del process group al timeout, con
+// fallback statico se il provider è giù o lento.
+const HERMES_TIMEOUT = +(process.env.HERMES_TIMEOUT_MS || 180000);
+
+function runHermes(prompt) {
+  return new Promise(resolve => {
+    const child = spawn('hermes', ['chat', '-Q', '--oneshot', '-t', '', '-q', prompt],
+      {detached: true, stdio: ['ignore', 'pipe', 'ignore']});
+    let out = '';
+    let done = false;
+    const finish = value => { if (done) return; done = true; clearTimeout(timer); resolve(value); };
+    child.stdout.on('data', chunk => { out += chunk; });
+    child.on('error', () => finish(null));
+    child.on('close', () => finish(out || null));
+    const timer = setTimeout(() => {
+      try { process.kill(-child.pid, 'SIGKILL'); } catch {}
+      finish(null);
+    }, HERMES_TIMEOUT);
+  });
+}
+
+async function hermesPlan(observation) {
   const prompt = [
     'You are the PLANNER for a Minecraft bot. Return ONLY a JSON object {"objective": string, "targets": {item: minCount}, "waypoint": {"x":int,"z":int} | null, "notes": string}.',
     `Overall goal: ${GOAL}`,
@@ -34,7 +57,12 @@ function hermesPlan(observation) {
     `Observation: ${JSON.stringify(observation)}`,
   ].filter(Boolean).join('\n');
   const started = Date.now();
-  const out = execFileSync('hermes', ['chat', '-Q', '--oneshot', '-t', '', '-q', prompt], {encoding: 'utf8', timeout: 180000, stdio: ['ignore', 'pipe', 'ignore']});
+  const out = await runHermes(prompt);
+  if (out == null) {
+    const plan = {objective: GOAL, targets: TARGETS, waypoint: WAYPOINT, notes: 'hermes unavailable; static fallback plan'};
+    log('plan_fallback', {plan, ms: Date.now() - started});
+    return plan;
+  }
   const m = out.match(/\{[\s\S]*\}/);
   const plan = m ? JSON.parse(m[0]) : {objective: GOAL, targets: TARGETS, waypoint: WAYPOINT};
   if (WAYPOINT && !plan.waypoint) plan.waypoint = WAYPOINT;
@@ -75,12 +103,14 @@ async function jevDecide(observation, options, plan) {
 }
 
 // ---- controller: Hermes (fallback) ------------------------------------------------------------
-function hermesDecide(observation, options, plan) {
+async function hermesDecide(observation, options, plan) {
   const prompt = `Objective: ${plan.objective}\nObservation: ${JSON.stringify(observation)}\nValid actions:\n${options.map(o => `- ${o.key}: ${o.description}`).join('\n')}\nReply with ONLY the key of the single best action.`;
   const started = Date.now();
-  const out = execFileSync('hermes', ['chat', '-Q', '--oneshot', '-t', '', '-q', prompt], {encoding: 'utf8', timeout: 180000, stdio: ['ignore', 'pipe', 'ignore']}).trim();
-  const key = options.find(o => out.includes(o.key))?.key || options.at(-1).key;
-  log('decision', {controller: 'hermes', key, ms: Date.now() - started});
+  const out = (await runHermes(prompt))?.trim();
+  const key = out
+    ? (options.find(o => out.includes(o.key))?.key || options.at(-1).key)
+    : (options.find(o => o.key === 'wait')?.key || options[0].key);
+  log('decision', {controller: 'hermes', key, fallback: out == null, ms: Date.now() - started});
   return key;
 }
 
@@ -93,17 +123,23 @@ const goalMet = (obs, plan) => {
 
 // ---- loop -----------------------------------------------------------------------------------
 let obs = await api('GET', '/observe');
-let plan = hermesPlan(obs);
+let plan = await hermesPlan(obs);
 await api('POST', '/plan', plan);
 console.log('PLAN', plan.objective, plan.waypoint ? JSON.stringify(plan.waypoint) : '');
 let spent = 0;
+let lastFailedKey = null;
 for (let step = 1; step <= MAX_STEPS; step++) {
   obs = await api('GET', '/observe');
   if (goalMet(obs, plan)) { console.log(`GOAL MET after ${step - 1} actions`, JSON.stringify({position: obs.position, inventory: obs.inventory})); log('goal_met', {steps: step - 1, obs}); break; }
-  if (step > 1 && step % REPLAN_EVERY === 1) { plan = hermesPlan(obs); await api('POST', '/plan', plan); console.log('REPLAN', plan.objective); }
+  if (step > 1 && step % REPLAN_EVERY === 1) { plan = await hermesPlan(obs); await api('POST', '/plan', plan); console.log('REPLAN', plan.objective); }
   const {options} = await api('GET', '/options');
-  const key = CONTROLLER === 'jev' ? await jevDecide(obs, options, plan) : hermesDecide(obs, options, plan);
+  // Non ripetere l'azione che ha appena fallito: il prossimo passo prova altro.
+  const usable = lastFailedKey && options.length > 1 ? options.filter(o => o.key !== lastFailedKey) : options;
+  const key = CONTROLLER === 'jev' ? await jevDecide(obs, usable, plan) : await hermesDecide(obs, usable, plan);
   const result = await api('POST', '/act', {key});
+  lastFailedKey = result.ok ? null : key;
   console.log(`#${step} ${key} ->`, JSON.stringify(result));
   if (step === MAX_STEPS) { console.log('step budget exhausted'); log('budget_exhausted', {steps: step}); }
 }
+// Le connessioni keep-alive di fetch tengono vivo il processo: esci esplicitamente.
+process.exit(0);
