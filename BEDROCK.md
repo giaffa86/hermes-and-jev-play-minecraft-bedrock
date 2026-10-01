@@ -171,8 +171,21 @@ sudo docker cp hermes:/opt/data/runs /home/<utente-ssh>/hermes-jev-bedrock/runs-
 | `goto_waypoint` | ✅ Funzionante | Movimento server-authoritative via `player_auth_input` (fisica locale: gravità, collisioni, gradini, salti) + pathfinding A* sul mondo caricato; apre le porte sul percorso. |
 | `collect_drop` | ✅ Funzionante | Traccia gli item entity (`move_entity`/`move_entity_delta`), cammina fino al drop e verifica il pickup (`take_item_entity`). |
 | `mine_*` | ✅ Funzionante | Rottura reale con `player_auth_input` + `block_action`, conferma dal server e evento di distruzione (patate, pietra, terra, `oak_log`). |
-| `place_*` | ⚠️ Non implementata | |
-| `craft_*` | ⚠️ Non implementata | |
+| `craft_*` | ✅ Funzionante | Ricette da `crafting_data` (network id), griglia 2×2 nell'inventario e 3×3 al tavolo da lavoro; item_stack_request `craft_recipe` con consumi e output. |
+| `place_*` | ✅ Base | Piazzamento con transazione `click_block`; usato per il tavolo da lavoro. |
+
+### Crafting e piazzamento (aggiornamento 01/10/2026)
+
+BDS usa `item_stack_request` con **stack id** degli slot e una sessione container aperta:
+
+1. `interact open_inventory` apre l'inventario (griglia 2×2 ai blocchi 30/31/28/29); un `click_block` sul tavolo apre la finestra `workbench` (griglia 3×3 ai blocchi 32..40).
+2. Per ogni ingrediente: `take` dall'inventario al cursore, `place` dal cursore alla griglia (con lo stack id corrente dello slot di destinazione).
+3. La richiesta di craft contiene `craft_recipe`, `results_deprecated`, un `consume` per ogni slot della griglia e un `place` dall'output creato (`creative_output`, slot 50, stack id = id della richiesta) verso l'inventario.
+4. Le risposte `item_stack_response` vengono applicate alla copia locale dell'inventario; la griglia e il cursore sono tracciati e ripuliti in caso di errore.
+
+Attenzione: `slot_type.dynamic_container_id` va **omesso** (con il campo presente BDS tratta il container come dinamico e rifiuta le richieste). Gli stack id delle pile esistenti sono obbligatori per fondere l'output; gli attrezzi (stack 1) non si fondono.
+
+Verificato sul server reale: `oak_log → oak_planks → stick → crafting_table → place → wooden_pickaxe` e loop Hermes → Jev → Bedrock con `GOAL MET` (4 `wooden_pickaxe` in inventario).
 
 ### Movimento (aggiornamento 01/10/2026)
 
@@ -207,6 +220,9 @@ Hermes → Jev → Bedrock con `GOAL MET` (`oak_log` 9 → 10).
 - **Blocchi parziali**: l'adapter non conosce l'altezza esatta di letti, lastre e gradini; la fisica locale li approssima come cubi pieni e il server riporta la quota corretta con `correct_player_move_prediction`. Il movimento resta fluido, ma la quota può oscillare di ~0,5 blocchi su questi blocchi.
 - **Inventario server-authoritative**: BDS non invia aggiornamenti di inventario al pickup; l'adapter aggiorna il conteggio dal pacchetto `take_item_entity` (conferma di raccolta) e riconcilia con `inventory_content` alla connessione successiva.
 - **Inventario persistente**: l'account del bot è lo stesso usato dal giocatore umano; l'inventario sopravvive tra le sessioni. I target del controller vanno scelti sopra il conteggio corrente.
+- **Crafting**: supportate le ricette shaped/shapeless con ingredienti per nome o tag (`planks`, `logs`); ricette senza output noto (multi) e ricette speciali (fucina, incudine, telai) non sono implementate. Il craft usa sempre un oggetto per volta (niente `times_crafted > 1`).
+- **Piazzamento**: piazzamento solo su una faccia superiore adiacente al bot; nessuna scalatura o orientamento dei blocchi.
+- **Item nel mondo**: un craft fallito può lasciare item davanti al tavolo (chiusura del container con griglia piena). L'adapter ripulisce la griglia prima di chiudere quando può tracciarla.
 
 ### Collaudi e passaggio tra client
 
