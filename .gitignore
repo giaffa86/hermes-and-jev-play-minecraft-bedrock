@@ -6,6 +6,8 @@ runs/
 .env
 .env.local
 .env.*.local
+nmp-cache/
+auth.json
 
 # Private project notes and runbooks not meant for the public repo
 .private/
