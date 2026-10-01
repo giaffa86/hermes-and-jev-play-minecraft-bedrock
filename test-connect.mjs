@@ -90,9 +90,11 @@ async function main() {
       position: client.startGameData?.player_position,
     });
     // Rimani connesso 10 secondi per verificare stabilità
-    setTimeout(() => {
+    setTimeout(async () => {
       console.log('[spawn] stable, disconnecting');
+      const rtc = client.connection?.nethernet?.rtcConnection;
       client.disconnect('smoke test complete');
+      await Promise.all([rtc?.close(), client._nethernetCleanup]);
     }, 10000);
   });
 
