@@ -235,11 +235,27 @@ Still missing (the rest of the original gap):
 - **Human chat command channel**: natural-language remote control via in-game
   chat (`@bot seguimi`, `@bot aiutami coi mob`). M1–M3 implemented (chat capture,
   allowlist + trigger, NL → Hermes → `/plan`, `follow_player`); **live
-  verification on the BDS still pending**. M5 is half-done: the bot speaks
-  (`POST /say`) and greets a nearby human with the order syntax, but it does not
-  **ack a specific order** yet; autonomous exploration remains open. Open design
-  choices: public chat vs whisper, and skipping the greeting in `emergency`.
-  Roadmap in [human-command](human-command.md).
+  verification on the BDS still pending**. M5 is half-done (the bot speaks and
+  greets, see below); autonomous exploration remains open. Roadmap in
+  [human-command](human-command.md).
+- **Proactive greeting** (AI-player roadmap §6 *Attention System*, milestone 4
+  first slice) — **implemented and unit-tested, live round pending**: perception
+  `_nearbyHumanPlayers()` → `observe().humans` (humans only, ≤ 32 blocks, bot
+  excluded, separate from the 8-row `entities` list); pure policy
+  `human-greeting.mjs` (`planGreetings`: allowlist + range + per-gamertag
+  cooldown, **empty allowlist ⇒ no greeting**); speech `sendChat()` →
+  `POST /say` (M5, rate-limited, 256-char cap); `maybeGreetHumans()` in both
+  controller loops (goal and `IDLE`), gated on `obs.spawned`. Still open:
+  - **no ack of a specific order** ("ricevuto, arrivo") — the bot only greets;
+  - **greeting channel**: public `chat` vs `type: whisper` (quieter hello);
+  - **greeting during `emergency`**: not skipped today (the message is only
+    informational, but it fires while the bot is being attacked);
+  - **greeted state is in memory only** (`greetedHumans` map in `controller.mjs`):
+    a controller restart re-greets the same human immediately (the cooldown does
+    not survive the process; no persistence);
+  - **no live round** with a real human on the BDS (`POST /say` never exercised
+    against the deployed container).
+  See [human-command](human-command.md#proactive-greeting-6-attention-system).
 - **Defense completions** — first slice implemented and mostly live-verified
   (`place_torch`, `craft_*_sword`, `retreat`/`go_home`, `close_door`/`barricade`,
   `equip_armor`, armor points); only the **shield** (stretch) remains. See

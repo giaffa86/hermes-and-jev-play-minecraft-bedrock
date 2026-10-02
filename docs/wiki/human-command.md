@@ -144,12 +144,20 @@ quieter hello is preferred (still an open question).
   tracking range. Still open: long escort and behaviour on player disconnect.
 - **Priority vs autonomous plan**: settled to "human order overrides until
   superseded or budget end". Still open: an explicit "resume autonomy" command.
-- **Acknowledgement**: partially addressed — the bot can now speak (`POST /say`)
-  and greets a nearby human with the order syntax, but it still does **not** ack a
-  specific order ("received, on my way"). Still open.
-- **Greeting vs order**: open — should the greeting be a whisper (`type: whisper`)
-  instead of public chat, and should it be skipped while the bot is in
-  `emergency` (being attacked) to avoid noise?
+- **Acknowledgement**: still open — the bot can speak (`POST /say`) and greets a
+  nearby human with the order syntax, but it does **not** ack a specific order
+  ("received, on my way").
+- **Greeting channel**: open — a whisper (`type: whisper`) instead of public
+  chat, so the hello does not spam everyone?
+- **Greeting during `emergency`**: open — skip it while the bot is being attacked?
+  Today the greeting fires regardless of the governor state (it is informational
+  only, but it is noise during a fight).
+- **Greeted-state persistence**: open — `greetedHumans` lives in memory in
+  `controller.mjs`, so a controller restart re-greets the same human
+  immediately: the cooldown does not survive the process and is not stored in
+  `runs/<RUN_ID>/`.
+- **Live round**: open — the greeting and `POST /say` have never been exercised
+  against the deployed BDS (unit tests + offline wire-format check only).
 
 ## Sources
 

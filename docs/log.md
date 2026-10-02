@@ -1093,7 +1093,7 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   and boundary), `wiki/ai-player-roadmap.md` (milestones 1/5/8),
   `wiki/roadmap.md`, `wiki/open-questions.md`, `docs/index.md`, `docs/sources.md`.
 
-## [2026-10-02] feat | Saluto proattivo dell'umano (Attention System §6)
+## [2026-10-03] feat | Saluto proattivo dell'umano (Attention System §6)
 
 - **Goal** (roadmap §6 *Attention System*, milestone 4 *Social behaviour*):
   quando il bot percepisce un umano vicino, si presenta e gli spiega la sintassi
@@ -1137,3 +1137,21 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   tabella capacità, domande aperte), `wiki/ai-player-roadmap.md` (milestone 4),
   `wiki/verification.md` (riga 18), `docs/index.md`, `docs/sources.md`,
   `.env.example`.
+
+## [2026-10-03] doc | Punti aperti del saluto proattivo esplicitati in wiki
+
+- Richiesta: "segna i punti aperti sulla wiki". Registrati esplicitamente i
+  cinque punti aperti del saluto proattivo, con un bullet dedicato in
+  `wiki/open-questions.md` (sezione *Planned / in progress*) e la stessa lista
+  estesa nella sezione *Open questions* di `wiki/human-command.md`:
+  1. nessun **ack di un ordine specifico** (il bot saluta, non conferma
+     "ricevuto, arrivo");
+  2. **canale del saluto**: chat pubblica vs `type: whisper`;
+  3. saluto **non saltato in `emergency`** (arriva mentre il bot è attaccato);
+  4. **stato "già salutato" solo in memoria** (`greetedHumans` in
+     `controller.mjs`): un riavvio del controller risaluta subito lo stesso
+     umano, il cooldown non sopravvive al processo e non è persistito in
+     `runs/<RUN_ID>/`;
+  5. **nessun round live** su BDS: `POST /say` e il saluto sono coperti solo da
+     unit test e dalla verifica offline del wire format (1.26.51).
+- Nessuna modifica di codice; `npm run wiki:lint:strict` pulito.
