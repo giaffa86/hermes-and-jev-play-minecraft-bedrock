@@ -29,7 +29,10 @@ never committed.
 | `bedrock-trading.mjs` | Pure trading economy rules: profession mapping, item value classification, cheapest-trade picker for levelling. |
 | `bedrock-fishing.mjs` | Pure fishing rules: fish classification, water-block detection, shore geometry, bite timing. |
 | `bedrock-world.mjs` | Registry + Prismarine v9 decoder, `findBlocks`/`blockAt`, `requestAround` (subchunk requests). |
-| `bedrock-harness.mjs` | HTTP API (`/observe`, `/options`, `/act`, `/plan`, `/survival`) and the Survival Governor filter. |
+| `bedrock-harness.mjs` | HTTP API (`/observe`, `/options`, `/act`, `/plan`, `/survival`) and the Survival Governor filter; owns the `WorldMemory` (load, periodic flush, close). |
+| `world-memory.mjs` | Persistent **world memory** service: landmark/container records, `known/stale/invalid` status, spatial queries; storage-agnostic. |
+| `sqlite-memory.mjs` | SQLite repository (`node:sqlite`, WAL, chunk index) — default memory backend. |
+| `memory-store.mjs` | JSON repository (same interface) — fallback / tests. |
 | `bedrock-lifecycle.mjs` | Disconnect/teardown lifecycle. |
 | `controller.mjs` | The planner/controller loop (incl. the human chat command channel: `CHAT_ALLOWLIST` → Hermes → `/plan`). |
 | `controller-decisions.mjs` | Pure decision helpers (ranking, anti-loop, cap, diagnostics). |

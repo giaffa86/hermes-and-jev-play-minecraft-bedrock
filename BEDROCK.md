@@ -54,6 +54,7 @@ BEDROCK_AUTH_TITLE=MinecraftNintendoSwitch
 # Harness
 API_PORT=3077
 RUN_ID=demo
+MEMORY_DIR=runs/memory   # persistent world memory (SQLite + WAL); default runs/memory
 
 # Jev (TypeSafe)
 TYPESAFE_API_KEY=ts-...
@@ -79,6 +80,29 @@ CHAT_CONTROL=on                    # on/off; default on when CHAT_ALLOWLIST is s
 ```
 
 > Never commit `.env` or the `nmp-cache`.
+
+---
+
+## World memory (persistence)
+
+The bot keeps a **persistent world memory** of what it has discovered, so it
+survives reconnects and restarts. It is a repository behind an abstract
+interface: **SQLite** (`node:sqlite`, WAL) by default, JSON as fallback; the
+service (`world-memory.mjs`) is storage-agnostic.
+
+- File: `${MEMORY_DIR}/world.sqlite` (default `runs/memory`), persisted by the
+  `runs` Docker volume. `MEMORY_DIR` also accepts a `.sqlite` path.
+- Records: `landmarks` (places/structures/portals, plus `home` registered at
+  spawn) and `containers` (chest contents, updated on every `read_container`).
+- Each record carries `discoveredAt`, `lastSeenAt`, `confidence` and a
+  `known/stale/invalid` status: **memory is historical, not current truth**
+  (`stale` = verify before depending on it).
+- Exposed in `/observe.memory` (compact view). The harness flushes/closes it on
+  shutdown and checkpoints the WAL periodically.
+- Full design: `docs/wiki/memory.md`.
+
+> The memory is runtime knowledge (coordinates, contents), not source: it is
+> git-ignored and excluded from the image (`memory/`, `*.sqlite*`).
 
 ---
 

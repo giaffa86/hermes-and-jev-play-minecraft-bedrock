@@ -102,10 +102,11 @@ const STORAGE_CONTAINER_SLOT = {
 };
 
 export class BedrockAdapter {
-  constructor ({ logger = console, onLog, onDisconnect } = {}) {
+  constructor ({ logger = console, onLog, onDisconnect, memory = null } = {}) {
     this.logger = logger;
     this.onLog = onLog;
     this.onDisconnect = onDisconnect;
+    this.memory = memory;
     this.client = null;
     this.status = 'disconnected';
     this.position = null;
@@ -351,6 +352,12 @@ export class BedrockAdapter {
         this.position = client.startGameData?.player_position;
         this.dimension = client.startGameData?.dimension || 'overworld';
         if (!this.home) this.home = { x: this.position.x, y: this.position.y, z: this.position.z };
+        if (this.memory) {
+          if (this.home && !this.memory.hasLandmark('home')) {
+            this.memory.rememberLandmark({ id: 'home', type: 'home', label: 'home', position: this.home, source: 'spawn' });
+          }
+          this.memory.hydrate();
+        }
         this.drops = [];
         this._syncFeetFromPosition();
         this._velocity = { x: 0, y: 0, z: 0 };
@@ -748,6 +755,7 @@ export class BedrockAdapter {
       inventory: this.inventory,
       held: this._slotItemName(heldSlot),
       armor: { ...this.armor, points: this._armorPoints() },
+      memory: this.memory ? this.memory.observeView() : null,
       heldDurability: heldInfo?.maxDurability
         ? { damage: this._itemDamage(heldSlot), max: heldInfo.maxDurability }
         : null,
@@ -2497,6 +2505,12 @@ export class BedrockAdapter {
 
   _setContainerContents (entry, contents) {
     this.containers.set(entry.key, { type: entry.type, position: entry.position, readAt: Date.now(), contents });
+    // Persisti l'osservazione nel WorldMemory: la cache runtime scade, la
+    // memoria è storica (lastSeenAt/status) e sopravvive ai riavvii.
+    if (this.memory) {
+      try { this.memory.rememberContainer({ type: entry.type, position: entry.position, contents }); }
+      catch (error) { this.log('memory_error', { message: error.message }); }
+    }
   }
 
   _storageContentsFromSlots (slots) {
@@ -2550,7 +2564,7 @@ export class BedrockAdapter {
         await this._ensureStorageOpen(block);
         const contents = this._storageContentsFromSlots(this._openContainerSlots);
         const key = this._containerCacheKey(block.position);
-        this.containers.set(key, { type: block.name, position: block.position, readAt: Date.now(), contents });
+        this._setContainerContents({ key, type: block.name, position: block.position }, contents);
         read.push({ position: block.position, type: block.name, contents });
       } catch (error) {
         this.log('container_read_failed', { block: block.name, position: block.position, error: error.message });
@@ -2648,7 +2662,7 @@ export class BedrockAdapter {
       // Base sul contenuto reale letto dal server (non sulla cache, che può essere stantia).
       const contents = this._storageContentsFromSlots(this._openContainerSlots);
       contents[itemName] = (contents[itemName] || 0) + count;
-      this.containers.set(target.key, { type: target.type, position: target.position, readAt: Date.now(), contents });
+      this._setContainerContents(target, contents);
       const after = this.inventory[itemName] || 0;
       this.log('container_deposit', { block: target.type, position: target.position, item: itemName, count, inventoryDelta: after - before });
       return { ok: true, item: itemName, count, into: target.type, position: target.position, inventoryDelta: after - before, ms: Date.now() - started };

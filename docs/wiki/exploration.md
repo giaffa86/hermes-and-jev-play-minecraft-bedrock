@@ -228,10 +228,10 @@ a report → stays on the spot → can return later → can escort the player th
 `/options` + `/act` loop. There is no exploration mission model, no expanding
 spiral planner, no chunk-visit memory, no biome target resolution, and the bot
 has no random walk / strip mining / cave exploration (M6 underground targets —
-caves, mineshafts, Deep Dark, spawners — are spec only). There is also **no
-persistent memory**: no landmark registry (home, sheep pen, chests) and the
-chest cache is volatile (a reconnect wipes it) — see
-[open-questions](open-questions.md#no-persistent-memory-landmarks-chests-chunks). The bot only "sees" loaded
+caves, mineshafts, Deep Dark, spawners — are spec only). A **persistent world
+memory** now exists (landmarks + container observations, see [memory](memory.md)),
+the infrastructure this spec needs; exploration itself is still not built. The
+bot only "sees" loaded
 blocks near it (see
 [headless-client](headless-client.md#8-render-distance-not-comparable)), so
 "go find X by yourself" is currently out of reach — the chat-channel roadmap

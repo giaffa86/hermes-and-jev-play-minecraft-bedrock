@@ -531,3 +531,22 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   real exit code `2`; `MAX_STEPS=0` pre-loop → exhausted, exit `2`; pre-loop
   SUCCESS → exit `0`. `docs/raw/SURVIVAL-INTELLIGENCE.md`,
   `wiki/goal-achievement.md`, `wiki/verification.md` (row 56) updated.
+
+## [2026-10-02] feat | Persistent world memory (SQLite + abstract repository)
+
+- New infrastructure: `world-memory.mjs` (service) over an abstract repository —
+  `sqlite-memory.mjs` (**node:sqlite**, WAL, chunk index; default) and
+  `memory-store.mjs` (JSON repository, fallback/tests). Same interface
+  (get/upsert/find/remove/markStaleBefore/count/flush), so skills/planner never
+  see the storage.
+- First slice: **landmarks** (`rememberLandmark`; `home` registered at spawn) and
+  **container observations** (`rememberContainer`, updated on every chest read).
+  Records carry `discoveredAt`/`lastSeenAt`/`confidence` and `known/stale/invalid`
+  status — memory is *historical*, not current truth.
+- Wired into `bedrock-adapter.mjs` (`/observe.memory`, `_setContainerContents`) and
+  `bedrock-harness.mjs` (create `MEMORY_DIR` default `runs/memory`, periodic
+  WAL checkpoint, close on shutdown).
+- Tests: `memory-store`, `sqlite-memory`, `world-memory` (both backends, incl.
+  persistence + chunk-restricted spatial query), `adapter-memory`. Suite green (356).
+- Docs: new `wiki/memory.md`; `open-questions.md`/`exploration.md`/`index.md`/
+  `sources.md`/`BEDROCK.md` updated; `memory/`, `*.sqlite*` git/image-ignored.

@@ -7,6 +7,7 @@
 import { createServer } from 'node:http';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { BedrockAdapter } from './bedrock-adapter.mjs';
+import { createWorldMemory } from './world-memory.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   evaluateSurvival, summarizeSurvival, loadSurvivalRules,
@@ -34,7 +35,15 @@ let shuttingDown = false;
 const shutdownSignal = new AbortController();
 let connectionWorker = null;
 
+const MEMORY_DIR = process.env.MEMORY_DIR || 'runs/memory';
+const worldMemory = createWorldMemory({ dir: MEMORY_DIR });
+worldMemory.hydrate();
+console.log(`world memory ready: ${JSON.stringify(worldMemory.summary())} (${MEMORY_DIR})`);
+// Flush periodico: la memoria sopravvive anche a un crash (flushed ogni 30 s a dirty).
+setInterval(() => { try { worldMemory.flush(); } catch (error) { console.error('[memory] flush failed:', error.message); } }, 30000).unref();
+
 const adapter = new BedrockAdapter({
+  memory: worldMemory,
   onLog: process.env.BEDROCK_EVENT_LOG ? (entry) => eventLog(entry.type, entry) : undefined,
   onDisconnect: () => {
     console.warn('[adapter] disconnected; will reconnect');
@@ -59,6 +68,8 @@ async function shutdown () {
   console.log('Disconnecting bot and waiting for NetherNet teardown');
   server?.close();
   server?.closeAllConnections();
+  try { worldMemory.close(); console.log('world memory saved'); }
+  catch (error) { console.error('world memory close failed:', error.message); }
   try { await adapter.disconnect('harness shutdown'); }
   catch (error) { console.error('Shutdown failed:', error.message); process.exitCode = 1; }
 }

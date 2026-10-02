@@ -1,5 +1,6 @@
 node_modules
 runs/
+memory/
 *.log
 
 # Secrets / environment — never commit real credentials
@@ -12,3 +13,7 @@ auth.json
 # Private project notes and runbooks not meant for the public repo
 .private/
 .private/*
+
+# Persistent world memory (runtime knowledge, not source)
+memory/
+memory/**
