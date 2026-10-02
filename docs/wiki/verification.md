@@ -77,11 +77,13 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 34 | Return home | `go_home`, `retreat` | ✅ | `/act go_home` when far from spawn | Home = spawn or `HOME_WAYPOINT`; verified live 02/10 (returned ~1.9 blocks from home). |
 | 35 | Armor equip | `equip_armor` | 🧪 | `/act equip_armor` with armor in inventory | take→cursor→place into `armor` slot; unit-tested; live pending. |
 | 36 | Close doors | `close_door` | 🧪 | `/act close_door` after opening a door | Clicks `_openDoors` doors closed; unit-tested; live pending. |
+| 37 | Barricade a gap | `barricade` | 🧪 | `/act barricade` at a 1×2 opening | Places 2 blocks (feet+head) via top-face clicks; unit-tested; live pending. |
+| 38 | Armor points in `/observe` | `observe().armor` | 🧪 | read `/observe.armor` | Pieces + computed vanilla points; unit-tested; live pending. |
 
 ## Still not implemented
 
 - Milk (bucket + cow); mature-crop growth detection.
-- Defense (remaining): `barricade`, armor points in `/observe`, shield.
+- Defense (remaining): shield (stretch).
 - Riding extras: saddle equipping, mount inventory/armor, `rider_jump`,
   minecart steering, boat paddling animation.
 - Axolotl capture with a bucket.

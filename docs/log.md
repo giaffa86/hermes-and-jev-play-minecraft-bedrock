@@ -303,3 +303,13 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - 6 new unit tests; full suite green (297 tests).
 - `BEDROCK.md` action table + `roadmap.md` + `verification.md` (rows 35-36)
   updated; defense gap now only `barricade` + armor points + shield.
+
+## [2026-10-02] ingest | Defense complete: barricade + armor points
+
+- `bedrock-adapter.mjs`: `_placeBlock` refactored into a reusable `_placeAtCell`
+  (top-face placement at an arbitrary cell); added `barricade` (seals a 1×2
+  opening with 2 blocks, feet + head) and armor tracking (`this.armor` +
+  `_armorPoints`, exposed in `/observe.armor`). `equip_armor` now records the
+  worn pieces. 7 new unit tests; full suite green (304).
+- `BEDROCK.md` action table + `roadmap.md` + `verification.md` (rows 37-38)
+  updated: defense only leaves the shield (stretch).

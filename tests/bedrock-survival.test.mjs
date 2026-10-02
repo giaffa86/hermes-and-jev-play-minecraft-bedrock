@@ -653,3 +653,77 @@ test('_closeDoor clicks the door and clears it from the open set', async () => {
   assert.ok(clicked.transaction, 'click_block inviato');
   assert.equal(adapter._openDoors.size, 0, 'porta rimossa da _openDoors');
 });
+
+// ---- difesa: armor points e barricade -------------------------------------------------
+
+test('_armorPoints sums vanilla points per piece', () => {
+  const adapter = spawnedAdapter();
+  adapter.armor = { helmet: 'iron_helmet', chestplate: 'iron_chestplate', leggings: null, boots: 'iron_boots' };
+  assert.equal(adapter._armorPoints(), 2 + 6 + 2);
+  adapter.armor = { helmet: 'diamond_helmet', chestplate: 'diamond_chestplate', leggings: 'diamond_leggings', boots: 'diamond_boots' };
+  assert.equal(adapter._armorPoints(), 3 + 8 + 6 + 3);
+  adapter.armor = { helmet: null, chestplate: null, leggings: null, boots: null };
+  assert.equal(adapter._armorPoints(), 0);
+});
+
+test('observe exposes the worn armor pieces and points', () => {
+  const adapter = spawnedAdapter();
+  adapter.armor = { helmet: 'diamond_helmet', chestplate: null, leggings: null, boots: null };
+  assert.deepEqual(adapter.observe().armor, { helmet: 'diamond_helmet', chestplate: null, leggings: null, boots: null, points: 3 });
+});
+
+test('_equipArmor records the worn piece after a successful place', async () => {
+  const adapter = spawnedAdapter();
+  adapter.inventorySlots[4] = { network_id: 210, name: 'iron_leggings', count: 1, stack_id: 9 };
+  adapter._sendStackRequest = async () => ({ status: 'ok', containers: [] });
+  await adapter._equipArmor();
+  assert.equal(adapter.armor.leggings, 'iron_leggings');
+});
+
+test('_placeableBlock prefers cobblestone then dirt', () => {
+  const adapter = spawnedAdapter();
+  adapter.inventory = { dirt: 5, cobblestone: 2 };
+  assert.equal(adapter._placeableBlock(), 'cobblestone');
+  adapter.inventory = { dirt: 5 };
+  assert.equal(adapter._placeableBlock(), 'dirt');
+  adapter.inventory = { bread: 1 };
+  assert.equal(adapter._placeableBlock(), null);
+});
+
+test('_barricadeGap finds a 1x2 opening flanked by solid walls', () => {
+  const adapter = spawnedAdapter();
+  adapter._solidAt = (x, y, z) => {
+    if (x === 1 && y === 62 && z === 0) return true; // floor
+    if (x === 1 && y === 63 && (z === 1 || z === -1)) return true; // flanking walls
+    return false;
+  };
+  const gap = adapter._barricadeGap();
+  assert.deepEqual(gap.feet, { x: 1, y: 63, z: 0 });
+  assert.deepEqual(gap.head, { x: 1, y: 64, z: 0 });
+  assert.deepEqual(gap.support, { x: 1, y: 62, z: 0 });
+});
+
+test('_barricade places blocks at feet then head', async () => {
+  const adapter = spawnedAdapter();
+  adapter._placeableBlock = () => 'dirt';
+  adapter._barricadeGap = () => ({ feet: { x: 1, y: 63, z: 0 }, head: { x: 1, y: 64, z: 0 }, support: { x: 1, y: 62, z: 0 } });
+  const calls = [];
+  adapter._placeAtCell = async (item, block, target, support, face) => { calls.push({ target, support, face }); return { ok: true, block }; };
+  const result = await adapter._barricade();
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], { target: { x: 1, y: 63, z: 0 }, support: { x: 1, y: 62, z: 0 }, face: 1 });
+  assert.deepEqual(calls[1], { target: { x: 1, y: 64, z: 0 }, support: { x: 1, y: 63, z: 0 }, face: 1 });
+});
+
+test('barricade is offered only with a placeable block and a gap', () => {
+  const adapter = spawnedAdapter();
+  adapter.nearbyBlocks = {};
+  adapter.drops = [];
+  adapter.world.findBlocks = () => [];
+  adapter._solidAt = (x, y, z) => (x === 1 && y === 62 && z === 0) || (x === 1 && y === 63 && (z === 1 || z === -1));
+  adapter.inventory = { cobblestone: 3 };
+  assert.ok(adapter.options().map(o => o.key).includes('barricade'), 'barricade option');
+  adapter.inventory = {};
+  assert.ok(!adapter.options().map(o => o.key).includes('barricade'), 'non offerta senza blocco piazzabile');
+});

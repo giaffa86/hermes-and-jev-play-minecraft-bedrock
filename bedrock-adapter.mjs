@@ -127,6 +127,7 @@ export class BedrockAdapter {
     if (process.env.HOME_WAYPOINT) {
       try { this.home = JSON.parse(process.env.HOME_WAYPOINT); } catch { /* ignora JSON malformato */ }
     }
+    this.armor = { helmet: null, chestplate: null, leggings: null, boots: null }; // pezzi indossati
     this.chatInbox = [];             // messaggi chat recenti { from, message, type, xuid, at }
     this._playersByName = new Map(); // gamertag minuscolo -> runtimeId (chat -> entità da seguire)
     this.busy = false;
@@ -746,6 +747,7 @@ export class BedrockAdapter {
       standingOn: this.standingOn,
       inventory: this.inventory,
       held: this._slotItemName(heldSlot),
+      armor: { ...this.armor, points: this._armorPoints() },
       heldDurability: heldInfo?.maxDurability
         ? { damage: this._itemDamage(heldSlot), max: heldInfo.maxDurability }
         : null,
@@ -848,6 +850,10 @@ export class BedrockAdapter {
     // Porte: chiudi quelle aperte dal bot per sigillare il rifugio.
     if (this._closeDoorTarget()) {
       o.push({ key: 'close_door', description: 'Close the open door(s) behind you to keep mobs out' });
+    }
+    // Barricata: sigilla il varco davanti con 2 blocchi (piedi+testa).
+    if (this._placeableBlock() && this._barricadeGap()) {
+      o.push({ key: 'barricade', description: 'Seal the opening ahead with 2 blocks (feet + head) to block mobs' });
     }
     const food = this._bestFoodItem();
     if (food && (this.food < 18 || (this.health < 20 && this.food < 20))) {
@@ -1205,6 +1211,8 @@ export class BedrockAdapter {
         result = await this._equipArmor();
       } else if (key === 'close_door') {
         result = await this._closeDoor();
+      } else if (key === 'barricade') {
+        result = await this._barricade();
       } else if (key === 'sleep') {
         result = await this._sleepInBed();
       } else if (key === 'recover_loot') {
@@ -2769,11 +2777,11 @@ export class BedrockAdapter {
     return null;
   }
 
-  async _placeBlock (itemName, blockName) {
+  // Piazza `itemName` (blocco `blockName`) nella cella `target`, cliccando la faccia
+  // `face` del blocco `support`. Generalizzazione di `_placeBlock` per barricade.
+  async _placeAtCell (itemName, blockName, target, support, face, clickPos = { x: 0.5, y: 1, z: 0.5 }) {
     let slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && s.count > 0);
     if (slotIndex < 0) {
-      // Un item appena raccolto può non essere ancora nella copia locale: la
-      // riconnessione forza un inventory_content completo dal server.
       try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
       slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && s.count > 0);
       if (slotIndex < 0) return { ok: false, error: 'missing_item' };
@@ -2782,30 +2790,27 @@ export class BedrockAdapter {
       try { slotIndex = await this._moveSlotToHotbar(slotIndex); }
       catch (error) { return { ok: false, error: error.message }; }
     }
-
-    const spot = this._findPlacementTarget(blockName);
-    if (!spot) return { ok: false, error: 'no_place_spot' };
     if (this._openContainer) await this._closeContainer();
     this._selectHotbarSlot(slotIndex);
     const held = this.inventorySlots[slotIndex];
-    const runtimeId = this.world.runtimeIdAt(spot.support);
-    const yaw = this._yawTo(this._feet, { x: spot.target.x + 0.5, z: spot.target.z + 0.5 });
+    const runtimeId = this.world.runtimeIdAt(support);
+    const yaw = this._yawTo(this._feet, { x: target.x + 0.5, z: target.z + 0.5 });
     await this._queueAuthInput({
       yaw,
-      pitch: this._lookAt({ x: spot.target.x + 0.5, y: spot.target.y + 0.5, z: spot.target.z + 0.5 }).pitch,
+      pitch: this._lookAt({ x: target.x + 0.5, y: target.y + 0.5, z: target.z + 0.5 }).pitch,
       transaction: {
         legacy: { legacy_request_id: 0 },
         actions: [],
         data: {
           action_type: 'click_block',
           trigger_type: 'player_input',
-          block_position: spot.support,
-          face: spot.face,
+          block_position: support,
+          face,
           hotbar_slot: this.selectedHotbar,
           hand: 'main_hand',
           held_item: held,
           player_pos: { ...this.position },
-          click_pos: spot.clickPos,
+          click_pos: clickPos,
           block_runtime_id: runtimeId >>> 0,
           client_prediction: 'success',
           client_cooldown_state: 'off',
@@ -2814,10 +2819,10 @@ export class BedrockAdapter {
     });
     const deadline = Date.now() + 2500;
     while (Date.now() < deadline) {
-      const placed = this.world.blockAt(spot.target);
+      const placed = this.world.blockAt(target);
       if (placed && placed.name === blockName) {
         this._refreshNearby();
-        return { ok: true, block: blockName, position: spot.target };
+        return { ok: true, block: blockName, position: target };
       }
       if (placed && placed.name !== 'air' && placed.name !== 'unknown') {
         return { ok: false, error: `unexpected_block_${placed.name}` };
@@ -2825,6 +2830,12 @@ export class BedrockAdapter {
       await delay(100);
     }
     return { ok: false, error: 'place_not_confirmed' };
+  }
+
+  async _placeBlock (itemName, blockName) {
+    const spot = this._findPlacementTarget(blockName);
+    if (!spot) return { ok: false, error: 'no_place_spot' };
+    return this._placeAtCell(itemName, blockName, spot.target, spot.support, spot.face, spot.clickPos);
   }
 
   // ---- mining ------------------------------------------------------------------------
@@ -4625,6 +4636,23 @@ export class BedrockAdapter {
     return -1;
   }
 
+  // Punti armatura vanilla (elmo/pettorale/gambali/stivali) per materiale.
+  _armorPoints () {
+    const byMaterial = {
+      leather: [1, 3, 2, 1], golden: [2, 5, 3, 1], chainmail: [2, 5, 4, 1],
+      iron: [2, 6, 5, 2], diamond: [3, 8, 6, 3], netherite: [3, 8, 6, 3],
+    };
+    const order = ['helmet', 'chestplate', 'leggings', 'boots'];
+    let total = 0;
+    for (let i = 0; i < order.length; i++) {
+      const name = this.armor[order[i]];
+      if (!name) continue;
+      const material = Object.keys(byMaterial).find(m => name.startsWith(m));
+      if (material) total += byMaterial[material][i];
+    }
+    return total;
+  }
+
   async _equipArmor () {
     const pieces = [];
     for (let index = 0; index < this.inventorySlots.length; index++) {
@@ -4657,6 +4685,7 @@ export class BedrockAdapter {
       }
       this._applyStackResponse(place, { networkId: piece.network_id });
       this._cursor = null;
+      this.armor[['helmet', 'chestplate', 'leggings', 'boots'][piece.armorSlot]] = piece.name;
       equipped.push({ item: piece.name, slot: piece.armorSlot });
       this.log('armor_equip', { item: piece.name, slot: piece.armorSlot, status: place.status });
     }
@@ -4700,6 +4729,48 @@ export class BedrockAdapter {
     }
     this._openDoors.delete(`${target.x},${target.y},${target.z}`);
     return { ok: true, closed: true, unconfirmed: true, position: target };
+  }
+
+  // Blocco piazzabile più comune in inventario (per barricare un varco).
+  _placeableBlock () {
+    const preferred = ['cobblestone', 'dirt', 'oak_planks', 'spruce_planks', 'cherry_planks', 'birch_planks',
+      'stone', 'oak_log', 'spruce_log', 'cherry_log', 'birch_log', 'sand', 'gravel'];
+    return preferred.find(b => (this.inventory[b] || 0) > 0) || null;
+  }
+
+  // Cerca un varco 1×2 aperto (piedi+testa liberi, pavimento e fianchi solidi) nei
+  // quattro versi orizzontali: è il candidato a barricata.
+  _barricadeGap () {
+    const feet = this._feet;
+    if (!feet) return null;
+    const bx = Math.floor(feet.x), bz = Math.floor(feet.z), by = Math.floor(feet.y + 0.1);
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const fx = bx + dx, fz = bz + dz;
+      const gap = { feet: { x: fx, y: by, z: fz }, head: { x: fx, y: by + 1, z: fz }, support: { x: fx, y: by - 1, z: fz } };
+      if (this._solidAt(gap.feet.x, gap.feet.y, gap.feet.z)) continue;
+      if (this._solidAt(gap.head.x, gap.head.y, gap.head.z)) continue;
+      if (!this._solidAt(gap.support.x, gap.support.y, gap.support.z)) continue;
+      const sx = -dz, sz = dx; // perpendicolare alla direzione del varco
+      if (this._solidAt(fx + sx, by, fz + sz) && this._solidAt(fx - sx, by, fz - sz)) return gap;
+    }
+    return null;
+  }
+
+  async _barricade () {
+    const block = this._placeableBlock();
+    if (!block) return { ok: false, error: 'no_placeable_block' };
+    const gap = this._barricadeGap();
+    if (!gap) return { ok: false, error: 'no_gap' };
+    const placed = [];
+    const feetRes = await this._placeAtCell(block, block, gap.feet, gap.support, 1);
+    placed.push({ level: 'feet', ...feetRes });
+    if (feetRes.ok) {
+      const headRes = await this._placeAtCell(block, block, gap.head, gap.feet, 1);
+      placed.push({ level: 'head', ...headRes });
+    }
+    this._refreshNearby();
+    const sealed = placed.length === 2 && placed.every(p => p.ok);
+    return { ok: sealed, block, placed, ...(sealed ? {} : { error: 'barricade_incomplete' }) };
   }
 
   _bestFoodItem () {
