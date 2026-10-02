@@ -112,7 +112,9 @@ server = createServer(async (req, res) => {
         grid.push({ dy, cells });
       }
       const upTargets = {};
+      const savedYaw = a._lastYaw;
       for (const yaw of [0, 90, 180, -90]) { a._lastYaw = yaw; const plan = a._upTargets(); upTargets[yaw] = plan.error || plan.targets.map(t => t.label); }
+      a._lastYaw = savedYaw;
       const bed = a._findBed();
       const bedCenter = bed ? { x: bed.position.x + 0.5, y: bed.position.y, z: bed.position.z + 0.5 } : null;
       const blocks = [];

@@ -49,7 +49,8 @@ test('up targets refuse missing step and fluids, and treat unknown blocks as raw
   assert.equal(plan.error, undefined);
   assert.deepEqual(plan.targets.map(t => `${t.label}${t.raw ? ':raw' : ''}`), ['step:raw', 'head']);
   const open = upAdapter({ '92,69,149': air, '92,70,149': air });
-  assert.equal(open.adapter._upTargets().error, 'already_open');
+  assert.equal(open.adapter._upTargets().error, undefined, 'scalino già aperto: si sale e basta');
+  assert.deepEqual(open.adapter._upTargets().targets, []);
 });
 
 test('up targets include the ceiling above the bot when it blocks the jump', () => {

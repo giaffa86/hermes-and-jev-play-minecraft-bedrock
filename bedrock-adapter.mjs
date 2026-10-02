@@ -662,8 +662,10 @@ export class BedrockAdapter {
     // uscire da buche o pozzi scavati in precedenza).
     const up = this._upTargets();
     if (!up.error) {
-      const names = [...new Set(up.targets.map(t => t.block.name))].join(', ');
-      o.push({ key: 'dig_up', description: `Dig one step up through ${names} to climb out` });
+      const description = up.targets.length
+        ? `Dig one step up through ${[...new Set(up.targets.map(t => t.block.name))].join(', ')} to climb out`
+        : 'Step up into the opening ahead';
+      o.push({ key: 'dig_up', description });
     }
     // Crafting: solo le ricette utili alla progressione, con materiali disponibili.
     if (this.recipes && this.craftingData) {
@@ -2940,7 +2942,6 @@ export class BedrockAdapter {
     }
     // Il gradino vero e proprio (davanti ai piedi) deve essere solido.
     if (!this._solidAt(front.x, front.y, front.z)) return { error: 'no_step_ahead' };
-    if (!targets.length) return { error: 'already_open' };
     return { direction: d, front, step, head, targets };
   }
 
