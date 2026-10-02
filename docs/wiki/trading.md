@@ -53,12 +53,16 @@ are covered by unit tests and packet serialization tests against protocol
   flow is the vanilla one: place the inputs, then take the result);
 - the level-up detection via `trade_tier`/`max_trade_tier` metadata.
 
-**First live attempt (2026-10-02)**: `open_trade` failed twice
-(`trade_not_opened`) on a `villager_v2` at ~1.7 blocks. The `interact`
-(`item_use_on_entity`, `action_type: interact`) was sent, but the server replied
-with `inventory_content` (`container: anvil_input`) instead of
-`update_trade`/`container_open(trading)`, so no offers were parsed. Root cause
-not yet isolated — could be a mis-targeted interact (anvil/block nearby), a busy
-villager (hostiles in the area), or a trading-UI difference in BDS 1.26.52.
+**First live attempt (2026-10-02)**: `open_trade` does not open the trade window
+on BDS 1.26.52. With a `villager_v2` at ~1.9 blocks the `interact`
+(`item_use_on_entity`, `action_type: interact`) was sent 3× (confirmed in the
+container log), but the server sent **no** `update_trade` and **no**
+`container_open(trading)` back (only routine player `inventory_content`).
+Result: `trade_not_opened`. When the villager is >5 blocks the approach
+`_moveTo` also stalls (`trade_approach_failed: stuck` → `trader_unreachable`).
+Root cause not isolated — candidates: an empty-hand `held_item` the server
+ignores, a villager-state requirement (moving/panic), or a trading-UI flow
+difference in BDS 1.26.52 vs the bedrockflayer reference. Needs protocol-level
+capture (compare against a real client or gophertunnel).
 
 See [open-questions](open-questions.md) for the current gaps.

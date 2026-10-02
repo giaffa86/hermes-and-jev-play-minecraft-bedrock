@@ -236,3 +236,13 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   (`trade_not_opened`). The `interact` was sent but the server answered
   `inventory_content` (`anvil_input`) instead of `update_trade`/`container_open`.
   Root cause TBD. Documented in `trading.md` + `verification.md` row 16.
+
+## [2026-10-02] query | Trading open_trade: definitive live finding (server ignores interact)
+
+- With `BEDROCK_PACKET_LOG=1` on the container: got a `villager_v2` at ~1.9
+  blocks; `open_trade` sent `item_use_on_entity` interact 3× (logged) but the
+  server sent **no** `update_trade` and **no** `container_open(trading)`.
+  Approach >5 blocks also stalls (`trade_approach_failed: stuck`).
+- Conclusion: `open_trade` does not work live on BDS 1.26.52; root cause needs a
+  protocol-level capture (real client / gophertunnel). Documented in `trading.md`
+  + `verification.md` row 16.
