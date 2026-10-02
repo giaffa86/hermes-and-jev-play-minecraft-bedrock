@@ -2502,8 +2502,8 @@ export class BedrockAdapter {
     // Il server manda anche respawn "di login" (state di setup): applicali solo
     // quando il bot è davvero morto, altrimenti azzererebbero la posizione.
     if (!this.dead) return;
-    // Flusso Bedrock: il client completa il respawn rispondendo con lo stesso
-    // pacchetto e state = 2 (client_ready_to_spawn).
+    // Flusso Bedrock: il client risponde con lo stesso pacchetto e
+    // state = 2 (client_ready_to_spawn) per completare il respawn.
     try {
       this.client.write('respawn', {
         position: packet.position ?? { x: 0, y: 0, z: 0 },
@@ -2514,10 +2514,18 @@ export class BedrockAdapter {
     } catch (error) {
       this.log('respawn_ready_error', { message: error.message });
     }
-    if (packet.position && packet.position.x != null) {
-      this.position = { ...packet.position };
+    // La posizione di morte arriva nello state 0: si applica solo lo state 1
+    // (server pronto), altrimenti si risorgerebbe nel punto in cui si è morti.
+    this._pendingRespawn = { position: packet.position ?? null, state: packet.state, at: Date.now() };
+    if (packet.state === 1) this._finishRespawn(packet.position);
+  }
+
+  _finishRespawn (position) {
+    if (position && position.x != null) {
+      this.position = { ...position };
       this._syncFeetFromPosition(this.position);
     }
+    this._pendingRespawn = null;
     this.dead = false;
     this._respawnAt = 0;
     this._velocity = { x: 0, y: 0, z: 0 };
@@ -2543,6 +2551,10 @@ export class BedrockAdapter {
       } catch (error) {
         this.log('respawn_error', { message: error.message });
       }
+    }
+    // Fallback: se il server ha risposto al respawn ma non ha mandato lo state 1.
+    if (this.dead && this._pendingRespawn && Date.now() - this._pendingRespawn.at > 4000) {
+      this._finishRespawn(this._pendingRespawn.position);
     }
     if (this.sleeping && this._timeBase && !this._isNight()) {
       this._daySince = this._daySince || Date.now();

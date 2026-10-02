@@ -145,7 +145,7 @@ test('death and respawn flip the survival state', () => {
   adapter._onOwnHealth();
   assert.equal(adapter.dead, true);
   assert.equal(adapter.deaths, 1);
-  adapter._onRespawnPacket({ position: { x: 10, y: 70.62, z: 10 } });
+  adapter._onRespawnPacket({ state: 1, position: { x: 10, y: 70.62, z: 10 } });
   assert.equal(adapter.dead, false);
   assert.deepEqual(adapter.position, { x: 10, y: 70.62, z: 10 });
   assert.equal(adapter._feet.y, 70.62 - 1.62);
@@ -186,13 +186,28 @@ test('a server respawn packet while dead completes with client_ready and revives
   adapter.health = 0;
   adapter._onOwnHealth();
   assert.equal(adapter.dead, true);
+  // state 0 (searching): si risponde client_ready ma non si risorge sulla posizione di morte.
+  adapter._onRespawnPacket({ state: 0, position: { x: 83, y: 75, z: 176 } });
+  assert.equal(adapter.dead, true, 'state 0 non chiude il respawn');
+  assert.equal(packets[0].name, 'respawn');
+  assert.equal(packets[0].params.state, 2);
+  // state 1 (server ready): posizione finale e stato vivo.
   adapter._onRespawnPacket({ state: 1, position: { x: 90, y: 74.62, z: 150 } });
   assert.equal(adapter.dead, false);
-  const reply = packets.find(packet => packet.name === 'respawn');
-  assert.equal(reply.params.state, 2);
-  assert.deepEqual(reply.params.position, { x: 90, y: 74.62, z: 150 });
   assert.equal(adapter.position.y, 74.62);
   assert.equal(adapter._feet.y, 74.62 - 1.62);
+});
+
+test('respawn fallback closes the death state when state 1 never arrives', () => {
+  const adapter = spawnedAdapter();
+  adapter.client.write = () => {};
+  adapter.health = 0;
+  adapter._onOwnHealth();
+  adapter._onRespawnPacket({ state: 0, position: { x: 83, y: 75, z: 176 } });
+  assert.equal(adapter.dead, true);
+  adapter._pendingRespawn.at = Date.now() - 5000;
+  adapter._survivalTick();
+  assert.equal(adapter.dead, false);
 });
 
 test('unsolicited respawn packets do not move the bot', () => {
