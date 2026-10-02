@@ -15,6 +15,15 @@ Last lint: 2026-10-03.
 - `connecterror:9` (InactivityTimeout) persists for hours at zero players; only a
   BDS restart clears it. One solved cause: mining via `item_stack_request` with
   invalid negative ids (fixed by reusing the crafting id sequence).
+- **Reconfirmed 2026-10-03**: after a container restart the harness spun on
+  `[connect] attempt 1..6 failed: connecterror:9` (backoff 5→60 s) and `/observe`
+  stayed `status: error` for minutes; stopping the container for 90 s did not
+  help. The remedy that worked: **restart the BDS at zero players**
+  (`pct exec 108 -- systemctl stop/start minecraft-bedrock.service`), after which
+  the harness reconnected by itself within ~50 s (a container restart just forces
+  an immediate retry). The BDS console must be read *inside* the CT:
+  `pct exec 108 -- runuser -u minecraft -- screen -S minecraft -X hardcopy -h /tmp/mcscreen.txt`
+  then `pct exec 108 -- tail -12 /tmp/mcscreen.txt`.
 
 ## Bot stuck on a built platform (2026-10-02)
 
@@ -25,6 +34,26 @@ Last lint: 2026-10-03.
   rounds of the session (the planner itself was verified via `GET /explore`).
 - Remedy: **restart the BDS at zero players** (the bot respawns at the world
   spawn), or have the human player move/break the structure.
+- **Update 2026-10-03 — reachability primitive + room geometry**: the harness no
+  longer *offers* actions whose landing cell is unreachable (`reachableCells`,
+  `dropReachable`, `mineDropReachable`, `approachReachable`, `entityApproachable`;
+  live-verified: `read_container` fails in 19 ms instead of hanging 30 s,
+  [verification](verification.md) row 42.3). The bot is however spawned inside a
+  **furnished room**: the walkable component at `y=73` is only
+  `x114-117 / z156-160`; the bed bank (`x113`, `x117`) plus two `green_carpet`
+  blocks at `(113,73,158)`/`(114,73,158)` close the corridor to the only door cell
+  `(112,73,158)`, which is standable but isolated. The offered options are
+  therefore only `flee` and `dig_down` (which digs the **cobblestone in front** of
+  the bot, not the base's floor). `mine_*`, `collect_drop`, `read_container`,
+  `attack_*`, `mount_*`, `open_trade` are filtered out; the entities/chests/water
+  the pending live rounds need are all outside the component.
+- **Pending user decision (asked 2026-10-03, no answer yet)**: (A) allow the bot to
+  dig a staircase through the room's cobblestone (wooden floor, carpets, doors,
+  beds and chests untouched) — unblocks riding/companion/fishing/inventory live
+  rounds; (B) place a chest with food in a reachable cell — unblocks only
+  `take_`/`deposit_`/`eat`/trading; (C) no world change — the affected live rounds
+  stay documented as environment-blocked. Until an answer arrives the plan in
+  force is **(C)**: no change to the base, offline verification only.
 
 ## Missing Bedrock capabilities (for the full first-night milestone)
 
@@ -96,8 +125,16 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
 - Riding as transport (`mount_<vehicle>`/`dismount`/`_rideToward`) is implemented
   but not yet exercised live. See [companions](companions.md).
 - Trading (`open_trade`/`trade_<index>`/`level_<profession>`) is implemented and
-  unit-tested, but the exact client→server transaction that finalises a trade and
-  the tier-up detection still need a live round on a real villager. See
+  unit-tested. The **packet-level live round was done on 03/10** (capture via
+  `GET /debug/packet-debug`): the server ignores the entity interaction and sends
+  back only a player-inventory resync — no `container_open`, no `update_trade`.
+  The exact client→server transaction that finalises a trade, the tier-up
+  detection, and the reason the interaction is ignored all still need a live
+  round (see [trading](trading.md)).
+- The **furnished room** (see *Bot stuck on a built platform*) blocks every
+  remaining P2 live round that needs the floor: riding/companion need an animal at
+  the same level, `take_`/`deposit_`/`eat` need a reachable chest/table, fishing
+  needs water. Their offline half (unit + packet-serialization tests) is complete.
   [trading](trading.md).
 - A live `CURRICULUM=first_night` round on the BDS was not run (the bot container
   was connected; a concurrent session with the same account would kick it out).
@@ -281,13 +318,10 @@ Still missing (the rest of the original gap):
 
 ## Known code defects (not fixed)
 
-- **`_tradeAt` drops its timeout** (`bedrock-adapter.mjs`, found 02/10):
-  `async _tradeAt (index, { timeoutMs = 20000 } = {})` never forwards `timeoutMs`
-  to `_waitTradeResult (timeoutMs = 5000)`, so every trade effectively waits 5 s
-  instead of the intended 20 s. Deliberately left as is: fixing it changes the
-  timing of an area whose live transaction handshake is still unverified —
-  thread the timeout through during the live trading round and observe the
-  result ([trading](trading.md)).
+- ~~**`_tradeAt` drops its timeout**~~ — **fixed 2026-10-03**: the remaining
+  budget is forwarded to `_waitTradeResult` and covered by a unit test
+  ([trading](trading.md)); the live handshake round is still pending. No other
+  known defect is open at the moment.
 
 ## Documentation integrity (lint 2026-10-03)
 

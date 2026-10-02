@@ -7,7 +7,6 @@ import { isTraderType, entityHeight } from '../bedrock-survival.mjs';
 
 const require = createRequire(import.meta.url);
 const { createSerializer } = require('bedrock-protocol/src/transforms/serializer');
-const nbt = require('prismarine-nbt');
 const serializer = createSerializer('1.26.51');
 
 // ---- regole pure --------------------------------------------------------------------
@@ -257,6 +256,84 @@ test('trade stack request actions use trade2 containers and serialize', () => {
   const decoded = parser.parsePacketBuffer(serializer.createPacketBuffer(packet)).data.params;
   assert.equal(decoded.requests[0].actions[1].destination.slot_type.container_id, 'trade2_ingredient1');
   assert.equal(decoded.requests[0].actions[1].destination.slot, 0);
+});
+
+// ---- budget e diagnosi ----------------------------------------------------------------
+
+test('a trade waits on the caller budget instead of a fixed 5 s', async () => {
+  const adapter = spawnedAdapter();
+  adapter._openContainer = { id: 5, type: 'trading' };
+  adapter.tradeOffers = [{ buyA: { item: 'emerald', count: 1 }, buyB: null, sell: { item: 'bread', count: 6 } }];
+  adapter.inventory = { emerald: 1 };
+  const budgets = [];
+  adapter._putInTradeSlot = async () => {};
+  adapter._refreshInventory = () => {};
+  adapter._waitTradeResult = async (ms) => { budgets.push(ms); return null; };
+
+  const wide = await adapter._tradeAt(0, { timeoutMs: 20000 });
+  assert.equal(wide.error, 'trade_result_timeout');
+  assert.ok(budgets[0] > 5000, `il budget del chiamante è inoltrato (${budgets[0]} ms), non il vecchio 5 s fisso`);
+
+  const tight = await adapter._tradeAt(0, { timeoutMs: 800 });
+  assert.equal(tight.error, 'trade_result_timeout');
+  assert.ok(budgets[1] <= 800, 'un budget stretto non viene allungato');
+  assert.ok(budgets[1] >= 500, 'l\'attesa mantiene un minimo di 500 ms');
+});
+
+test('opening a trade sends the vanilla npc_open interact packet, then the legacy fallback', async () => {
+  const adapter = spawnedAdapter();
+  adapter._trackEntity({ runtime_id: 42n, entity_type: 'minecraft:villager', position: { x: 3, y: 63, z: 0 } }, 'mob');
+  const entity = adapter.entities.get('42');
+  const packets = capture(adapter);
+
+  await adapter._openTradeWithEntity(entity, { confirmMs: 1 });
+
+  const npcOpen = packets.filter(p => p.name === 'interact');
+  assert.ok(npcOpen.length >= 1, 'il client manda interact (action_id npc_open) come un client vanilla');
+  assert.equal(npcOpen[0].params.action_id, 'npc_open');
+  assert.equal(npcOpen[0].params.target_entity_id, 42n);
+  assert.equal(npcOpen[0].params.has_position, false);
+  const legacy = packets.filter(p => p.name === 'inventory_transaction'
+    && p.params.transaction.transaction_type === 'item_use_on_entity');
+  assert.ok(legacy.length >= 1, 'item_use_on_entity resta come fallback sui tentativi successivi');
+  const authWithInteract = packets.filter(p => p.name === 'player_auth_input'
+    && p.params.input_data?.includes('item_interact'));
+  assert.ok(authWithInteract.length >= 1, 'il frame auth_input alza item_interact prima della transazione');
+  const order = packets.map(p => p.name);
+  assert.ok(order.indexOf('player_auth_input') < order.indexOf('inventory_transaction'),
+    'il flag item_interact precede la transazione sull\'entità');
+  serializeAll(packets);
+});
+
+test('the packet capture window opens only with PACKET_DEBUG=1', () => {
+  const adapter = spawnedAdapter();
+  delete process.env.PACKET_DEBUG;
+  assert.equal(adapter._armPacketDebug(1000), false);
+  assert.ok(!adapter._packetDebugUntil, 'senza PACKET_DEBUG non arma nulla');
+  process.env.PACKET_DEBUG = '1';
+  try {
+    assert.equal(adapter._armPacketDebug(1000), true);
+    assert.ok(adapter._packetDebugUntil > Date.now());
+  } finally {
+    delete process.env.PACKET_DEBUG;
+  }
+});
+
+test('a failed trade open arms the packet capture window and reports distance', async () => {
+  const adapter = spawnedAdapter();
+  adapter._trackEntity({ runtime_id: 42n, entity_type: 'minecraft:villager', position: { x: 3, y: 63, z: 0 } }, 'mob');
+  const entity = adapter.entities.get('42');
+  process.env.PACKET_DEBUG = '1';
+  try {
+    const res = await adapter._openTradeWithEntity(entity, { confirmMs: 10 });
+    assert.equal(res.ok, false);
+    assert.equal(res.error, 'trade_not_opened');
+    assert.equal(res.attempts, 3);
+    assert.ok(res.distance > 2 && res.distance < 4.5, `distanza misurata (${res.distance})`);
+    assert.ok(adapter._packetDebugUntil > Date.now(), 'finestra rx_packet armata per la diagnosi');
+  } finally {
+    delete process.env.PACKET_DEBUG;
+  }
 });
 
 // ---- chiusura ------------------------------------------------------------------------

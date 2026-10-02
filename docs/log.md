@@ -1155,3 +1155,105 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   5. **nessun round live** su BDS: `POST /say` e il saluto sono coperti solo da
      unit test e dalla verifica offline del wire format (1.26.51).
 - Nessuna modifica di codice; `npm run wiki:lint:strict` pulito.
+
+## [2026-10-03] feat | Primitive di raggiungibilità: niente azioni irraggiungibili
+
+- **Perché**: i round live P2 bruciavano decine di secondi su azioni che non
+  potevano riuscire — `collect_drop` → `item_not_collected` dopo 20 s (un drop
+  finito nella cavità sotto il pavimento), `read_container` →
+  `container_read_failed` dopo 30 s (container in un'altra componente
+  calpestabile). Sintomo unico: il planner riceveva un'offerta di azioni il cui
+  esito era **strutturalmente** impossibile.
+- **Cosa**: primitive di raggiungibilità in `bedrock-adapter.mjs` —
+  `reachableCells({limit,ttlMs,overrides})` (BFS su `_neighbors` dalla cella del
+  bot, cache 1 s invalidata dal movimento, tetto 1200 celle con flag
+  `truncated`), `cellReachable`, `approachReachable(position,{range,dy})`,
+  `dropReachable`, `mineDropReachable` (BFS con override di **air** sul blocco da
+  minare, così la cella d'atterraggio è valutata come sarà dopo la rottura),
+  `entityApproachable`, `reachReport({limit,maxCells})`. I filtri sono applicati
+  dove nascono le opzioni (drop, `mine_*`, container, entità ostili/animali/
+  trader/mount) e non come patch nei call-site.
+- **Fail-open obbligatorio**: `_reachabilityUsable()` è falso (quindi nessun
+  filtro) quando il componente ha 1 sola cella o il BFS è troncato — i mondi
+  sparsi dei test e i mondi grandi restano invariati.
+- **Verifica live** (container `jev-navdiag`, VM 100, :3078, codice poi deployato
+  in produzione): `/options` ha smesso di offrire `collect_drop`, `mine_*`,
+  `read_container`, `attack_*`, `mount_*` con il bot bloccato nella stanza;
+  `read_container` → `container_unreachable` in **19 ms** (era 30 355 ms),
+  `collect_drop` → `no_drop_nearby`, `flee` con destinazioni tutte fuori
+  componente → `flee_failed` in 27 ms; `GET /debug/reach` ha restituito il
+  componente reale di 10 celle (`x114-117, y73, z156-160`) e l'evento
+  `container_unreachable` elenca i container esclusi. `trader_unreachable` /
+  `no_matching_trader` per i villager fuori componente.
+- **Test**: `tests/bedrock-reachability.test.mjs` (14 casi, nuovo): componente +
+  tasca isolata, cache/ricalcolo al movimento, `dropReachable` nella geometria
+  reale (pavimento in planks `y=72`, piedi `y=73`, cavità `y=71`, terreno `y=70`),
+  `mineDropReachable` (cella senza supporto / cella sigillata), `options` senza
+  `collect_drop`/`mine_stone` impossibili, `_collectDrop` → `drop_unreachable`
+  con 0 move, `_readContainers` → `container_unreachable` con 0 move + rifiuto di
+  `_ensureStorageOpen`, filtri entità e trader, `_flee` che ignora destinazioni
+  fuori componente, fail-open su mondo degenere, limiti di `reachReport`.
+  Suite completa: **502 pass / 0 fail** (all'epoca; 514 dopo il fronte trading).
+- Commit `23c25c0 feat(nav): reachability primitive — filtro azioni irraggiungibili
+  (drop, mine, container, entità)` (`bedrock-adapter.mjs`, `bedrock-harness.mjs`,
+  `tests/bedrock-reachability.test.mjs`); rotta diagnostica `GET /debug/reach`
+  gated da `BEDROCK_DEBUG`.
+
+## [2026-10-03] verify | Trading: cattura a livello pacchetto, fix del budget di _tradeAt, ipotesi scartate
+
+- **Difetto registrato chiuso**: `_tradeAt (index, { timeoutMs = 20000 })` non
+  inoltrava il budget a `_waitTradeResult (timeoutMs = 5000)` (attesa effettiva
+  5 s, warning lint "declared but never used"). Ora
+  `await this._waitTradeResult(Math.max(500, started + timeoutMs - Date.now()))`;
+  test dedicato che cattura il budget inoltrato (20000 → >5000, 800 → 500-800).
+- **Strumenti nuovi**: `_armPacketDebug (ms = 25000)` (arma la dump clientbound
+  solo con `PACKET_DEBUG=1`), chiamato da `_onOwnHealth` e **all'inizio** di
+  `_openTradeWithEntity` (prima la finestra si armava solo dopo il fallimento,
+  quindi la cattura non copriva l'interact); rotta `GET /debug/packet-debug?ms=…`
+  (gated da `BEDROCK_DEBUG`) per armare la cattura a runtime; `_openTradeWithEntity`
+  ora ritorna `attempts` e `distance` sul fallimento e logga
+  `packet_debug_armed {reason:'trade_not_opened', trader, distance}`.
+- **Pacchetto di apertura**: oltre a `inventory_transaction`/`item_use_on_entity`
+  (mantenuto come fallback) il tentativo 1 manda il pacchetto del client vanilla
+  `interact { action_id: 'npc_open', target_entity_id, has_position: false }`
+  (`_npcOpen`); i tentativi 2-3 mandano anche un frame `player_auth_input` con una
+  transazione `click_air` vuota (`_airUseTransaction`), che è l'unico modo di
+  alzare il flag `item_interact` (InputData 34) prima della transazione
+  sull'entità (in modalità server-autoritativa il commercio **non** è esprimibile
+  dentro `player_auth_input`: `TransactionUseItem.action_type` ha solo
+  click_block/click_air/break_block/attack).
+- **Esito live (container diagnostico `jev-tradecap`, VM 100, :3078, produzione
+  fermata)**: `POST /act {"key":"open_trade"}` → `{"ok":false,
+  "error":"trade_not_opened","hint":"villager busy, obstructed or not a trader",
+  "attempts":3,"distance":3.1}` in ~12,6 s; event log 3× `npc_open`, 2× `interact`
+  + 2 `inventory_content` di resync, **nessun** `container_open`, **nessun**
+  `update_trade`. Cattura con `PACKET_DEBUG=1`: nella finestra armata il server
+  invia solo traffico di routine (7 050 `move_entity_delta`, 6 024
+  `set_entity_data`, …, 3 `take_item_entity`) più, dopo ogni `interact`, un
+  `inventory_content` con `window_id: 'inventory'` e 36 slot vuoti
+  (`container_id` che prismarine etichetta `anvil_input`, etichetta non
+  affidabile: enum 1.26.51 vs BDS 1.26.52) — cioè il **resync che il server manda
+  quando rifiuta una transazione**.
+- **Ipotesi scartate live**: forma del pacchetto (serializza pulito con lo schema
+  1.26.51 ed è identica al percorso `attack_<mob>` verificato), `legacy_request_id`,
+  pacchetto vanilla `npc_open`, flag `item_interact` nel frame auth, villager
+  addormentato (`/observe.time` da `{ticks:23308, phase:'dawn', night:true}` a
+  `{ticks:23804, phase:'day', night:false}`: stesso fallimento), behavior pack
+  custom (il server carica solo pack vanilla in `/opt/minecraft`).
+- **Blocco infrastrutturale attraversato**: durante i tentativi il container è
+  entrato nel noto `connecterror:9` (InactivityTimeout NetherNet, backoff
+  5→60 s) e non si è ripreso da solo; risolto con il rimedio dei runbook —
+  riavvio del BDS a zero giocatori (`pct exec 108 -- systemctl
+  stop/start minecraft-bedrock.service`, console letta dentro il CT) → il
+  harness si è riconnesso da solo in ~50 s. `jev-tradecap` rimosso, produzione
+  `hermes-jev-bedrock` riavviata e ri-deployata (bot spawned, `health 20`,
+  `standingOn: oak_planks`, `phase: day`).
+- **Test**: `tests/bedrock-trading.test.mjs` 15/15 (budget inoltrato, finestra di
+  cattura solo con `PACKET_DEBUG=1`, `npc_open` + fallback + ordine
+  `item_interact` prima della transazione, `serializeAll` sullo schema 1.26.51);
+  rimossi gli import morti `isVehicleType`/`isCropBlock`/`isFarmlandBlock` e il
+  `require('prismarine-nbt')` inutilizzato nel test. Suite completa **514 pass /
+  0 fail**.
+- **Stato del task**: la parte offline di `p2-trade-timeout` è chiusa; il round
+  live resta aperto (il server ignora l'interazione: prossimi passi in
+  `wiki/trading.md` — cattura da un client reale, secondo villager).

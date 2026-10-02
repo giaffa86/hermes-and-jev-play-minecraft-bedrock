@@ -53,25 +53,44 @@ are covered by unit tests and packet serialization tests against protocol
   flow is the vanilla one: place the inputs, then take the result);
 - the level-up detection via `trade_tier`/`max_trade_tier` metadata.
 
-**First live attempt (2026-10-02)**: `open_trade` does not open the trade window
-on BDS 1.26.52. With a `villager_v2` at ~1.9 blocks the `interact`
-(`item_use_on_entity`, `action_type: interact`) was sent 3× (confirmed in the
-container log), but the server sent **no** `update_trade` and **no**
-`container_open(trading)` back (only routine player `inventory_content`).
-Result: `trade_not_opened`. When the villager is >5 blocks the approach
-`_moveTo` also stalls (`trade_approach_failed: stuck` → `trader_unreachable`).
-Root cause not isolated — candidates: an empty-hand `held_item` the server
-ignores, a villager-state requirement (moving/panic), or a trading-UI flow
-difference in BDS 1.26.52 vs the bedrockflayer reference. Needs protocol-level
-capture (compare against a real client or gophertunnel).
+**Live rounds (02-03/10, packet capture)**: `open_trade` still does not open the
+trade window on BDS 1.26.52. The capture (`PACKET_DEBUG=1` on the harness plus
+`GET /debug/packet-debug?ms=…`, which arms the clientbound dump *before* the
+interaction) shows that a `villager_v2` at 3.1-3.6 blocks receives the
+interaction and the server replies with **only** a player-inventory resync
+(`inventory_content`, 36 empty slots, `container_id` that prismarine labels
+`anvil_input`) — never `container_open`, never `update_trade`. The three
+`interact` attempts produce exactly three of those resyncs and nothing else.
+
+Hypotheses tested live and **ruled out**:
+
+- packet shape — `item_use_on_entity` with `action_type: interact` serializes
+  cleanly against the 1.26.51 schema and is byte-identical to the live-verified
+  `attack_<mob>` path except for the extra `animate swing_arm`;
+- `legacy_request_id: 0` vs a non-zero request id;
+- the vanilla client packet `interact { action_id: 'npc_open' }` (now sent first,
+  with `item_use_on_entity` as fallback on the later attempts);
+- the `item_interact` input flag (bit 34) in `player_auth_input`, sent in the
+  same frame as the entity interaction;
+- a sleeping villager — same failure at `night: true` and `night: false`
+  (waited from ticks 23308 → 23804);
+- a behaviour pack disabling trading — the server loads vanilla packs only
+  (`/opt/minecraft/behavior_packs`, `vanilla_1.26.52` …).
+
+Next diagnostics: capture the same interaction from a **real client** on this
+server and compare byte by byte, test a second (freshly spawned) villager, and
+check whether a `villager_v2` has offers at all for this player. When the
+villager is >5 blocks away the approach `_moveTo` also stalls
+(`trade_approach_failed: stuck` → `trader_unreachable`).
 
 See [open-questions](open-questions.md) for the current gaps.
 
-## Known defect (timeout)
+## Fixed defect (timeout)
 
-`_tradeAt (index, { timeoutMs = 20000 })` in `bedrock-adapter.mjs` never forwards
-its `timeoutMs` to `_waitTradeResult (timeoutMs = 5000)`, so a trade effectively
-waits **5 s instead of 20 s**. Left unfixed on purpose: it changes the timing of
-an area whose live handshake is still unverified, and the fix should be threaded
-through during that live round and observed. Tracked in
-[open-questions](open-questions.md#known-code-defects-not-fixed).
+`_tradeAt (index, { timeoutMs = 20000 })` in `bedrock-adapter.mjs` never
+forwarded its `timeoutMs` to `_waitTradeResult (timeoutMs = 5000)`, so a trade
+effectively waited **5 s instead of 20 s**. **Fixed (2026-10-03)**: the remaining
+budget is threaded through (`await this._waitTradeResult(Math.max(500, started +
+timeoutMs - Date.now()))`), covered by a unit test that records the forwarded
+budget, and the pi-lens “declared but never used” warning is gone. The live
+transaction round is still pending.

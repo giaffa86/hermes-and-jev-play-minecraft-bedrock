@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BedrockWorld } from './bedrock-world.mjs';
 import { trackNethernetClient, closeBedrockClient } from './bedrock-lifecycle.mjs';
-import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isTameableType, isRideTameableType, isCompanionType, isVehicleType, isRideableType, animalFeed, tameFeed, cropForSeed, isCropBlock, isFarmlandBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS } from './bedrock-survival.mjs';
+import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isTameableType, isRideTameableType, isCompanionType, isRideableType, animalFeed, tameFeed, cropForSeed, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS } from './bedrock-survival.mjs';
 import { professionName, normalizeProfession, professionMatches, pickBestTrade } from './bedrock-trading.mjs';
 import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
 import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
@@ -2401,6 +2401,45 @@ export class BedrockAdapter {
     return `Trade ${cost} for ${offer.sell.count} ${offer.sell.item}${uses}${where}${urgency}`;
   }
 
+  // `interact` con action_id 'npc_open': è il pacchetto con cui un client vanilla
+  // apre la finestra di commercio di un villager. La cattura live su BDS 1.26.52
+  // mostra che item_use_on_entity (action_type interact) da solo non la apre:
+  // il server risponde con un resync dell'inventario, mai con container_open.
+  _npcOpen (entity) {
+    let target;
+    try { target = BigInt(entity.runtimeId); } catch { return false; }
+    this.client.write('interact', {
+      action_id: 'npc_open',
+      target_entity_id: target,
+      has_position: false,
+    });
+    this.log('npc_open', { target: entity.type, runtimeId: entity.runtimeId, distance: +this._entityDistance(entity).toFixed(2) });
+    return true;
+  }
+
+  // Transazione click_air vuota: serve solo ad alzare il flag item_interact
+  // nel frame player_auth_input, senza usare nulla (mano vuota).
+  _airUseTransaction () {
+    return {
+      legacy: { legacy_request_id: 0 },
+      actions: [],
+      data: {
+        action_type: 'click_air',
+        trigger_type: 'player_input',
+        block_position: { x: 0, y: 0, z: 0 },
+        face: 0,
+        hotbar_slot: this.selectedHotbar,
+        hand: 'main_hand',
+        held_item: this.inventorySlots[this.selectedHotbar] || { network_id: 0 },
+        player_pos: { ...this.position },
+        click_pos: { x: 0.5, y: 0.5, z: 0.5 },
+        block_runtime_id: 0,
+        client_prediction: 'success',
+        client_cooldown_state: 'off',
+      },
+    };
+  }
+
   // item_use_on_entity con action_type interact: apre il commercio (mai attack).
   _interactEntity (entity) {
     const held = this.inventorySlots[this.selectedHotbar] || { network_id: 0 };
@@ -2441,6 +2480,9 @@ export class BedrockAdapter {
   // Apre il commercio con un'entità trader specifica (usata anche dal livellamento
   // per scegliere il commerciante giusto, non solo il più vicino).
   async _openTradeWithEntity (entity, { approachTimeoutMs = 25000, confirmMs = 4000 } = {}) {
+    // Con PACKET_DEBUG=1 la cattura parte prima dell'interact: così si vede se
+    // il server risponde con container_open/update_trade o con un rifiuto.
+    this._armPacketDebug(20000);
     // Chiudi un commercio/container precedente prima di aprirne un altro.
     if (this._openContainer) await this._closeContainer().catch(() => {});
     this.tradeOffers = [];
@@ -2464,11 +2506,25 @@ export class BedrockAdapter {
       await delay(120);
       const current = this.entities.get(entity.runtimeId);
       if (!current) continue;
-      this._interactEntity(current);
+      // Primo tentativo col pacchetto del client vanilla (`npc_open`); i
+      // tentativi successivi aggiungono item_use_on_entity come fallback.
+      this._npcOpen(current);
+      // In modalità server-autoritativa il server prende in carico l'interazione
+      // con l'entità solo se un frame player_auth_input alza il flag item_interact
+      // (input_data 34): un click_air è il modo minimo per farlo (mano vuota,
+      // nessun effetto sul mondo).
+      if (attempt > 1) await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch, transaction: this._airUseTransaction() });
+      if (attempt > 1) this._interactEntity(current);
       const waitUntil = Date.now() + confirmMs;
       while (Date.now() < waitUntil && !this.tradeOffers.length) await delay(100);
     }
-    if (!this.tradeOffers.length) return { ok: false, error: 'trade_not_opened', hint: 'villager busy, obstructed or not a trader' };
+    if (!this.tradeOffers.length) {
+      // Diagnosi: con PACKET_DEBUG=1 registra i pacchetti che il server manda
+      // nei secondi successivi all'interact, così si distingue "il server non
+      // apre la finestra" da "il client non riconosce il pacchetto di apertura".
+      if (this._armPacketDebug(15000)) this.log('packet_debug_armed', { reason: 'trade_not_opened', trader: live.type, distance: +distance.toFixed(1) });
+      return { ok: false, error: 'trade_not_opened', hint: 'villager busy, obstructed or not a trader', attempts: 3, distance: +distance.toFixed(1) };
+    }
     return { ok: true, opened: true, offers: this.tradeOffers.length, trader: live.type, displayName: this.tradeDisplayName };
   }
 
@@ -2547,7 +2603,10 @@ export class BedrockAdapter {
       if (this._tradeSlots.result?.network_id) await this._takeTradeResult();
       await this._putInTradeSlot('ingredient1', offer.buyA.item, offer.buyA.count);
       if (offer.buyB) await this._putInTradeSlot('ingredient2', offer.buyB.item, offer.buyB.count);
-      let result = await this._waitTradeResult();
+      // Il budget dello scambio è quello del chiamante: il tempo residuo
+      // (non un 5 s fisso) è quanto si aspetta la slot risultato dal server.
+      const remaining = Math.max(500, started + timeoutMs - Date.now());
+      let result = await this._waitTradeResult(remaining);
       if (!result) return { ok: false, error: 'trade_result_timeout', offer, hint: 'server did not report the trade result slot' };
       const taken = await this._takeTradeResult();
       // Gli input sono stati consumati dal server: lo specchio locale va azzerato
@@ -4539,13 +4598,20 @@ export class BedrockAdapter {
     }
   }
 
+  // Arma la finestra di logging dei pacchetti in arrivo (solo con PACKET_DEBUG=1).
+  _armPacketDebug (ms = 25000) {
+    if (!process.env.PACKET_DEBUG) return false;
+    this._packetDebugUntil = Date.now() + ms;
+    return true;
+  }
+
   _onOwnHealth () {
     if (this.health <= 0 && !this.dead) {
       this.dead = true;
       this.deaths++;
       this._respawnAt = Date.now() + 1500;
       this._deadSince = Date.now();
-      if (process.env.PACKET_DEBUG) this._packetDebugUntil = Date.now() + 25000;
+      this._armPacketDebug(25000);
       this._motion = null;
       this._velocity = { x: 0, y: 0, z: 0 };
       this._setSleeping(false);

@@ -150,8 +150,16 @@ server = createServer(async (req, res) => {
       const limit = Number(u.searchParams.get('limit') || 1200);
       response = [200, adapter.reachReport({ limit: Number.isFinite(limit) && limit > 0 ? limit : 1200 })];
     }
-    else if (process.env.BEDROCK_DEBUG && req.method === 'POST' && req.url === '/debug/mine') {
-      const { x, y, z } = JSON.parse(body);
+    else if (process.env.BEDROCK_DEBUG && req.method === 'GET' && req.url.startsWith('/debug/packet-debug')) {
+      // Arma la cattura dei pacchetti in arrivo (richiede PACKET_DEBUG=1):
+      // permette di registrare la risposta del server a un'azione puntuale
+      // senza riavviare il container.
+      const u = new URL(req.url, 'http://x');
+      const ms = Number(u.searchParams.get('ms') || 15000);
+      const armed = adapter._armPacketDebug(Number.isFinite(ms) && ms > 0 ? ms : 15000);
+      response = [200, { ok: armed, until: adapter._packetDebugUntil ?? 0, hint: armed ? null : 'PACKET_DEBUG non attivo' }];
+    }
+    else if (process.env.BEDROCK_DEBUG && req.method === 'POST' && req.url === '/debug/mine') {      const { x, y, z } = JSON.parse(body);
       const block = adapter.world.blockAt({ x, y, z });
       if (!block) response = [200, { ok: false, error: 'block_not_loaded' }];
       else response = [200, await adapter._mineTarget({ cell: { x, y, z }, block, raw: block.name === 'unknown' })];
