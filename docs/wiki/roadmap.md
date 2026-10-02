@@ -122,7 +122,7 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   **live-verified 02/10** (`consolidated_into resource_site_7_9`, hint read back
   from `GET /memory/hints`, `POST /memory/consolidate` → `already_consolidated`)
   — see [memory](memory.md).
-- 466 green unit tests (2026-10-02).
+- 488 green unit tests (2026-10-02).
 
 ## What is implemented but not verified live
 
@@ -146,6 +146,12 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   `craft_stone_sword`, `go_home` / `retreat` (home = spawn or `HOME_WAYPOINT`),
   `equip_armor` (+ `/observe.armor` points), `close_door`, `barricade`.
   Implemented + unit-tested; `go_home` verified live, the rest live-pending.
+- Opportunity goals (02/10): the adapter notices a valuable vein (24-block scan →
+  `observe().ores` → `VALUABLE_ORE_SEEN`), `opportunity-goals.mjs` decides
+  whether it is worth a detour (relative value, scarcity cap, no chat order, no
+  nearly-finished goal) and the `mine_<ore>` option carries tier 4.5. All
+  unit-tested; **the controller wiring is not done yet**, so nothing suspends a
+  goal on a sighting — see [opportunity](opportunity.md).
 - A live `CURRICULUM=first_night` round and the real-multiplayer test (Phase 10).
 
 ## Post-goal lifecycle (milestone 0→1 of the AI-player roadmap)

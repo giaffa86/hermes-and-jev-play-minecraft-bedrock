@@ -31,6 +31,7 @@ export const GOAL_SOURCE = Object.freeze({
   EMERGENCY: 'emergency',         // world event that preempts everything (death, danger)
   CHAT: 'chat',                   // a trusted human ordered it in chat
   WORLD_EVENT: 'world_event',     // world-triggered activity
+  OPPORTUNITY: 'opportunity',     // a better chance appeared mid-goal (valuable vein)
   PLAYER_BEHAVIOR: 'player_behavior', // reactivity to a player's behaviour
   CURRICULUM: 'curriculum',       // the progression engine (existing CURRICULUM mode)
   AUTONOMOUS: 'autonomous',       // needs-driven idle behaviour
@@ -42,6 +43,10 @@ export const SOURCE_PRIORITY = Object.freeze({
   [GOAL_SOURCE.EMERGENCY]: 100,
   [GOAL_SOURCE.CHAT]: 80,
   [GOAL_SOURCE.WORLD_EVENT]: 60,
+  // An opportunity outranks the planned curriculum it interrupts (40) and idle
+  // needs (20), but never a human order (80) or a world event (60): it is a
+  // detour, not a reaction.
+  [GOAL_SOURCE.OPPORTUNITY]: 55,
   [GOAL_SOURCE.PLAYER_BEHAVIOR]: 50,
   [GOAL_SOURCE.CURRICULUM]: 40,
   [GOAL_SOURCE.AUTONOMOUS]: 20,

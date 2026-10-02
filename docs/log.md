@@ -1052,3 +1052,43 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Tests: full suite **466 pass / 0 fail**; `npm run wiki:lint` clean. Docs:
   `wiki/verification.md` (rows 4, 42.1, new 42.2), `wiki/open-questions.md`,
   `wiki/roadmap.md`, this log.
+
+## [2026-10-02] feat | Opportunity layer: valuable-ore goals (data + producer)
+
+- **New data layer** (`ore-value.mjs`, pure): one value table for every ore/item
+  drop (diamond 100, emerald 60, gold 40, lapis 30, redstone 25, iron 15, copper
+  8, coal 5) and the thresholds the two consumers share — `ORE_EVENT_MIN_VALUE` 5
+  (what is worth *reporting*), `ORE_OPTION_PRIORITY_MIN_VALUE` 40 (what earns the
+  option-priority lift), `OPPORTUNITY_MIN_VALUE` 40,
+  `OPPORTUNITY_MIN_RELATIVE_VALUE` 5, `OPPORTUNITY_STOCK_CAP` 16.
+- **Detection**: the adapter scans the valuable ore names within 24 blocks (5 s
+  TTL, rescan after moving 8) and exposes `observe().ores`
+  (`{name, position, distance, value, harvestable}`); `world-events.mjs` raises a
+  new `VALUABLE_ORE_SEEN` event per *newly seen* vein (`dedupKey`
+  `ore:<name>@<x>,<y>,<z>`, transition-based like the other events).
+- **Decision** (`opportunity-goals.mjs`, pure): `evaluateOpportunity` /
+  `opportunityGoalFor` map the event to a **suspending** goal — new
+  `GOAL_SOURCE.OPPORTUNITY`, priority 55 (between `WORLD_EVENT` 60 and
+  `PLAYER_BEHAVIOR` 50), `type: mine_opportunity`, `plan.targets` = one more drop
+  than already held, waypoint on the vein. Gate: gold-and-above always
+  (absolute); otherwise strictly more valuable than the plan target with a
+  scarcity cap (coal and copper count early — cheap ≠ worthless); never over a
+  chat order, an emergency or another opportunity; not when the current goal is
+  ≥ 90 % done; danger-free and within 24 blocks; 120 s cooldown on the dedup key.
+- **Visibility**: the adapter offers `mine_<ore>` for a harvestable valuable ore
+  outside the fixed mining list, and `controller-decisions.mjs` ranks it in a new
+  tier 4.5 (gold and above), after the plan target (4) and before craft (5). The
+  copper→iron case is resolved at the *goal* level (the seen iron becomes the
+  plan target), not by the tier.
+- Tests: `tests/opportunity-goals.test.mjs`, `tests/adapter-opportunity.test.mjs`
+  and four ore cases in `tests/world-events.test.mjs`; full suite **488 pass /
+  0 fail** (was 466).
+- **Not wired**: `controller.mjs` is untouched (the emergency preempt path has no
+  opportunity sibling yet), so an in-flight goal is still never interrupted by a
+  vein; no `OPPORTUNITY*` environment switch; no live round.
+- Side finding, left unfixed on purpose: `_tradeAt` in `bedrock-adapter.mjs`
+  never forwards its `timeoutMs` to `_waitTradeResult`, so trades wait 5 s
+  instead of 20 s — recorded in `wiki/open-questions.md`.
+- Docs: new `wiki/opportunity.md`; updated `wiki/emergency.md` (producer table
+  and boundary), `wiki/ai-player-roadmap.md` (milestones 1/5/8),
+  `wiki/roadmap.md`, `wiki/open-questions.md`, `docs/index.md`, `docs/sources.md`.

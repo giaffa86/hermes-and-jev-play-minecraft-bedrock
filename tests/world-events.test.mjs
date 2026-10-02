@@ -54,3 +54,39 @@ test('a dead bot does not emit low-health or ambush noise', () => {
   const events = detectEvents(base(), base({ dead: true, health: 0, entities: [creeper(2)] }));
   assert.deepEqual(events.map(e => e.type), [WORLD_EVENTS.PLAYER_DIED]);
 });
+
+const ore = (over = {}) => ({ name: 'diamond_ore', position: { x: 4, y: 12, z: 6 }, distance: 5.2, harvestable: true, ...over });
+const oreEvents = events => events.filter(e => e.type === WORLD_EVENTS.VALUABLE_ORE_SEEN);
+
+test('VALUABLE_ORE_SEEN fires when a valuable vein enters view', () => {
+  const events = oreEvents(detectEvents(base(), base({ ores: [ore()] })));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].severity, 'notice');
+  assert.equal(events[0].dedupKey, 'ore:diamond_ore@4,12,6');
+  assert.deepEqual(events[0].data, {
+    ore: 'diamond_ore',
+    value: 100,
+    drop: 'diamond',
+    position: { x: 4, y: 12, z: 6 },
+    distance: 5.2,
+    harvestable: true,
+  });
+});
+
+test('VALUABLE_ORE_SEEN does not re-emit for the same block, but a new one counts', () => {
+  const seen = [ore()];
+  assert.equal(oreEvents(detectEvents(base({ ores: seen }), base({ ores: seen }))).length, 0);
+  const twin = [ore(), ore({ position: { x: 5, y: 12, z: 6 } })];
+  assert.equal(oreEvents(detectEvents(base({ ores: seen }), base({ ores: twin }))).length, 1);
+});
+
+test('VALUABLE_ORE_SEEN reports cheap-but-scarce ores and ignores far ones', () => {
+  const coal = { name: 'coal_ore', position: { x: 2, y: 40, z: 2 }, distance: 3, harvestable: true };
+  assert.equal(oreEvents(detectEvents(base(), base({ ores: [coal] }))).length, 1);
+  const far = ore({ distance: 40, position: { x: 40, y: 12, z: 0 } });
+  assert.equal(oreEvents(detectEvents(base(), base({ ores: [far] }))).length, 0);
+});
+
+test('a vein already in view at goal start is reported once', () => {
+  assert.equal(oreEvents(detectEvents(null, base({ ores: [ore()] }))).length, 1);
+});

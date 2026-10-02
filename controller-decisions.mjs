@@ -7,6 +7,7 @@
 // they never invent a key.
 
 import { keyMatchesIntents } from './survival/intents.mjs';
+import { oreValue, ORE_OPTION_PRIORITY_MIN_VALUE } from './ore-value.mjs';
 
 export const DEFAULT_MAX_OPTIONS = 12;
 export const DEFAULT_ANTI_LOOP_THRESHOLD = 3;
@@ -22,7 +23,13 @@ export function parseDistance (description) {
 
 // Lower = more relevant when the option set has to be capped.
 // 0 survival | 1 recover loot | 2 drop pickup | 3 skill intent | 4 target hit |
-// 5 progression crafts/places | 6 travel and digging | 7 generic mining | 10 wait.
+// 4.5 valuable ore (opportunity) | 5 progression crafts/places |
+// 6 travel and digging | 7 generic mining | 10 wait.
+//
+// The 4.5 tier is the option-level half of the opportunity layer: a diamond or
+// gold vein is worth taking even when the plan aims elsewhere, because the
+// window is short (ORE_INTEREST_RANGE) while a craft can be done later. It stays
+// below the plan target: the goal decides, the option only does not starve it.
 export function optionPriority (option, { targets = {}, preferredIntents = [] } = {}) {
   const key = option?.key || '';
   if (SURVIVAL_KEYS.has(key) || key.startsWith('attack_')) return 0;
@@ -36,6 +43,7 @@ export function optionPriority (option, { targets = {}, preferredIntents = [] } 
       return 4;
     }
   }
+  if (key.startsWith('mine_') && oreValue(key.slice('mine_'.length)) >= ORE_OPTION_PRIORITY_MIN_VALUE) return 4.5;
   if (key.startsWith('craft_') || key.startsWith('place_') || key.startsWith('smelt_')) return 5;
   if (key === 'goto_waypoint' || key.startsWith('dig_')) return 6;
   if (key.startsWith('mine_')) return 7;

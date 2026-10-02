@@ -137,7 +137,11 @@ Still missing (the rest of the original gap):
   City, spawners) exists in [exploration](exploration.md) but is not implemented.
 - **Placement** only on a top face adjacent to the bot; no scaling/orientation.
 - **No redstone awareness or placement.** `_refreshNearby`'s fixed list excludes
-  redstone ore and components, so the bot cannot see or place them; `_placeAtCell`
+  redstone ore and components, so the bot cannot *watch* for them; the separate
+  opportunity scan (`ore-value.mjs` table → `mine_redstone_ore`/`mine_lapis_ore`
+  when harvestable, see [opportunity](opportunity.md)) can since 02/10 at least
+  *mine* those veins — the gap is state sensing and placement:
+  `_placeAtCell`
   cannot set orientation (`facing_direction`/`cardinal_direction`); `DIG_PROTECTED`
   does not cover redstone components. The world model *does* expose component
   state via `blockAt().getProperties()` (`redstone_signal`, `powered_bit`,
@@ -180,6 +184,18 @@ Still missing (the rest of the original gap):
   remaining needs-driven goals (inventory-full → store, else explore), the
   loot-priority executor and the fluid/fire-dependent events. Full analysis in
   [ai-player-roadmap](ai-player-roadmap.md).
+
+- **Opportunity goals** (curiosity slice, 02/10) — **implemented at the data,
+  decision and option level, unit-tested; the controller wiring is pending**:
+  `ore-value.mjs` (value table + thresholds), `VALUABLE_ORE_SEEN` detection in
+  `world-events.mjs` (`observe().ores` from the adapter's 24-block scan),
+  `opportunity-goals.mjs` (a vein strictly better than the plan target, or gold
+  and above absolutely; the drop must still be scarcer than a stack; never over a
+  chat order, an emergency, another opportunity or a ≥ 90 % finished goal) and
+  the `mine_<ore>` option with its tier 4.5 in `controller-decisions.mjs`. The
+  preempt/suspend block in `controller.mjs` has no opportunity sibling yet, so an
+  in-flight goal is still never interrupted by a vein; no `OPPORTUNITY*`
+  environment switch; no live round. See [opportunity](opportunity.md).
 
 - **Farming** (`.private/FARMING-TASK.md`) — **done and verified live 03/10** for
   the core (`plant_<seed>`, `feed_<animal>`, `breed_<animal>`, `throw_egg`,
@@ -244,6 +260,16 @@ Still missing (the rest of the original gap):
   state-aware search) and R1 (oriented placement, needs a placement packet
   capture).
 
+## Known code defects (not fixed)
+
+- **`_tradeAt` drops its timeout** (`bedrock-adapter.mjs`, found 02/10):
+  `async _tradeAt (index, { timeoutMs = 20000 } = {})` never forwards `timeoutMs`
+  to `_waitTradeResult (timeoutMs = 5000)`, so every trade effectively waits 5 s
+  instead of the intended 20 s. Deliberately left as is: fixing it changes the
+  timing of an area whose live transaction handshake is still unverified —
+  thread the timeout through during the live trading round and observe the
+  result ([trading](trading.md)).
+
 ## Documentation integrity (lint 2026-10-03)
 
 - `log.md` dates are interleaved (entries labelled `2026-10-02` and `2026-10-03`
@@ -252,7 +278,7 @@ Still missing (the rest of the original gap):
   commit history for exact ordering, and give new entries the real current date.
 - Stale test counts remain in the immutable sources (`BEDROCK.md` minerals section
   and `docs/raw/SURVIVAL-INTELLIGENCE.md` say 204): they are historical snapshots.
-  The current count lives in [roadmap](roadmap.md) (383 at 2026-10-03).
+  The current count lives in [roadmap](roadmap.md) (488 at 2026-10-02).
 - `verification.md` had duplicate row numbers (39/40 reused for the fluids rows);
   renumbered to 41–58 and all internal references updated.
 - **Historical privacy leak (public repo)**: earlier commits still on the

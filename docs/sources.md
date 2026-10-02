@@ -25,7 +25,7 @@ never committed.
 
 | Path | What it defines |
 |---|---|
-| `bedrock-adapter.mjs` | The Bedrock protocol client: perception (`_refreshNearby`), actions (`player_auth_input`, `block_action`, `item_stack_request`, `click_block`), tool selection, mining, digging, containers, trading and trader levelling, chat capture (`text` id 9 → `chatInbox`) and `follow_player`. |
+| `bedrock-adapter.mjs` | The Bedrock protocol client: perception (`_refreshNearby`), actions (`player_auth_input`, `block_action`, `item_stack_request`, `click_block`), tool selection, mining, digging, containers, trading and trader levelling, chat capture (`text` id 9 → `chatInbox`), `follow_player` and the valuable-ore opportunity scan (`observe().ores`, the `mine_<ore>` options outside the fixed mining list). |
 | `bedrock-trading.mjs` | Pure trading economy rules: profession mapping, item value classification, cheapest-trade picker for levelling. |
 | `bedrock-fishing.mjs` | Pure fishing rules: fish classification, water-block detection, shore geometry, bite timing. |
 | `bedrock-world.mjs` | Registry + Prismarine v9 decoder, `findBlocks`/`blockAt`, `requestAround` (subchunk requests). |
@@ -40,9 +40,11 @@ never committed.
 | `controller.mjs` | The planner/controller loop (incl. the human chat command channel: `CHAT_ALLOWLIST` → Hermes → `/plan`) and the **persistent session loop** (`SESSION=on`): goal → run → IDLE → next goal, with cross-session resume (`RESUME`), no reconnect. |
 | `goal-manager.mjs` | Pure **Goal Manager** (Agent Core, M1): goal model, sources/priorities, `PENDING/RUNNING/SUSPENDED/COMPLETED/FAILED` transitions, preemption, snapshot/restore, cross-session resume, persistence via a repository (`kind: 'goal'`). |
 | `idle-goals.mjs` | Pure **idle autonomy** (M3): maps survival needs to ranked candidate goals (+`nextIdleGoal` cooldown) and the deterministic `isNeedResolved` success predicate. |
-| `world-events.mjs` | Pure **world-event detection** (M2): transition-based `detectEvents(prev, curr)` → `PLAYER_DIED`, `LOW_HEALTH`, `HOSTILE_AMBUSH`, each with a `dedupKey`. |
+| `world-events.mjs` | Pure **world-event detection** (M2): transition-based `detectEvents(prev, curr)` → `PLAYER_DIED`, `LOW_HEALTH`, `HOSTILE_AMBUSH` and `VALUABLE_ORE_SEEN` (a newly seen ore within 24 blocks), each with a `dedupKey`. |
 | `emergency-goals.mjs` | Pure **emergency mapping** (M2): `emergencyGoalFor(event, …)` maps events to preempting `EMERGENCY` goals (`PLAYER_DIED → recover_loot`), with cooldown/dedup. |
-| `controller-decisions.mjs` | Pure decision helpers (ranking, anti-loop, cap, diagnostics). |
+| `ore-value.mjs` | Pure **ore/item value table** (`ORE_VALUES`, `ITEM_VALUES`): the deterministic answer to "is this vein worth a detour?" — thresholds for the event floor, the option-priority lift and the opportunity gate. |
+| `opportunity-goals.mjs` | Pure **opportunity mapping** (curiosity): `evaluateOpportunity(event, …)` / `opportunityGoalFor(event, …)` turn a `VALUABLE_ORE_SEEN` event into a suspending `OPPORTUNITY` goal (relative-value gate, cooldown/dedup, one level, never over a chat order). |
+| `controller-decisions.mjs` | Pure decision helpers (ranking, anti-loop, cap, diagnostics), incl. the **valuable-ore tier 4.5** for gold-and-above ore. |
 | `survival/` | Survival Intelligence Layer (governor, resolver, verifier, progression, ...). |
 | `knowledge/` | `survival-rules.json`, `progression.json`. |
 | `skills/gameplay/` | Declarative gameplay skills. |

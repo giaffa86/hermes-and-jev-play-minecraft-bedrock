@@ -18,9 +18,12 @@ A **producer** is a source that *creates goals* in the `GoalManager` queue.
 | Chat channel | `chat` | a trusted human sends `@bot …` while `IDLE` | `waitForGoal()` |
 | Idle autonomy | `autonomous` / `emergency` | a survival need appears while `IDLE` | [idle-goals.mjs](../../idle-goals.mjs) |
 | **World events** | `emergency` | an event happens **while a goal is RUNNING** | [world-events.mjs](../../world-events.mjs) + [emergency-goals.mjs](../../emergency-goals.mjs) |
+| **Opportunities** | `opportunity` | a valuable vein comes in sight **while a goal is RUNNING** | [world-events.mjs](../../world-events.mjs) + [opportunity-goals.mjs](../../opportunity-goals.mjs) |
 
-The first three only fire while the agent is idle. The last one is the only
-producer that can **interrupt** an in-flight goal.
+The first three only fire while the agent is idle. The last two can interrupt an
+in-flight goal, but differently: the emergency **preempts** it because continuing
+is harmful, the opportunity only **suspends** it because something better is in
+reach ([opportunity](opportunity.md)).
 
 ## Two levels of emergency
 
@@ -90,6 +93,7 @@ but **not** turned into goals: the governor already handles them instantly.
 | Low health / eat / heal | governor | one action (`eat`/`flee`), override is enough |
 | Rescue a player, flee a lasting hazard | emergency goal | multi-step, player-facing |
 | Drowning / on fire / lava near | governor or goal | blocked: needs fluid/fire perception ([fluids](fluids.md) M0) |
+| A richer vein in sight while a goal runs | **opportunity goal** | multi-step detour that needs a parent to resume (suspended, not preempted) — [opportunity](opportunity.md) |
 
 ## Dedup and anti-oscillation
 
@@ -131,6 +135,7 @@ but **not** turned into goals: the governor already handles them instantly.
 
 ## Related pages
 
+- [opportunity](opportunity.md) — the suspending counterpart (a better vein in sight).
 - [ai-player-roadmap](ai-player-roadmap.md) — M2 in the nine-milestone plan.
 - [survival-intelligence](survival-intelligence.md) — the governor (action level).
 - [control-flow](control-flow.md) — where emergency goals sit in the loop.

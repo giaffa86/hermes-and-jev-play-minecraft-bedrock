@@ -9,6 +9,7 @@ import { trackNethernetClient, closeBedrockClient } from './bedrock-lifecycle.mj
 import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isTameableType, isRideTameableType, isCompanionType, isVehicleType, isRideableType, animalFeed, tameFeed, cropForSeed, isCropBlock, isFarmlandBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS } from './bedrock-survival.mjs';
 import { professionName, normalizeProfession, professionMatches, pickBestTrade } from './bedrock-trading.mjs';
 import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
+import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -95,6 +96,12 @@ const STORAGE_BLOCKS = ['chest', 'trapped_chest', 'barrel', 'shulker_box'];
 // TTL della cache contenitori: altri giocatori possono cambiare le scorte.
 const CONTAINER_TTL_MS = 5 * 60 * 1000;
 const DISCOVERY_RESCAN_MS = 15000;   // ri-scansione scoperte nella stessa chunk (mondo appena caricato)
+// Occasioni: raggio della scansione delle ore di valore. Deve combaciare con
+// ORE_INTEREST_RANGE di world-events.mjs: tutto ciò che genera un evento
+// VALUABLE_ORE_SEEN è anche un'opzione mine_<ore>.
+const ORE_INTEREST_RANGE = 24;
+const ORE_SCAN_TTL_MS = 5000;        // la percezione gira molte volte al secondo
+const ORE_SCAN_MOVE_TOLERANCE = 8;   // ...e comunque non riusare una lista di 8 blocchi fa
 const CHECKPOINT_MIN_DISTANCE = 48;   // checkpoint sparsi: ogni ~48 blocchi di viaggio
 // Slot esposti da un baule/botte singolo (i bauli doppi ne espongono 54).
 const CONTAINER_SLOT_COUNT = 27;
@@ -115,6 +122,8 @@ export class BedrockAdapter {
     this.missionId = null;             // missione di esplorazione attiva (checkpoint)
     this._lastDiscoveryChunk = null;   // dedup: scoperte scansionate una volta per chunk
     this._lastDiscoveryAt = 0;
+    this._lastOreScanAt = 0;          // TTL della scansione ore di valore
+    this._lastOreScanPos = null;
     this.client = null;
     this.status = 'disconnected';
     this.position = null;
@@ -129,6 +138,7 @@ export class BedrockAdapter {
     this._tickAnchor = null;
     this.drops = [];
     this.nearbyBlocks = {};
+    this.valuableOres = [];        // ore di valore in vista (occasioni, vedi _scanValuableOres)
     this.dimension = 'overworld';
     this.standingOn = null;
     this.plan = null;
@@ -656,7 +666,7 @@ export class BedrockAdapter {
           client.off('spawn', onSpawn);
           client.off('close', onClose);
           client.off('error', onError);
-          error ? reject(error) : resolve();
+          if (error) reject(error); else resolve();
         };
         const onSpawn = () => finish();
         const onClose = () => finish(new Error(client._lifecycleCloseReason || this.connectError?.message || 'connection closed before spawn'));
@@ -703,7 +713,50 @@ export class BedrockAdapter {
     // Bedrock player_position is at eye height (1.62 blocks above the feet).
     this.standingOn = this.world.blockAt({ ...this.position, y: this.position.y - 1.63 })?.name ?? null;
     this._pruneEntities();
+    this._scanValuableOres();
     this._maybeRememberDiscoveries();
+  }
+
+  // Ore di valore in vista (diamond, emerald, gold, …): alimenta l'evento
+  // VALUABLE_ORE_SEEN e le opzioni mine_<ore> fuori piano. `harvestable` è
+  // calcolato qui perché dipende dai dati del blocco (harvestTools) e dal
+  // miglior piccone in inventario: il produttore di goal non deve saperlo.
+  _scanValuableOres () {
+    const now = Date.now();
+    const moved = this._lastOreScanPos
+      ? Math.hypot(this.position.x - this._lastOreScanPos.x, this.position.z - this._lastOreScanPos.z)
+      : Infinity;
+    if (this._lastOreScanAt != null && now - this._lastOreScanAt < ORE_SCAN_TTL_MS && moved < ORE_SCAN_MOVE_TOLERANCE) {
+      return this.valuableOres ?? [];
+    }
+    this._lastOreScanAt = now;
+    this._lastOreScanPos = { ...this.position };
+    if (!this.world || typeof this.world.findBlocks !== 'function') return (this.valuableOres = []);
+    const found = [];
+    try {
+      const pickaxe = this._bestInventoryTool('pickaxe')?.name ?? null;
+      for (const name of VALUABLE_ORE_NAMES) {
+        for (const block of this.world.findBlocks(name, this.position, ORE_INTEREST_RANGE, 2)) {
+          const probe = this.world.blockAt(block.position) ?? block;
+          const oreName = probe.name ?? name;
+          found.push({
+            name: oreName,
+            position: block.position,
+            distance: +block.distance.toFixed(1),
+            value: oreValue(oreName),
+            harvestable: this._blockHarvestable(probe, pickaxe),
+          });
+        }
+      }
+    } catch (error) {
+      this.logger?.log?.(`ore scan failed: ${error?.message ?? error}`);
+      return (this.valuableOres = []);
+    }
+    // Prima il valore, poi la distanza: con MAX_OPTIONS piccolo vince la vena
+    // che vale di più, non quella che capita davanti.
+    found.sort((a, b) => (b.value - a.value) || (a.distance - b.distance));
+    this.valuableOres = found;
+    return found;
   }
 
   // Producer di memoria: registra scoperte dal mondo (portali, siti di risorse,
@@ -858,6 +911,7 @@ export class BedrockAdapter {
       plan: this.plan,
       chat: this.chatInbox.slice(-10),
       nearby: this.nearbyBlocks,
+      ores: (this.valuableOres ?? []).slice(0, 8),
       recent: this.recent.slice(-8),
       status: this.status,
       spawned: this.spawned,
@@ -1013,6 +1067,18 @@ export class BedrockAdapter {
         if (!this._blockHarvestable(probe, tool)) continue;
       }
       o.push({ key: `mine_${blockName}`, description: `Mine ${blockName} at ${JSON.stringify(target.position)} (${target.distance} blocks away)` });
+    }
+    // Occasioni: oltre alla lista fissa, le ore di valore osservate entrano come
+    // opzioni mine_<ore> se il piccone in inventario le rende raccoglibili. Il
+    // raggio è ORE_INTEREST_RANGE, quindi la finestra è breve: il controller può
+    // coglierla (vedi controller-decisions.mjs) o ignorarla, ma il goal
+    // VALUABLE_ORE_SEEN la rende comunque una scelta esplicita.
+    const offeredKeys = new Set(o.map(option => option.key));
+    for (const ore of this.valuableOres ?? []) {
+      const key = `mine_${ore.name}`;
+      if (offeredKeys.has(key) || !ore.harvestable) continue;
+      offeredKeys.add(key);
+      o.push({ key, description: `Mine ${ore.name} at ${JSON.stringify(ore.position)} (${ore.distance} blocks away, opportunity)` });
     }
     // Discesa: scavare un gradino verso il basso (testa, fronte e cella sotto il
     // fronte), poi avanzare di un blocco e scendere. Serve a raggiungere lo stone
@@ -2286,7 +2352,7 @@ export class BedrockAdapter {
     return true;
   }
 
-  _offerDescription (offer, index) {
+  _offerDescription (offer, _index) {
     const cost = offer.buyB
       ? `${offer.buyA.count} ${offer.buyA.item} + ${offer.buyB.count} ${offer.buyB.item}`
       : `${offer.buyA.count} ${offer.buyA.item}`;
