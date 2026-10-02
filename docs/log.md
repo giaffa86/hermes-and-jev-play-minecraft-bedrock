@@ -266,3 +266,40 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - `place_torch` and `craft_*_sword` reuse the already-live-verified `place_*` /
   `craft_*` paths (option generation unit-tested); a dedicated live round is
   deferred. `BEDROCK.md` + `verification.md` updated.
+
+## [2026-10-02] ingest | AI-player roadmap + post-goal lifecycle audit
+
+- New raw source `docs/raw/AI_PLAYER_ROADMAP.md` (Italian) digested into a new
+  wiki page `wiki/ai-player-roadmap.md`: persistent-agent north star, milestone
+  0–8 table (Goal Manager, emergency, autonomy, social, world awareness,
+  navigation, hierarchical planning, personality), deferred features.
+- **Lifecycle audit (milestone 0) answered from the code**: the bot stays
+  connected/spawned after a goal ends — `controller.mjs` is a one-shot loop
+  (`break` on `GOAL MET`, then `process.exit(0)`), while `bedrock-harness.mjs`
+  keeps the `BedrockAdapter` alive and reconnects on drop; no route disconnects
+  the bot (only `SIGTERM`/`SIGINT`). Gap: no explicit `IDLE` state / goal queue,
+  so new `@bot` orders are no longer acted on after the controller exits.
+- `index.md`, `sources.md`, `wiki/roadmap.md` (post-goal lifecycle section +
+  "Next planned work" item 1), `wiki/open-questions.md` (planned) updated.
+
+## [2026-10-02] ingest | Autonomous Exploration v1 spec (GOAL_EXPLORATION)
+
+- New raw source `docs/raw/GOAL_EXPLORATION.md` (Italian) digested into a new
+  wiki page `wiki/exploration.md`: find-biome MVP (persistent mission model,
+  Minecraft-ID biome targets, deterministic expanding-square/spiral planner,
+  checkpoints, biome detection, structured report, HOLD_POSITION), M2 route
+  replay, M3 escort, M4 search blocks/resources, M5 search structures, the
+  `explore.*` skill API and the responsibility split (Hermes / Exploration
+  Planner / Jev / Survival Governor).
+- Status recorded as **spec only, not implemented** — matches the existing
+  "no real exploration" limitation. Cross-links added from `roadmap.md` and
+  `open-questions.md`; `index.md` + `sources.md` updated.
+
+## [2026-10-02] ingest | Defense: equip_armor + close_door
+
+- `bedrock-adapter.mjs`: `equip_armor` (take→cursor→place armor pieces into the
+  `armor` container slots 0..3) and `close_door` (clicks `_openDoors` doors shut,
+  clearing the set on the runtime-id change). Both offered from `/options`.
+- 6 new unit tests; full suite green (297 tests).
+- `BEDROCK.md` action table + `roadmap.md` + `verification.md` (rows 35-36)
+  updated; defense gap now only `barricade` + armor points + shield.

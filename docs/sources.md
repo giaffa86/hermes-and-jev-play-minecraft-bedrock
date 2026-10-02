@@ -13,6 +13,8 @@ never committed.
 | `BEDROCK.md` | repo root | The operational runbook for the Bedrock port (components, deploy, action status, survival, crafting, movement, known issues). |
 | `docs/raw/SURVIVAL-INTELLIGENCE.md` | `docs/raw/` | Full reference for the Survival Intelligence Layer. |
 | `docs/raw/REPRODUCTION-REPORT.md` | `docs/raw/` | Full report of reproducing the original Ender Dragon run. |
+| `docs/raw/AI_PLAYER_ROADMAP.md` | `docs/raw/` | Evolutionary roadmap from chat-controllable bot to persistent autonomous agent (Goal Manager, suspend/resume, emergency, autonomy, home, navigation, personality). |
+| `docs/raw/GOAL_EXPLORATION.md` | `docs/raw/` | Autonomous Exploration v1 spec: find-biome MVP, mission model, deterministic planner, checkpoints, route replay, escort, search blocks/structures. |
 | `docs/raw/evidence/` | `docs/raw/evidence/` | JSONL evidence from early harness runs. |
 
 ## Source code (authoritative for behaviour)

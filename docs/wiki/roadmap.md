@@ -30,7 +30,7 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 | `ROADMAP.md` | Original port roadmap (division of labour + technical milestones) | ✅ done, superseded (frozen 01/10) | `BEDROCK.md`, `bedrock-adapter.mjs` |
 | `GOAL.md` | Original goal + launch runbook (Phases 1–10, two gameplay milestones) | ◑ Phases 1–9 done; Phase 10 (real multiplayer) and a full `first_night` run open | `BEDROCK.md`, `survival/` |
 | `JEV-TASK.md` | Jev decision quality + evaluation with new actions | ✅ implemented; live eval scenarios open | `controller-decisions.mjs`, `tests/controller-decisions.test.mjs` |
-| `DEFENSE-TASK.md` | Defense strategies (torch/lighting, weapons, shelter, armor, shield) | ◑ partial — `attack_*`, `flee`, `sleep`, `craft_torch`, `recover_loot`, **`place_torch`, `craft_wooden_sword`/`craft_stone_sword`, `go_home`/`retreat`** (02/10); still open: `close_door`, `barricade`, armor, shield | `bedrock-adapter.mjs` |
+| `DEFENSE-TASK.md` | Defense strategies (torch/lighting, weapons, shelter, armor, shield) | ◑ partial — `attack_*`, `flee`, `sleep`, `craft_torch`, `recover_loot`, **`place_torch`, `craft_wooden_sword`/`craft_stone_sword`, `go_home`/`retreat`, `equip_armor`, `close_door`** (02/10); still open: `barricade`, armor points, shield | `bedrock-adapter.mjs` |
 | `FARMING-TASK.md` | Farming (plant/resow crops, passive animals, feed/breed/tame/shear) | ◑ mostly done — `plant_<seed>`, `feed_<animal>`, `attack_<animal>`, `throw_egg`, `breed_<animal>`, `tame_<companion>` (wolf/cat/ocelot/parrot + ride horse/donkey/mule/llama/nautilus), `shear_sheep` + `craft_shears` implemented; `plant`/`feed`/`breed`/`throw_egg` + `read_container` **verified live 03/10**; `attack`/`tame`/`shear` live pending; axolotl in census (not tameable), milk + mature-crop detection still open | `bedrock-adapter.mjs`, `bedrock-survival.mjs` |
 | `STORAGE-TASK.md` | Chest/barrel storage: read, take, deposit | ◑ partial — `read_container` **verified live 03/10** (6 chests/barrels); `take_<item>`/`deposit_<item>` still live pending | `bedrock-adapter.mjs` (`read_container`, `take_<item>`, `deposit_<item>`) |
 | `TRADING-TASK.md` | Villager/wandering-trader trade + levelling | ⚠️ implemented, live verification pending | `bedrock-adapter.mjs` + `bedrock-trading.mjs`; see [trading](trading.md) |
@@ -100,35 +100,57 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
   `bedrock-fishing.mjs` + unit tests; no live round yet) — see
   [fishing](fishing.md).
 - Defense (first slice, 02/10): `place_torch`, `craft_wooden_sword` /
-  `craft_stone_sword`, `go_home` / `retreat` (home = spawn or `HOME_WAYPOINT`).
-  Implemented + unit-tested, not yet verified live.
+  `craft_stone_sword`, `go_home` / `retreat` (home = spawn or `HOME_WAYPOINT`),
+  `equip_armor`, `close_door`. Implemented + unit-tested; `go_home` verified
+  live, the rest live-pending.
 - A live `CURRICULUM=first_night` round and the real-multiplayer test (Phase 10).
+
+## Post-goal lifecycle (milestone 0 of the AI-player roadmap)
+
+- **The bot stays connected after a goal ends.** Goal lifecycle and connection
+  lifecycle are already separated: `controller.mjs` is a one-shot loop that
+  `break`s on `GOAL MET` and then `process.exit(0)`, while `bedrock-harness.mjs`
+  keeps the `BedrockAdapter` connected and reconnects on drop. There is no HTTP
+  route that disconnects the bot — only `SIGTERM`/`SIGINT` (harness shutdown).
+- **What is missing is persistence around the goal, not the connection**: no
+  explicit `IDLE` state, no goal queue, no suspend/resume. Once the controller
+  exits, new `@bot` orders are captured but no longer acted on (the chat actor
+  lives in the controller). Re-running `controller.mjs` against the same harness
+  works without reconnect, but it is manual.
+- Full analysis and the target `IDLE → GOAL_RUNNING → GOAL_COMPLETED → IDLE`
+  state machine in [ai-player-roadmap](ai-player-roadmap.md).
 
 ## What is not implemented
 
 - Farming leftovers (`.private/FARMING-TASK.md`): milk (bucket + cow) and
   mature-crop growth detection.
-- Defense gaps (remaining): `close_door`, `barricade`, armor equip/armor
-  points, shield (stretch).
-- Human chat command M5 (ack/reply in chat) and autonomous exploration.
+- Defense gaps (remaining): `barricade`, armor points in `/observe`,
+  shield (stretch).
+- Human chat command M5 (ack/reply in chat) and autonomous exploration
+  (spec in [exploration](exploration.md)).
 
 ## Open cross-cutting issues
 
 - NetherNet instability + `connecterror:9` (only a BDS restart at zero players
   clears it) — see [open-questions](open-questions.md).
 - No real exploration (strip mining / caves), no shelter building, no nether
-  portal — see [open-questions](open-questions.md).
+  portal — see [open-questions](open-questions.md); the exploration spec is in
+  [exploration](exploration.md).
 
 ## Next planned work
 
-1. **Live-verify the farming actions** on the BDS (`plant_<seed>`/`feed_`/
+1. **Lifecycle persistence** (AI-player roadmap milestone 0): turn the one-shot
+   `controller.mjs` loop into a persistent session loop with an explicit `IDLE`
+   state (or a Session Manager in the harness) that keeps polling for new goals
+   instead of `process.exit(0)` — see [ai-player-roadmap](ai-player-roadmap.md).
+2. **Live-verify the farming actions** on the BDS (`plant_<seed>`/`feed_`/
    `attack_<animal>`/`throw_egg`/`breed_*`/`tame_*`/`shear_sheep`), then milk +
    mature-crop detection.
-2. Live verification of the other ⚠️ items (storage, trading, `eat`, chat
+3. Live verification of the other ⚠️ items (storage, trading, `eat`, chat
    channel).
-3. Defense completions (torch placement, swords, shelter) and a full
+4. Defense completions (torch placement, swords, shelter) and a full
    `CURRICULUM=first_night` run.
-4. Live-verify fishing: `craft_fishing_rod` → `cast_rod`/`reel_in` (or a single
+5. Live-verify fishing: `craft_fishing_rod` → `cast_rod`/`reel_in` (or a single
    `fish`), bite detection, `food` tag integration — see [fishing](fishing.md).
 
 ## Related pages
@@ -140,3 +162,5 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 - [companions](companions.md) — taming/riding companion animals.
 - [verification](verification.md) — collaudo checklist (status per capability).
 - [open-questions](open-questions.md) — blockers and verification gaps.
+- [ai-player-roadmap](ai-player-roadmap.md) — persistent-autonomous-agent roadmap and the post-goal lifecycle audit.
+- [exploration](exploration.md) — autonomous-exploration spec (find biome/block/structure).

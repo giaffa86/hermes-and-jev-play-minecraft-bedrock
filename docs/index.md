@@ -20,6 +20,8 @@ question about the project.
 | [fishing.md](wiki/fishing.md) | Fishing (rod crafting, cast/bite/reel, water/shore detection, food integration) — implemented, live verification pending. | `bedrock-adapter.mjs`, `bedrock-fishing.mjs`, `BEDROCK.md` |
 | [roadmap.md](wiki/roadmap.md) | Consolidated roadmap and implementation status: done/verified-live vs implemented-pending-live vs not-implemented, across all `.private/` task notes. | `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/*-TASK.md`, `BEDROCK.md` |
 | [open-questions.md](wiki/open-questions.md) | Known issues, blockers, and verification gaps. | `BEDROCK.md` (Known issues), `SURVIVAL-INTELLIGENCE.md` (status) |
+| [ai-player-roadmap.md](wiki/ai-player-roadmap.md) | Synthesis of the persistent-AI-player roadmap (Goal Manager, emergency, autonomy, navigation, personality) and the milestone-0 lifecycle audit: the bot stays connected after a goal ends, but the controller exits and there is no explicit IDLE state yet. | `docs/raw/AI_PLAYER_ROADMAP.md`, `controller.mjs`, `bedrock-harness.mjs` |
+| [exploration.md](wiki/exploration.md) | Autonomous-exploration spec (find biome/block/structure, deterministic spiral planner, checkpoints, route replay, escort) — spec only, not implemented. | `docs/raw/GOAL_EXPLORATION.md` |
 
 ## Raw sources (`raw/`)
 
@@ -28,6 +30,8 @@ question about the project.
 | [BEDROCK.md](../BEDROCK.md) | The operational runbook for the Bedrock port: components, env vars, deploy, action status, survival, crafting, movement, known issues. |
 | [SURVIVAL-INTELLIGENCE.md](raw/SURVIVAL-INTELLIGENCE.md) | Full reference for the Survival Intelligence Layer. |
 | [REPRODUCTION-REPORT.md](raw/REPRODUCTION-REPORT.md) | Full report of reproducing the original Ender Dragon run. |
+| [AI_PLAYER_ROADMAP.md](raw/AI_PLAYER_ROADMAP.md) | Evolutionary roadmap from chat-controllable bot to persistent autonomous agent (Goal Manager, suspend/resume, emergency, autonomy, home, navigation, personality). |
+| [GOAL_EXPLORATION.md](raw/GOAL_EXPLORATION.md) | Autonomous Exploration v1 spec: find-biome MVP, mission model, deterministic planner, checkpoints, route replay, escort, search blocks/structures. |
 | [evidence/](raw/evidence/) | JSONL evidence from early harness runs (`hermes-01`, `jev-03`). |
 
 ## Meta files

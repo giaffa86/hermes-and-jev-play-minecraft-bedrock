@@ -53,12 +53,21 @@ capability collaudo checklist (done / pending live), see
 - **No real exploration**: the bot only "sees" ores within ~±40 loaded blocks (the
   96-block radar is capped by the actively requested subchunks) and has no random
   walk / strip mining / cave exploration. See
-  [headless-client](headless-client.md#8-render-distance-not-comparable).
+  [headless-client](headless-client.md#8-render-distance-not-comparable). A full
+  autonomous-exploration spec (find biome/block/structure, deterministic spiral
+  planner) exists in [exploration](exploration.md) but is not implemented.
 - **Placement** only on a top face adjacent to the bot; no scaling/orientation.
 - **Crafting** only one item at a time; special recipes (smithing, anvil, looms)
   not implemented.
 
 ## Planned / in progress
+
+- **Persistent agent lifecycle** (AI-player roadmap milestone 0): the controller
+  is a one-shot loop (`process.exit(0)` on goal met/budget) while the harness
+  keeps the bot connected. Missing: an explicit `IDLE` state and a goal queue so
+  the bot can accept a new goal (or autonomous idle behaviour) without
+  re-running `controller.mjs`. Full analysis in
+  [ai-player-roadmap](ai-player-roadmap.md).
 
 - **Farming** (`.private/FARMING-TASK.md`) — not started: `plant_<seed>`/resow,
   passive-animal `attack_<animal>`, `feed_*`/`breed_*`/`tame_*`/`shear_*`,
