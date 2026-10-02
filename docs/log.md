@@ -921,3 +921,22 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   `replan_skipped {recover:true}`, `goal_end completed`, `g1` re-planned).
   Cleaned up `/tmp/session` and the collaudo runs. `verification.md` row 62 → ✅,
   row 12 updated; `wiki/emergency.md` and `wiki/ai-player-roadmap.md` updated.
+
+## [2026-10-02] fix | Respawn stuck after death: auto-reconnect mitigation (verified live)
+
+- Investigated the death→respawn block. Packet capture (`PACKET_DEBUG=1`, new
+  env-gated diagnostic logging clientbound packet names after a death) showed the
+  connection stays alive (thousands of entity packets) but the BDS **ignores**
+  `player_action respawn` (13 requests, 0 `respawn` packets back). A client
+  `respawn` packet (`state: 2`, CLIENT_READY) *does* make the server run the
+  handshake (`SERVER_SEARCHING` 0 → `SERVER_READY` 1, spawn position) but it still
+  never restores health → server-side bug, not client-fixable.
+- **Mitigation**: `bedrock-adapter.mjs` watchdog — if the bot is still dead
+  `RESPAWN_RECONNECT_MS` (default 25 s) after dying it closes the client; the
+  harness reconnects (fresh login) and the player spawns healthy. **Live-verified**
+  (twice): `kill` → `respawn_reconnect {deadMs: 25000}` → harness reconnect →
+  `health: 20`, **without a BDS restart**. New env var `RESPAWN_RECONNECT_MS`;
+  the packet diagnostic is gated behind `PACKET_DEBUG` (default off).
+- Docs: `wiki/open-questions.md` (respawn section rewritten with the findings and
+  the mitigation), `wiki/verification.md` row 12 → ✅ (mitigated), `BEDROCK.md`
+  (env vars + Known issues). Tests green.

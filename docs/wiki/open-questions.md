@@ -56,21 +56,34 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
   checklist. Also missing: inventory-full handling, pillar-up, provisional-hut
   skill.
 
-## Respawn stuck on live BDS (2026-10-02, resolved)
+## Respawn stuck on live BDS (2026-10-02) — mitigated by auto-reconnect
 
-- The deployed `hermes-jev-bedrock` container was **dead** (`health: 0, deaths: 1`)
-  and stuck: `_survivalTick` sent `player_action {action: 'respawn'}` every
-  2.5 s but the BDS never replied with the `respawn` packet (no `respawn_packet`
-  log), so `/options` degraded to `wait` (`Dead; respawning automatically`).
-- **Resolution**: it was a stale NetherNet session state for that player, not a
-  protocol bug. A BDS restart at zero players (stop container → `systemctl
-  restart minecraft-bedrock` → start container) cleared it; the bot respawned
-  alive (`health:20`, spawn point) with an empty inventory (death dropped the
-  items, `keep-inventory=false`).
-- **Note**: this recovery was a fresh login, so the in-place
-  `player_action respawn` flow itself still needs a clean live re-verification
-  (die → respawn without a restart). Tracked in [verification](verification.md)
-  row 12.
+- After a death (natural or a console `kill`) the bot stays `dead`
+  (`health: 0`): `_survivalTick` sends `player_action {action: 'respawn'}` every
+  2.5 s but the BDS never replies with a `respawn` packet, so `/options` degrades
+  to `wait` (`Dead; respawning automatically`).
+- **What a live packet capture showed** (BDS 1.26.52, NetherNet,
+  server-authoritative movement): the connection stays fully alive after the
+  death (thousands of entity packets). The server **ignores**
+  `player_action respawn`. A client `respawn` packet (`state = 2`, CLIENT_READY)
+  *does* make the server run the respawn handshake (`SERVER_SEARCHING` 0 →
+  `SERVER_READY` 1, with the spawn position), but it never restores health — the
+  player stays dead. This is a **server-side bug**, not fixable purely
+  client-side.
+- **Mitigation (implemented, live-verified)**: `bedrock-adapter.mjs` runs a
+  watchdog — if the bot is still dead `RESPAWN_RECONNECT_MS` (default 25 s) after
+  dying it closes the client; the harness reconnects (fresh login) and the player
+  spawns healthy. Live 2026-10-02: `kill` → `respawn_reconnect {deadMs: 25000}` →
+  harness reconnect → `health: 20`, **without a BDS restart**. The inventory is
+  still dropped on death (`keep-inventory=false`), so `recover_loot` still
+  matters.
+- **Fallback** (previous behaviour, kept for reference): a
+  `systemctl restart minecraft-bedrock` at zero players also clears it (fresh
+  login).
+- A **clean in-place respawn** (no reconnect, no 25 s gap) would need the correct
+  server-side protocol exchange; tracked in [verification](verification.md) row 12.
+- Diagnostic for future work: `PACKET_DEBUG=1` on the harness logs the names of
+  the clientbound packets received right after a death (`rx_packet`).
 
 ## Live verification pending
 

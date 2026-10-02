@@ -32,6 +32,9 @@ const PLAYER_HALF_WIDTH = 0.3;
 const PLAYER_HEIGHT = 1.8;
 const PATH_MAX_NODES = 5000;    // tetti di ricerca A*
 const MAX_CORRECTION_DRIFT = 0.75; // oltre questa distanza la correzione è autoritativa su X/Z
+// BDS 1.26.52: se il respawn non si completa entro questo tempo, si riconnette
+// (nuovo login = unico recovery noto dalla morte bloccata). Vedi _survivalTick.
+const RESPAWN_RECONNECT_MS = +(process.env.RESPAWN_RECONNECT_MS || 25000);
 // Velocità degli utensili per materiale (vanilla, secondi-blocco/tick): il
 // registry Bedrock usa id diversi da quelli di rete, quindi la corrispondenza
 // utensile/materiale va dedotta dal nome.
@@ -184,6 +187,8 @@ export class BedrockAdapter {
     this.deaths = 0;
     this._respawnAt = 0;
     this._limboSince = null;           // health <= 0 senza stato dead (respawn a metà)
+    this._deadSince = null;            // morte in corso: base per il watchdog di riconnessione
+    this._respawnReconnecting = false; // riconnessione già innescata per respawn bloccato
     this.deathSite = null;             // { position, at, attempts } per il recupero post-morte
     this.experienceLevel = null;       // livello EXP dal server (attributi)
     this.experienceProgress = null;
@@ -354,6 +359,8 @@ export class BedrockAdapter {
       this.client.on('spawn', () => {
         this.spawned = true;
         this.status = 'spawned';
+        this._deadSince = null;
+        this._respawnReconnecting = false;
         this.position = client.startGameData?.player_position;
         this.dimension = client.startGameData?.dimension || 'overworld';
         if (!this.home) this.home = { x: this.position.x, y: this.position.y, z: this.position.z };
@@ -629,6 +636,16 @@ export class BedrockAdapter {
       this.client.on('set_time', (packet) => this._recordTime(packet.time));
       this.client.on('sync_world_clocks', (packet) => this._onWorldClocks(packet));
       this.client.on('respawn', (packet) => this._onRespawnPacket(packet));
+      // Diagnostica opzionale (PACKET_DEBUG=1): logga i nomi dei pacchetti
+      // ricevuti subito dopo una morte, per capire cosa manda (o non manda) il
+      // server. Spenta di default: nessun costo a runtime.
+      if (process.env.PACKET_DEBUG) {
+        this.client.on('packet', (des) => {
+          if (this._packetDebugUntil && Date.now() < this._packetDebugUntil) {
+            this.log('rx_packet', { name: des?.data?.name });
+          }
+        });
+      }
       this.client.on('move_entity', (packet) => this._onEntityMove(packet));
       this.client.on('move_entity_delta', (packet) => this._onEntityMove(packet));
       this.client.on('remove_entity', (packet) => this._onEntityRemove(packet));
@@ -4248,6 +4265,8 @@ export class BedrockAdapter {
       this.dead = true;
       this.deaths++;
       this._respawnAt = Date.now() + 1500;
+      this._deadSince = Date.now();
+      if (process.env.PACKET_DEBUG) this._packetDebugUntil = Date.now() + 25000;
       this._motion = null;
       this._velocity = { x: 0, y: 0, z: 0 };
       this._setSleeping(false);
@@ -4264,6 +4283,8 @@ export class BedrockAdapter {
     } else if (this.health > 0 && this.dead) {
       this.dead = false;
       this._respawnAt = 0;
+      this._deadSince = null;
+      this._respawnReconnecting = false;
       this.log('alive_again', { health: this.health });
     }
   }
@@ -4340,6 +4361,20 @@ export class BedrockAdapter {
       }
     } else {
       this._limboSince = null;
+    }
+    // Workaround BDS 1.26.52 (vedi docs/wiki/open-questions.md, riga 12):
+    // dopo una morte il server ignora `player_action respawn` e, pur rispondendo
+    // al pacchetto `respawn` (state 0 -> 1) col punto di spawn, NON ripristina la
+    // vita: il player resta a 0. L'unico recovery noto e' un login nuovo (un
+    // reconnect), quindi se il respawn non si completa entro N secondi si chiude
+    // il client: il harness riconnette (nuovo login) e il player risorge sano.
+    if (this.dead && this._deadSince && !this._respawnReconnecting &&
+        Date.now() - this._deadSince > RESPAWN_RECONNECT_MS) {
+      this._respawnReconnecting = true;
+      this.log('respawn_reconnect', { deadMs: Date.now() - this._deadSince, deaths: this.deaths });
+      closeBedrockClient(this.client, 'respawn-stuck').catch(error =>
+        this.log('respawn_reconnect_error', { message: error.message }));
+      return;
     }
     if (this.sleeping && this._timeBase && !this._isNight()) {
       this._daySince = this._daySince || Date.now();

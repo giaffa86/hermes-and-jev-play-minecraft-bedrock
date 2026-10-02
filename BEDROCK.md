@@ -55,6 +55,8 @@ BEDROCK_AUTH_TITLE=MinecraftNintendoSwitch
 API_PORT=3077
 RUN_ID=demo
 MEMORY_DIR=runs/memory   # persistent world memory (SQLite + WAL); default runs/memory
+RESPAWN_RECONNECT_MS=25000  # still dead this long after a death -> reconnect (workaround for the BDS respawn bug)
+PACKET_DEBUG=               # 1 = log clientbound packet names for 25 s after a death (protocol diagnostics)
 
 # Jev (TypeSafe)
 TYPESAFE_API_KEY=ts-...
@@ -716,6 +718,14 @@ inventory count (`take_item_entity`), and a Hermes → Jev → Bedrock loop with
   `connect()` shares the attempt between concurrent callers and also cleans up
   errors before spawn. Do not consider these tests a guarantee for external clients
   that do not wait for teardown.
+- **Respawn stuck after death (server-side, mitigated 2026-10-02)**: the BDS
+  ignores `player_action respawn`, so after a death the bot stayed `dead`
+  (`health: 0`). A client `respawn` packet (`state: 2`) runs the handshake
+  (`SERVER_SEARCHING` → `SERVER_READY`) but does not restore health either — a
+  server-side bug. Workaround: if still dead after `RESPAWN_RECONNECT_MS`
+  (default 25 s) the adapter closes the client and the harness reconnects (fresh
+  login), which spawns the bot alive — verified live, no BDS restart. A clean
+  in-place respawn is still missing; details in `docs/wiki/open-questions.md`.
 - **Drops during mining (solved 02/10)**: the NetherNet session dropped after 1-2
   dug blocks (`client_close: disconnected`, also from the container). Cause:
   `item_stack_request` of `mine_block` with ids `-1, -2, ...`; the vanilla client
