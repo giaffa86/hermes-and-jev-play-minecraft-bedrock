@@ -131,6 +131,10 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
   avoidance, buckets/boats/bubble columns/potions. Roadmap (M0–M6) in
   [fluids](fluids.md) / [`raw/FLUIDS_ROADMAP.md`](../raw/FLUIDS_ROADMAP.md);
   fluids are currently walls (`_passable` rejects `water|lava`).
+- **Redstone and primitive automation** — switches, delay lines, observers/
+  pistons, hoppers, dispensers. Roadmap (R0–R6) in [redstone](redstone.md) /
+  [`raw/REDSTONE_ROADMAP.md`](../raw/REDSTONE_ROADMAP.md); no redstone support
+  today, but the world model already exposes component `getProperties()` state.
 
 ## Open cross-cutting issues
 
@@ -159,6 +163,10 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
    `/observe.fluids`, lava forbidden in A*, dig adjacency check), then M1
    (swimming physics + air budget). Requires a packet capture of a real player
    swimming to confirm the Bedrock water movement flags/`delta` semantics.
+7. **Redstone** (spec in [redstone](redstone.md)): start with R0 (protect
+   redstone in `DIG_PROTECTED`, `/observe.redstone`, state-aware search) and R1
+   (oriented placement — needs a packet capture of a real placement to confirm
+   how the BDS derives block state from yaw/face/click position).
 
 ## Related pages
 
@@ -172,3 +180,4 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 - [ai-player-roadmap](ai-player-roadmap.md) — persistent-autonomous-agent roadmap and the post-goal lifecycle audit.
 - [exploration](exploration.md) — autonomous-exploration spec (find biome/block/structure).
 - [fluids](fluids.md) — swimming/drowning/breathing, waterfalls, lava avoidance, buckets/boats/potions.
+- [redstone](redstone.md) — redstone sensing/placement and primitive circuit automation.

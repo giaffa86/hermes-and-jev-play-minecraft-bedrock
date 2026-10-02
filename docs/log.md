@@ -345,3 +345,23 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Tests added/updated; suite green (305). Documented in
   `wiki/survival-intelligence.md`; bow/arrow gap recorded in
   `wiki/open-questions.md`.
+
+## [2026-10-02] ingest | Redstone roadmap (sensing, oriented placement, primitive circuits)
+
+- New raw source `docs/raw/REDSTONE_ROADMAP.md` (Italian) digested into a new
+  wiki page `wiki/redstone.md`. Findings from the code/registry: no redstone
+  support today, but `bedrock-world.mjs` already decodes component state via
+  `blockAt().getProperties()` (`redstone_wire.redstone_signal` 0..15,
+  `lever.open_bit`, `repeater.repeater_delay` + `cardinal_direction`,
+  `observer.powered_bit`, `dispenser.triggered_bit`, `piston.facing_direction`,
+  ...); `DIG_PROTECTED` does **not** cover redstone; `_placeAtCell` cannot set
+  orientation; `_refreshNearby`/`findBlocks` are name-only.
+- Roadmap R0–R6: protect redstone + `/observe.redstone` + state-aware search;
+  oriented placement (blocked on a placement packet capture); interaction/sensing;
+  declarative `circuits/*.json` (`lamp_switch`, `delay_line`, `auto_lamp`,
+  `auto_harvest`, `hopper_chain`, ...) with `build_circuit_<id>`; verification,
+  `teardown_circuit` and guardrails; Survival Intelligence integration
+  (skills/progression/verifier/tags); limits (no TNT/command blocks, lag caps).
+- Status **spec only, not implemented**. Cross-links added from `roadmap.md`,
+  `open-questions.md` and `verification.md` (rows 44–48); `index.md` +
+  `sources.md` updated. Private handoff: `.private/REDSTONE-TASK.md` (not committed).

@@ -84,6 +84,11 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 41 | Waterfall descent / ascent | `descend_waterfall`, `climb_waterfall`, `use_bubble_column` | ❌ | descend + climb a natural waterfall | Spec M3 in [fluids](fluids.md); needs fall-safe landing. |
 | 42 | Lava avoidance | `avoid_lava`, A* forbid + repulsion | ❌ | path near lava stays clear | Spec M0/M4 in [fluids](fluids.md); lava currently a wall, so never mined into. |
 | 43 | Buckets / boats / potions | `craft_bucket`, `fill_bucket`, `place_water`, `mount_boat`, `brew_*` | ❌ | place water → obsidian; boat across water | Spec M4/M5 in [fluids](fluids.md). |
+| 44 | Redstone sensing | `/observe.redstone`, `findBlocksByState` | ❌ | read nearby components + `redstone_signal` | Spec R0 in [redstone](redstone.md); `blockAt().getProperties()` already exposes state. |
+| 45 | Oriented placement | `place_<component>`, `set_repeater_delay` | ❌ | place a repeater/piston with the expected facing | Spec R1 in [redstone](redstone.md); needs a placement packet capture. |
+| 46 | Trigger components | `use_redstone` | ❌ | `lever → redstone_lamp` toggles | Spec R2 in [redstone](redstone.md); reuses the verified `click_block` path. |
+| 47 | Primitive circuits | `build_circuit_<id>` | ❌ | build `lamp_switch` / `delay_line` | Spec R3 in [redstone](redstone.md); declarative blueprints. |
+| 48 | Teardown / guardrails | `teardown_circuit` | ❌ | build then teardown, materials returned | Spec R4 in [redstone](redstone.md); `DIG_PROTECTED` must cover redstone. |
 
 ## Still not implemented
 
@@ -96,6 +101,9 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 - **Fluids**: swimming, drowning/breathing, waterfalls (descent/ascent), lava
   avoidance, buckets/boats/bubble columns/potions. Spec in [fluids](fluids.md)
   (rows 39–43); `_passable()` currently treats `water|lava` as walls.
+- **Redstone and primitive automation**: sensing, oriented placement, switches,
+  delay lines, observers/pistons, hoppers, dispensers, circuit blueprints. Spec
+  in [redstone](redstone.md) (rows 44–48); no redstone support today.
 
 ## Related pages
 

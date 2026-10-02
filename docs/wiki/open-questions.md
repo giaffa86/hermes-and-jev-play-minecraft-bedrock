@@ -67,6 +67,12 @@ capability collaudo checklist (done / pending live), see
   autonomous-exploration spec (find biome/block/structure, deterministic spiral
   planner) exists in [exploration](exploration.md) but is not implemented.
 - **Placement** only on a top face adjacent to the bot; no scaling/orientation.
+- **No redstone awareness or placement.** `_refreshNearby`'s fixed list excludes
+  redstone ore and components, so the bot cannot see or place them; `_placeAtCell`
+  cannot set orientation (`facing_direction`/`cardinal_direction`); `DIG_PROTECTED`
+  does not cover redstone components. The world model *does* expose component
+  state via `blockAt().getProperties()` (`redstone_signal`, `powered_bit`,
+  `open_bit`, `repeater_delay`, ...). Roadmap in [redstone](redstone.md).
 - **Crafting** only one item at a time; special recipes (smithing, anvil, looms)
   not implemented.
 
@@ -98,6 +104,10 @@ capability collaudo checklist (done / pending live), see
 - **Fluids** (swimming, drowning/breathing, waterfalls, lava avoidance, buckets/
   boats/potions) — spec only. Roadmap in [fluids](fluids.md); start at M0 (fluid
   awareness) and M1 (swimming physics + air budget).
+- **Redstone and primitive automation** — spec only. Roadmap in
+  [redstone](redstone.md); start at R0 (protect redstone, `/observe.redstone`,
+  state-aware search) and R1 (oriented placement, needs a placement packet
+  capture).
 
 ## Architecture evolution
 
