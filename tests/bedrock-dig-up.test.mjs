@@ -39,13 +39,15 @@ test('up targets are the step and head cells above the block ahead', () => {
   assert.deepEqual(plan.step, { x: 92, y: 69, z: 149 });
 });
 
-test('up targets refuse missing step, fluids, unknown blocks and open passages', () => {
+test('up targets refuse missing step and fluids, and treat unknown blocks as raw targets', () => {
   const noStep = upAdapter({ '92,68,149': air });
   assert.equal(noStep.adapter._upTargets().error, 'no_step_ahead');
   const water = upAdapter({ '92,69,149': { name: 'water', boundingBox: 'empty', diggable: false, hardness: 0 } });
   assert.equal(water.adapter._upTargets().error, 'unsafe_block_step');
-  const unknown = upAdapter({ '92,69,149': { name: 'unknown', diggable: false, hardness: null } });
-  assert.equal(unknown.adapter._upTargets().error, 'block_unknown');
+  const unknown = upAdapter({ '92,69,149': { name: 'unknown', diggable: false, hardness: null, runtimeId: 42 } });
+  const plan = unknown.adapter._upTargets();
+  assert.equal(plan.error, undefined);
+  assert.deepEqual(plan.targets.map(t => `${t.label}${t.raw ? ':raw' : ''}`), ['step:raw', 'head']);
   const open = upAdapter({ '92,69,149': air, '92,70,149': air });
   assert.equal(open.adapter._upTargets().error, 'already_open');
 });
@@ -55,6 +57,22 @@ test('up targets include the ceiling above the bot when it blocks the jump', () 
   const plan = adapter._upTargets();
   assert.equal(plan.error, undefined);
   assert.deepEqual(plan.targets.map(t => t.label), ['ceiling', 'step', 'head']);
+});
+
+test('an unknown ceiling is a raw target and dig_up dispatches to raw mining', async () => {
+  const { adapter } = upAdapter({ '92,70,148': { name: 'unknown', diggable: false, hardness: null, runtimeId: 42 } });
+  assert.equal(adapter._upTargets().targets[0].label, 'ceiling');
+  assert.equal(adapter._upTargets().targets[0].raw, true);
+  const rawMined = [];
+  adapter._mineTarget = async target => { rawMined.push({ label: target.label, raw: !!target.raw }); return { ok: true, block: 'unknown' }; };
+  adapter._ascendStair = async () => true;
+  const result = await adapter._digUp(1000);
+  assert.equal(result.ok, true);
+  assert.deepEqual(rawMined, [
+    { label: 'ceiling', raw: true },
+    { label: 'step', raw: false },
+    { label: 'head', raw: false },
+  ]);
 });
 
 test('dig_up mines step and head then climbs the stair', async () => {

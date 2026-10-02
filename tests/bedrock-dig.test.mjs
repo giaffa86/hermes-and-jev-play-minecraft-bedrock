@@ -98,13 +98,16 @@ test('dig targets are the head, front and step cells of a staircase', () => {
   assert.deepEqual(plan.support, { x: 92, y: 70, z: 149 });
 });
 
-test('dig targets refuse missing support, fluids and unknown blocks', () => {
+test('dig targets refuse missing support and fluids, and treat unknown blocks as raw targets', () => {
   const noSupport = digAdapter({ '92,70,149': air });
   assert.equal(noSupport.adapter._digTargets().error, 'no_support_ahead');
   const water = digAdapter({ '92,71,149': { name: 'water', boundingBox: 'empty', diggable: false, hardness: 0 } });
   assert.equal(water.adapter._digTargets().error, 'unsafe_block_step');
-  const unknown = digAdapter({ '92,73,149': { name: 'unknown', diggable: false, hardness: null } });
-  assert.equal(unknown.adapter._digTargets().error, 'block_unknown');
+  const unknown = digAdapter({ '92,73,149': { name: 'unknown', diggable: false, hardness: null, runtimeId: 42 } });
+  const plan = unknown.adapter._digTargets();
+  assert.equal(plan.error, undefined);
+  assert.equal(plan.targets[0].label, 'head');
+  assert.equal(plan.targets[0].raw, true);
 });
 
 test('dig_down mines head/front/step in order then descends the stair', async () => {

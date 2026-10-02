@@ -87,9 +87,34 @@ server = createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && req.url === '/observe') response = [200, adapter.observe()];
     else if (req.method === 'GET' && req.url === '/options') response = [200, { options: adapter.options() }];
+    else if (req.method === 'GET' && req.url === '/debug/geom') response = [200, geometryReport(adapter)];
     else if (req.method === 'POST' && req.url === '/plan') { adapter.setPlan(JSON.parse(body)); response = [200, { ok: true, plan: adapter.plan }]; }
     else if (req.method === 'POST' && req.url === '/act') { const { key } = JSON.parse(body); response = [200, await adapter.executeAction(key)]; }
     else response = [404, { error: 'unknown route' }];
+
+    // Solo lettura: griglia camminabile attorno al bot e validità della risalita.
+    function geometryReport (a) {
+      if (!a._feet) return { error: 'no_position' };
+      const feet = a._feet;
+      const cx = Math.floor(feet.x), cz = Math.floor(feet.z), cy = Math.floor(feet.y + 1e-3);
+      const grid = [];
+      for (let dy = 5; dy >= -3; dy--) {
+        const cells = [];
+        for (let dx = -3; dx <= 3; dx++) for (let dz = -3; dz <= 3; dz++) {
+          if (a._standable(cx + dx, cy + dy, cz + dz)) cells.push(`${dx >= 0 ? '+' : ''}${dx},${dz >= 0 ? '+' : ''}${dz}`);
+        }
+        grid.push({ dy, cells });
+      }
+      const upTargets = {};
+      for (const yaw of [0, 90, 180, -90]) { a._lastYaw = yaw; const plan = a._upTargets(); upTargets[yaw] = plan.error || plan.targets.map(t => t.label); }
+      const bed = a._findBed();
+      const bedCenter = bed ? { x: bed.position.x + 0.5, y: bed.position.y, z: bed.position.z + 0.5 } : null;
+      return {
+        feet, position: a.pos(), startNode: a._startNode(), grid, upTargets, bed,
+        bedGoals: bed ? a._findGoalNodes(bedCenter).map(goal => ({ goal, hasPath: !!a._findPath(a._startNode(), goal) })) : null,
+        standingOn: a.standingOn,
+      };
+    }
   } catch (e) {
     console.error('[http] error handling', req.method, req.url, e);
     response = [500, { error: e.message }];

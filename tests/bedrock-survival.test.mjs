@@ -224,6 +224,18 @@ test('executeAction refuses actions while dead or sleeping', async () => {
   assert.equal(sleeping.error, 'sleeping');
 });
 
+test('attack options are deduped by mob type', () => {
+  const adapter = spawnedAdapter();
+  adapter.nearbyBlocks = {};
+  adapter.drops = [];
+  adapter.inventory = {};
+  adapter._trackEntity({ runtime_id: 1n, unique_id: 11n, entity_type: 'zombie', position: { x: 5, y: 63, z: 0 } }, 'mob');
+  adapter._trackEntity({ runtime_id: 2n, unique_id: 12n, entity_type: 'zombie', position: { x: 6, y: 63, z: 0 } }, 'mob');
+  adapter._trackEntity({ runtime_id: 3n, unique_id: 13n, entity_type: 'skeleton', position: { x: 7, y: 63, z: 0 } }, 'mob');
+  const attackKeys = adapter.options().map(o => o.key).filter(key => key.startsWith('attack_'));
+  assert.deepEqual(attackKeys, ['attack_zombie', 'attack_skeleton']);
+});
+
 test('attack uses an item_use_on_entity transaction with swing animation', () => {
   const adapter = spawnedAdapter();
   const packets = [];

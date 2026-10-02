@@ -617,8 +617,12 @@ export class BedrockAdapter {
     // Sopravvivenza: mob ostili, cibo e letto. Le descrizioni portano il contesto
     // (distanza, vita, fame) e la scelta resta al controller.
     const threats = this._hostiles();
-    for (const threat of threats.slice(0, 3)) {
+    const attackTypes = new Set();
+    for (const threat of threats) {
+      if (attackTypes.has(threat.type)) continue;
+      attackTypes.add(threat.type);
       o.push({ key: `attack_${threat.type}`, description: `Attack the ${threat.type} (${threat.distance.toFixed(1)} blocks away, ${threat.health != null ? `health ${threat.health}` : 'health unknown'})` });
+      if (attackTypes.size >= 3) break;
     }
     if (threats.length && threats[0].distance <= 16) {
       o.push({ key: 'flee', description: `Run away from the nearest ${threats[0].type} (${threats[0].distance.toFixed(1)} blocks away)` });
@@ -1706,7 +1710,7 @@ export class BedrockAdapter {
     for (const [cell, label] of [[head, 'head'], [front, 'front'], [step, 'step']]) {
       const block = this.world.blockAt(cell);
       if (!block) return { error: 'world_not_loaded' };
-      if (block.name === 'unknown') return { error: 'block_unknown' };
+      if (block.name === 'unknown') { targets.push({ cell, block, label, raw: true }); continue; }
       if (this._passableForPath(block)) continue;
       if (/water|lava/.test(block.name)) return { error: `unsafe_block_${label}` };
       if (DIG_PROTECTED.test(block.name)) return { error: `protected_${label}`, block: block.name };
@@ -1724,8 +1728,9 @@ export class BedrockAdapter {
     const plan = this._digTargets();
     if (plan.error) return { ok: false, error: plan.error };
     const dug = [];
-    for (const { cell, block, label } of plan.targets) {
-      const result = await this._mineBlock(block, timeoutMs);
+    for (const target of plan.targets) {
+      const { cell, block, label } = target;
+      const result = await this._mineTarget(target, timeoutMs);
       if (!result.ok) return { ...result, dug };
       dug.push({ label, block: block.name, position: cell, tool: result.tool ?? null });
     }
@@ -1925,9 +1930,10 @@ export class BedrockAdapter {
 
   _passable (block) {
     if (!block) return false;
-    // Un hash non risolto (server più recente del registro) viene trattato come
-    // attraversabile per la pianificazione; la fisica resta conservativa.
-    if (block.name === 'unknown') return true;
+    // Un hash non risolto (server più recente del registro) è conservativo:
+    // la fisica locale lo tratta come solido, quindi anche il pathfinding deve
+    // evitarlo, altrimenti pianifica percorsi attraverso muri invisibili.
+    if (block.name === 'unknown') return false;
     if (block.name === 'air') return true;
     if (/water|lava/.test(block.name)) return false; // il bot non nuota
     return block.boundingBox === 'empty';
@@ -2918,7 +2924,9 @@ export class BedrockAdapter {
     // Volta sopra la testa del bot: serve spazio verticale per il salto.
     const ownCeiling = { x: fx, y: fy + 2, z: fz };
     const ceilingBlock = this.world.blockAt(ownCeiling);
-    if (ceilingBlock && ceilingBlock.name !== 'unknown' && !this._passableForPath(ceilingBlock)) {
+    if (ceilingBlock && ceilingBlock.name === 'unknown') {
+      targets.push({ cell: ownCeiling, block: ceilingBlock, label: 'ceiling', raw: true });
+    } else if (ceilingBlock && !this._passableForPath(ceilingBlock)) {
       if (/water|lava/.test(ceilingBlock.name)) return { error: 'unsafe_block_ceiling' };
       if (!ceilingBlock.diggable || !(ceilingBlock.hardness >= 0)) return { error: 'not_diggable_ceiling' };
       targets.push({ cell: ownCeiling, block: ceilingBlock, label: 'ceiling' });
@@ -2926,7 +2934,7 @@ export class BedrockAdapter {
     for (const [cell, label] of [[step, 'step'], [head, 'head']]) {
       const block = this.world.blockAt(cell);
       if (!block) return { error: 'world_not_loaded' };
-      if (block.name === 'unknown') return { error: 'block_unknown' };
+      if (block.name === 'unknown') { targets.push({ cell, block, label, raw: true }); continue; }
       if (this._passableForPath(block)) continue;
       if (/water|lava/.test(block.name)) return { error: `unsafe_block_${label}` };
       if (!block.diggable || !(block.hardness >= 0)) return { error: `not_diggable_${label}` };
@@ -2957,8 +2965,9 @@ export class BedrockAdapter {
     const plan = this._upTargets();
     if (plan.error) return { ok: false, error: plan.error };
     const dug = [];
-    for (const { cell, block, label } of plan.targets) {
-      const result = await this._mineBlock(block, timeoutMs);
+    for (const target of plan.targets) {
+      const { cell, block, label } = target;
+      const result = await this._mineTarget(target, timeoutMs);
       if (!result.ok) return { ...result, dug };
       dug.push({ label, block: block.name, position: cell, tool: result.tool ?? null });
     }
@@ -2968,5 +2977,40 @@ export class BedrockAdapter {
     } catch (error) {
       return { ok: false, error: `step_move_failed: ${error.message}`, dug, position: this.pos() };
     }
+  }
+
+  // Scava un bersaglio: per gli hash non risolti ("unknown") usa una rottura
+  // grezza col runtime id del server, senza previsioni di utensile.
+  async _mineTarget (target, timeoutMs) {
+    if (target?.raw || target?.block?.name === 'unknown') return this._mineRawCell(target.cell, timeoutMs);
+    return this._mineBlock(target.block, timeoutMs);
+  }
+
+  async _mineRawCell (position, timeoutMs = 4000) {
+    if (!this.client) throw new Error('no client');
+    const runtimeId = this.world.runtimeIdAt(position);
+    if (runtimeId == null) return { ok: false, error: 'block_runtime_id_unknown' };
+    const original = this.world.blockAt(position);
+    if (!original || original.name !== 'unknown') return { ok: false, error: 'not_unknown' };
+    const look = this._lookAt({ x: position.x + 0.5, y: position.y + 0.5, z: position.z + 0.5 });
+    const face = this._faceForBlock(position, this.position);
+    const action = name => [{ action: name, position: { x: position.x, y: position.y, z: position.z }, face }];
+    const started = Date.now();
+    const deadline = started + Math.max(1200, timeoutMs);
+    await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch, blockAction: action('start_break') });
+    while (Date.now() < deadline) {
+      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch, blockAction: action('continue_break') });
+      const current = this.world.blockAt(position);
+      if (!current || current.name !== 'unknown' || current.runtimeId !== runtimeId) {
+        await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch, blockAction: action('stop_break') });
+        this.world.refreshSection(this.client, position);
+        this._refreshNearby();
+        this.log('raw_mined', { position, ms: Date.now() - started });
+        return { ok: true, block: 'unknown', position, ms: Date.now() - started };
+      }
+      await delay(50);
+    }
+    await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch, blockAction: action('stop_break') });
+    return { ok: false, error: 'raw_break_timeout', position };
   }
 }
