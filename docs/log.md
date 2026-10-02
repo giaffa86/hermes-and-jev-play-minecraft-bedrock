@@ -443,3 +443,16 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Recorded the gaps in `wiki/open-questions.md` ("Exploration travel kit"):
   `craft_bed`/`place_bed`, travel-kit/loadout, inventory-full handling,
   pillar-up, provisional-hut skill.
+
+## [2026-10-02] doc | Finding: no persistent memory (landmarks, chests, chunks)
+
+- Audited persistence: the only files read at startup are static config
+  (`knowledge/*.json`, `skills/gameplay/**`); no runtime state is restored.
+  `this.containers` (chest cache) is a volatile in-memory Map, `home` comes from
+  spawn/`HOME_WAYPOINT`, and `runs/*.jsonl` are append-only and never read back
+  (`survival/experience.mjs` logs skill stats "for a future retrievable
+  experience").
+- Consequence: the bot cannot remember where the sheep pen or the wool chest is,
+  nor the chunks it has explored.
+- Recorded in `wiki/open-questions.md` ("No persistent memory") and
+  `wiki/exploration.md` (current status).

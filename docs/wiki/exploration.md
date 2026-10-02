@@ -184,7 +184,10 @@ a report → stays on the spot → can return later → can escort the player th
 `goto_waypoint` / `_moveTo` (A* pathfinding), `follow_player`, and the bounded
 `/options` + `/act` loop. There is no exploration mission model, no expanding
 spiral planner, no chunk-visit memory, no biome target resolution, and the bot
-has no random walk / strip mining / cave exploration. The bot only "sees" loaded
+has no random walk / strip mining / cave exploration. There is also **no
+persistent memory**: no landmark registry (home, sheep pen, chests) and the
+chest cache is volatile (a reconnect wipes it) — see
+[open-questions](open-questions.md#no-persistent-memory-landmarks-chests-chunks). The bot only "sees" loaded
 blocks near it (see
 [headless-client](headless-client.md#8-render-distance-not-comparable)), so
 "go find X by yourself" is currently out of reach — the chat-channel roadmap

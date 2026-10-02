@@ -76,6 +76,31 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
 - A live `CURRICULUM=first_night` round on the BDS was not run (the bot container
   was connected; a concurrent session with the same account would kick it out).
 
+## No persistent memory (landmarks, chests, chunks)
+
+The bot has **no persistent memory** — nothing is loaded back on startup:
+
+- `this.containers` (chest/barrel contents) is an in-memory `Map` with a TTL;
+  it is populated at runtime (`read_container`) and **never saved**, so it is
+  lost on every reconnect/restart.
+- `home` is set at spawn (or from the `HOME_WAYPOINT` env var); it is not learned.
+- `deathSite`, `entities`, `drops`, `_openDoors` are all in-memory and ephemeral.
+- `runs/<RUN>/*.jsonl` (events, controller decisions, skill records) are written
+  **append-only and never read back**; `survival/experience.mjs` explicitly logs
+  skill stats "to prepare the ground for a future retrievable experience".
+- The only files read at startup are static config (`knowledge/*.json`,
+  `skills/gameplay/**`), never runtime state.
+
+**Consequence**: the bot cannot remember *where the sheep pen is* or *which
+chest holds the wool*, nor the chunks it has already explored. A `HOME_WAYPOINT`
+can be handed in via env, but nothing is learned on its own. This is exactly what
+an exploration/expedition needs, so a persistent layer is required:
+
+- **landmarks**: name → position (home, sheep pen, chests, villages, found biomes);
+- **container memory**: persist the chest cache to disk;
+- **chunk memory**: visited chunks (for the deterministic planner);
+- **mission checkpoints**: already in the [exploration](exploration.md) spec (M1).
+
 ## Design limitations
 
 - **No real exploration**: the bot only "sees" ores within ~±40 loaded blocks (the
