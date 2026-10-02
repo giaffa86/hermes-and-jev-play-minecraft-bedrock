@@ -47,6 +47,7 @@ action; a mission can run for a long time as many small bounded steps.
 | M3 | Escort player | walk the player to a discovered location (`ESCORTING` / `WAITING_FOR_PLAYER`, stop if the player lags, avoid pointless fights). |
 | M4 | Search blocks/resources | extend `explore/find` to observable targets (mushrooms, pumpkins, bamboo, mangrove trees): `EXPLORE → SCAN → MATCH BLOCK/ENTITY → REPORT`. |
 | M5 | Search structures | village, trial chamber, pillager outpost, woodland mansion, ancient city, desert pyramid, jungle temple; heuristic detection first (village = villagers + beds + village blocks + pattern), specific detectors later. |
+| M6 | Underground targets | **caves** (`cave_air` volumes, lush/dripstone caves), **mineshafts**, **Deep Dark / Ancient City** (sculk, shriekers), **spawners** (`mob_spawner`); same mission model with a different `target`; warden/lava/spawner hazards and 3D navigation. |
 
 ## Exploration mission model (M1)
 
@@ -150,6 +151,44 @@ In every case the Survival Governor handles hunger/health/hostiles and then
 - Shelter building uses `barricade`/`place_*` pieces but there is no
   "build a provisional hut" skill.
 
+## Underground targets (M6)
+
+Caves, mineshafts, the Deep Dark and spawners are the richest resource sources,
+so they are first-class exploration targets (same mission model as M1, different
+`target`). Targets resolve to Minecraft IDs:
+
+```text
+cave            -> cave_air volumes; cave / lush_caves / dripstone_caves biomes
+mineshaft       -> mineshaft / abandoned_mineshaft (planks, rails, fences, cobwebs, spawner)
+deep dark/city  -> deep_dark biome + sculk / sculk_shrieker / sculk_catalyst +
+                   reinforced_deepslate + ancient_city
+spawner         -> mob_spawner / monster_spawner block (+ mob type)
+amethyst geode  -> amethyst_geode (bonus)
+```
+
+Heuristic detection first (cave = `cave_air` clusters or a vertical opening;
+mineshaft = planks + rails + cobwebs + spawner; ancient city = an extended sculk
++ deepslate area; spawner = a visible `mob_spawner` block).
+
+**Hazards and rules** (much harsher than surface exploration):
+
+- **Deep Dark / Warden**: shriekers summon the Warden. Default is **observe and
+  report** from a safe distance, never trigger more shriekers or loot without an
+  escape route.
+- **Spawners**: do **not** break a base's spawner without consent; for exploration,
+  record it and optionally disable it with light on request. Mob/XP farming is a
+  separate, gated milestone. Mineshaft cave-spider spawners are lethal in tight
+  spaces.
+- **Lava/water**: depends on [fluids](fluids.md) M0/M4 — never dig into lava,
+  never open a shaft that breaks into a lava lake.
+- **Darkness, gravel/sand collapses, falls, getting lost**: carry torches, leave
+  checkpoints, keep a return route.
+- **3D navigation**: the current A* is surface-oriented (support, ±1 steps, short
+  falls); the underground needs 3D pathfinding plus dig/place/pillar, i.e. the
+  AI-player "advanced navigation" milestone ([ai-player-roadmap](ai-player-roadmap.md)).
+- **Underground kit**: torches, blocks (bridge/pillar), sword + armor, food, a
+  water bucket, a pickaxe, and **free inventory space**.
+
 ## Exploration Skill API (target)
 
 ```
@@ -157,6 +196,10 @@ explore.findBiome(target)
 explore.findBlock(target)
 explore.findResource(target)
 explore.findStructure(target)
+explore.findCave()
+explore.findMineshaft()
+explore.findSpawner()
+explore.findDeepDark()
 explore.pause() / explore.resume() / explore.cancel()
 explore.returnTo(resultId)
 explore.escortTo(resultId)
@@ -184,7 +227,8 @@ a report → stays on the spot → can return later → can escort the player th
 `goto_waypoint` / `_moveTo` (A* pathfinding), `follow_player`, and the bounded
 `/options` + `/act` loop. There is no exploration mission model, no expanding
 spiral planner, no chunk-visit memory, no biome target resolution, and the bot
-has no random walk / strip mining / cave exploration. There is also **no
+has no random walk / strip mining / cave exploration (M6 underground targets —
+caves, mineshafts, Deep Dark, spawners — are spec only). There is also **no
 persistent memory**: no landmark registry (home, sheep pen, chests) and the
 chest cache is volatile (a reconnect wipes it) — see
 [open-questions](open-questions.md#no-persistent-memory-landmarks-chests-chunks). The bot only "sees" loaded

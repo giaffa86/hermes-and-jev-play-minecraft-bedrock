@@ -472,6 +472,102 @@ Successivamente introdurre detector specifici.
 
 ---
 
+# M6 — Ricerca sotterranea (caverne, miniere, deep dark/ancient city, spawner)
+
+## Goal
+
+Supportare target **sotterranei**, che sono la fonte più ricca di risorse e la ragione
+principale per cui vale la pena esplorare.
+
+Esempi:
+
+```text
+Trova una caverna.
+Trova una miniera abbandonata.
+Trova una Ancient City / il Deep Dark.
+Trova uno spawner.
+```
+
+Obiettivo: riusare lo stesso modello di missione (M1) cambiando il `target`:
+non "bioma" ma **caverna / struttura sotterranea / blocco / spawner**.
+
+## Target (ID Minecraft)
+
+```text
+caverna              -> cave_air (volume) + cave / lush_caves / dripstone_caves (biomi)
+miniera abbandonata  -> mineshaft / abandoned_mineshaft (planche, rotaie, ragnatele, spawner)
+deep dark / city     -> deep_dark (bioma) + sculk / sculk_shrieker / sculk_catalyst /
+                        reinforced_deepslate + ancient_city
+spawner              -> mob_spawner / monster_spawner (stato del blocco, tipo di mob)
+geode                -> amethyst_geode (bonus)
+```
+
+## Rilevamento (euristico prima, detector dopo)
+
+```text
+caverna =
+cave_air clusters
+OPPURE pozzo/varco verticale (superficie -> aria sotto)
+
+mineshaft =
+planks + rails + fences + cobwebs + spawner (vicini)
+
+ancient city =
+sculk + sculk_shrieker + deepslate + reinforced_deepslate (area estesa)
+
+spawner =
+blocco mob_spawner visibile (con il tipo di mob dal metadata/NBT)
+```
+
+## Rischio e sicurezza
+
+Il sottosuolo è molto più pericoloso dell'esplorazione superficiale:
+
+- **buio** → mob; portare torce e illuminare mentre si scava/avanza;
+- **lava e acqua** → dipendono da `FLUIDS_ROADMAP` (M0/M4): mai scavare nella lava,
+  mai aprire un pozzo che sfondi in un lago di lava;
+- **Deep Dark** → lo **sculk shrieker** evoca il **Warden**: se si trova una
+  Ancient City, avvicinarsi con cautela, non attivare più shrieker, non rubare
+  senza via di fuga; il default è **osservare e riferire**, non saccheggiare;
+- **spawner** → di default **non rompere** uno spawner di una base senza consenso;
+  in esplorazione si annota e si può disattivare con la luce (fiaccole) solo su
+  richiesta; una farm di mob/XP è un milestone separato e gated;
+- **crolli** (ghiaia/sabbia), **cadute**, **perdersi**: lasciare checkpoint/segnali
+  e non consumare tutto il kit;
+- **Cave Spider / Mineshaft**: gli spawner di ragni della miniera sono letali in
+  spazi stretti.
+
+## Navigazione sotterranea
+
+L'attuale A* è pensato per la superficie (appoggio, gradini ±1, cadute brevi). Il
+sottosuolo richiede:
+
+- pathfinding **3D** e gestione dislivelli (dig / place / pillar);
+- `dig_down`/`dig_up` come primitive, ma con `DIG_PROTECTED` e il controllo fluidi;
+- avanzare verso un bersaglio mantenendo una via di ritorno (checkpoint).
+
+Dipende dal milestone "advanced navigation" di `AI_PLAYER_ROADMAP`
+(bridge / pillar / dig tunnel / safe descent).
+
+## Kit per l'escursione sotterranea
+
+Estende il travel survival kit: torce, blocchi (ponte/pillar), spada + armatura, cibo,
+secchio (acqua), piccone (+ scudo se disponibile), e **spazio inventario libero**.
+
+## Acceptance Criteria M6
+
+- `Trova una caverna.` → il bot entra in un volume `cave_air`, marca una entrata,
+  riferisce coordinate/bioma e resta sul posto (`HOLD_POSITION`).
+- `Trova una miniera abbandonata.` → rileva planche+rotaie+spawner e riferisce.
+- `Trova il Deep Dark.` → raggiunge il bioma `deep_dark` senza attivare il Warden;
+  se lo trova, si ferma a distanza di sicurezza e riferisce.
+- `Trova uno spawner.` → rileva il blocco `mob_spawner` (con tipo mob) e **non lo
+  rompe** senza consenso.
+- Nessuna morte per lava/fuoco/caduta durante il test; route e checkpoint salvati;
+  nessun blocco della base rotto.
+
+---
+
 # Exploration Skill API
 
 Obiettivo finale:
@@ -481,6 +577,10 @@ explore.findBiome(target)
 explore.findBlock(target)
 explore.findResource(target)
 explore.findStructure(target)
+explore.findCave()
+explore.findMineshaft()
+explore.findSpawner()
+explore.findDeepDark()
 
 explore.pause()
 explore.resume()

@@ -478,3 +478,36 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   section), `wiki/survival-intelligence.md`, `wiki/goal-achievement.md` (G1 thin
   slice implemented), `wiki/roadmap.md`, `wiki/open-questions.md`,
   `wiki/verification.md` (row 56), `.env.example`.
+
+## [2026-10-02] verify | Goal Contract live (Slice A)
+
+- Overlaid the Slice A files into the running `hermes-jev-bedrock` container
+  (`docker cp`, non-destructive; the running harness keeps its own code) and ran
+  the controller against the live harness (`http://127.0.0.1:3077`).
+- **A — pre-loop SUCCESS**: `{"goal":"smoke_ok","success":{"inventoryGte":{"dirt":1}}}`
+  → `GOAL CONTRACT SUCCESS` at step 0, evidence `inventory.dirt=2`; log
+  `goal_contract` + `goal_contract_stop` written.
+- **B — pre-loop FAILED**: `failure:{"deathsAtLeast":0}` → `GOAL CONTRACT FAILED`
+  at step 0, reasons `failure criteria met`, evidence `deaths=0`.
+- **C — in-loop RUNNING (real actions)**: `success:{"inventoryGte":{"dirt":3}}`,
+  `constraints.maxDeaths=1`, `CONTROLLER=jev` ran 8 steps (sleep, mine_dirt ×4,
+  collect_drop ×3) and exhausted the budget. Logged `goal_contract RUNNING` at
+  step 0. The inventory never reached 3 because the mined dirt drops were not
+  collected (`collect_drop` → `item_not_collected`), so the natural in-loop
+  SUCCESS transition was not observed. The transition uses the same
+  `evaluateContract` call verified live in A.
+- Operational finding: the deployed container's `JEV_MODEL=typesafe/jev-1.13`
+  with `TYPESAFE_API_KEY` returns TypeSafe `400 Unknown model`; `JEV_MODEL=jev-latest`
+  works. `.env.example` already documents the correct value.
+- `verification.md` row 56 updated to ✅ with the caveat.
+
+## [2026-10-02] ingest | Exploration M6 — underground targets
+
+- Extended `docs/raw/GOAL_EXPLORATION.md` with **M6 — Ricerca sotterranea**:
+  caves (`cave_air`, lush/dripstone caves), abandoned mineshafts, Deep Dark /
+  Ancient City (sculk, shriekers, Warden hazard), spawners (`mob_spawner`), plus
+  amethyst geodes. Heuristic detectors, hazards (warden/lava/spawner/collapse),
+  3D navigation and the underground kit; acceptance criteria and new skill API
+  (`explore.findCave/findMineshaft/findSpawner/findDeepDark`).
+- `wiki/exploration.md` updated (M6 row, "Underground targets (M6)" section,
+  skill API, status), `wiki/open-questions.md` and `index.md` cross-links.

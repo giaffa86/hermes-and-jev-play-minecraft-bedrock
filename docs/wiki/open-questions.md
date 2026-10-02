@@ -108,7 +108,8 @@ an exploration/expedition needs, so a persistent layer is required:
   walk / strip mining / cave exploration. See
   [headless-client](headless-client.md#8-render-distance-not-comparable). A full
   autonomous-exploration spec (find biome/block/structure, deterministic spiral
-  planner) exists in [exploration](exploration.md) but is not implemented.
+  planner, plus **underground targets**: caves, mineshafts, Deep Dark/Ancient
+  City, spawners) exists in [exploration](exploration.md) but is not implemented.
 - **Placement** only on a top face adjacent to the bot; no scaling/orientation.
 - **No redstone awareness or placement.** `_refreshNearby`'s fixed list excludes
   redstone ore and components, so the bot cannot see or place them; `_placeAtCell`
