@@ -332,3 +332,16 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Cross-links added from `roadmap.md` (not-implemented + next work),
   `open-questions.md` and `verification.md` (rows 39–43); `index.md` +
   `sources.md` updated. Private handoff: `.private/FLUIDS-TASK.md` (not committed).
+
+## [2026-10-02] doc | Creeper defense: map the new defence actions onto intents
+
+- Gap found: `go_home`/`retreat`/`close_door`/`barricade`/`equip_armor` were
+  `unknown` intents, so the governor's emergency filter removed them — exactly
+  in a creeper emergency. `survival/intents.mjs` now maps them
+  (`go_home`/`retreat` → `['escape','shelter']`, `close_door`/`barricade` →
+  `['shelter']`, `equip_armor` → `['heal']`, `place_torch` → `['build','shelter']`).
+- `knowledge/survival-rules.json`: `creeper_immediate` now allows
+  `["escape","shelter"]` (retreat/barricade stay available, melee does not).
+- Tests added/updated; suite green (305). Documented in
+  `wiki/survival-intelligence.md`; bow/arrow gap recorded in
+  `wiki/open-questions.md`.

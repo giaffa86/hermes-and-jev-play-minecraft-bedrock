@@ -15,6 +15,12 @@ export const INTENTS = [
 const KEY_INTENTS = {
   wait: ['wait'],
   flee: ['escape'],
+  go_home: ['escape', 'shelter'],
+  retreat: ['escape', 'shelter'],
+  close_door: ['shelter'],
+  barricade: ['shelter'],
+  equip_armor: ['heal'],
+  place_torch: ['build', 'shelter'],
   eat: ['eat', 'heal'],
   sleep: ['sleep', 'heal'],
   recover_loot: ['recover'],

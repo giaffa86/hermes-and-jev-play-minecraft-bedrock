@@ -50,8 +50,36 @@ test('option keys map to the shared intent vocabulary', () => {
   assert.deepEqual(optionIntents('place_crafting_table'), ['build']);
   assert.deepEqual(optionIntents('goto_waypoint'), ['travel']);
   assert.deepEqual(optionIntents('wait'), ['wait']);
+  // Difesa: le nuove azioni entrano nel vocabolario condiviso.
+  assert.deepEqual(optionIntents('go_home'), ['escape', 'shelter']);
+  assert.deepEqual(optionIntents('retreat'), ['escape', 'shelter']);
+  assert.deepEqual(optionIntents('close_door'), ['shelter']);
+  assert.deepEqual(optionIntents('barricade'), ['shelter']);
+  assert.deepEqual(optionIntents('equip_armor'), ['heal']);
+  assert.deepEqual(optionIntents('place_torch'), ['build', 'shelter']);
   assert.ok(keyMatchesIntents('mine_stone', ['mine', 'travel']));
   assert.ok(!keyMatchesIntents('craft_stick', ['mine']));
+});
+
+test('a creeper emergency keeps escape/shelter defence and drops the melee attack', () => {
+  const offered = [
+    { key: 'attack_creeper', description: 'Attack the creeper' },
+    { key: 'flee', description: 'Run away' },
+    { key: 'go_home', description: 'Return home' },
+    { key: 'retreat', description: 'Retreat home' },
+    { key: 'barricade', description: 'Seal the opening' },
+    { key: 'close_door', description: 'Close the door' },
+    { key: 'mine_stone', description: 'Mine stone' },
+  ];
+  const { options } = filterOptionsForGovernor(offered, { mode: 'emergency', allowedIntents: ['escape', 'shelter'] });
+  const keys = options.map(o => o.key);
+  assert.ok(keys.includes('flee'));
+  assert.ok(keys.includes('go_home'));
+  assert.ok(keys.includes('retreat'));
+  assert.ok(keys.includes('barricade'));
+  assert.ok(keys.includes('close_door'));
+  assert.ok(!keys.includes('attack_creeper'), 'nessun melee contro il creeper');
+  assert.ok(!keys.includes('mine_stone'));
 });
 
 // ---- resolver: filtro in emergenza ----------------------------------------------------

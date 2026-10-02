@@ -18,6 +18,10 @@ capability collaudo checklist (done / pending live), see
 
 - **Food beyond crops** — requires the furnace/smelting chain (exists, needs live
   testing of `eat` with hunger < 20 and food in inventory).
+- **Ranged combat** — the bot has **no bow/arrow support**: `attack_*` is melee
+  only (`item_use_on_entity`). A bow (`craft_bow`: 3 sticks + 3 string) plus
+  arrows (`craft_arrows`: flint + stick + feather) would add a safe creeper
+  counter and a way to fight from range. Nothing is implemented yet.
 - **Advanced shelter** — no wall/shelter building actions.
 - **Nether portal** — not implemented.
 - **Fluids** — swimming, drowning/breathing, waterfalls and lava avoidance are

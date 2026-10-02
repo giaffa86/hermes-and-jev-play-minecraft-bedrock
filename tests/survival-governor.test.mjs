@@ -209,7 +209,7 @@ test('governor treats a close creeper as an emergency even at full health', () =
   }), { rules });
   assert.equal(result.mode, 'emergency');
   assert.equal(result.rule, 'creeper_immediate');
-  assert.deepEqual(result.allowedIntents, ['escape']);
+  assert.deepEqual(result.allowedIntents, ['escape', 'shelter']);
   assert.equal(result.preferredSkills[0], 'escape_hostile');
 });
 

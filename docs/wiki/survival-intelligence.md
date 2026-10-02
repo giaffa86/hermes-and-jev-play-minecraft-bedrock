@@ -41,9 +41,34 @@ actions → verification → next milestone.**
 model`, never `huge prompt → the model guesses`. The models never control
 mechanics and never bypass `/options`.
 
+## Melee and creeper defense
+
+Melee against a creeper is a losing play (≈49 explosion damage). The layer
+encodes that deterministically:
+
+- `knowledge/survival-rules.json` → `creeper_immediate` (priority 97): a creeper
+  within 6 blocks forces `emergency` with intents `["escape", "shelter"]` and the
+  objective *"do not fight it in melee"*; the preferred skill is `escape_hostile`.
+- `survival/perception.mjs` gives the creeper its own threat profile (critical at
+  5, high at 10, medium at 16).
+- The harness filter (`filterOptionsForGovernor`) drops every option whose intents
+  are not allowed, so `attack_creeper` → `['fight']` is removed while `flee` →
+  `['escape']` stays.
+- The defence actions are mapped onto those intents in `survival/intents.mjs`:
+  `go_home`/`retreat` → `['escape', 'shelter']`, `close_door`/`barricade` →
+  `['shelter']`, `equip_armor` → `['heal']`, `place_torch` → `['build', 'shelter']`.
+
+So in a creeper emergency the bot can flee, retreat home, or barricade a gap —
+but never try to punch the creeper.
+
+**Best real-world defence** (for future work): prevent spawns (`place_torch` +
+`sleep`), keep a tamed **cat** (creepers flee from cats within ~8 blocks),
+and wear armor. **No ranged option exists yet**: the bot has no bow/arrow
+support (see [open-questions](open-questions.md)).
+
 ## Status
 
-204 unit tests green; offline smoke (`wood → crafting table → food → first_night`)
+305 unit tests green; offline smoke (`wood → crafting table → food → first_night`)
 with an emergency interruption passed; live BDS verification of the full milestone
 still pending (food beyond crops, shelter, Nether portal). See
 [open-questions](open-questions.md).

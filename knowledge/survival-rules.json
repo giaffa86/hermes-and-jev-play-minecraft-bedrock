@@ -30,7 +30,7 @@
       "id": "creeper_immediate",
       "priority": 97,
       "when": { "hostileTypeWithin": { "creeper": 6 } },
-      "intents": ["escape"],
+      "intents": ["escape", "shelter"],
       "objective": "Move away from the creeper before it explodes: do not fight it in melee.",
       "preferredSkills": ["escape_hostile"]
     },
