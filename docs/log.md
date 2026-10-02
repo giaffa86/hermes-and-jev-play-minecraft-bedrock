@@ -679,3 +679,30 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   its biome once per chunk.
 - Tests both backends + `biomeAt`; suite green (386).
 - `wiki/memory.md` + `open-questions.md` updated.
+
+## [2026-10-03] lint | Private-reference and environment-fingerprint checks
+
+- Extended `tools/wiki-lint.mjs`: references to the private Proxmox wiki clone,
+  to the host agent schema files or to the private bootstrap/stack repositories
+  are now **errors**; environment fingerprints (private LAN/VPN or WAN IPs,
+  private domains and DDNS names, the environment SSH username) are **warnings**,
+  so the strict pre-push blocks them. The meta-docs are written without the
+  literal private tokens on purpose.
+- Broadened the secret scan to **every tracked text file** (not just docs):
+  private keys, SSH key material/paths, `sk-`/`ts-`/GitHub/Slack/AWS/Google/
+  bearer tokens, hardcoded keys, auth-cache JSON, xuid, personal emails,
+  plaintext passwords, real usernames/names. Positive control verified
+  (injected fake key/IP/username were caught).
+- History audit: no real API token, SSH key, `.env`, `auth.json` or token cache
+  was ever committed (the only env-like file in history is `.env.example` with
+  empty placeholders). The historical leak is limited to the private LAN IPs,
+  the environment username and links to the Proxmox wiki pages noted below.
+- Current tree verified clean: no link to the Proxmox wiki, no real IP/domain,
+  no account identifier. Anonymised the remaining real SSH username in
+  `verification.md` (now a `<ssh-user>@<ip-host>` placeholder).
+- History note: an earlier scrub commit removed the same data from the tree but
+  it is still present in earlier commits already on the public fork (private LAN
+  IPs, the environment username, and links to the Proxmox wiki pages) in commits
+  `26417f9`, `367f175`, `1a0e3bb`, `d21aaca`, `45822aa`. Removing it from the
+  published history needs a rewrite; tracked in
+  [open-questions](wiki/open-questions.md).

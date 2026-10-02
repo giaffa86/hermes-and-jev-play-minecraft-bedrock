@@ -20,7 +20,7 @@ Legend:
 node --test tests/*.test.mjs
 
 # Live round — option A: drive the deployed harness on the Docker host via HTTP
-ssh -i <ssh-key> hermesadmin@<ip-host>
+ssh -i <ssh-key> <ssh-user>@<ip-host>
 sudo docker exec hermes-jev-bedrock node -e \
   'fetch("http://127.0.0.1:3077/observe").then(r=>r.json()).then(console.log)'
 # POST /act {"key":"..."} to run one action; POST /plan to set a waypoint.
@@ -33,7 +33,7 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 ```
 
 > One bot account only: stop the container before a local round
-> (`ssh hermesadmin@<ip-host> 'sudo docker stop hermes-jev-bedrock'`). On
+> (`ssh <ssh-user>@<ip-host> 'sudo docker stop hermes-jev-bedrock'`). On
 > `connecterror:9`, restart the BDS at zero players (`systemctl
 > stop/start minecraft-bedrock.service`).
 

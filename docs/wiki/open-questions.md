@@ -203,6 +203,13 @@ Still missing (the rest of the original gap):
   The current count lives in [roadmap](roadmap.md) (383 at 2026-10-03).
 - `verification.md` had duplicate row numbers (39/40 reused for the fluids rows);
   renumbered to 41–58 and all internal references updated.
+- **Historical privacy leak (public repo)**: earlier commits still on the
+  published fork contain private LAN IPs, the environment SSH username and links
+  to the private Proxmox wiki pages. A later "privacy scrub" commit removed them
+  from the tree but **not from history**. `tools/wiki-lint.mjs` now blocks these
+  patterns going forward (private references = errors, environment fingerprints =
+  warnings); fully removing them from the *published* history would require a
+  history rewrite (force-push).
 
 ## Architecture evolution
 

@@ -72,8 +72,14 @@ It verifies broken relative links, that every `raw/` source is in `sources.md`,
 every `wiki/` page is in `index.md` and has inbound links, the `log.md` entry
 format, and that `open-questions.md`'s "Last lint" line matches the latest lint
 in `log.md`. It also runs a privacy gate: `.private/`, `.env`, `runs/`,
-`nmp-cache/`, `auth.json` and `memory/` must never be tracked, and it warns about
-possible secrets/personal data (this repo is public).
+`nmp-cache/`, `auth.json` and `memory/` must never be tracked; references to the
+private Proxmox wiki clone, to the host agent schema files or to the private
+bootstrap/stack repositories are **errors**; environment fingerprints (private
+LAN/VPN or WAN IPs, private domains and DDNS names, real usernames/names) and a
+secret scan over **every tracked text file** (private keys, SSH key material and
+paths, `sk-`/`ts-`/GitHub/Slack/AWS/Google/bearer tokens, hardcoded keys,
+auth-cache JSON, xuid, personal emails, plaintext passwords) are **warnings** —
+this repo is public, so pre-push (`--strict`) blocks them.
 
 A routine is wired with git hooks (activate once per clone):
 

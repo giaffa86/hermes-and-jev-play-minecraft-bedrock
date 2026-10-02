@@ -52,8 +52,22 @@ const topFiles = ['README.md', 'AGENTS.md', 'BEDROCK.md', 'docs/index.md', 'docs
   .filter(existsSync);
 // All files whose links we validate.
 const linkFiles = [...topFiles, ...wikiPages, ...rawSources].filter((f) => f.endsWith('.md') || f.endsWith('.txt'));
-// Files scanned for secrets (skip raw/evidence JSONL: separate, small).
-const textFiles = linkFiles;
+// Files scanned for secrets / private refs / fingerprints: every tracked text
+// file (the linter itself is excluded so its own pattern list does not self-match).
+const SELF_REL = relative(ROOT, fileURLToPath(import.meta.url));
+const TEXT_EXT = /\.(md|txt|mjs|js|cjs|json|jsonl|ya?ml|sh|toml|ini|conf|properties|env)$/i;
+let trackedFiles = [];
+try {
+  trackedFiles = execFileSync('git', ['-C', ROOT, 'ls-files'], { encoding: 'utf8' }).split('\n').filter(Boolean);
+} catch {
+  trackedFiles = [];
+}
+const textFiles = (trackedFiles.length ? trackedFiles : linkFiles.map(rel))
+  .filter((f) => f !== SELF_REL && f !== 'package-lock.json')
+  .filter((f) => TEXT_EXT.test(f) || f === '.gitignore' || f === 'Dockerfile' || f === '.env.example')
+  .map((f) => resolve(ROOT, f))
+  .filter(existsSync)
+  .sort();
 
 // ---------------------------------------------------------------------------
 // 1. Link check
@@ -154,12 +168,19 @@ try {
 // 8. Secret / personal-data scan (public repo)
 // ---------------------------------------------------------------------------
 const SECRET_PATTERNS = [
-  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, 'private key (PEM)'],
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, 'private key (PEM/OpenSSH)'],
+  [/\bssh-(?:rsa|ed25519|dss) [A-Za-z0-9+/]{40,}/, 'SSH public key material'],
+  [/\/\\.ssh\/|authorized_keys|\bid_(?:rsa|ed25519)\b/, 'SSH key path/file'],
   [/\bsk-[A-Za-z0-9_-]{20,}\b/, 'possible API key (sk-...)'],
-  [/\b(?:ghp_|github_pat_|xox[bap]-|AKIA[0-9A-Z]{16})/, 'possible access token'],
+  [/\bts-[A-Za-z0-9]{16,}\b/, 'possible TypeSafe API key (ts-...)'],
+  [/\b(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{20,}\b/, 'possible GitHub token'],
+  [/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/, 'possible Slack token'],
+  [/\bAKIA[0-9A-Z]{16}\b/, 'possible AWS access key'],
+  [/\bAIza[0-9A-Za-z_-]{35}\b/, 'possible Google API key'],
+  [/\bBearer\s+[A-Za-z0-9._-]{20,}/, 'possible bearer token'],
+  [/\b(?:api[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token)\s*[:=]\s*["']?[A-Za-z0-9_\-]{16,}/i, 'possible hardcoded key/token'],
   [/"(?:access_token|refresh_token|client_secret|MicrosoftAccount|XboxLive)"\s*:\s*"[^"]{8,}"/i, 'possible auth token/cache'],
   [/xuid\s*[:=]\s*\d{6,}/i, 'possible real xuid'],
-  [/\/root\/\.ssh|\/root\/\.secrets|authorized_keys/, 'SSH key path'],
   [/\b[A-Za-z0-9._%+-]+@(?:gmail|googlemail|outlook|hotmail|live|proton|protonmail|yahoo|icloud|libero|virgilio|tiscali|fastweb)\.[A-Za-z]{2,}\b/i, 'personal email'],
   [/password\s*[:=]\s*["'`]?(?!redacted|change[-_]?me|example|placeholder|your|tua|<|\$|\{)[^\s"'`]{6,}/i, 'possible plaintext password'],
 ];
@@ -169,6 +190,48 @@ for (const file of textFiles) {
     .forEach((line, i) => {
       for (const [re, label] of SECRET_PATTERNS) {
         if (re.test(line)) warn(`possible sensitive data (${label}): ${rel(file)}:${i + 1}`);
+      }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// 8b. Private-content gate: never reference the private Proxmox wiki / host repo.
+// ---------------------------------------------------------------------------
+const PRIVATE_REF = [
+  [/\/root\/docs\b/, 'link to the private Proxmox wiki (/root/docs)'],
+  [/giaffalab-wiki/, 'reference to the private wiki repository'],
+  [/machine-docs/, 'reference to the private wiki clone path'],
+  [/\/root\/CLAUDE\.md|\/root\/AGENTS\.md/, 'reference to the host agent schema'],
+  [/hermes-proxmox-bootstrap|hermes-stack/, 'reference to the private bootstrap/stack repo'],
+];
+for (const file of textFiles) {
+  read(file)
+    .split('\n')
+    .forEach((line, i) => {
+      for (const [re, label] of PRIVATE_REF) {
+        if (re.test(line)) err(`private reference (${label}): ${rel(file)}:${i + 1}`);
+      }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// 8c. Environment fingerprints (public repo): warn, block the push under --strict.
+// ---------------------------------------------------------------------------
+const ENV_FINGERPRINTS = [
+  [/\b192\.168\.[0-9]+\.[0-9]+\b/, 'private LAN IP'],
+  [/\b10\.[0-9]+\.[0-9]+\.[0-9]+\b/, 'private/VPN IP'],
+  [/\b151\.[0-9]+\.[0-9]+\.[0-9]+\b/, 'public WAN IP'],
+  [/\b[a-z0-9-]+\.giaffalab\.win\b/i, 'private domain'],
+  [/\btplinkdns\.com\b/i, 'private DDNS domain'],
+  [/\bhermesadmin\b/, 'environment username'],
+  [/\b(?:giaffaglione|mammino|fabio)\b/i, 'possible personal name'],
+];
+for (const file of textFiles) {
+  read(file)
+    .split('\n')
+    .forEach((line, i) => {
+      for (const [re, label] of ENV_FINGERPRINTS) {
+        if (re.test(line)) warn(`environment fingerprint (${label}): ${rel(file)}:${i + 1}`);
       }
     });
 }
