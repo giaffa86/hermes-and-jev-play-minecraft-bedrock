@@ -246,3 +246,13 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Conclusion: `open_trade` does not work live on BDS 1.26.52; root cause needs a
   protocol-level capture (real client / gophertunnel). Documented in `trading.md`
   + `verification.md` row 16.
+
+## [2026-10-02] ingest | Defense slice: swords, torch placement, go_home/retreat
+
+- `bedrock-adapter.mjs`: added `craft_wooden_sword`/`craft_stone_sword` options
+  (reuse `_craftItem`), `place_torch` option (reuse `_placeBlock`), and
+  `go_home`/`retreat` (home = spawn at first spawn or `HOME_WAYPOINT` env JSON;
+  `_goHome` reuses `_moveTo`). Dispatch wired; 6 new unit tests.
+- Docs: `BEDROCK.md` action table + `roadmap.md` + `verification.md` updated
+  (defense gap narrowed to `close_door`/`barricade`/armor/shield).
+- Full suite green (291 tests).

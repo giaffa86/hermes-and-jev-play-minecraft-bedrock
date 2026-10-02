@@ -123,6 +123,10 @@ export class BedrockAdapter {
     this.dimension = 'overworld';
     this.standingOn = null;
     this.plan = null;
+    this.home = null;              // waypoint casa per go_home/retreat (default: spawn)
+    if (process.env.HOME_WAYPOINT) {
+      try { this.home = JSON.parse(process.env.HOME_WAYPOINT); } catch { /* ignora JSON malformato */ }
+    }
     this.chatInbox = [];             // messaggi chat recenti { from, message, type, xuid, at }
     this._playersByName = new Map(); // gamertag minuscolo -> runtimeId (chat -> entità da seguire)
     this.busy = false;
@@ -345,6 +349,7 @@ export class BedrockAdapter {
         this.status = 'spawned';
         this.position = client.startGameData?.player_position;
         this.dimension = client.startGameData?.dimension || 'overworld';
+        if (!this.home) this.home = { x: this.position.x, y: this.position.y, z: this.position.z };
         this.drops = [];
         this._syncFeetFromPosition();
         this._velocity = { x: 0, y: 0, z: 0 };
@@ -828,6 +833,14 @@ export class BedrockAdapter {
     if (threats.length && threats[0].distance <= 16) {
       o.push({ key: 'flee', description: `Run away from the nearest ${threats[0].type} (${threats[0].distance.toFixed(1)} blocks away)` });
     }
+    // Rifugio: rientra a casa (spawn o HOME_WAYPOINT) quando è lontana o in pericolo.
+    if (this.home && this.position) {
+      const homeDist = Math.hypot(this.home.x - this.position.x, this.home.z - this.position.z);
+      if (homeDist > 6) {
+        const atRisk = threats.length ? ` (${threats[0].type} nearby)` : '';
+        o.push({ key: 'go_home', description: `Return home to ${JSON.stringify({ x: Math.round(this.home.x), y: Math.round(this.home.y), z: Math.round(this.home.z) })} (${homeDist.toFixed(0)} blocks away${atRisk})` });
+      }
+    }
     const food = this._bestFoodItem();
     if (food && (this.food < 18 || (this.health < 20 && this.food < 20))) {
       o.push({ key: 'eat', description: `Eat ${food} to restore hunger (hunger ${this.food}/20, health ${this.health}/20)` });
@@ -930,6 +943,14 @@ export class BedrockAdapter {
           this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
         o.push({ key: 'craft_stone_pickaxe', description: 'Craft a stone pickaxe at the crafting table (3 cobblestone + 2 sticks)' });
       }
+      if (this.recipes.has('wooden_sword') && planksHeld && (this.inventory[planksHeld] || 0) >= 2 && (this.inventory.stick || 0) >= 1 &&
+          this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
+        o.push({ key: 'craft_wooden_sword', description: 'Craft a wooden sword at the crafting table (2 planks + 1 stick)' });
+      }
+      if (this.recipes.has('stone_sword') && (this.inventory.cobblestone || 0) >= 2 && (this.inventory.stick || 0) >= 1 &&
+          this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
+        o.push({ key: 'craft_stone_sword', description: 'Craft a stone sword at the crafting table (2 cobblestone + 1 stick)' });
+      }
       if (this.recipes.has('torch') && ((this.inventory.coal || 0) + (this.inventory.charcoal || 0)) >= 1 && (this.inventory.stick || 0) >= 1) {
         o.push({ key: 'craft_torch', description: 'Craft torches from coal or charcoal and sticks' });
       }
@@ -954,6 +975,9 @@ export class BedrockAdapter {
     const furnaceNear = this.world.findBlocks('furnace', this.position, 8, 1).length > 0;
     if ((this.inventory.furnace || 0) > 0 && !furnaceNear) {
       o.push({ key: 'place_furnace', description: 'Place a furnace next to the bot' });
+    }
+    if ((this.inventory.torch || 0) > 0) {
+      o.push({ key: 'place_torch', description: 'Place a torch to light up the area (ward off mobs)' });
     }
     // Fusione: stazione adatta (altoforno per i minerali, affumicatore per il
     // cibo, altrimenti fornace) + materiale + combustibile.
@@ -1167,6 +1191,8 @@ export class BedrockAdapter {
         result = await this._eat();
       } else if (key === 'flee') {
         result = await this._flee();
+      } else if (key === 'go_home' || key === 'retreat') {
+        result = await this._goHome();
       } else if (key === 'sleep') {
         result = await this._sleepInBed();
       } else if (key === 'recover_loot') {
@@ -4557,6 +4583,23 @@ export class BedrockAdapter {
       }
     }
     return { ok: false, error: `flee_failed${lastError ? `: ${lastError}` : ''}` };
+  }
+
+  // Rientra verso casa (spawn o HOME_WAYPOINT). `retreat` è un alias di `go_home`
+  // per i momenti di pericolo: la scelta tra flee e retreat resta al controller.
+  async _goHome (timeoutMs = 45000) {
+    if (!this.home) return { ok: false, error: 'no_home' };
+    if (!this.position) return { ok: false, error: 'no_position' };
+    const home = this.home;
+    const dist = Math.hypot(home.x - this.position.x, home.z - this.position.z);
+    if (dist <= 2) return { ok: true, arrived: true, home, distance: +dist.toFixed(1) };
+    try {
+      const moveResult = await this._moveTo(home, 2, timeoutMs);
+      const remaining = Math.hypot(home.x - (this.position?.x ?? 0), home.z - (this.position?.z ?? 0));
+      return { ok: true, home, ...moveResult, distance: +remaining.toFixed(1) };
+    } catch (error) {
+      return { ok: false, error: `go_home_failed: ${error.message}` };
+    }
   }
 
   _bestFoodItem () {

@@ -72,12 +72,14 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 29 | Tool durability (long ore runs) | — | 🧪 | mine many stone/ore blocks, watch `heldDurability` | Only unit-tested. |
 | 30 | `CURRICULUM=first_night` end-to-end | controller + curriculum | ⏳ | run controller with `-e CURRICULUM=first_night` | Full autonomous round not run. |
 | 31 | Real multiplayer (Phase 10) | — | ⏳ | join with a human player online | Both players visible; not run. |
+| 32 | Swords (combat) | `craft_wooden_sword`, `craft_stone_sword` | 🧪 | `/act craft_stone_sword` at a table | Option generation + craft path unit-tested; live pending. |
+| 33 | Torch placement | `place_torch` | 🧪 | `/act place_torch` with a torch | Option generation unit-tested; live pending. |
+| 34 | Return home | `go_home`, `retreat` | 🧪 | `/act go_home` when far from spawn | Home = spawn or `HOME_WAYPOINT`; unit-tested; live pending. |
 
 ## Still not implemented
 
 - Milk (bucket + cow); mature-crop growth detection.
-- Defense: `place_torch`, `craft_*_sword`, `retreat`/`go_home`, `close_door`,
-  `barricade`, armor equip/points, shield.
+- Defense (remaining): `close_door`, `barricade`, armor equip/points, shield.
 - Riding extras: saddle equipping, mount inventory/armor, `rider_jump`,
   minecart steering, boat paddling animation.
 - Axolotl capture with a bucket.

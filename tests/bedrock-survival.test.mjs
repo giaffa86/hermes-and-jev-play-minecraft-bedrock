@@ -511,3 +511,73 @@ test('sleepInBed clicks the bed and reports the rejection when sleep does not st
   assert.equal(result.ok, false);
   assert.equal(result.error, 'sleep_rejected');
 });
+
+// ---- difesa: go_home/retreat, torce e spade -------------------------------------------
+
+test('go_home is offered when home is set and the bot is far away', () => {
+  const adapter = spawnedAdapter();
+  adapter.nearbyBlocks = {};
+  adapter.drops = [];
+  adapter.inventory = {};
+  adapter.world.findBlocks = () => [];
+  adapter.home = { x: 90, y: 74, z: 163 };
+  adapter.position = { x: 120, y: 74, z: 200 };
+  const keys = adapter.options().map(o => o.key);
+  assert.ok(keys.includes('go_home'), 'go_home option');
+  adapter.position = { x: 90, y: 74, z: 163 };
+  assert.ok(!adapter.options().map(o => o.key).includes('go_home'), 'non offerta se già a casa');
+});
+
+test('go_home walks to the home waypoint and reports the distance', async () => {
+  const adapter = spawnedAdapter();
+  adapter.home = { x: 90, y: 74, z: 163 };
+  adapter.position = { x: 100, y: 74, z: 163 };
+  const moves = [];
+  adapter._moveTo = async (target, radius, timeout) => { moves.push({ target, radius, timeout }); adapter.position = { x: 90, y: 74, z: 163 }; return { ok: true, distance: 0.5, pathNodes: 3 }; };
+  const result = await adapter._goHome();
+  assert.equal(result.ok, true);
+  assert.deepEqual(moves[0].target, { x: 90, y: 74, z: 163 });
+  assert.equal(result.distance, 0);
+});
+
+test('go_home fails cleanly without a home waypoint', async () => {
+  const adapter = spawnedAdapter();
+  adapter.home = null;
+  const result = await adapter._goHome();
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'no_home');
+});
+
+test('retreat dispatches to _goHome', async () => {
+  const adapter = spawnedAdapter();
+  adapter.home = { x: 90, y: 74, z: 163 };
+  adapter.position = { x: 100, y: 74, z: 163 };
+  let called = 0;
+  adapter._goHome = async () => { called++; return { ok: true }; };
+  const result = await adapter.executeAction('retreat');
+  assert.equal(result.ok, true);
+  assert.equal(called, 1);
+});
+
+test('place_torch is offered when a torch is held', () => {
+  const adapter = spawnedAdapter();
+  adapter.nearbyBlocks = {};
+  adapter.drops = [];
+  adapter.inventory = { torch: 4 };
+  adapter.world.findBlocks = () => [];
+  const keys = adapter.options().map(o => o.key);
+  assert.ok(keys.includes('place_torch'), 'place_torch option');
+});
+
+test('sword crafting options are offered with materials and a crafting table', () => {
+  const adapter = spawnedAdapter();
+  adapter.nearbyBlocks = {};
+  adapter.drops = [];
+  adapter.inventory = { oak_planks: 3, cobblestone: 2, stick: 1 };
+  adapter.recipes = new Map([['wooden_sword', [{ kind: 'shaped', network_id: 1 }]], ['stone_sword', [{ kind: 'shaped', network_id: 2 }]]]);
+  adapter.craftingData = { shaped_recipes: [], shapeless_recipes: [] };
+  adapter.world.findBlocks = (name) => name === 'crafting_table' ? [{ name: 'crafting_table', position: { x: 1, y: 63, z: 1 }, distance: 1 }] : [];
+  const keys = adapter.options().map(o => o.key);
+  assert.ok(keys.includes('craft_wooden_sword'), 'wooden sword option');
+  assert.ok(keys.includes('craft_stone_sword'), 'stone sword option');
+});

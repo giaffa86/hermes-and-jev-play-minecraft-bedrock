@@ -30,7 +30,7 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 | `ROADMAP.md` | Original port roadmap (division of labour + technical milestones) | ✅ done, superseded (frozen 01/10) | `BEDROCK.md`, `bedrock-adapter.mjs` |
 | `GOAL.md` | Original goal + launch runbook (Phases 1–10, two gameplay milestones) | ◑ Phases 1–9 done; Phase 10 (real multiplayer) and a full `first_night` run open | `BEDROCK.md`, `survival/` |
 | `JEV-TASK.md` | Jev decision quality + evaluation with new actions | ✅ implemented; live eval scenarios open | `controller-decisions.mjs`, `tests/controller-decisions.test.mjs` |
-| `DEFENSE-TASK.md` | Defense strategies (torch/lighting, weapons, shelter, armor, shield) | ◑ partial | `bedrock-adapter.mjs` (`attack_*`, `flee`, `sleep`, `craft_torch`, `recover_loot`) |
+| `DEFENSE-TASK.md` | Defense strategies (torch/lighting, weapons, shelter, armor, shield) | ◑ partial — `attack_*`, `flee`, `sleep`, `craft_torch`, `recover_loot`, **`place_torch`, `craft_wooden_sword`/`craft_stone_sword`, `go_home`/`retreat`** (02/10); still open: `close_door`, `barricade`, armor, shield | `bedrock-adapter.mjs` |
 | `FARMING-TASK.md` | Farming (plant/resow crops, passive animals, feed/breed/tame/shear) | ◑ mostly done — `plant_<seed>`, `feed_<animal>`, `attack_<animal>`, `throw_egg`, `breed_<animal>`, `tame_<companion>` (wolf/cat/ocelot/parrot + ride horse/donkey/mule/llama/nautilus), `shear_sheep` + `craft_shears` implemented; `plant`/`feed`/`breed`/`throw_egg` + `read_container` **verified live 03/10**; `attack`/`tame`/`shear` live pending; axolotl in census (not tameable), milk + mature-crop detection still open | `bedrock-adapter.mjs`, `bedrock-survival.mjs` |
 | `STORAGE-TASK.md` | Chest/barrel storage: read, take, deposit | ◑ partial — `read_container` **verified live 03/10** (6 chests/barrels); `take_<item>`/`deposit_<item>` still live pending | `bedrock-adapter.mjs` (`read_container`, `take_<item>`, `deposit_<item>`) |
 | `TRADING-TASK.md` | Villager/wandering-trader trade + levelling | ⚠️ implemented, live verification pending | `bedrock-adapter.mjs` + `bedrock-trading.mjs`; see [trading](trading.md) |
@@ -99,14 +99,17 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 - Fishing: `craft_fishing_rod`, `cast_rod`, `reel_in`, `fish` (pure module
   `bedrock-fishing.mjs` + unit tests; no live round yet) — see
   [fishing](fishing.md).
+- Defense (first slice, 02/10): `place_torch`, `craft_wooden_sword` /
+  `craft_stone_sword`, `go_home` / `retreat` (home = spawn or `HOME_WAYPOINT`).
+  Implemented + unit-tested, not yet verified live.
 - A live `CURRICULUM=first_night` round and the real-multiplayer test (Phase 10).
 
 ## What is not implemented
 
 - Farming leftovers (`.private/FARMING-TASK.md`): milk (bucket + cow) and
   mature-crop growth detection.
-- Defense gaps: `place_torch`, `craft_*_sword`, `retreat`/`go_home`,
-  `close_door`, `barricade`, armor equip/armor points, shield (stretch).
+- Defense gaps (remaining): `close_door`, `barricade`, armor equip/armor
+  points, shield (stretch).
 - Human chat command M5 (ack/reply in chat) and autonomous exploration.
 
 ## Open cross-cutting issues
