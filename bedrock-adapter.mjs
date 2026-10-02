@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BedrockWorld } from './bedrock-world.mjs';
 import { trackNethernetClient, closeBedrockClient } from './bedrock-lifecycle.mjs';
-import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isTameableType, isRideTameableType, isCompanionType, isRideableType, animalFeed, tameFeed, cropForSeed, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS } from './bedrock-survival.mjs';
+import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isTameableType, isRideTameableType, isCompanionType, isRideableType, animalFeed, tameFeed, cropForSeed, cropMaturity, seedForCrop, isCropBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS } from './bedrock-survival.mjs';
 import { professionName, normalizeProfession, professionMatches, pickBestTrade } from './bedrock-trading.mjs';
 import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
 import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
@@ -724,7 +724,20 @@ export class BedrockAdapter {
     if (!this.position) return;
     this.nearbyBlocks = {};
     for (const name of ['dirt', 'grass_block', 'stone', 'cobblestone', 'coal_ore', 'deepslate_coal_ore', 'iron_ore', 'deepslate_iron_ore', 'copper_ore', 'oak_log', 'spruce_log', 'cherry_log', 'potatoes', 'carrots', 'wheat', 'beetroots']) {
-      this.nearbyBlocks[name] = this.world.findBlocks(name, this.position, 96, 4).map(block => ({ name: block.name, position: block.position, distance: +block.distance.toFixed(1), diggable: block.diggable, hardness: block.hardness }));
+      // Per le colture lo stato di crescita entra nell'osservazione: matura/acerba
+      // è ciò che decide se l'azione di raccolta è lecita, e senza numero non si
+      // distingue "maturità ignota" da "acerba"
+      const crop = isCropBlock(name);
+      this.nearbyBlocks[name] = this.world.findBlocks(name, this.position, 96, 4).map(block => {
+        const row = { name: block.name, position: block.position, distance: +block.distance.toFixed(1), diggable: block.diggable, hardness: block.hardness };
+        const maturity = crop ? cropMaturity(block) : null;
+        if (maturity) {
+          row.growth = maturity.growth;
+          row.maxGrowth = maturity.max;
+          row.mature = maturity.mature;
+        }
+        return row;
+      });
     }
     // Bedrock player_position is at eye height (1.62 blocks above the feet).
     this.standingOn = this.world.blockAt({ ...this.position, y: this.position.y - 1.63 })?.name ?? null;
@@ -1077,8 +1090,13 @@ export class BedrockAdapter {
     // Se il blocco più vicino è sepolto (nessuna faccia raggiungibile) non va offerto:
     // per raggiungerlo serve prima dig_down. Se l'inventario non ha l'utensile col
     // rango giusto, il blocco non lascerebbe drop: non va offerto.
+    // Le colture si offrono solo da mature e come `harvest_<coltura>` (mieti e
+    // ripianta): un raccolto acerbo distrugge la pianta senza dare semi, e senza
+    // ripiantare la fattoria si esaurisce. Maturità ignota = come prima.
     for (const [blockName, blocks] of Object.entries(this.nearbyBlocks || {})) {
-      const target = this._pickMineTarget(blocks);
+      const crop = isCropBlock(blockName);
+      const { ready, immature } = crop ? this._harvestableCrops(blocks) : { ready: blocks, immature: 0 };
+      const target = this._pickMineTarget(ready);
       if (!target) continue;
       const probe = this.world.blockAt(target.position);
       if (probe) {
@@ -1089,7 +1107,12 @@ export class BedrockAdapter {
       // Il drop atterra nella cella del blocco scavato: se il bot non potrà
       // raggiungerla (cava sotto un pavimento, cunicolo chiuso) l'item è perso.
       if (this._reachabilityUsable() && !this.mineDropReachable(target.position)) continue;
-      o.push({ key: `mine_${blockName}`, description: `Mine ${blockName} at ${JSON.stringify(target.position)} (${target.distance} blocks away)` });
+      const away = `(${target.distance} blocks away)`;
+      const skip = immature ? `, ${immature} immature left to grow` : '';
+      const seed = crop ? seedForCrop(blockName) : null;
+      o.push(crop
+        ? { key: `harvest_${blockName}`, description: `Harvest the mature ${blockName} at ${JSON.stringify(target.position)} ${away} and replant ${seed || 'it'}${skip}` }
+        : { key: `mine_${blockName}`, description: `Mine ${blockName} at ${JSON.stringify(target.position)} ${away}` });
     }
     // Occasioni: oltre alla lista fissa, le ore di valore osservate entrano come
     // opzioni mine_<ore> se il piccone in inventario le rende raccoglibili. Il
@@ -1361,9 +1384,19 @@ export class BedrockAdapter {
         result = await this._digUp();
       } else if (key.startsWith('mine_')) {
         const blockName = key.slice('mine_'.length);
-        const target = this._pickMineTarget(this.world.findBlocks(blockName, this.position, 96, 8));
-        if (!target) throw new Error(`no reachable ${blockName} found nearby`);
+        const found = this.world.findBlocks(blockName, this.position, 96, 8);
+        // Le colture acerbe non si toccano nemmeno se il nome dell'azione le
+        // chiede: lo stesso filtro delle opzioni, applicato al bersaglio vero.
+        const { ready } = isCropBlock(blockName) ? this._harvestableCrops(found) : { ready: found };
+        const target = this._pickMineTarget(ready);
+        if (!target) {
+          throw new Error(isCropBlock(blockName) && found.length
+            ? `crop_not_mature: ${blockName}`
+            : `no reachable ${blockName} found nearby`);
+        }
         result = await this._mineBlock(target);
+      } else if (key.startsWith('harvest_')) {
+        result = await this._harvestCrop(key.slice('harvest_'.length));
       } else if (key.startsWith('craft_')) {
         result = await this._craftItem(key.slice('craft_'.length));
       } else if (key.startsWith('smelt_')) {
@@ -3178,6 +3211,22 @@ export class BedrockAdapter {
     return candidates.find(b => this._blockInReach(b)) || candidates.find(b => this._blockExposed(b)) || null;
   }
 
+  // Una coltura acerba non si raccoglie: distruggerla non dà semi né raccolto
+  // pieno. Maturità **ignota** (blocco finto, stato non leggibile) non blocca:
+  // senza informazione ci si comporta come prima.
+  _cropHarvestable (block) {
+    const state = cropMaturity(block);
+    return !state || state.mature !== false;
+  }
+
+  // Filtra le righe di `nearbyBlocks`/`findBlocks` tenendo solo le colture
+  // raccoglibili; `immature` conta quelle lasciate crescere (per la diagnosi).
+  _harvestableCrops (blocks) {
+    const list = blocks || [];
+    const ready = list.filter(b => this._cropHarvestable(this.world.blockAt(b.position)));
+    return { ready, immature: list.length - ready.length };
+  }
+
   _requiredToolKind (block) {
     const material = String(block?.material || '');
     for (const [needle, kind] of Object.entries(TOOL_MATERIAL)) {
@@ -3437,6 +3486,13 @@ export class BedrockAdapter {
     const pos = block.position;
     const blockData = this.world.blockAt(pos);
     if (!blockData || blockData.name !== block.name) throw new Error(`block ${block.name} not found at ${JSON.stringify(pos)}`);
+    // Guardia di maturità: ogni percorso di scavo passa da qui, quindi il filtro
+    // delle opzioni non basta. Maturità ignota non blocca (fail-open).
+    const cropState = cropMaturity(blockData);
+    if (cropState && cropState.mature === false) {
+      this.log('crop_not_mature', { crop: cropState.name, position: pos, growth: cropState.growth, maxGrowth: cropState.max });
+      return { ok: false, error: 'crop_not_mature', crop: cropState.name, position: pos, growth: cropState.growth, maxGrowth: cropState.max };
+    }
     // Utensile giusto in mano: senza il piccone la pietra non lascia cadere cobblestone.
     await this._selectToolFor(blockData);
 
@@ -3529,8 +3585,12 @@ export class BedrockAdapter {
           await send({ blockAction: action('stop_break') });
           const picked = await this._pickupNearby();
           this._refreshNearby();
-          return { ok: true, block: block.name, position: pos, confirmedBy: 'server_world',
+          const result = { ok: true, block: block.name, position: pos, confirmedBy: 'server_world',
             destroyedEvent, tool: this.world.registry?.items[held.network_id]?.name || null, ms: Date.now() - started, picked };
+          if (cropState?.mature === true) {
+            result.crop = { name: cropState.name, growth: cropState.growth, maxGrowth: cropState.max };
+          }
+          return result;
         }
         await delay(50);
       }
@@ -5526,6 +5586,31 @@ export class BedrockAdapter {
       await delay(100);
     }
     return { ok: false, error: 'plant_not_confirmed', item: itemName };
+  }
+
+  // Mietitura con ripianto: raccoglie una coltura matura e rimette il seme
+  // ricavato (o già in inventario) sulla stessa farmland, così la fattoria
+  // continua a produrre invece di esaurirsi. Il ripianto è best-effort: se
+  // fallisce la mietitura resta valida e il motivo è nel risultato.
+  async _harvestCrop (cropName) {
+    const name = String(cropName).replace(/^minecraft:/, '');
+    if (!isCropBlock(name)) return { ok: false, error: 'not_a_crop', crop: name };
+    const seed = seedForCrop(name);
+    const found = this.world.findBlocks(name, this.position, 96, 8);
+    const { ready, immature } = this._harvestableCrops(found);
+    const target = this._pickMineTarget(ready);
+    if (!target) {
+      return { ok: false, error: found.length ? 'crop_not_mature' : 'no_crop_found', crop: name, immature };
+    }
+    if (this._reachabilityUsable() && !this.mineDropReachable(target.position)) {
+      return { ok: false, error: 'drop_unreachable', crop: name, position: target.position };
+    }
+    const harvest = await this._mineBlock(target);
+    if (!harvest.ok) return { ...harvest, crop: name, immature };
+    let replanted = null;
+    if (seed && (this.inventory[seed] || 0) > 0) replanted = await this._plantSeed(seed);
+    return { ok: true, crop: name, position: target.position, growth: harvest.crop?.growth ?? null,
+      harvest, replanted, immature };
   }
 
   // Nutre l'animale da fattoria più vicino del tipo richiesto (wrapper di

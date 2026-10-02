@@ -197,6 +197,13 @@ for (const name of ['dirt', 'grass_block', 'stone', 'cobblestone',
 within a **96-block sphere** (3D Euclidean), and returns **at most 4** nearest
 blocks per type.
 
+It returns the **block object itself** (a prismarine `Block`, with `distance`
+attached), not a spread copy: spreading a Block drops its methods, and with them
+`getProperties()`, so every block **state** read through `findBlocks` came back
+unknown. That was a real production bug (2026-10-03): crop growth read as
+`null` on the live server, which silently disabled the maturity gate. `blockAt()`
+was never affected (it always returned the instance).
+
 ### 6.2 It sees through walls — within limits
 
 There is **no occlusion or line-of-sight filter**. An `iron_ore` behind 20 blocks

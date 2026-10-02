@@ -121,7 +121,10 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
   verified live. `read_container` **was verified live on 03/10** (6 chests/barrels).
 - Farming leftovers: `attack_<animal>` (skipped live, would kill a base animal),
   `tame_<companion>` (no companion near the bot on 03/10), `shear_sheep` +
-  `craft_shears` (no sheep nearby), milk (bucket + cow), mature-crop detection.
+  `craft_shears` (no sheep nearby), milk (bucket + cow, needs 3 iron ingots).
+  Mature-crop detection is implemented (03/10) but its end-to-end live harvest
+  is blocked by the cage: the only fields (z ≈ 188) are outside the bot's
+  walkable component.
 - Riding as transport (`mount_<vehicle>`/`dismount`/`_rideToward`) is implemented
   but not yet exercised live. See [companions](companions.md).
 - Trading (`open_trade`/`trade_<index>`/`level_<profession>`) is implemented and
@@ -278,7 +281,9 @@ Still missing (the rest of the original gap):
 - **Farming** (`.private/FARMING-TASK.md`) — **done and verified live 03/10** for
   the core (`plant_<seed>`, `feed_<animal>`, `breed_<animal>`, `throw_egg`,
   `read_container`); `attack_<animal>`/`tame_<companion>`/`shear_sheep` are
-  implemented but live-pending. Remaining gaps: milk and mature-crop detection.
+  implemented but live-pending. Remaining gaps: milk. Mature-crop detection is
+  implemented (`harvest_<crop>`, 03/10) with the live state verified, but the
+  end-to-end harvest is blocked by the cage.
   Consolidated status in [roadmap](roadmap.md).
 - **Goal/episodic memory** (02/10) — the mission layer over the world graph is
   implemented (`mission` + `mission_relation` goal edges + `action_event` +

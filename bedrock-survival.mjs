@@ -218,6 +218,60 @@ export function isFarmlandBlock (name) {
   return String(name).replace(/^minecraft:/, '') === 'farmland';
 }
 
+// Crescita delle colture in Bedrock: lo stato `growth` va da 0 a 7 e solo
+// all'ultimo valore la pianta è matura (raccolto pieno + semi); il nether_wart
+// usa invece `age` 0-3. Qui c'è solo la tabella: la politica resta al chiamante,
+// perché `mature: null` (stato non leggibile) non significa "acerba".
+const CROP_MAX_GROWTH = {
+  wheat: 7,
+  carrots: 7,
+  potatoes: 7,
+  beetroots: 7,
+  melon_stem: 7,
+  pumpkin_stem: 7,
+  sweet_berry_bush: 7,
+  nether_wart: 3,
+};
+
+const SEED_FOR_CROP = Object.fromEntries(
+  Object.entries(SEED_TO_CROP).map(([seed, crop]) => [crop, seed]));
+
+// Il seme che ripianta una coltura (per carote e patate il seme è il raccolto).
+export function seedForCrop (crop) {
+  return SEED_FOR_CROP[String(crop).replace(/^minecraft:/, '')] || null;
+}
+
+export function cropMaxGrowth (name) {
+  return CROP_MAX_GROWTH[String(name).replace(/^minecraft:/, '')] ?? null;
+}
+
+function blockProperties (block) {
+  if (typeof block?.getProperties === 'function') {
+    try { return block.getProperties(); } catch { return null; }
+  }
+  // Un Block prismarine "spalmato" (es. il risultato di `findBlocks`) perde i
+  // metodi ma conserva lo stato in `_properties`; `computedStates` porta i
+  // default calcolati. Senza questo ramo la maturità risulterebbe ignota in
+  // produzione (fail-open) mentre nei test, che passano istanze vere, funziona.
+  const base = block?.properties || block?._properties || block?.states;
+  const computed = block?.computedStates;
+  if (!base && !computed) return null;
+  return { ...(base || {}), ...(computed || {}) };
+}
+
+// `null` se il blocco non è una coltura nota; altrimenti `{ name, growth, max,
+// mature }`, con `growth`/`mature` a `null` quando lo stato non è leggibile
+// (blocco finto, registry senza stati, sezione non decodificata).
+export function cropMaturity (block) {
+  const name = String(block?.name ?? '').replace(/^minecraft:/, '');
+  const max = CROP_MAX_GROWTH[name];
+  if (!max) return null;
+  const props = blockProperties(block);
+  const raw = props?.growth ?? props?.age;
+  const growth = raw == null || Number.isNaN(Number(raw)) ? null : Number(raw);
+  return { name, growth, max, mature: growth == null ? null : growth >= max };
+}
+
 export const HOSTILE_TYPE_COUNT = HOSTILE_TYPES.size;
 export const TRADER_TYPE_COUNT = TRADER_TYPES.size;
 export const FARM_ANIMAL_TYPE_COUNT = FARM_ANIMAL_TYPES.size;
@@ -225,6 +279,7 @@ export const FOODS = [...FOOD_PRIORITY];
 export const PLANTABLE_ITEMS = Object.keys(SEED_TO_CROP);
 export const ANIMAL_FEED_MAP = { ...ANIMAL_FEED };
 export const SEED_TO_CROP_MAP = { ...SEED_TO_CROP };
+export const CROP_MAX_GROWTH_MAP = { ...CROP_MAX_GROWTH };
 export const TAME_FEED_MAP = { ...TAME_FEED };
 export const TAMEABLE_TYPE_COUNT = TAMEABLE_TYPES.size;
 export const RIDE_TAMEABLE_TYPE_COUNT = RIDE_TAMEABLE_TYPES.size;

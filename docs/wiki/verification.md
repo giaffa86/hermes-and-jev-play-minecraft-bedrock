@@ -62,6 +62,7 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 17 | Trader levelling | `level_<profession>` | ⏳ | `/act level_farmer` | Cheap-only economy; live tier-up pending. |
 | 18 | Follow human / chat, speak | `follow_player` (+ `@bot` M1–M3); `POST /say` + proactive greeting (M5) | ⏳ | chat `@bot seguimi` with a human online; stand within ~24 blocks and read the bot's greeting | Wiring + unit tests; live pending. |
 | 19 | Plant / resow crops | `plant_<seed>` | ✅ | `/act plant_potato` on free farmland | `plant_potato` re-sowed live 03/10. |
+| 19.1 | Mature-crop detection | `harvest_<crop>` (and `mine_<crop>` gated on growth) | 🧪 | `/act harvest_potatoes` on a ripe field | **Offline (03/10)**: `cropMaturity()` + the three gates (options, target resolution, `_mineBlock`), 34 farming tests. **Live 03/10**: crop states are readable again — `/observe.nearby` → `potatoes growth 7/7/6/6` (`mature: true/false`), `carrots growth 7`; `harvest_potatoes` → `drop_unreachable` in 0.01 s, `harvest_wheat` → `no_crop_found`, `mine_potatoes` → `path_failed` in 0.03 s. End-to-end harvest still blocked: the only fields (z ≈ 188) lie outside the bot's walkable component (cage, row 4). |
 | 20 | Feed farm animals | `feed_<animal>` | ✅ | `/act feed_pig` with carrot | `inlove` confirmed live 03/10. |
 | 21 | Breed farm animals | `breed_<animal>` | ✅ | `/act breed_pig` (2 adults + 2 carrots) | Baby pig `baby:true` live 03/10. |
 | 22 | Throw egg | `throw_egg` | ✅ | `/act throw_egg` with an egg | Consumed; `chick: none` live 03/10. |
@@ -97,7 +98,7 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 43 | Waterfall descent / ascent | `descend_waterfall`, `climb_waterfall`, `use_bubble_column` | ❌ | descend + climb a natural waterfall | Spec M3 in [fluids](fluids.md); needs fall-safe landing. |
 | 44 | Lava avoidance | `avoid_lava`, A* forbid + repulsion | ❌ | path near lava stays clear | Spec M0/M4 in [fluids](fluids.md); lava currently a wall, so never mined into. |
 | 45 | Buckets / boats / potions | `craft_bucket`, `fill_bucket`, `place_water`, `mount_boat`, `brew_*` | ❌ | place water → obsidian; boat across water | Spec M4/M5 in [fluids](fluids.md). |
-| 46 | Redstone sensing | `/observe.redstone`, `findBlocksByState` | ❌ | read nearby components + `redstone_signal` | Spec R0 in [redstone](redstone.md); `blockAt().getProperties()` already exposes state. |
+| 46 | Redstone sensing | `/observe.redstone`, `findBlocksByState` | ❌ | read nearby components + `redstone_signal` | Spec R0 in [redstone](redstone.md); `blockAt().getProperties()` already exposes state — note (03/10): `findBlocks()` used to return a spread copy **without** methods, so `getProperties()` was unavailable there; it now returns the block instance. |
 | 47 | Oriented placement | `place_<component>`, `set_repeater_delay` | ❌ | place a repeater/piston with the expected facing | Spec R1 in [redstone](redstone.md); needs a placement packet capture. |
 | 48 | Trigger components | `use_redstone` | ❌ | `lever → redstone_lamp` toggles | Spec R2 in [redstone](redstone.md); reuses the verified `click_block` path. |
 | 49 | Primitive circuits | `build_circuit_<id>` | ❌ | build `lamp_switch` / `delay_line` | Spec R3 in [redstone](redstone.md); declarative blueprints. |
@@ -117,7 +118,8 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 
 ## Still not implemented
 
-- Milk (bucket + cow); mature-crop growth detection.
+- Milk (bucket + cow) — the bucket needs 3 iron ingots and a cow.
+  Mature-crop detection is implemented (row 19.1).
 - Defense (remaining): shield (stretch).
 - Riding extras: saddle equipping, mount inventory/armor, `rider_jump`,
   minecart steering, boat paddling animation.

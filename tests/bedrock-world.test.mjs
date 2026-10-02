@@ -40,6 +40,23 @@ test('real BDS 1.26.52 terrain contains vanilla blocks, not the first block_prop
   assert.equal(world.findBlocks('oak_log', { x: 92, y: 74, z: 163 }, 8, 1).length, 1);
 });
 
+test('findBlocks returns the block object itself, block states included', () => {
+  // Regressione: restituire `{...block, distance}` perdeva `getProperties()`,
+  // quindi gli stati (es. `growth` delle colture) non erano leggibili live.
+  const world = new BedrockWorld();
+  world.start({ dimension: 'overworld', block_network_ids_are_hashes: true, block_properties: [{ name: 'minecraft:black_concrete_double_slab' }] });
+  const packet = JSON.parse(readFileSync(new URL('./fixtures/bedrock-terrain.json', import.meta.url)));
+  for (const entry of packet.entries) entry.payload = Buffer.from(entry.payload, 'base64');
+  world.subchunk(packet);
+  const [hit] = world.findBlocks('oak_log', { x: 92, y: 74, z: 163 }, 8, 1);
+  assert.ok(hit, 'oak_log found');
+  assert.equal(typeof hit.getProperties, 'function', 'the returned block keeps its methods');
+  assert.equal(typeof hit.distance, 'number', 'and carries the distance');
+  const direct = world.blockAt(hit.position);
+  assert.equal(hit.stateId, direct.stateId);
+  assert.deepEqual(hit.getProperties(), direct.getProperties());
+});
+
 test('singleton palettes resolve runtime hashes and signed underground section indices', () => {
   const world = new BedrockWorld();
   world.start({ dimension: 0, block_network_ids_are_hashes: true });

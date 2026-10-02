@@ -1470,3 +1470,43 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   rilettura del caso cavità; riga 42.3 estesa con il filtro dell'auto-pickup, il
   fail-open sui piedi ignoti e i 16 test), `open-questions.md` (bullet
   "Drop collection regression" chiuso, "Drop pickup residue" riscritto).
+
+## [2026-10-03] feat | Maturazione colture (`harvest_<crop>`) + fix della lettura degli stati di blocco
+
+- **Bug (causa radice)**: `BedrockWorld.findBlocks` (`bedrock-world.mjs:241`)
+  restituiva `{ ...this.blockAt(pos), distance }`. Spalmare un `Block`
+  prismarine perde i metodi, quindi `getProperties()` non esisteva e *ogni*
+  stato letto via `findBlocks` risultava ignoto. Live: `/observe.nearby`
+  riportava `growth: null, mature: null` su tutte le colture. Fix: `findBlocks`
+  ora restituisce l'oggetto blocco stesso (con `distance` allegata), e
+  `blockProperties()` in `bedrock-survival.mjs` accetta anche la forma spalmata
+  (`_properties` + `computedStates`) per robustezza.
+- **Feature**: `CROP_MAX_GROWTH` (`growth` 0..7 per wheat/carrots/potatoes/
+  beetroots/melon_stem/pumpkin_stem/sweet_berry_bush, `age` 0..3 per
+  nether_wart), `cropMaturity(block)` (`null` per i non-coltura, `mature: null`
+  quando lo stato non è leggibile = fail-open) e `seedForCrop()` in
+  `bedrock-survival.mjs`. L'adapter offre `harvest_<crop>` solo per le piante
+  mature (al posto di `mine_<crop>`; la descrizione dice cosa verrà ripiantato e
+  quante restano a crescere), rifiuta `mine_<crop>` su una pianta acerba
+  (`crop_not_mature: <crop>`), ricontrolla lo stato dentro `_mineBlock` e con
+  `_harvestCrop()` miete + ripianta il seme in best-effort (`_mineBlock` +
+  `_plantSeed`) restituendo `{crop, growth, harvest, replanted, immature}`;
+  errori tipizzati `not_a_crop`/`no_crop_found`/`crop_not_mature`/`drop_unreachable`.
+- **Test**: `tests/bedrock-farming.test.mjs` 20 → 34 (maturità e `age`, blocchi
+  spalmati, opzioni, rifiuto con **0 pacchetti** inviati, mietitura+ripianto,
+  senza seme, campo vuoto vs ancora in crescita, drop irraggiungibile,
+  annotazione in `/observe`), `tests/bedrock-world.test.mjs` +1 (`findBlocks`
+  restituisce un blocco con `getProperties()` funzionante). Suite completa
+  `node --test tests/*.test.mjs` → **543 pass / 0 fail**; `npm run wiki:lint` pulito.
+- **Live (BDS 1.26.52, container `hermes-jev-bedrock`, VM 100)**: dopo il deploy
+  (`rsync` + `docker cp` + `docker restart`) `/observe.nearby` →
+  `potatoes growth 7/7/6/6` (`mature: true/false`) e `carrots growth 7`;
+  `POST /act harvest_wheat` → `no_crop_found`; `harvest_potatoes` →
+  `drop_unreachable` in 0.01 s; `mine_potatoes` → `path_failed` in 0.03 s
+  (fallimento rapido invece dei 20-30 s di prima). La mietitura end-to-end resta
+  bloccata: gli unici campi (z ≈ 188) sono fuori dal componente camminabile del
+  bot (gabbia, riga 4 di verification.md).
+- **Doc**: `verification.md` (nuova riga 19.1, nota sulla riga 100, lista "still
+  not implemented"), `survival-intelligence.md` (543 test + paragrafo feature),
+  `open-questions.md`, `roadmap.md`, `headless-client.md` (percezione:
+  `findBlocks` restituisce il blocco, non una copia).

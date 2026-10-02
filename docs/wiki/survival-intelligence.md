@@ -75,8 +75,22 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**517 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**543 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
+
+- **Mature-crop detection (2026-10-03)**: `cropMaturity()`/`seedForCrop()` live in
+`bedrock-survival.mjs` (`growth` 0..7 for wheat/carrots/potatoes/beetroots/melon
+stem/pumpkin stem/sweet berry bush, `age` 0..3 for nether wart); the adapter
+offers `harvest_<crop>` only for ripe plants and replants the seed it yields,
+refuses `mine_<crop>` on an unripe plant (`crop_not_mature`, checked again inside
+`_mineBlock`), and keeps **fail-open** semantics when the state cannot be read
+(unknown maturity behaves as before). Finding that made it work live: `findBlocks()`
+returned `{...block, distance}`, and spreading a prismarine Block loses
+`getProperties()` → every growth read came back `null`, silently turning the gate
+off. Live: `/observe.nearby` now reports `potatoes growth 7/7/6/6, mature true/false`,
+`carrots growth 7`; `harvest_potatoes` fails in 0.01 s with `drop_unreachable`
+(the only fields are outside the bot's walkable component), `harvest_wheat` with
+`no_crop_found`.
 
 - **Offline (deterministic, no model)**: `tests/controller-curriculum.test.mjs`
 drives `CURRICULUM=first_night` against a staged fake harness (one valid action

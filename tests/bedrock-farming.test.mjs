@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { BedrockAdapter } from '../bedrock-adapter.mjs';
+import { cropMaturity, seedForCrop } from '../bedrock-survival.mjs';
 
 function spawnedAdapter () {
   const adapter = new BedrockAdapter({ logger: { log () {} } });
@@ -300,7 +301,7 @@ test('_tameAnimal tames a parrot with wheat seeds', async () => {
   adapter.inventory = { wheat_seeds: 1 };
   adapter._trackEntity({ runtime_id: 111n, unique_id: 1111n, entity_type: 'minecraft:parrot', position: { x: 2, y: 63, z: 0 } }, 'mob');
   let fed = null;
-  adapter._feedEntity = async (runtimeId, feed) => { fed = feed; adapter.entities.get('111').tamed = true; return { ok: true, state: 'tamed' }; };
+  adapter._feedEntity = async (_runtimeId, feed) => { fed = feed; adapter.entities.get('111').tamed = true; return { ok: true, state: 'tamed' }; };
   const result = await adapter._tameAnimal('parrot');
   assert.equal(result.ok, true);
   assert.equal(fed, 'wheat_seeds');
@@ -317,4 +318,167 @@ test('options offer tame_ for rideables and food-tameable companions', () => {
   const keys = adapter.options().map(o => o.key);
   assert.ok(keys.includes('tame_horse'), 'tame_horse offered');
   assert.ok(keys.includes('tame_parrot'), 'tame_parrot offered');
+});
+
+// ---- colture: maturazione -----------------------------------------------------------
+
+test('cropMaturity reads the Bedrock growth/age state', () => {
+  const crop = (name, props) => ({ name, getProperties: () => props });
+  assert.equal(cropMaturity({ name: 'stone' }), null);
+  assert.deepEqual(cropMaturity(crop('wheat', { growth: 7 })), { name: 'wheat', growth: 7, max: 7, mature: true });
+  assert.deepEqual(cropMaturity(crop('wheat', { growth: 3 })), { name: 'wheat', growth: 3, max: 7, mature: false });
+  assert.deepEqual(cropMaturity(crop('nether_wart', { age: 3 })), { name: 'nether_wart', growth: 3, max: 3, mature: true });
+  assert.deepEqual(cropMaturity(crop('nether_wart', { age: 1 })), { name: 'nether_wart', growth: 1, max: 3, mature: false });
+  // Stato non leggibile: maturità *ignota*, non "acerba".
+  assert.deepEqual(cropMaturity({ name: 'potatoes' }), { name: 'potatoes', growth: null, max: 7, mature: null });
+});
+
+test('cropMaturity reads a spread block that only kept `_properties`', () => {
+  // `BedrockWorld.findBlocks` restituiva `{...block, distance}`: lo stato
+  // sopravvive in `_properties`, i metodi no. Live questo rendeva la maturità
+  // ignota (fail-open) su tutte le colture.
+  const spread = { name: 'potatoes', stateId: 1913, _properties: { growth: 7 }, computedStates: {} };
+  assert.deepEqual(cropMaturity(spread), { name: 'potatoes', growth: 7, max: 7, mature: true });
+  assert.deepEqual(cropMaturity({ ...spread, _properties: { growth: 2 } }), { name: 'potatoes', growth: 2, max: 7, mature: false });
+  assert.deepEqual(cropMaturity({ name: 'nether_wart', _properties: { age: 3 } }), { name: 'nether_wart', growth: 3, max: 3, mature: true });
+  // `computedStates` non deve nascondere lo stato letto da `_properties`.
+  assert.deepEqual(cropMaturity({ name: 'wheat', _properties: { growth: 5 }, computedStates: { growth: 5 } }), { name: 'wheat', growth: 5, max: 7, mature: false });
+});
+
+test('seedForCrop maps a crop back to the item that replants it', () => {
+  assert.equal(seedForCrop('wheat'), 'wheat_seeds');
+  assert.equal(seedForCrop('carrots'), 'carrot');
+  assert.equal(seedForCrop('potatoes'), 'potato');
+  assert.equal(seedForCrop('stone'), null);
+});
+
+test('options offer harvest_ for a mature crop, never a destructive mine_', () => {
+  const adapter = spawnedAdapter();
+  adapter._reachabilityUsable = () => false;
+  adapter.world.findBlocks = () => [];
+  adapter.world.blockAt = pos => (pos.y === 63
+    ? { name: 'potatoes', getProperties: () => ({ growth: 7 }), hardness: 0, diggable: true }
+    : { name: 'air' });
+  adapter.nearbyBlocks = {
+    potatoes: [{ name: 'potatoes', position: { x: 1, y: 63, z: 0 }, distance: 1, diggable: true, hardness: 0 }],
+  };
+  const options = adapter.options();
+  const harvest = options.find(o => o.key === 'harvest_potatoes');
+  assert.ok(harvest, 'harvest_potatoes offered');
+  assert.equal(options.some(o => o.key === 'mine_potatoes'), false, 'crop not offered as mine_');
+  assert.match(harvest.description, /\(1 blocks away\)/);
+  assert.match(harvest.description, /replant potato/);
+});
+
+test('options skip immature crops and say how many are left to grow', () => {
+  const adapter = spawnedAdapter();
+  adapter._reachabilityUsable = () => false;
+  adapter.world.findBlocks = () => [];
+  const row = (x, distance) => ({ name: 'carrots', position: { x, y: 63, z: 0 }, distance, diggable: true, hardness: 0 });
+  adapter.world.blockAt = pos => ({
+    name: 'carrots', getProperties: () => ({ growth: pos.x === 1 ? 7 : 2 }), hardness: 0, diggable: true,
+  });
+  adapter.nearbyBlocks = { carrots: [row(1, 1), row(2, 2)] };
+  const harvest = adapter.options().find(o => o.key === 'harvest_carrots');
+  assert.ok(harvest);
+  assert.match(harvest.description, /1 immature left to grow/);
+
+  // Solo acerbe: nessuna opzione (né harvest_ né mine_).
+  adapter.world.blockAt = () => ({ name: 'carrots', getProperties: () => ({ growth: 0 }), hardness: 0, diggable: true });
+  const keys = adapter.options().map(o => o.key);
+  assert.equal(keys.some(k => k.includes('carrots')), false);
+});
+
+test('_mineBlock refuses a known-immature crop without touching the wire', async () => {
+  const adapter = spawnedAdapter();
+  adapter.world.blockAt = () => ({ name: 'wheat', getProperties: () => ({ growth: 1 }), hardness: 0, diggable: true });
+  let sent = 0;
+  adapter._queueAuthInput = async () => { sent++; };
+  const result = await adapter._mineBlock({ name: 'wheat', position: { x: 1, y: 63, z: 0 } });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'crop_not_mature');
+  assert.equal(result.growth, 1);
+  assert.equal(sent, 0, 'nessun pacchetto inviato');
+});
+
+test('executeAction refuses mine_ when every crop of that type is immature', async () => {
+  const adapter = spawnedAdapter();
+  adapter.world.findBlocks = () => [{ name: 'potatoes', position: { x: 1, y: 63, z: 0 }, distance: 1, diggable: true }];
+  adapter.world.blockAt = () => ({ name: 'potatoes', getProperties: () => ({ growth: 4 }), hardness: 0, diggable: true });
+  const result = await adapter.executeAction('mine_potatoes');
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'crop_not_mature: potatoes');
+});
+
+test('_harvestCrop harvests a mature crop through executeAction and replants it', async () => {
+  const adapter = spawnedAdapter();
+  adapter.inventory = { potato: 2 };
+  adapter._reachabilityUsable = () => false;
+  adapter.world.findBlocks = () => [{ name: 'potatoes', position: { x: 1, y: 63, z: 0 }, distance: 1, diggable: true }];
+  adapter.world.blockAt = () => ({ name: 'potatoes', getProperties: () => ({ growth: 7 }), hardness: 0, diggable: true });
+  adapter._mineBlock = async () => ({
+    ok: true, block: 'potatoes', position: { x: 1, y: 63, z: 0 },
+    crop: { name: 'potatoes', growth: 7, maxGrowth: 7 }, picked: [{ item: 'potato', count: 1 }],
+  });
+  let planted = null;
+  adapter._plantSeed = async item => { planted = item; return { ok: true, item, crop: 'potatoes' }; };
+  const result = await adapter.executeAction('harvest_potatoes');
+  assert.equal(result.ok, true);
+  assert.equal(result.crop, 'potatoes');
+  assert.equal(result.growth, 7);
+  assert.equal(planted, 'potato');
+  assert.equal(result.replanted.ok, true);
+});
+
+test('_harvestCrop skips the replant without a seed and rejects non-crops', async () => {
+  const adapter = spawnedAdapter();
+  adapter.inventory = {};
+  adapter._reachabilityUsable = () => false;
+  adapter.world.findBlocks = () => [{ name: 'wheat', position: { x: 1, y: 63, z: 0 }, distance: 1, diggable: true }];
+  adapter.world.blockAt = () => ({ name: 'wheat', getProperties: () => ({ growth: 7 }), hardness: 0, diggable: true });
+  adapter._mineBlock = async () => ({ ok: true, block: 'wheat', crop: { name: 'wheat', growth: 7, maxGrowth: 7 } });
+  adapter._plantSeed = async () => { throw new Error('should not be called'); };
+  const harvested = await adapter._harvestCrop('wheat');
+  assert.equal(harvested.ok, true);
+  assert.equal(harvested.replanted, null);
+  assert.equal((await adapter._harvestCrop('stone')).error, 'not_a_crop');
+});
+
+test('_harvestCrop fails fast when the mature crop drop would be unreachable', async () => {
+  const adapter = spawnedAdapter();
+  adapter._reachabilityUsable = () => true;
+  adapter.mineDropReachable = () => false;
+  adapter.world.findBlocks = () => [{ name: 'potatoes', position: { x: 1, y: 63, z: 0 }, distance: 1, diggable: true }];
+  adapter.world.blockAt = () => ({ name: 'potatoes', getProperties: () => ({ growth: 7 }), hardness: 0, diggable: true });
+  adapter._mineBlock = async () => { throw new Error('should not mine'); };
+  const result = await adapter._harvestCrop('potatoes');
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'drop_unreachable');
+});
+
+test('_harvestCrop distinguishes "nothing to harvest" from "still growing"', async () => {
+  const empty = spawnedAdapter();
+  empty.world.findBlocks = () => [];
+  empty._mineBlock = async () => { throw new Error('should not mine'); };
+  assert.deepEqual(await empty._harvestCrop('wheat'), { ok: false, error: 'no_crop_found', crop: 'wheat', immature: 0 });
+
+  const growing = spawnedAdapter();
+  growing.world.findBlocks = () => [{ name: 'potatoes', position: { x: 1, y: 63, z: 0 }, distance: 1, diggable: true }];
+  growing.world.blockAt = () => ({ name: 'potatoes', getProperties: () => ({ growth: 3 }), hardness: 0, diggable: true });
+  growing._mineBlock = async () => { throw new Error('should not mine'); };
+  assert.deepEqual(await growing._harvestCrop('potatoes'), { ok: false, error: 'crop_not_mature', crop: 'potatoes', immature: 1 });
+});
+
+test('_refreshNearby annotates crop rows with the growth state', () => {
+  const adapter = spawnedAdapter();
+  adapter.world.findBlocks = name => (name === 'potatoes'
+    ? [{ name: 'potatoes', position: { x: 1, y: 63, z: 0 }, distance: 1, diggable: true, hardness: 0, getProperties: () => ({ growth: 4 }) }]
+    : []);
+  adapter._refreshNearby();
+  const row = adapter.nearbyBlocks.potatoes[0];
+  assert.equal(row.growth, 4);
+  assert.equal(row.maxGrowth, 7);
+  assert.equal(row.mature, false);
+  // Le righe non-coltura restano invariate (nessun campo di crescita).
+  assert.equal(Object.keys(adapter.nearbyBlocks.dirt[0] || {}).includes('growth'), false);
 });

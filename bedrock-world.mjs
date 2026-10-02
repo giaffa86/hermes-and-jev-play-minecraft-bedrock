@@ -234,7 +234,15 @@ export class BedrockWorld {
         if (result.length > count) result.pop();
       }
     }
-    return result.map(entry => ({ ...this.blockAt(entry.position), distance: entry.distance }));
+    // Restituisce l'oggetto blocco *intero* (istanza prismarine Block), non una
+    // copia spalmata: lo spread perdeva i metodi e con essi `getProperties()`,
+    // quindi gli stati di blocco (es. `growth` delle colture) risultavano
+    // illeggibili in produzione.
+    return result.map(entry => {
+      const block = this.blockAt(entry.position) || {};
+      block.distance = entry.distance;
+      return block;
+    });
   }
 
   summary () {
