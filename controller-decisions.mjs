@@ -27,6 +27,7 @@ export function optionPriority (option, { targets = {}, preferredIntents = [] } 
   const key = option?.key || '';
   if (SURVIVAL_KEYS.has(key) || key.startsWith('attack_')) return 0;
   if (key === 'collect_drop') return 1;
+  if (key === 'follow_player') return 2; // ordine umano "seguimi"
   if (preferredIntents.length && keyMatchesIntents(key, preferredIntents)) return 3;
   for (const target of Object.keys(targets)) {
     const normalized = target.replace(/_/g, '');

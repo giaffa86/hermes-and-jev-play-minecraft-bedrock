@@ -6,7 +6,8 @@ import { createRequire } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BedrockWorld } from './bedrock-world.mjs';
 import { trackNethernetClient, closeBedrockClient } from './bedrock-lifecycle.mjs';
-import { bestFood, isHostileType, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection } from './bedrock-survival.mjs';
+import { bestFood, isHostileType, isTraderType, isFarmAnimalType, animalFeed, cropForSeed, isCropBlock, isFarmlandBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS } from './bedrock-survival.mjs';
+import { professionName, normalizeProfession, professionMatches, pickBestTrade } from './bedrock-trading.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -42,7 +43,10 @@ const TOOL_HARVEST_RANK = { wooden: 1, golden: 1, stone: 2, copper: 2, iron: 3, 
 const HARVEST_TOOL_RANK = { 941: 1, 956: 1, 946: 2, 951: 2, 961: 3, 966: 4, 971: 5 };
 // Blocchi funzionali o costruiti che dig_down non deve mai scavare per errore
 // (tavoli, contenitori, stazioni): il passo verrebbe rifiutato invece che distruggerli.
-const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|_bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$)/;
+const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|_bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$|farmland$|_fence$|_fence_gate$|wheat$|carrots$|potatoes$|beetroots$|melon_stem$|pumpkin_stem$|sweet_berry_bush$|nether_wart$)/;
+// Bit dei MetadataFlags (key 0) delle entità: servono per baby/tempted/inlove
+// degli animali e per il flag resting del bot stesso.
+const METADATA_FLAG_BITS = { onfire: 0, sneaking: 1, riding: 2, sprinting: 3, action: 4, invisible: 5, tempted: 6, inlove: 7, baby: 8, resting: 23 };
 // Fornace: slot del container Bedrock e priorità dei combustibili (fusione).
 const FURNACE_SLOTS = { ingredient: 0, fuel: 1, output: 2 };
 const FURNACE_BY_CONTAINER = {
@@ -113,6 +117,8 @@ export class BedrockAdapter {
     this.dimension = 'overworld';
     this.standingOn = null;
     this.plan = null;
+    this.chatInbox = [];             // messaggi chat recenti { from, message, type, xuid, at }
+    this._playersByName = new Map(); // gamertag minuscolo -> runtimeId (chat -> entità da seguire)
     this.busy = false;
     this.recent = [];
     this.connectError = null;
@@ -141,6 +147,14 @@ export class BedrockAdapter {
     this._containerWaiters = [];
     this._craftingGrid = new Map();    // gridSlot -> { network_id, count, stack_id }
     this._cursor = null;               // { network_id, count, stack_id }
+    // Commercio: offerte del villager/mercante aperto, finestra e slot di trading.
+    this.tradeOffers = [];             // offerte parse da update_trade
+    this.tradeTarget = null;           // { type, runtimeId, uniqueId, position, distance, profession? }
+    this.tradeDisplayName = null;      // professione/descrizione mostrata nella UI di trading
+    this.tradeTier = null;             // tier corrente del villager aperto
+    this.tradeNewUI = true;            // new_trading_ui da update_trade (slot trade2_*)
+    this.tradeOpenedAt = 0;            // timestamp apertura commercio (per TTL)
+    this._tradeSlots = { ingredient1: null, ingredient2: null, result: null };
     // Sopravvivenza: entità note (mob/giocatori), ora del giorno, sonno e morte.
     this.entities = new Map();         // runtimeId -> { type, kind, position, health, lastAt }
     this._entitiesByUnique = new Map(); // uniqueId -> runtimeId
@@ -230,6 +244,8 @@ export class BedrockAdapter {
       if (process.env.BEDROCK_PACKET_LOG) {
         client.on('packet', des => this.log('packet', { name: des.data.name }));
       }
+      // Chat dei giocatori (pubblico + whisper): canale di comando umano (M1).
+      this.client.on('text', (packet) => this._onChat(packet));
       const cancel = () => client.close();
       signal.addEventListener('abort', cancel, { once: true });
 
@@ -254,10 +270,39 @@ export class BedrockAdapter {
         this._openContainer = { id: packet.window_id, type: packet.window_type };
         this._openContainerBlock = null;
         this._openContainerSlots = [];
+        if (packet.window_type === 'trading' || packet.window_type === 15) {
+          // La finestra di trading viene aperta dal server in risposta all'interact
+          // sul villager; il contenuto delle tre slot arriva con inventory_content.
+          this._tradeSlots = { ingredient1: null, ingredient2: null, result: null };
+          if (!this.tradeOpenedAt) this.tradeOpenedAt = Date.now();
+        }
         this.log('container_open', { windowId: packet.window_id, windowType: packet.window_type });
         for (const waiter of this._containerWaiters.splice(0)) {
           if (waiter.predicate(packet)) waiter.resolve(packet);
           else this._containerWaiters.push(waiter);
+        }
+      });
+
+      // Il server invia le offerte dopo l'interact sul villager (o quando una
+      // finestra di trading già aperta cambia, es. tier sbloccato).
+      this.client.on('update_trade', (packet) => this._onUpdateTrade(packet));
+
+      // Se il server chiude la finestra di trading (villager allontanato o
+      // despawnato), le offerte non sono più valide e vanno scartate.
+      this.client.on('container_close', (packet) => {
+        const open = this._openContainer;
+        if (!open) return;
+        if (packet.window_id !== open.id) return;
+        const wasTrading = open.type === 'trading' || open.type === 15;
+        this.log('container_closed', { windowId: packet.window_id, byServer: !!packet.server, windowType: packet.window_type });
+        this._openContainer = null;
+        this._openContainerBlock = null;
+        this._openContainerSlots = [];
+        if (wasTrading) {
+          this.tradeOffers = [];
+          this.tradeOpenedAt = 0;
+          this.tradeTarget = null;
+          this._tradeSlots = { ingredient1: null, ingredient2: null, result: null };
         }
       });
 
@@ -446,6 +491,11 @@ export class BedrockAdapter {
               }),
             });
           }
+          // Finestra di trading: le tre slot (ingrediente 1, ingrediente 2,
+          // risultato) arrivano come inventory_content della finestra trading.
+          if (this._openContainer.type === 'trading') {
+            this._trackTradeSlots(packet.input);
+          }
           // Contenitore di stoccaggio (baule/botte/shulker): la window_type è
           // 'container'; il contenuto è l'elenco completo delle slot 0..26 (54 se doppio).
           if (this._openContainer.type === 'container' && this._openContainerBlock) {
@@ -466,6 +516,7 @@ export class BedrockAdapter {
           item: packet.item ? `${packet.item.name || this.world.registry?.items[packet.item.network_id]?.name || packet.item.network_id}:${packet.item.count}:${packet.item.stack_id ?? 'none'}` : null,
         });
         if (this._trackFurnaceSlot(containerId, packet.item)) return; // non è uno slot del giocatore
+        if (this._trackTradeSlot(containerId, packet.slot, packet.item)) return; // slot della finestra di trading
         const index = this._playerSlotIndex(containerId, packet.window_id, packet.slot);
         if (index == null || index < 0 || index > 35) return;
         this.inventorySlots[index] = packet.item;
@@ -672,6 +723,7 @@ export class BedrockAdapter {
         contents: c.contents,
       })),
       plan: this.plan,
+      chat: this.chatInbox.slice(-10),
       nearby: this.nearbyBlocks,
       recent: this.recent.slice(-8),
       status: this.status,
@@ -684,6 +736,16 @@ export class BedrockAdapter {
       deathSite: this.deathSite ? { position: this.deathSite.position, at: this.deathSite.at } : null,
       experience: this.experienceLevel != null ? { level: this.experienceLevel, progress: this.experienceProgress } : null,
       entities: this._nearbyEntities(8),
+      farmAnimals: this._nearbyFarmAnimals(8),
+      traders: this._nearbyTraders(8),
+      trade: this.tradeOffers.length ? {
+        open: this._tradeWindowOpen(),
+        target: this.tradeTarget,
+        displayName: this.tradeDisplayName,
+        tier: this.tradeTier,
+        newUI: this.tradeNewUI,
+        offers: this.tradeOffers,
+      } : null,
       world: this.world.summary(),
     };
   }
@@ -712,6 +774,12 @@ export class BedrockAdapter {
     }
     if (waypointUnmet) {
       o.push({ key: 'goto_waypoint', description: `Pathfind to planner waypoint ${JSON.stringify(this.plan.waypoint)}` });
+    }
+    // Comando umano "seguimi": plan.follow = gamertag del giocatore da seguire.
+    const follow = this._playerByName(this.plan?.follow);
+    if (follow && follow.position) {
+      const d = this._entityDistance(follow);
+      o.push({ key: 'follow_player', description: `Follow ${follow.username || this.plan.follow} (${d.toFixed(1)} blocks away)` });
     }
     if (drop && !fresh) {
       o.push({ key: 'collect_drop', description: `Walk onto the nearest dropped item (${drop.distance.toFixed(1)} blocks away)` });
@@ -742,6 +810,39 @@ export class BedrockAdapter {
       const p = this.deathSite.position;
       const d = Math.hypot(p.x - this.position.x, p.z - this.position.z);
       o.push({ key: 'recover_loot', description: `Walk back to the death site at ${JSON.stringify(p)} (${d.toFixed(1)} blocks) to recover the dropped items and XP orbs` });
+    }
+    // Commercio: apri la finestra su un trader vicino, oppure offri ogni scambio
+    // eseguibile con l'inventario corrente. La scelta economica resta a Jev.
+    const trader = this._nearestTrader();
+    if (trader && !this._tradeWindowOpen()) {
+      const urgency = trader.type === 'wandering_trader' ? ' (wandering trader, despawns soon!)' : '';
+      o.push({ key: 'open_trade', description: `Open trade with the ${trader.type}${trader.profession != null ? ` (profession ${trader.profession})` : ''} ${trader.distance} blocks away${urgency}` });
+    }
+    if (this._tradeWindowOpen()) {
+      o.push({ key: 'close_trade', description: 'Close the trading window' });
+      this.tradeOffers.forEach((offer, index) => {
+        if (!this._offerRequirementsMet(offer)) return;
+        o.push({ key: `trade_${index}`, description: this._offerDescription(offer, index) });
+      });
+    }
+    // Livellamento (maxxing): un'opzione per professione distinta tra i trader
+    // vicini non ancora al massimo, più una generica se la professione è ignota.
+    // Il loop usa solo scambi economici (mai smeraldi o risorse preziose).
+    {
+      const levelable = this._nearbyTraders(12).filter(t => t.type !== 'wandering_trader');
+      const known = new Set();
+      for (const t of levelable) {
+        const maxTier = t.maxTradeTier ?? 4;
+        if ((t.tradeTier ?? 0) >= maxTier) continue;
+        const prof = t.profession ? normalizeProfession(t.profession) : null;
+        if (prof && !known.has(prof)) {
+          known.add(prof);
+          o.push({ key: `level_${prof}`, description: `Level up the ${t.profession} to master (tier ${t.tradeTier ?? '?'}/${maxTier}) using only cheap, non-precious trades` });
+        }
+      }
+      if (levelable.some(t => (t.tradeTier ?? 0) < (t.maxTradeTier ?? 4)) && !known.size) {
+        o.push({ key: 'level_trader', description: 'Level up the nearest villager to master using only cheap, non-precious trades' });
+      }
     }
     // Mining: offri un'opzione per ogni tipo di blocco scavabile nelle vicinanze.
     // Se il blocco più vicino è sepolto (nessuna faccia raggiungibile) non va offerto:
@@ -856,6 +957,30 @@ export class BedrockAdapter {
         if (++depositOffered >= 6) break;
       }
     }
+    // Fattoria: piantare su farmland libero, nutrire e (se serve carne) cacciare
+    // gli animali della base. Mai villager né domestici (isFarmAnimalType).
+    {
+      const freeFarmland = this._unplantedFarmland();
+      for (const item of PLANTABLE_ITEMS) {
+        if (!(this.inventory[item] > 0)) continue;
+        if (!freeFarmland.length) break;
+        const target = freeFarmland[0];
+        const crop = cropForSeed(item);
+        o.push({ key: `plant_${item}`, description: `Plant ${item} on the farmland at ${JSON.stringify(target.position)} (${target.distance} blocks away) to grow ${crop}` });
+      }
+      const farmAnimals = this._nearbyFarmAnimals(12);
+      const offered = new Set();
+      for (const animal of farmAnimals) {
+        if (offered.has(animal.type)) continue;
+        offered.add(animal.type);
+        o.push({ key: `attack_${animal.type}`, description: `Hunt the ${animal.type} for food (${animal.distance.toFixed(1)} blocks away${animal.baby ? ', baby' : ''})` });
+        const feed = animalFeed(animal.type);
+        if (feed && (this.inventory[feed] || 0) > 0) {
+          o.push({ key: `feed_${animal.type}`, description: `Feed the ${animal.type} ${feed} to make it breed (${animal.distance.toFixed(1)} blocks away)` });
+        }
+        if (offered.size >= 4) break;
+      }
+    }
     // Fallback
     if (!o.length) o.push({ key: 'wait', description: 'Wait 2 seconds for fresh observations' });
     return o;
@@ -881,6 +1006,8 @@ export class BedrockAdapter {
         const target = { x: w.x, y: this.position?.y ?? 70, z: w.z };
         const moveResult = await this._moveTo(target, 2, 45000);
         result = { ok: true, ...moveResult };
+      } else if (key === 'follow_player' && this.plan?.follow) {
+        result = await this._followPlayer(this.plan.follow);
       } else if (key === 'collect_drop') {
         result = await this._collectDrop();
       } else if (key === 'dig_down') {
@@ -896,6 +1023,10 @@ export class BedrockAdapter {
         result = await this._craftItem(key.slice('craft_'.length));
       } else if (key.startsWith('smelt_')) {
         result = await this._smeltItem(key.slice('smelt_'.length));
+      } else if (key.startsWith('plant_')) {
+        result = await this._plantSeed(key.slice('plant_'.length));
+      } else if (key.startsWith('feed_')) {
+        result = await this._feedAnimal(key.slice('feed_'.length));
       } else if (key === 'read_container') {
         result = await this._readContainers();
       } else if (key.startsWith('take_')) {
@@ -905,6 +1036,18 @@ export class BedrockAdapter {
       } else if (key.startsWith('place_')) {
         const itemName = key.slice('place_'.length);
         result = await this._placeBlock(itemName, itemName);
+      } else if (key === 'open_trade') {
+        result = await this._openTrade();
+      } else if (key === 'close_trade') {
+        await this._closeContainer();
+        result = { ok: true, closed: true };
+      } else if (key.startsWith('trade_')) {
+        const index = Number(key.slice('trade_'.length));
+        result = await this._tradeAt(index);
+      } else if (key === 'level_trader') {
+        result = await this._levelTrader({});
+      } else if (key.startsWith('level_')) {
+        result = await this._levelTrader({ profession: key.slice('level_'.length) });
       } else if (key === 'eat') {
         result = await this._eat();
       } else if (key === 'flee') {
@@ -1220,6 +1363,7 @@ export class BedrockAdapter {
   async _closeContainer () {
     const open = this._openContainer;
     if (!open || !this.client) return;
+    const wasTrading = open.type === 'trading' || open.type === 15;
     this.client.write('container_close', { window_id: open.id, window_type: 'none', server: false });
     this._openContainer = null;
     this._openContainerBlock = null;
@@ -1227,6 +1371,12 @@ export class BedrockAdapter {
     // Il server restituisce o fa cadere gli item rimasti nella griglia: lo stato locale non è più valido.
     if (this._craftingGrid.size) this.log('grid_leftovers_discarded', { slots: [...this._craftingGrid.keys()] });
     this._craftingGrid.clear();
+    if (wasTrading) {
+      this.tradeOffers = [];
+      this.tradeOpenedAt = 0;
+      this.tradeTarget = null;
+      this._tradeSlots = { ingredient1: null, ingredient2: null, result: null };
+    }
     await delay(80);
   }
 
@@ -1660,6 +1810,485 @@ export class BedrockAdapter {
       await this._closeContainer().catch(() => {});
       this._refreshInventory();
     }
+  }
+
+  // ---- commercio con villager e mercanti itineranti ---------------------------------
+
+  // I mercanti itineranti despawnano: il loro commercio scade prima di quello
+  // dei villager (che restano).
+  _tradeTTLMs () {
+    return this.tradeTarget?.type === 'wandering_trader' ? 3 * 60 * 1000 : 10 * 60 * 1000;
+  }
+
+  _tradeWindowOpen () {
+    return !!this._openContainer && (this._openContainer.type === 'trading' || this._openContainer.type === 15);
+  }
+
+  // Slot container (FullContainerName) delle tre finestre di trading. La UI nuova
+  // (1.11+, quindi anche BDS 1.26) usa i nomi trade2_*; quella vecchia trade_*.
+  _tradeSlotContainers () {
+    if (this.tradeNewUI) {
+      return { ingredient1: 'trade2_ingredient1', ingredient2: 'trade2_ingredient2', result: 'trade2_result' };
+    }
+    return { ingredient1: 'trade_ingredient1', ingredient2: 'trade_ingredient2', result: 'trade_result' };
+  }
+
+  // Converte un tag prismarine-nbt (o un valore già sciolto) in JS puro:
+  // compound -> oggetto, list -> array, scalari -> number/string.
+  _nbtToJs (tag) {
+    if (tag == null) return null;
+    if (Array.isArray(tag)) return tag.map(t => this._nbtToJs(t));
+    if (typeof tag !== 'object') return tag;
+    if ('type' in tag && 'value' in tag) {
+      const type = tag.type;
+      if (type === 'list') {
+        const inner = tag.value;
+        const arr = Array.isArray(inner) ? inner : (Array.isArray(inner?.value) ? inner.value : []);
+        return arr.map(item => this._nbtToJs(item));
+      }
+      if (type === 'compound') {
+        const out = {};
+        const val = tag.value;
+        if (val && typeof val === 'object' && !Array.isArray(val)) {
+          for (const [k, v] of Object.entries(val)) out[k] = this._nbtToJs(v);
+        }
+        return out;
+      }
+      return typeof tag.value === 'bigint' ? Number(tag.value) : tag.value;
+    }
+    const out = {};
+    for (const [k, v] of Object.entries(tag)) out[k] = this._nbtToJs(v);
+    return out;
+  }
+
+  // Parsa le offerte NBT di update_trade in un array leggibile:
+  // { buyA: {item, count}, buyB: {...}|null, sell: {item, count}, uses, maxUses, tier, rewardExp }.
+  _parseTradeOffers (offers) {
+    const root = this._nbtToJs(offers) || {};
+    const recipes = Array.isArray(root.Recipes) ? root.Recipes : [];
+    const out = [];
+    for (const recipe of recipes) {
+      const cleanItem = raw => {
+        if (!raw || typeof raw !== 'object') return null;
+        const name = String(raw.id || raw.ID || raw.item || '').replace(/^minecraft:/, '');
+        const count = Number(raw.Count ?? raw.count ?? raw.CountV1 ?? 1) || 1;
+        if (!name || name === 'air' || count <= 0) return null;
+        return { item: name, count };
+      };
+      const buyA = cleanItem(recipe.buyA);
+      const buyB = cleanItem(recipe.buyB);
+      const sell = cleanItem(recipe.sell);
+      if (!buyA || !sell) continue; // offerta senza costo o senza output non è commerciabile
+      out.push({
+        buyA,
+        buyB: buyB && buyB.count > 0 ? buyB : null,
+        sell,
+        uses: Number(recipe.uses ?? 0) || 0,
+        maxUses: Number(recipe.maxUses ?? 0) || 0,
+        tier: Number(recipe.tier ?? 0) || 0,
+        rewardExp: !!recipe.rewardExp,
+        // Prezzo reale (economia vanilla: il prezzo sale con la domanda).
+        priceMultiplierA: Number(recipe.priceMultiplierA ?? recipe.priceMultiplierA1 ?? 0) || 0,
+      });
+    }
+    return out;
+  }
+
+  _onUpdateTrade (packet) {
+    this.tradeOpenedAt = Date.now();
+    this.tradeDisplayName = packet.display_name || null;
+    this.tradeTier = packet.trade_tier ?? null;
+    this.tradeNewUI = packet.new_trading_ui !== false;
+    this.tradeOffers = this._parseTradeOffers(packet.offers);
+    const uniqueId = packet.villager_unique_id != null ? String(packet.villager_unique_id) : null;
+    if (uniqueId && this._entitiesByUnique.has(uniqueId)) {
+      const runtimeId = this._entitiesByUnique.get(uniqueId);
+      const entity = this.entities.get(runtimeId);
+      if (entity && this.tradeDisplayName) entity.professionName = this.tradeDisplayName;
+      this.tradeTarget = entity ? {
+        type: entity.type,
+        runtimeId: entity.runtimeId,
+        uniqueId: entity.uniqueId,
+        position: entity.position,
+        distance: entity.position ? +this._entityDistance(entity).toFixed(1) : null,
+      } : this.tradeTarget;
+    }
+    this.log('update_trade', {
+      displayName: this.tradeDisplayName,
+      tier: this.tradeTier,
+      newUI: this.tradeNewUI,
+      offers: this.tradeOffers.length,
+      target: this.tradeTarget ? { type: this.tradeTarget.type, distance: this.tradeTarget.distance } : null,
+    });
+  }
+
+  // Aggiorna lo specchio locale delle tre slot di trading da inventory_content.
+  _trackTradeSlots (input) {
+    const read = slot => {
+      const item = input?.[slot];
+      return item?.network_id ? {
+        network_id: item.network_id,
+        name: this._slotItemName(item),
+        count: item.count,
+        stack_id: item.stack_id ?? null,
+      } : null;
+    };
+    this._tradeSlots = { ingredient1: read(0), ingredient2: read(1), result: read(2) };
+    this.log('trade_content', {
+      ingredient1: this._tradeSlots.ingredient1 ? `${this._tradeSlots.ingredient1.name}:${this._tradeSlots.ingredient1.count}` : '-',
+      ingredient2: this._tradeSlots.ingredient2 ? `${this._tradeSlots.ingredient2.name}:${this._tradeSlots.ingredient2.count}` : '-',
+      result: this._tradeSlots.result ? `${this._tradeSlots.result.name}:${this._tradeSlots.result.count}` : '-',
+    });
+  }
+
+  // Aggiorna lo specchio locale da un inventory_slot della finestra di trading.
+  _trackTradeSlot (containerId, slot, item) {
+    if (!this._tradeWindowOpen()) return false;
+    const containers = this._tradeSlotContainers();
+    const key = containerId === containers.ingredient1 ? 'ingredient1'
+      : containerId === containers.ingredient2 ? 'ingredient2'
+      : containerId === containers.result ? 'result'
+      : null;
+    if (!key || slot !== 0) return false;
+    this._tradeSlots[key] = item?.network_id ? {
+      network_id: item.network_id,
+      name: this._slotItemName(item),
+      count: item.count,
+      stack_id: item.stack_id ?? null,
+    } : null;
+    return true;
+  }
+
+  // Professione leggibile di un'entità trader: il display_name cacheato (fonte
+  // autorevole) oppure la mappa best-effort su trading_career/mark_variant.
+  _professionFor (entity) {
+    if (!entity) return null;
+    if (entity.professionName) return entity.professionName;
+    for (const raw of [entity.career, entity.markVariant]) {
+      const name = professionName(raw);
+      if (name) return name;
+    }
+    return null;
+  }
+
+  // Entità commerciabili note, entro `limit` blocchi.
+  _nearbyTraders (limit = 8) {
+    const rows = [];
+    for (const entity of this.entities.values()) {
+      if (entity.kind !== 'mob' || !entity.position || !isTraderType(entity.type)) continue;
+      const distance = this._entityDistance(entity);
+      if (distance > 32) continue;
+      rows.push({
+        type: entity.type,
+        runtimeId: entity.runtimeId,
+        wandering: entity.type === 'wandering_trader',
+        distance: +distance.toFixed(1),
+        position: {
+          x: +entity.position.x.toFixed(1),
+          y: +entity.position.y.toFixed(1),
+          z: +entity.position.z.toFixed(1),
+        },
+        tradeTier: entity.tradeTier ?? null,
+        maxTradeTier: entity.maxTradeTier ?? null,
+        profession: this._professionFor(entity),
+        seenAt: entity.seenAt ?? null,
+      });
+    }
+    rows.sort((a, b) => a.distance - b.distance);
+    return rows.slice(0, limit);
+  }
+
+  _nearestTrader () {
+    return this._nearbyTraders(1)[0] || null;
+  }
+
+  // Offerta soddisfacibile con l'inventario corrente (input 1 e, se presente, 2).
+  _offerRequirementsMet (offer) {
+    if (!offer) return false;
+    if ((this.inventory[offer.buyA.item] || 0) < offer.buyA.count) return false;
+    if (offer.buyB && (this.inventory[offer.buyB.item] || 0) < offer.buyB.count) return false;
+    return true;
+  }
+
+  _offerDescription (offer, index) {
+    const cost = offer.buyB
+      ? `${offer.buyA.count} ${offer.buyA.item} + ${offer.buyB.count} ${offer.buyB.item}`
+      : `${offer.buyA.count} ${offer.buyA.item}`;
+    const uses = offer.maxUses ? `, ${offer.maxUses - offer.uses} uses left` : '';
+    const where = this.tradeTarget
+      ? ` (${this.tradeTarget.type} ${this.tradeTarget.distance != null ? `${this.tradeTarget.distance} blocks away` : ''})`
+      : '';
+    const urgency = this.tradeTarget?.type === 'wandering_trader' ? ' — despawns soon!' : '';
+    return `Trade ${cost} for ${offer.sell.count} ${offer.sell.item}${uses}${where}${urgency}`;
+  }
+
+  // item_use_on_entity con action_type interact: apre il commercio (mai attack).
+  _interactEntity (entity) {
+    const held = this.inventorySlots[this.selectedHotbar] || { network_id: 0 };
+    let runtimeId;
+    try { runtimeId = BigInt(entity.runtimeId); } catch { return false; }
+    const centerY = entity.position.y + entityHeight(entity.type) * 0.5;
+    this.client.write('inventory_transaction', {
+      transaction: {
+        legacy: { legacy_request_id: 0 },
+        transaction_type: 'item_use_on_entity',
+        actions: [],
+        transaction_data: {
+          entity_runtime_id: runtimeId,
+          action_type: 'interact',
+          hotbar_slot: this.selectedHotbar,
+          held_item: held,
+          player_pos: { ...this.position },
+          click_pos: { x: entity.position.x, y: centerY, z: entity.position.z },
+        },
+      },
+    });
+    this.log('interact', { target: entity.type, runtimeId: entity.runtimeId, distance: +this._entityDistance(entity).toFixed(2) });
+    return true;
+  }
+
+  // Si avvicina al trader più vicino e apre il commercio; attende le offerte.
+  async _openTrade (opts) {
+    const trader = this._nearestTrader();
+    if (!trader) return { ok: false, error: 'no_trader_nearby' };
+    if (this.tradeOpenedAt && Date.now() - this.tradeOpenedAt < this._tradeTTLMs() && this._tradeWindowOpen() && this.tradeOffers.length) {
+      return { ok: true, alreadyOpen: true, offers: this.tradeOffers.length, trader: trader.type };
+    }
+    const entity = this.entities.get(trader.runtimeId);
+    if (!entity) return { ok: false, error: 'trader_gone' };
+    return this._openTradeWithEntity(entity, opts);
+  }
+
+  // Apre il commercio con un'entità trader specifica (usata anche dal livellamento
+  // per scegliere il commerciante giusto, non solo il più vicino).
+  async _openTradeWithEntity (entity, { approachTimeoutMs = 25000, confirmMs = 4000 } = {}) {
+    // Chiudi un commercio/container precedente prima di aprirne un altro.
+    if (this._openContainer) await this._closeContainer().catch(() => {});
+    this.tradeOffers = [];
+    this.tradeOpenedAt = 0;
+    this.tradeTarget = { type: entity.type, runtimeId: entity.runtimeId, position: entity.position };
+    if (this._entityDistance({ ...entity, type: entity.type }) > 4.5) {
+      try {
+        await this._moveTo(entity.position, 2.0, approachTimeoutMs);
+      } catch (error) {
+        this.log('trade_approach_failed', { message: error.message, trader: entity.type });
+      }
+    }
+    const live = this.entities.get(entity.runtimeId);
+    if (!live) return { ok: false, error: 'trader_gone' };
+    const distance = this._entityDistance(live);
+    if (distance > 5) return { ok: false, error: 'trader_unreachable', distance: +distance.toFixed(1) };
+    this.tradeTarget = { type: live.type, runtimeId: live.runtimeId, position: live.position, distance: +distance.toFixed(1) };
+    for (let attempt = 1; attempt <= 3 && !this.tradeOffers.length; attempt++) {
+      const look = this._lookAt({ x: live.position.x, y: live.position.y + entityHeight(live.type) * 0.5, z: live.position.z });
+      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+      await delay(120);
+      const current = this.entities.get(entity.runtimeId);
+      if (!current) continue;
+      this._interactEntity(current);
+      const waitUntil = Date.now() + confirmMs;
+      while (Date.now() < waitUntil && !this.tradeOffers.length) await delay(100);
+    }
+    if (!this.tradeOffers.length) return { ok: false, error: 'trade_not_opened', hint: 'villager busy, obstructed or not a trader' };
+    return { ok: true, opened: true, offers: this.tradeOffers.length, trader: live.type, displayName: this.tradeDisplayName };
+  }
+
+  // Sposta `count` item `itemName` dall'inventario nella slot di input di trading.
+  async _putInTradeSlot (slotKey, itemName, count) {
+    const containers = this._tradeSlotContainers();
+    const container = containers[slotKey];
+    const index = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && (s.count || 0) >= count);
+    if (index < 0) throw new Error('missing_ingredients');
+    const item = this.inventorySlots[index];
+    const info = this._invSlotAsSource(index);
+    const take = await this._sendStackRequest([{
+      type_id: 'take', legacy_type_id: 0, count,
+      source: this._slotInfo(info.container, info.slot, item.stack_id || 0),
+      destination: this._slotInfo('cursor', 0, 0),
+    }]);
+    if (String(take.status) !== 'ok' && take.status !== 0) throw new Error(`take_failed_${take.status}`);
+    this._applyStackResponse(take);
+    const cursorStack = this._responseSlotStack(take, 'cursor', 0) ?? 0;
+    const current = this._tradeSlots[slotKey];
+    const place = await this._sendStackRequest([{
+      type_id: 'place', legacy_type_id: 1, count,
+      source: this._slotInfo('cursor', 0, cursorStack),
+      destination: this._slotInfo(container, 0, current?.stack_id || 0),
+    }]);
+    if (String(place.status) !== 'ok' && place.status !== 0) throw new Error(`place_failed_${place.status}`);
+    this._applyStackResponse(place, { networkId: item.network_id });
+    this._cursor = null;
+    this._tradeSlots[slotKey] = {
+      network_id: item.network_id, name: itemName, count,
+      stack_id: this._responseSlotStack(place, container, 0) ?? current?.stack_id ?? 0,
+    };
+    this.log('trade_put', { slot: slotKey, container, item: itemName, count, status: place.status });
+  }
+
+  // Preleva il risultato (se presente) e lo porta in inventario.
+  async _takeTradeResult () {
+    const containers = this._tradeSlotContainers();
+    const result = this._tradeSlots.result;
+    if (!result?.network_id) return null;
+    const count = result.count || 1;
+    const take = await this._sendStackRequest([{
+      type_id: 'take', legacy_type_id: 0, count,
+      source: this._slotInfo(containers.result, 0, result.stack_id || 0),
+      destination: this._slotInfo('cursor', 0, 0),
+    }]);
+    if (String(take.status) !== 'ok' && take.status !== 0) throw new Error(`take_failed_${take.status}`);
+    this._applyStackResponse(take, { networkId: result.network_id });
+    this._cursor = { network_id: result.network_id, name: result.name, count, stack_id: this._responseSlotStack(take, 'cursor', 0) ?? result.stack_id ?? 0 };
+    const returned = await this._returnCursorToInventory();
+    if (!returned) throw new Error('output_return_failed');
+    this._tradeSlots.result = null;
+    return { name: result.name, count };
+  }
+
+  // Attende che il server popoli la slot risultato dopo aver piazzato gli input.
+  async _waitTradeResult (timeoutMs = 5000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (this._tradeSlots.result?.network_id) return { ...this._tradeSlots.result };
+      await delay(250);
+    }
+    return null;
+  }
+
+  // Esegue lo scambio `index` (0-based) con l'offerta esposta in /observe.
+  async _tradeAt (index, { timeoutMs = 20000 } = {}) {
+    const offer = this.tradeOffers[index];
+    if (!offer) return { ok: false, error: 'no_trade_offer', index };
+    if (!this._tradeWindowOpen()) return { ok: false, error: 'trade_not_open' };
+    if (!this._offerRequirementsMet(offer)) return { ok: false, error: 'missing_ingredients' };
+    const before = { ...this.inventory };
+    const started = Date.now();
+    try {
+      // Residui di uno scambio precedente rimasti nella finestra.
+      if (this._tradeSlots.result?.network_id) await this._takeTradeResult();
+      await this._putInTradeSlot('ingredient1', offer.buyA.item, offer.buyA.count);
+      if (offer.buyB) await this._putInTradeSlot('ingredient2', offer.buyB.item, offer.buyB.count);
+      let result = await this._waitTradeResult();
+      if (!result) return { ok: false, error: 'trade_result_timeout', offer, hint: 'server did not report the trade result slot' };
+      const taken = await this._takeTradeResult();
+      // Gli input sono stati consumati dal server: lo specchio locale va azzerato
+      // per non riusare stack_id stantii nello scambio successivo.
+      this._tradeSlots.ingredient1 = null;
+      this._tradeSlots.ingredient2 = null;
+      await delay(150);
+      this._refreshInventory();
+      const consumedA = (before[offer.buyA.item] || 0) - (this.inventory[offer.buyA.item] || 0);
+      const consumedB = offer.buyB ? (before[offer.buyB.item] || 0) - (this.inventory[offer.buyB.item] || 0) : 0;
+      const gained = (this.inventory[offer.sell.item] || 0) - (before[offer.sell.item] || 0);
+      return {
+        ok: true,
+        trade: `${offer.buyA.count} ${offer.buyA.item}${offer.buyB ? ` + ${offer.buyB.count} ${offer.buyB.item}` : ''} → ${offer.sell.count} ${offer.sell.item}`,
+        received: taken?.count ?? result.count ?? offer.sell.count,
+        consumedA, consumedB, gained,
+        ms: Date.now() - started,
+      };
+    } catch (error) {
+      return { ok: false, error: error.message, offer };
+    } finally {
+      await this._returnCursorToInventory().catch(() => {});
+      this._refreshInventory();
+    }
+  }
+
+  // ---- livellamento di un commerciante (maxxing) -----------------------------------
+
+  _currentTraderTier () {
+    const entity = this.tradeTarget ? this.entities.get(this.tradeTarget.runtimeId) : null;
+    const tier = this.tradeTier ?? entity?.tradeTier ?? 0;
+    return Number.isInteger(Number(tier)) ? Number(tier) : 0;
+  }
+
+  _traderMaxTier () {
+    const entity = this.tradeTarget ? this.entities.get(this.tradeTarget.runtimeId) : null;
+    const maxTier = entity?.maxTradeTier ?? 4; // master è il massimo vanilla
+    return Number.isInteger(Number(maxTier)) ? Number(maxTier) : 4;
+  }
+
+  // Loop deterministico sul commerciante aperto: ripete l'offerta più economica
+  // disponibile finché il tier non raggiunge il massimo o scade il budget.
+  async _levelCurrentTrader ({ maxTrades, deadline }) {
+    const started = Date.now();
+    const maxTier = this._traderMaxTier();
+    let trades = 0;
+    while (trades < maxTrades && Date.now() < deadline) {
+      const tier = this._currentTraderTier();
+      if (tier >= maxTier) {
+        return { ok: true, maxed: true, tier, maxTier, trades, ms: Date.now() - started };
+      }
+      // Solo offerte economiche (mai smeraldi né risorse preziose come input):
+      // la scelta ponderata resta qui, nel harness, non delegata al modello.
+      const offer = pickBestTrade(this.tradeOffers, this.inventory);
+      if (!offer) {
+        return {
+          ok: false,
+          error: 'no_economical_trade',
+          tier,
+          maxTier,
+          trades,
+          ms: Date.now() - started,
+          hint: 'all cheap trades used up (restock at workstation needed) or no cheap materials in inventory',
+        };
+      }
+      const index = this.tradeOffers.indexOf(offer);
+      const res = await this._tradeAt(index);
+      if (!res.ok) {
+        return { ok: false, error: res.error, tier, maxTier, trades, ms: Date.now() - started };
+      }
+      trades++;
+      if (offer.maxUses) offer.uses = (offer.uses || 0) + 1; // aggiorna lo specchio locale
+      await delay(150);
+    }
+    const tier = this._currentTraderTier();
+    return {
+      ok: true,
+      maxed: tier >= maxTier,
+      tier,
+      maxTier,
+      trades,
+      ms: Date.now() - started,
+      budgetExhausted: trades >= maxTrades,
+    };
+  }
+
+  // Livella un commerciante (per professione o il più vicino) fino al tier massimo.
+  // Il mercante itinerante non ha livelli: viene escluso.
+  async _levelTrader ({ profession = null, maxTrades = 30, maxTimeMs = 180000 } = {}) {
+    const wanted = profession ? normalizeProfession(profession) : null;
+    const candidates = this._nearbyTraders(12).filter(t => t.type !== 'wandering_trader');
+    if (!candidates.length) return { ok: false, error: 'no_trader_nearby', profession: wanted };
+    if (wanted) {
+      // Ordina: prima i candidati la cui professione (cache o mappa) corrisponde,
+      // poi quelli a professione ignota, poi gli altri; a parità, il più vicino.
+      candidates.sort((a, b) => {
+        const am = professionMatches(a.profession, wanted) ? 0 : (a.profession == null ? 1 : 2);
+        const bm = professionMatches(b.profession, wanted) ? 0 : (b.profession == null ? 1 : 2);
+        return am - bm || a.distance - b.distance;
+      });
+    }
+    const deadline = Date.now() + maxTimeMs;
+    for (const candidate of candidates) {
+      if (Date.now() >= deadline) break;
+      const entity = this.entities.get(candidate.runtimeId);
+      if (!entity) continue;
+      const opened = await this._openTradeWithEntity(entity);
+      if (!opened.ok) continue;
+      if (wanted && !professionMatches(this.tradeDisplayName, wanted)) {
+        // La mappa metadata era inesatta: questo non è il commerciante cercato.
+        await this._closeContainer().catch(() => {});
+        continue;
+      }
+      const result = await this._levelCurrentTrader({ maxTrades, deadline });
+      result.profession = this.tradeDisplayName || candidate.profession || null;
+      result.trader = candidate.type;
+      await this._closeContainer().catch(() => {});
+      return result;
+    }
+    return { ok: false, error: 'no_matching_trader', profession: wanted };
   }
 
   // ---- bauli / botti / shulker -----------------------------------------------------
@@ -3105,9 +3734,52 @@ export class BedrockAdapter {
     throw new Error('movement timeout');
   }
 
+  // Segue un giocatore (by gamertag) rileggendo la sua posizione viva a ogni
+  // tratto, finché non è vicino o scade il budget. Usato dal comando umano
+  // "seguimi" (plan.follow = gamertag).
+  async _followPlayer (name, { distance = 3, timeoutMs = 45000 } = {}) {
+    const started = Date.now();
+    let last = null;
+    let stalls = 0;
+    while (Date.now() - started < timeoutMs) {
+      const entity = this._playerByName(name);
+      if (!entity || !entity.position) {
+        await delay(250);
+        if (++stalls >= 8) return { ok: false, error: 'target_not_found', target: name };
+        continue;
+      }
+      stalls = 0;
+      last = entity.position;
+      const d = Math.hypot(last.x - this.position.x, last.z - this.position.z);
+      if (d <= distance) return { ok: true, followed: name, distance: +d.toFixed(1) };
+      try {
+        await this._moveTo({ x: last.x, y: last.y, z: last.z }, distance, Math.min(12000, Math.max(3000, d * 600)));
+      } catch (error) {
+        if (++stalls >= 4) return { ok: false, error: `follow_failed: ${error.message}`, target: name };
+      }
+    }
+    return { ok: true, followed: name, distance: last ? +Math.hypot(last.x - this.position.x, last.z - this.position.z).toFixed(1) : null, note: 'follow window elapsed' };
+  }
+
   // ---- sopravvivenza ------------------------------------------------------------------
   // Entità, ora del giorno, combattimento, fuga, cibo e letto. Le regole pure
   // (classificazione ostili, cibo, tempo) stanno in bedrock-survival.mjs.
+
+  // Riceve un pacchetto `text` (id 9) e conserva solo la chat scritta da giocatori
+  // (pubblico `chat` e whisper `whisper`/`json_whisper`), escludendo i messaggi
+  // propri e quelli di sistema. L'allowlist/trigger vengono applicati dal controller.
+  _onChat (packet) {
+    const type = packet?.type;
+    const message = packet?.message;
+    if (!message || typeof message !== 'string') return;
+    if (type !== 'chat' && type !== 'whisper' && type !== 'json_whisper') return;
+    const from = packet.source_name || null;
+    if (from && USERNAME && from.toLowerCase() === USERNAME.toLowerCase()) return;
+    const entry = { from, message, type, xuid: packet.xuid != null ? String(packet.xuid) : null, at: Date.now() };
+    this.chatInbox.push(entry);
+    if (this.chatInbox.length > 32) this.chatInbox.shift();
+    this.log('chat', { from, type, xuid: entry.xuid, message: message.slice(0, 160) });
+  }
 
   // Registra un'entità da add_entity/add_player. Per i mob `position` è ai piedi;
   // per i giocatori è agli occhi (1,62 sopra i piedi).
@@ -3117,12 +3789,17 @@ export class BedrockAdapter {
     const type = normalizeEntityType(packet.entity_type || (kind === 'player' ? 'player' : `unknown_${runtimeId}`));
     let entity = this.entities.get(runtimeId);
     if (!entity) {
-      entity = { runtimeId, uniqueId: null, type, kind, position: null, health: null, lastAt: 0 };
+      entity = { runtimeId, uniqueId: null, type, kind, position: null, health: null, lastAt: 0, seenAt: Date.now() };
       this.entities.set(runtimeId, entity);
     }
     entity.type = type;
     entity.kind = kind;
     entity.lastAt = Date.now();
+    if (!entity.seenAt) entity.seenAt = Date.now();
+    if (kind === 'player' && packet.username) {
+      entity.username = packet.username;
+      this._playersByName.set(String(packet.username).toLowerCase(), runtimeId);
+    }
     if (packet.unique_id != null) {
       entity.uniqueId = String(packet.unique_id);
       this._entitiesByUnique.set(entity.uniqueId, runtimeId);
@@ -3179,15 +3856,41 @@ export class BedrockAdapter {
     for (const entry of packet.metadata || []) {
       const key = typeof entry.key === 'string'
         ? entry.key
-        : (entry.key === 0 ? 'flags' : entry.key === 1 ? 'health' : entry.key === 28 ? 'player_bed_position' : null);
+        : (entry.key === 0 ? 'flags' : entry.key === 1 ? 'health' : entry.key === 2 ? 'variant' : entry.key === 5 ? 'owner_eid' : entry.key === 28 ? 'player_bed_position' : entry.key === 43 ? 'mark_variant' : entry.key === 69 ? 'trading_career' : entry.key === 101 ? 'trade_tier' : entry.key === 102 ? 'max_trade_tier' : null);
       if (key === 'health' && entry.value != null && entity) {
         const value = Number(entry.value);
         if (Number.isFinite(value)) entity.health = value;
+      }
+      // `variant` è la pelle/bioma, NON la professione: per i villager la
+      // professione è `trading_career`/`mark_variant` (best-effort) e la fonte
+      // autorevole è il display_name di update_trade (entity.professionName).
+      if (key === 'variant' && entity) entity.variant = Number(entry.value);
+      if (key === 'mark_variant' && entity) entity.markVariant = Number(entry.value);
+      if (key === 'trading_career' && entity) entity.career = Number(entry.value);
+      if (key === 'trade_tier' && entity) {
+        entity.tradeTier = Number(entry.value);
+      }
+      if (key === 'max_trade_tier' && entity) {
+        entity.maxTradeTier = Number(entry.value);
       }
       if (key === 'flags' && isSelf) {
         const resting = this._metadataFlag(entry.value, 'resting');
         if (resting != null && resting !== this.sleeping) this.log('sleep_signal', { source: 'flags', resting, raw: entry.value?._value != null ? String(entry.value._value) : entry.value });
         if (resting != null) this._setSleeping(resting);
+      }
+      // Flags degli animali da fattoria: baby/tempted/inlove guidano riproduzione
+      // e allevamento. `entity` qui è il mob (non il bot).
+      if (key === 'flags' && entity && !isSelf) {
+        const baby = this._metadataFlag(entry.value, 'baby');
+        if (baby != null) entity.baby = baby;
+        const inlove = this._metadataFlag(entry.value, 'inlove');
+        if (inlove != null) entity.inlove = inlove;
+        const tempted = this._metadataFlag(entry.value, 'tempted');
+        if (tempted != null) entity.tempted = tempted;
+      }
+      // owner_eid (chiave 5) per gli animali domati: il runtime id del padrone.
+      if (key === 'owner_eid' && entity) {
+        entity.ownerEid = String(entry.value?._value ?? entry.value ?? '');
       }
       if (isSelf && process.env.BEDROCK_META_LOG) this.log('self_metadata', { key, value: entry.value?._value != null ? String(entry.value._value) : entry.value });
       // player_bed_position è il letto di respawn (presente anche da svegli):
@@ -3196,14 +3899,16 @@ export class BedrockAdapter {
     if (entity) entity.lastAt = Date.now();
   }
 
-  _metadataFlag (value, name) {    if (value && typeof value === 'object') {
+  _metadataFlag (value, name) {
+    if (value && typeof value === 'object') {
       if (typeof value[name] === 'boolean') return value[name];
       if (value[name] != null) return !!value[name];
       return null;
     }
-    // Fallback numerico: MetadataFlags1, resting = bit 23.
-    if ((typeof value === 'number' || typeof value === 'bigint') && name === 'resting') {
-      return ((BigInt(value) >> 23n) & 1n) === 1n;
+    // Fallback numerico: MetadataFlags (bitfield).
+    if (typeof value === 'number' || typeof value === 'bigint') {
+      const bit = METADATA_FLAG_BITS[name];
+      if (bit != null) return ((BigInt(value) >> BigInt(bit)) & 1n) === 1n;
     }
     return null;
   }
@@ -3422,6 +4127,13 @@ export class BedrockAdapter {
     return Math.hypot(point.x - this.position.x, point.y + 0.5 - this.position.y, point.z - this.position.z);
   }
 
+  // Risolve un gamertag (case-insensitive) nell'entità giocatore tracciata.
+  _playerByName (name) {
+    if (!name) return null;
+    const runtimeId = this._playersByName.get(String(name).toLowerCase());
+    return runtimeId ? (this.entities.get(runtimeId) || null) : null;
+  }
+
   _pruneEntities () {
     if (!this.entities.size) return;
     const now = Date.now();
@@ -3444,6 +4156,7 @@ export class BedrockAdapter {
       rows.push({
         type: entity.type,
         kind: entity.kind,
+        username: entity.username ?? null,
         hostile: entity.kind === 'mob' && isHostileType(entity.type),
         distance: +distance.toFixed(1),
         position: {
@@ -3456,6 +4169,45 @@ export class BedrockAdapter {
     }
     rows.sort((a, b) => a.distance - b.distance);
     return rows.slice(0, limit);
+  }
+
+  // Animali da fattoria vivi entro 32 blocchi, con stato baby/inlove/tempted e
+  // owner (per non toccare i domestici). Mai i villager (isFarmAnimalType li esclude).
+  _nearbyFarmAnimals (limit = 12) {
+    const rows = [];
+    for (const entity of this.entities.values()) {
+      if (entity.kind !== 'mob' || !entity.position || !isFarmAnimalType(entity.type)) continue;
+      if (entity.health != null && entity.health <= 0 && entity.deadAt) continue;
+      const distance = this._entityDistance(entity);
+      if (distance > 32) continue;
+      rows.push({
+        type: entity.type,
+        runtimeId: entity.runtimeId,
+        position: entity.position,
+        distance: +distance.toFixed(1),
+        health: entity.health ?? null,
+        baby: !!entity.baby,
+        inlove: !!entity.inlove,
+        tempted: !!entity.tempted,
+        ownerEid: entity.ownerEid ?? null,
+      });
+    }
+    rows.sort((a, b) => a.distance - b.distance);
+    return rows.slice(0, limit);
+  }
+
+  _farmAnimalOfType (type) {
+    const wanted = normalizeEntityType(type);
+    return this._nearbyFarmAnimals(64).find(e => e.type === wanted) || null;
+  }
+
+  // Bersaglio di attacco: ostile se presente, altrimenti animale da fattoria
+  // (l'azione attack_<tipo> copre entrambi).
+  _entityOfType (type) {
+    const wanted = normalizeEntityType(type);
+    const hostile = this._hostiles().find(e => e.type === wanted);
+    if (hostile) return hostile;
+    return this._farmAnimalOfType(wanted) || null;
   }
 
   // Ostili vivi entro 32 blocchi, ordinati per distanza.
@@ -3537,7 +4289,7 @@ export class BedrockAdapter {
     let approachFailures = 0;
     while (Date.now() < deadline) {
       if (this.dead) return { ok: false, error: 'died_in_combat', hits };
-      const target = this._hostileOfType(type);
+      const target = this._entityOfType(type);
       if (!target) {
         return hits > 0 ? { ok: true, killed: true, hits, weapon } : { ok: false, error: 'target_gone', hits };
       }
@@ -3547,7 +4299,7 @@ export class BedrockAdapter {
           await this._moveTo(target.position, 2.0, Math.min(8000, Math.max(1000, deadline - Date.now())));
         } catch (error) {
           approachFailures++;
-          if (!this._hostileOfType(type)) return hits > 0 ? { ok: true, killed: false, hits, detail: 'target_lost' } : { ok: false, error: 'target_lost', hits };
+          if (!this._entityOfType(type)) return hits > 0 ? { ok: true, killed: false, hits, detail: 'target_lost' } : { ok: false, error: 'target_lost', hits };
           if (approachFailures >= 3) return { ok: false, error: `cannot_reach_target: ${error.message}`, hits };
         }
         continue;
@@ -3560,13 +4312,13 @@ export class BedrockAdapter {
       });
       await this._queueAuthInput({ yaw: aim.yaw, pitch: aim.pitch });
       await delay(120);
-      const current = this._hostileOfType(type);
+      const current = this._entityOfType(type);
       if (!current) return hits > 0 ? { ok: true, killed: true, hits, weapon } : { ok: false, error: 'target_lost', hits };
       this._attackEntity(current);
       hits++;
       const waitUntil = Math.min(deadline, Date.now() + 550);
       while (Date.now() < waitUntil) {
-        const watched = this._hostileOfType(type);
+        const watched = this._entityOfType(type);
         if (!watched || (watched.health != null && watched.health <= 0)) return { ok: true, killed: true, hits, weapon };
         if (watched.distance > 4.5) break;
         await delay(50);
@@ -3693,6 +4445,134 @@ export class BedrockAdapter {
       }
     }
     return { ok: false, error: 'eat_not_confirmed', item: itemName };
+  }
+
+  // ---- fattoria ----------------------------------------------------------------------
+
+  // Farmland libera (cella sopra vuota) entro `radius`, ordinata per distanza.
+  _unplantedFarmland (radius = 24) {
+    if (!this.position) return [];
+    const farmland = this.world.findBlocks('farmland', this.position, radius, 16);
+    const rows = [];
+    for (const b of farmland) {
+      const above = this.world.blockAt({ x: b.position.x, y: b.position.y + 1, z: b.position.z });
+      if (above && above.name === 'air') {
+        rows.push({ ...b, distance: +(b.distance ?? 0).toFixed(1) });
+      }
+    }
+    return rows.sort((a, b) => a.distance - b.distance);
+  }
+
+  // Pianta un seme/ortaggio su una farmland libera e conferma dal mondo la
+  // comparsa della coltura (cella sopra la farmland).
+  async _plantSeed (itemName) {
+    const crop = cropForSeed(itemName);
+    if (!crop) return { ok: false, error: 'unknown_seed', item: itemName };
+    if ((this.inventory[itemName] || 0) < 1) return { ok: false, error: 'missing_seed' };
+    const target = this._unplantedFarmland()[0];
+    if (!target) return { ok: false, error: 'no_free_farmland' };
+    let slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && s.count > 0);
+    if (slotIndex < 0) {
+      try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
+      slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && s.count > 0);
+      if (slotIndex < 0) return { ok: false, error: 'missing_seed' };
+    }
+    if (slotIndex > 8) {
+      try { slotIndex = await this._moveSlotToHotbar(slotIndex); }
+      catch (error) { return { ok: false, error: `seed_equip_failed: ${error.message}` }; }
+    }
+    this._selectHotbarSlot(slotIndex);
+    const farmCenter = { x: target.position.x + 0.5, y: target.position.y + 1, z: target.position.z + 0.5 };
+    if (this._pointDistance(farmCenter) > 4.5) {
+      try { await this._moveTo(farmCenter, 2.0, 25000); } catch (error) { this.log('farmland_approach_failed', { message: error.message }); }
+    }
+    if (this._pointDistance(farmCenter) > 5.5) return { ok: false, error: 'farmland_unreachable' };
+    const held = this.inventorySlots[this.selectedHotbar];
+    const look = this._lookAt({ x: target.position.x + 0.5, y: target.position.y + 0.5, z: target.position.z + 0.5 });
+    await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+    await delay(120);
+    await this._queueAuthInput({
+      yaw: look.yaw,
+      pitch: look.pitch,
+      transaction: {
+        legacy: { legacy_request_id: 0 },
+        actions: [],
+        data: {
+          action_type: 'click_block',
+          trigger_type: 'player_input',
+          block_position: target.position,
+          face: 1,
+          hotbar_slot: this.selectedHotbar,
+          hand: 'main_hand',
+          held_item: held,
+          player_pos: { ...this.position },
+          click_pos: { x: 0.5, y: 1, z: 0.5 },
+          block_runtime_id: this.world.runtimeIdAt(target.position) >>> 0,
+          client_prediction: 'success',
+          client_cooldown_state: 'off',
+        },
+      },
+    });
+    const cropPos = { x: target.position.x, y: target.position.y + 1, z: target.position.z };
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const planted = this.world.blockAt(cropPos);
+      if (planted && planted.name === crop) {
+        this._refreshNearby();
+        return { ok: true, item: itemName, crop, position: cropPos, confirmedBy: 'server_world' };
+      }
+      if (planted && planted.name !== 'air' && planted.name !== 'unknown') {
+        return { ok: false, error: `unexpected_crop_${planted.name}`, position: cropPos };
+      }
+      await delay(100);
+    }
+    return { ok: false, error: 'plant_not_confirmed', item: itemName };
+  }
+
+  // Nutre l'animale da fattoria più vicino del tipo richiesto: equipaggia il cibo
+  // giusto e invia item_use_on_entity `interact`. Conferma dallo stato `inlove`
+  // (riproduzione) o dal consumo dell'item.
+  async _feedAnimal (type) {
+    const wanted = normalizeEntityType(type);
+    const feed = animalFeed(wanted);
+    if (!feed) return { ok: false, error: 'no_feed_for_type', type: wanted };
+    if ((this.inventory[feed] || 0) < 1) return { ok: false, error: 'missing_feed', feed };
+    const animal = this._farmAnimalOfType(wanted);
+    if (!animal) return { ok: false, error: 'no_animal_nearby', type: wanted };
+    let slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === feed && s.count > 0);
+    if (slotIndex < 0) {
+      try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
+      slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === feed && s.count > 0);
+      if (slotIndex < 0) return { ok: false, error: 'missing_feed', feed };
+    }
+    if (slotIndex > 8) {
+      try { slotIndex = await this._moveSlotToHotbar(slotIndex); }
+      catch (error) { return { ok: false, error: `feed_equip_failed: ${error.message}` }; }
+    }
+    this._selectHotbarSlot(slotIndex);
+    if (this._openContainer) await this._closeContainer();
+    if (this._entityDistance({ type: wanted, position: animal.position }) > 4.5) {
+      try { await this._moveTo(animal.position, 2.0, 25000); } catch (error) { this.log('animal_approach_failed', { message: error.message }); }
+    }
+    const beforeCount = this.inventory[feed] || 0;
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      const live = this.entities.get(animal.runtimeId);
+      if (!live) return { ok: false, error: 'animal_gone' };
+      if (this._entityDistance(live) > 5) return { ok: false, error: 'animal_unreachable' };
+      const look = this._lookAt({ x: live.position.x, y: live.position.y + entityHeight(live.type) * 0.5, z: live.position.z });
+      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+      await delay(120);
+      this._interactEntity(live);
+      const waitUntil = Math.min(deadline, Date.now() + 2500);
+      while (Date.now() < waitUntil) {
+        const watched = this.entities.get(animal.runtimeId);
+        if (watched?.inlove) return { ok: true, fed: feed, type: wanted, state: 'inlove' };
+        if ((this.inventory[feed] || 0) < beforeCount) return { ok: true, fed: feed, type: wanted, state: 'consumed' };
+        await delay(100);
+      }
+    }
+    return { ok: false, error: 'feed_not_confirmed', feed, type: wanted };
   }
 
   // Letto più vicino nel mondo caricato (scansione con TTL di 30 s).

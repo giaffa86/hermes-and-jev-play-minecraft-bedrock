@@ -17,8 +17,15 @@ const HOSTILE_TYPES = new Set([
   'warden', 'breeze', 'wither', 'ender_dragon',
 ]);
 
+// Entità con cui si può commerciare: villager (vecchio e nuovo id) e mercante
+// itinerante, più i lama che lo seguono (contesto, non commerciabili).
+const TRADER_TYPES = new Set([
+  'villager', 'villager_v2', 'wandering_trader', 'trader_llama',
+]);
+
 // Altezze approssimative per mirare al centro del corpo (il registry non le espone).
 const ENTITY_HEIGHTS = {
+  villager: 1.95, villager_v2: 1.95, wandering_trader: 1.95, trader_llama: 1.87,
   zombie: 1.95, husk: 1.95, drowned: 1.95, zombified_piglin: 1.95, zombie_pigman: 1.95,
   zombie_villager: 1.95, zombie_villager_v2: 1.95, piglin: 1.95, piglin_brute: 1.95,
   skeleton: 1.99, stray: 1.99, bogged: 1.99, wither_skeleton: 2.4,
@@ -29,6 +36,9 @@ const ENTITY_HEIGHTS = {
   pillager: 1.95, vindicator: 1.95, evocation_illager: 1.95, ravager: 2.2, vex: 0.8,
   warden: 2.9, breeze: 1.77, wither: 3.5, ender_dragon: 8.0,
   player: 1.8,
+  cow: 1.4, mooshroom: 1.4, sheep: 1.3, pig: 0.9, chicken: 0.7, rabbit: 0.5,
+  wolf: 0.85, cat: 0.7, ocelot: 0.7, horse: 1.6, donkey: 1.5, mule: 1.6,
+  llama: 1.87, goat: 1.3, fox: 0.6, panda: 1.25, turtle: 0.4, parrot: 0.9,
 };
 
 // Cibi usabili per mangiare, in ordine di preferenza. Restano fuori gli item
@@ -48,6 +58,10 @@ export function normalizeEntityType (type) {
 
 export function isHostileType (type) {
   return HOSTILE_TYPES.has(normalizeEntityType(type));
+}
+
+export function isTraderType (type) {
+  return TRADER_TYPES.has(normalizeEntityType(type));
 }
 
 export function entityHeight (type) {
@@ -102,5 +116,62 @@ export function rotateDirection (dir, degrees) {
   return { x: dir.x * cos - dir.z * sin, z: dir.x * sin + dir.z * cos };
 }
 
+// Animali da fattoria (passivi) che il bot può allevare/cacciare. I villager
+// restano fuori (sono trader), così come i domestici (lupo/gatto: taming a parte).
+const FARM_ANIMAL_TYPES = new Set([
+  'cow', 'mooshroom', 'sheep', 'pig', 'chicken', 'rabbit',
+]);
+
+// Cibo per nutrire/riprodurre ogni specie (item Bedrock senza prefisso).
+const ANIMAL_FEED = {
+  chicken: 'wheat_seeds',
+  cow: 'wheat',
+  mooshroom: 'wheat',
+  sheep: 'wheat',
+  pig: 'carrot',
+  rabbit: 'carrot',
+  wolf: 'bone',   // per il taming (stretch)
+  cat: 'raw_cod', // per il taming (stretch)
+};
+
+// Da item piantabile (seme od ortaggio) alla coltura che appare sul terreno.
+const SEED_TO_CROP = {
+  wheat_seeds: 'wheat',
+  beetroot_seeds: 'beetroots',
+  carrot: 'carrots',
+  potato: 'potatoes',
+  melon_seeds: 'melon_stem',
+  pumpkin_seeds: 'pumpkin_stem',
+  sweet_berries: 'sweet_berry_bush',
+  nether_wart: 'nether_wart',
+};
+
+const CROP_BLOCKS = new Set(Object.values(SEED_TO_CROP));
+
+export function isFarmAnimalType (type) {
+  return FARM_ANIMAL_TYPES.has(normalizeEntityType(type));
+}
+
+export function animalFeed (type) {
+  return ANIMAL_FEED[normalizeEntityType(type)] || null;
+}
+
+export function cropForSeed (item) {
+  return SEED_TO_CROP[String(item).replace(/^minecraft:/, '')] || null;
+}
+
+export function isCropBlock (name) {
+  return CROP_BLOCKS.has(String(name).replace(/^minecraft:/, ''));
+}
+
+export function isFarmlandBlock (name) {
+  return String(name).replace(/^minecraft:/, '') === 'farmland';
+}
+
 export const HOSTILE_TYPE_COUNT = HOSTILE_TYPES.size;
+export const TRADER_TYPE_COUNT = TRADER_TYPES.size;
+export const FARM_ANIMAL_TYPE_COUNT = FARM_ANIMAL_TYPES.size;
 export const FOODS = [...FOOD_PRIORITY];
+export const PLANTABLE_ITEMS = Object.keys(SEED_TO_CROP);
+export const ANIMAL_FEED_MAP = { ...ANIMAL_FEED };
+export const SEED_TO_CROP_MAP = { ...SEED_TO_CROP };

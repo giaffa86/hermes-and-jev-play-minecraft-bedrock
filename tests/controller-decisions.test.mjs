@@ -34,6 +34,13 @@ test('optionPriority orders survival first, wait last and targets above generic 
   assert.ok(optionPriority(opt('mine_stone'), ctx) < optionPriority(opt('wait'), ctx));
 });
 
+test('optionPriority ranks follow_player just below drop pickup and above generic mining', () => {
+  const ctx = { targets: {} };
+  assert.ok(optionPriority(opt('collect_drop'), ctx) < optionPriority(opt('follow_player'), ctx));
+  assert.ok(optionPriority(opt('follow_player'), ctx) < optionPriority(opt('mine_stone'), ctx));
+  assert.ok(optionPriority(opt('follow_player'), ctx) < optionPriority(opt('wait'), ctx));
+});
+
 test('optionPriority recognizes targets by name, including partial matches', () => {
   assert.ok(optionPriority(opt('craft_stone_pickaxe'), { targets: { stone_pickaxe: 1 } }) <
             optionPriority(opt('craft_stick'), { targets: { stone_pickaxe: 1 } }));

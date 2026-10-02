@@ -5,6 +5,8 @@ import { BedrockAdapter } from '../bedrock-adapter.mjs';
 import {
   bestFood, isHostileType, entityHeight, normalizeEntityType,
   estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection,
+  isFarmAnimalType, animalFeed, cropForSeed, isCropBlock, isFarmlandBlock,
+  PLANTABLE_ITEMS,
 } from '../bedrock-survival.mjs';
 
 // ---- regole pure --------------------------------------------------------------------
@@ -23,7 +25,31 @@ test('hostile classification ignores the minecraft prefix', () => {
 test('entity heights fall back to a humanoid default', () => {
   assert.equal(entityHeight('zombie'), 1.95);
   assert.equal(entityHeight('minecraft:spider'), 0.9);
-  assert.equal(entityHeight('cow'), 1.8);
+  assert.equal(entityHeight('cow'), 1.4);
+  assert.equal(entityHeight('blaze'), 1.8); // non mappato → default umanoide
+});
+
+test('farm animal classification and feed/crop maps', () => {
+  assert.equal(isFarmAnimalType('cow'), true);
+  assert.equal(isFarmAnimalType('minecraft:PIG'), true);
+  assert.equal(isFarmAnimalType('villager'), false);
+  assert.equal(isFarmAnimalType('wolf'), false); // domestico, taming a parte
+  assert.equal(isFarmAnimalType('zombie'), false);
+  assert.equal(animalFeed('chicken'), 'wheat_seeds');
+  assert.equal(animalFeed('cow'), 'wheat');
+  assert.equal(animalFeed('pig'), 'carrot');
+  assert.equal(animalFeed('villager'), null);
+  assert.equal(cropForSeed('wheat_seeds'), 'wheat');
+  assert.equal(cropForSeed('minecraft:carrot'), 'carrots');
+  assert.equal(cropForSeed('bone'), null);
+  assert.equal(isCropBlock('wheat'), true);
+  assert.equal(isCropBlock('carrots'), true);
+  assert.equal(isCropBlock('stone'), false);
+  assert.equal(isFarmlandBlock('farmland'), true);
+  assert.equal(isFarmlandBlock('minecraft:farmland'), true);
+  assert.equal(isFarmlandBlock('dirt'), false);
+  assert.ok(PLANTABLE_ITEMS.includes('wheat_seeds'));
+  assert.ok(PLANTABLE_ITEMS.includes('potato'));
 });
 
 test('bestFood prefers cooked food and skips unsafe or precious items', () => {

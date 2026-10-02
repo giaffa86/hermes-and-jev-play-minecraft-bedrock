@@ -7,6 +7,7 @@ Recurring questions, answered in one place:
 - How does "blind"/fuzzy exploration work (e.g. "get me some iron")?
 - Does it **see through walls** like x-ray?
 - Does it have the **same render distance** as a human player on a graphical client?
+- Is the bot **visible to other players**, or is it a ghost?
 
 Short answer: the bot is **fully headless** — no window, no rendering, no
 screenshots, no simulated keypresses. It is a Node.js process that speaks the
@@ -33,6 +34,35 @@ Xbox/Microsoft account, is on the BDS allowlist, and the server assigns it
 position, inventory, health and hunger like anyone else. The only difference is
 that on the client side there is no human at a screen, but a process reading and
 writing packets.
+
+### 1.1 Visible to other players — not a ghost
+
+"Headless" describes the bot's **own** side (no window, no rendering); it says
+nothing about how others see it. To the server, and therefore to every human
+player, the bot is a **normal, fully visible player**:
+
+- it appears in the **player list** (an explicit Phase-3 acceptance criterion:
+  *"appear in the server player list"*);
+- it is **rendered in the world** with a body — not as an NPC, fake entity or
+  command-block automation (those are explicitly forbidden by the goal);
+- it wears the **default skin** (Steve/Alex): `bedrock-protocol` sends
+  `minecraft-data`'s `defaultSkin` in the login handshake
+  (`node_modules/bedrock-protocol/src/handshake/login.js`); no custom skin is
+  configured, but the body is there and visible;
+- it **moves like a player**: server-authoritative movement (`player_auth_input`)
+  with walking, jumping, digging and the arm-swing animation — no teleporting,
+  no entity that "glides".
+
+| | How the bot appears to *others* | How the bot perceives the world |
+|---|---|---|
+| In the player list | Yes (its `BEDROCK_USERNAME`) | n/a |
+| Rendered in the world | Yes, default skin | n/a (no rendering at all) |
+| Entities | — | 24 blocks (`/observe`), 32 (hostiles) |
+| Blocks | — | ~±40 blocks, x-ray (see §6) |
+
+The asymmetry is only in **perception**: a human sees the bot up to the full
+render distance, while the bot "sees" entities only at 24–32 blocks. The bot is
+no more invisible to you than you are to it.
 
 ---
 

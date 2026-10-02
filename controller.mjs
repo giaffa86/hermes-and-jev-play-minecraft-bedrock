@@ -43,6 +43,12 @@ const REPLAN_EVERY = +(process.env.REPLAN_EVERY || 8);
 const MAX_OPTIONS = process.env.MAX_OPTIONS == null ? DEFAULT_MAX_OPTIONS : +(process.env.MAX_OPTIONS);
 const ANTI_LOOP_THRESHOLD = +(process.env.ANTI_LOOP_THRESHOLD || DEFAULT_ANTI_LOOP_THRESHOLD);
 const ANTI_LOOP_COOLDOWN = +(process.env.ANTI_LOOP_COOLDOWN || 3);
+// Comando umano via chat (M1-M3): attivo solo se CHAT_ALLOWLIST è valorizzato
+// (gamertag/xuid separati da virgola). CHAT_PREFIX è il prefisso che scatena l'ordine.
+const CHAT_CONTROL = process.env.CHAT_CONTROL || (process.env.CHAT_ALLOWLIST ? 'on' : 'off');
+const CHAT_ALLOWLIST = new Set((process.env.CHAT_ALLOWLIST || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
+const CHAT_PREFIX = (process.env.CHAT_PREFIX || '@bot').toLowerCase();
+const humanCommandSeen = new Set(); // dedup: un comando già eseguito non si ripete
 
 mkdirSync(`runs/${RUN}`, {recursive: true});
 const SKILLS_LOG = `runs/${RUN}/skills.jsonl`;
@@ -170,6 +176,79 @@ async function planForStep (observation, reason) {
   return hermesPlan(observation);
 }
 
+// ---- comando umano via chat (M1-M3) ---------------------------------------------------------
+function isAllowedSender (entry) {
+  if (!CHAT_ALLOWLIST.size) return false;
+  if (entry.from && CHAT_ALLOWLIST.has(entry.from.toLowerCase())) return true;
+  if (entry.xuid && CHAT_ALLOWLIST.has(entry.xuid)) return true;
+  return false;
+}
+
+// Traduce un comando umano in linguaggio naturale in un piano (come hermesPlan,
+// ma con il contesto del mittente: gamertag e posizione viva). Hermes è il
+// traduttore; il fallback deterministico è "seguire il mittente".
+async function humanCommandPlan (obs, entry) {
+  const sender = (obs.entities || []).find(e => e.kind === 'player' && e.username && e.username.toLowerCase() === (entry.from || '').toLowerCase());
+  const senderPos = sender?.position ?? null;
+  const prompt = [
+    'You are the PLANNER for a Minecraft bot. A TRUSTED human player sent you a command in chat. Return ONLY a JSON object {"objective": string, "targets": {item: minCount}, "waypoint": {"x":int,"z":int} | null, "follow": string | null, "notes": string}.',
+    `The human (gamertag "${entry.from}") said: "${entry.message}".`,
+    senderPos
+      ? `The human is currently at ${JSON.stringify(senderPos)}. If they ask you to follow, stay near, or escort them, set "follow" to "${entry.from}" (exact gamertag) and set "waypoint" to their current XZ position.`
+      : 'The human position is not visible right now; if they ask you to follow, still set "follow" to their gamertag.',
+    'If they ask you to help fight mobs, set the objective to stay near them and attack nearby hostile mobs (keep "follow" set if escorting).',
+    'If they ask you to gather or mine a specific item, put it in "targets". If they ask you to stop or resume autonomy, set "objective" accordingly and leave "follow" null.',
+    'Keep the objective to one sentence. The controller picks bounded actions from the harness; never invent action keys.',
+    `Current state: ${JSON.stringify(obs)}`,
+  ].join('\n');
+  const started = Date.now();
+  const out = await runHermes(prompt);
+  const fallback = (note) => ({
+    objective: `Follow ${entry.from} and obey their last order: "${entry.message}"`,
+    targets: {},
+    waypoint: senderPos ? { x: Math.round(senderPos.x), z: Math.round(senderPos.z) } : null,
+    follow: entry.from,
+    notes: `human:${entry.from} ${note}`,
+  });
+  if (out == null) { log('plan_fallback', {plan: fallback('hermes unavailable'), ms: Date.now() - started, source: 'human'}); return fallback('hermes unavailable'); }
+  const m = out.match(/\{[\s\S]*\}/);
+  let plan = null;
+  try { plan = m ? JSON.parse(m[0]) : null; } catch { plan = null; }
+  if (!plan || typeof plan !== 'object' || typeof plan.objective !== 'string') {
+    log('plan_fallback', {plan: fallback('parse'), ms: Date.now() - started, source: 'human'});
+    return fallback('parse');
+  }
+  if (plan.follow == null && /follow|stay near|come with|escort|seguimi|accompagn/i.test(entry.message)) plan.follow = entry.from;
+  plan.notes = `human:${entry.from} ${plan.notes || ''}`.trim();
+  log('plan', {plan, ms: Date.now() - started, source: 'human'});
+  return plan;
+}
+
+// Cerca nell'ultima osservazione un nuovo comando umano valido. Restituisce
+// {plan, entry} oppure null. Dedup per non rieseguire lo stesso messaggio.
+async function maybeHumanCommand (obs) {
+  if (CHAT_CONTROL === 'off' || !CHAT_ALLOWLIST.size) return null;
+  const chat = obs.chat || [];
+  for (let i = chat.length - 1; i >= 0; i--) {
+    const entry = chat[i];
+    const text = String(entry.message || '').trim();
+    if (!text.toLowerCase().startsWith(CHAT_PREFIX)) continue;
+    if (!isAllowedSender(entry)) {
+      log('chat_ignored', {from: entry.from, xuid: entry.xuid, reason: 'not_allowed'});
+      continue;
+    }
+    const message = text.slice(CHAT_PREFIX.length).trim();
+    if (!message) continue;
+    const seenKey = `${entry.at}|${entry.from}|${message}`;
+    if (humanCommandSeen.has(seenKey)) continue;
+    humanCommandSeen.add(seenKey);
+    log('chat_command', {from: entry.from, xuid: entry.xuid, message});
+    const plan = await humanCommandPlan(obs, {...entry, message});
+    return {plan, entry: {...entry, message}};
+  }
+  return null;
+}
+
 // ---- controller: Jev via TypeSafe or OpenRouter ---------------------------------------------
 async function jevDecide(observation, options, plan) {
   const typesafeKey = process.env.TYPESAFE_API_KEY;
@@ -226,6 +305,9 @@ async function hermesDecide(observation, options, plan) {
 
 // ---- loop -----------------------------------------------------------------------------------
 const goalMet = (obs, plan, skillStatus) => {
+  // I piani "seguimi" sono aperti: terminano solo con un nuovo ordine o a fine
+  // budget, mai da soli (non hanno target/waypoint terminali).
+  if (plan.follow) return false;
   const targetMap = plan.targets && Object.keys(plan.targets).length ? plan.targets : TARGETS;
   const targets = Object.entries(targetMap).every(([item, n]) => (obs.inventory[item] || 0) >= n);
   const w = plan.waypoint || WAYPOINT;
@@ -262,6 +344,16 @@ let totalCost = 0;
 let goalReached = false;
 for (let step = 1; step <= MAX_STEPS; step++) {
   obs = await api('GET', '/observe');
+  // Comando umano via chat (M3): priorità sul piano autonomo finché non arriva
+  // un nuovo ordine. Il governor resta comunque l'ultima parola sulle opzioni.
+  const humanCmd = await maybeHumanCommand(obs);
+  if (humanCmd) {
+    plan = humanCmd.plan;
+    await api('POST', '/plan', plan);
+    skillRun = null; // il piano umano sostituisce la skill attiva
+    console.log('HUMAN ORDER', humanCmd.entry.from, '->', plan.objective, plan.follow ? `[follow ${plan.follow}]` : '');
+    log('human_order', {from: humanCmd.entry.from, xuid: humanCmd.entry.xuid, plan});
+  }
   const governor = evaluateSurvival(obs, {rules: survivalRules});
   const survivalFingerprint = `${governor.mode}|${governor.rule}|${governor.reasons.join(',')}`;
   if (survivalFingerprint !== lastSurvivalFingerprint) {

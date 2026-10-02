@@ -71,6 +71,11 @@ REPLAN_EVERY=8
 MAX_OPTIONS=12          # cap on the options passed to Jev (0 = no cap)
 ANTI_LOOP_THRESHOLD=3   # consecutive no-progress actions before replan/exclusion
 ANTI_LOOP_COOLDOWN=3    # steps the blocked key stays excluded
+
+# Human chat command channel (optional)
+CHAT_ALLOWLIST=<gamertag-o-xuid>   # comma-separated; enables @bot control (default prefix)
+CHAT_PREFIX=@bot                   # prefix that triggers an order (default @bot)
+CHAT_CONTROL=on                    # on/off; default on when CHAT_ALLOWLIST is set
 ```
 
 > Never commit `.env` or the `nmp-cache`.
@@ -217,6 +222,79 @@ sudo docker cp hermes:/opt/data/runs /home/<ssh-user>/hermes-jev-bedrock/runs-fr
 | `read_container` | ⚠️ Needs live verification | Censuses nearby storage containers (`chest`/`trapped_chest`/`barrel`/`shulker_box`): approaches, opens with `click_block` (Bedrock `container` window_type), parses `inventory_content` (slots 0..26, 54 for double chests) and stores into `this.containers` (`Map("<x,y,z>" → { type, readAt, contents })`). Exposed in `/observe.containers` with items and quantities. Covered by unit tests. |
 | `take_<item>` | ⚠️ Needs live verification | Takes the whole item slot from a known, non-expired container (`item_stack_request` take from the container slot to the cursor, then back into inventory), verifies the deltas (inventory +N, chest −N) and updates the cache. Offered only if a known container has the item; the description reports position and quantity. |
 | `deposit_<item>` | ⚠️ Needs live verification | Deposits a valuable item (ingots, ores, diamonds, ...) from the inventory into the nearest known/nearby container (take to cursor + place into an empty or partial container slot), verifies the deltas and updates the cache. Mitigation for `keep-inventory=false`. |
+| `open_trade` | ⚠️ Needs live verification | Approaches the nearest trader (`villager`/`villager_v2`/`wandering_trader`, tracked in `entities` and exposed in `/observe.traders`), looks at it and sends an `item_use_on_entity` transaction with `action_type: interact` (never `attack`). The server answers with `update_trade` (offers NBT) + `container_open` (`trading`); offers are parsed (buyA/buyB/sell, uses/maxUses, tier) into `this.tradeOffers` and exposed in `/observe.trade`. |
+| `trade_<index>` | ⚠️ Needs live verification | Executes the selected offer (0-based index from `/observe.trade.offers`) via `item_stack_request`: `take` from the inventory → cursor → `place` into `trade2_ingredient1`/`trade2_ingredient2` (or `trade_*` for the old UI, chosen by `new_trading_ui`), waits for the result slot, then takes it into the inventory and confirms with inventory deltas (inputs consumed, output gained). Offered only when the inputs are present in the inventory. |
+| `close_trade` | ⚠️ Needs live verification | Closes the open trading window and clears the cached offers. |
+| `level_<profession>` / `level_trader` | ⚠️ Needs live verification | Deterministic **leveling (maxxing)**: targets the nearest trader of the requested profession (`level_cartographer`, `level_farmer`, ...) or the nearest villager (`level_trader`), opens trade, then loops the cheapest available offer until the trader reaches `max_trade_tier` (master) or the budget runs out. The loop **never spends emeralds or precious resources** as input (see the economy heuristic below); it reports `tier`, `maxTier`, `trades`, `maxed` and, when it stops early, `no_economical_trade` (restock at the workstation needed or no cheap materials). |
+| `follow_player` | ⚠️ Needs live verification | Follows a human player by gamertag (`plan.follow`): re-reads their live position each leg and `_moveTo`s within 3 blocks (45 s window, ~64-block tracking range). Offered only when `plan.follow` is set and the player is tracked. Driven by the human chat command channel (`@bot seguimi` → Hermes → `/plan`); see `docs/wiki/human-command.md`. |
+| `plant_<seed>` | ⚠️ Needs live verification | Plants a seed/vegetable (`plant_wheat_seeds`, `plant_beetroot_seeds`, `plant_carrot`, `plant_potato`, ...) on the nearest free `farmland` (cell above is `air`): equips the item, walks to the farmland and sends a `click_block` transaction on the top face; confirmed when the crop appears in the cell above the farmland (`confirmedBy: server_world`). Offered only when the item is in the inventory and free farmland is loaded. |
+| `feed_<animal>` | ⚠️ Needs live verification | Feeds the nearest farm animal of the requested type the correct food (`chicken`→`wheat_seeds`, `cow`/`sheep`/`mooshroom`→`wheat`, `pig`/`rabbit`→`carrot`): equips the food and sends `item_use_on_entity` with `action_type: interact`. Confirmed by the animal's `inlove` flag (breeding) or by the consumed item. Offered only when the food is in the inventory. |
+| `attack_<animal>` | ⚠️ Needs live verification | Hunts the nearest farm animal of the requested type (whitelist `cow`/`mooshroom`/`sheep`/`pig`/`chicken`/`rabbit`) using the same `_combat` loop as hostiles; the drop must be collected with `collect_drop` afterwards. **Never** targets villagers/traders or tamed pets. |
+
+### Farming (update 03/10/2026)
+
+First farming slice: the crop cycle (`plant_<seed>`) and passive-animal
+interaction (`feed_<animal>`, `attack_<animal>`) are implemented and unit-tested;
+live verification on the BDS is pending.
+
+- **Crop cycle**: `mine_<crop>` (already working) harvests mature crops, then
+  `plant_<seed>` re-sows on free `farmland`. The seed→crop map (`wheat_seeds`→
+  `wheat`, `carrot`→`carrots`, `potato`→`potatoes`, `beetroot_seeds`→`beetroots`,
+  `melon_seeds`/`pumpkin_seeds`→stems, `sweet_berries`, `nether_wart`) lives in
+  `bedrock-survival.mjs` (`SEED_TO_CROP`). Maturity (`growth` metadata) is not
+  yet distinguished: `mine_*` harvests whatever crop is present.
+- **Farm animals**: `add_entity`/`set_entity_data` track passive animals; the
+  flags metadata now exposes `baby`/`tempted`/`inlove` (bits 8/6/7) and
+  `owner_eid` (key 5), exposed in `/observe.farmAnimals` (type, distance,
+  baby/inlove/tempted, owner). `attack_<animal>` reuses `_combat` (target lookup
+  falls back from hostiles to farm animals via `_entityOfType`); villagers and
+  tamed pets are excluded.
+- **World safety**: `farmland`, fences/gates and crop blocks are now in
+  `DIG_PROTECTED`, so `dig_down`/`dig_up` never dig through the family farms
+  (`mine_*` still harvests crops on purpose).
+- **Not yet implemented (stretch)**: `breed_*` (feed two adults), `tame_wolf`/
+  `tame_cat`, `shear_<sheep>` (needs shears + the furnace chain), `throw_egg`,
+  milk collection, and a `farmAnimals`/mature-crop census richer than the
+  current listing. See `docs/wiki/roadmap.md`.
+
+### Trading (update 03/10/2026)
+
+- **Trader detection**: `add_entity`/`set_entity_data` track traders via
+  `isTraderType` (`villager`, `villager_v2`, `wandering_trader`, `trader_llama`);
+  profession (`variant` metadata) and trade tier (`trade_tier` metadata) are kept
+  when the server sends them. `/observe.traders` lists type, position, distance,
+  wandering flag and, when known, profession/tier.
+- **Opening**: `open_trade` sends `inventory_transaction` `item_use_on_entity`
+  with `action_type: interact` (the same wire shape as `attack`, without the
+  swing); it is safe (never `attack` on a trader).
+- **Offers**: `update_trade` carries `offers` as network NBT
+  (`Recipes[].buyA/buyB/sell`, `uses`, `maxUses`, `tier`); parsing handles both
+  the full prismarine-nbt tag form and an already-unwrapped plain object, strips
+  the `minecraft:` prefix and collapses an empty (`air`) second input to `null`.
+  `new_trading_ui` selects the `trade2_*` slot containers (BDS 1.26 uses the new UI).
+- **Execution (to confirm live)**: the exact client→server transaction for the
+  trade is the remaining reverse-engineering point. The implemented flow is the
+  vanilla one: place the buy inputs into the trading ingredient slots, then take
+  the result from the trading output; the server consumes the inputs and produces
+  the output. Confirm with `BEDROCK_PACKET_LOG=1` (delta of the input/output
+  slots and the `item_stack_response`); the `trade_<index>` result reports
+  `consumedA`/`consumedB`/`gained` for verification.
+- Economy: no random trades — every offer is shown to Jev with cost, output,
+  remaining uses and (for wandering traders) a despawn warning; the decision
+  stays with the controller.
+- **Leveling economy (pure module `bedrock-trading.mjs`)**: items are classified
+  as *precious* (diamond/iron/gold/netherite/lapis/ender-pearl/blaze-rod/... —
+  never spent by the auto-levelling loop), *emerald* (the currency, avoided), *cheap*
+  (paper, glass panes, crops, logs/planks, seeds, wool, coal, flint, ... —
+  preferred) and *neutral* (redstone, sculk, copper, ...). `pickBestTrade` picks the
+  offer with the lowest per-item input cost among those whose inputs are in the
+  inventory and that still have uses left; the default cap (`maxCost=1`) excludes
+  emeralds and precious items, so the loop only ever sells cheap/neutral items.
+- Profession targeting is **verified live** via `update_trade.display_name`
+  (e.g. "Cartographer") — the metadata (`trading_career`/`mark_variant`) is only a
+  best-effort hint to order the candidates; a wrong guess is corrected by opening
+  the trader and checking the name before levelling. Wandering traders are never
+  levelled (no tier progression).
 
 ### Survival (update 02/10/2026)
 
@@ -245,13 +323,17 @@ sudo docker cp hermes:/opt/data/runs /home/<ssh-user>/hermes-jev-bedrock/runs-fr
 - **Unresolved hashes**: `unknown` blocks are conservative in planning (no paths
   through invisible walls) and diggable with a raw break (`_mineRawCell`).
 - `/observe` exposes `time`, `sleeping`, `dead`, `deaths`, `deathSite`,
-  `experience`, `entities` (with distance, type and health) and `containers`
+  `experience`, `entities` (with distance, type and health), `containers`
   (census of read chests/barrels, with position, type, `readAt` and per-item
-  contents).
+  contents), `traders` (nearby villagers/wandering traders) and `trade` (the
+  parsed offers of the open trading window, with target, tier and UI type).
 - `/options` offers `attack_<type>`, `flee`, `eat`, `sleep`, `dig_up` and
   `recover_loot` when valid; `attack_` options are deduplicated per type. It also
   offers `read_container` (nearby unread containers), `take_<item>` (items present
-  in a known chest) and `deposit_<item>` (valuables with a known/nearby chest).
+  in a known chest), `deposit_<item>` (valuables with a known/nearby chest),
+  `open_trade` (nearby trader), `close_trade`, `trade_<index>` (each offer
+  whose inputs are currently in the inventory) and `level_<profession>`/
+  `level_trader` (level a non-maxed trader using only cheap trades).
 - Verified live (02/10): entity tracking (cat, pigs, creeper/zombie/skeleton with
   health), clock/night, hunger, base beds, attack (landed hits), flee, sleep (two
   nights skipped), death+respawn, mining/breaking (also of `unknown` cells), dig_up

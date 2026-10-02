@@ -54,6 +54,13 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   (+ `follow_player` priority case). `.env.example` documents the new vars.
 - Live verification on the BDS still pending.
 
+## [2026-10-02] doc | Bot visibility to other players (not a ghost)
+
+- Added `headless-client.md` §1.1: the bot is a real, fully-visible player
+  (player list, default skin, server-authoritative movement); "headless" only
+  describes its own missing rendering, not its visibility to others.
+- Updated the page's recurring-questions list and the `index.md` summary.
+
 ## [2026-10-02] doc | Control-flow page with goal → plan → action diagram
 
 - Added `wiki/control-flow.md`: end-to-end loop (Progression Engine → System
@@ -85,3 +92,17 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   (farming first).
 - Marked `ROADMAP.md`/`GOAL.md` as historical (frozen 01/10, superseded by code).
 - Cross-linked from `index.md`, `sources.md`, `overview.md`, `open-questions.md`.
+
+## [2026-10-03] ingest | Farming slice: plant seeds, feed/hunt farm animals
+
+- `bedrock-survival.mjs`: farm-animal whitelist (`cow`/`mooshroom`/`sheep`/`pig`/
+  `chicken`/`rabbit`), `ANIMAL_FEED`, `SEED_TO_CROP`, crop/farmland predicates and
+  farm-animal entity heights.
+- `bedrock-adapter.mjs`: metadata flags `baby`/`tempted`/`inlove` + `owner_eid`;
+  `/observe.farmAnimals`; `plant_<seed>` (click_block on free farmland, confirmed
+  by the crop above), `feed_<animal>` (`item_use_on_entity` interact, confirmed by
+  `inlove`/consumed), `attack_<animal>` (farm animals via `_entityOfType`);
+  farmland/fences/crops added to `DIG_PROTECTED`.
+- Tests: `tests/bedrock-farming.test.mjs` (10) + survival map assertions; suite
+  257 green. Live verification on the BDS pending.
+- `BEDROCK.md` action table + Farming section; `roadmap.md` status updated.
