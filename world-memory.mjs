@@ -314,7 +314,8 @@ export class WorldMemory {
 
   chunksWithBiome (biome, { dimension = 'overworld', limit = null } = {}) {
     this.flushChunks();
-    return this.repo.find({ kind: 'explored_chunk', dimension, limit }).filter(r => r.biome === biome);
+    // `biome` è una colonna indicizzata (idx_wm_biome), non un filtro in JS.
+    return this.repo.find({ kind: 'explored_chunk', dimension, biome, limit });
   }
 
   // Frontiera: chunk adiacenti a quelli visitati e non ancora visitati — la
