@@ -256,3 +256,13 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Docs: `BEDROCK.md` action table + `roadmap.md` + `verification.md` updated
   (defense gap narrowed to `close_door`/`barricade`/armor/shield).
 - Full suite green (291 tests).
+
+## [2026-10-02] query | Defense slice live-verified: go_home works on the BDS
+
+- Deployed the new code to VM 100 (rsync + `docker compose up -d --build`).
+- `go_home` live round: set a waypoint at (115, 180), `goto_waypoint` (39 nodes),
+  `/options` offered `go_home` ("Return home to {96,74,161} (25 blocks away)"),
+  `/act go_home` walked back and ended ~1.9 blocks from home (`pathNodes: 35`).
+- `place_torch` and `craft_*_sword` reuse the already-live-verified `place_*` /
+  `craft_*` paths (option generation unit-tested); a dedicated live round is
+  deferred. `BEDROCK.md` + `verification.md` updated.
