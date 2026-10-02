@@ -2903,7 +2903,8 @@ export class BedrockAdapter {
   // ---- risalita a gradini (uscita da buche/pozzi) ------------------------------------
 
   // Specchio di _digTargets: il blocco davanti ai piedi è il gradino, le due celle
-  // sopra (piedi e testa) vanno aperte per poterci salire.
+  // sopra (piedi e testa) vanno aperte per poterci salire; se la volta sopra il
+  // bot è chiusa va aperta prima, altrimenti il salto non parte.
   _upTargets () {
     if (!this.position || !this._feet) return { error: 'no_position' };
     const feet = this._feet;
@@ -2914,6 +2915,14 @@ export class BedrockAdapter {
     const step = { x: front.x, y: fy + 1, z: front.z };
     const head = { x: front.x, y: fy + 2, z: front.z };
     const targets = [];
+    // Volta sopra la testa del bot: serve spazio verticale per il salto.
+    const ownCeiling = { x: fx, y: fy + 2, z: fz };
+    const ceilingBlock = this.world.blockAt(ownCeiling);
+    if (ceilingBlock && ceilingBlock.name !== 'unknown' && !this._passableForPath(ceilingBlock)) {
+      if (/water|lava/.test(ceilingBlock.name)) return { error: 'unsafe_block_ceiling' };
+      if (!ceilingBlock.diggable || !(ceilingBlock.hardness >= 0)) return { error: 'not_diggable_ceiling' };
+      targets.push({ cell: ownCeiling, block: ceilingBlock, label: 'ceiling' });
+    }
     for (const [cell, label] of [[step, 'step'], [head, 'head']]) {
       const block = this.world.blockAt(cell);
       if (!block) return { error: 'world_not_loaded' };

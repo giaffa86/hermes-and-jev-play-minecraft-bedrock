@@ -50,6 +50,13 @@ test('up targets refuse missing step, fluids, unknown blocks and open passages',
   assert.equal(open.adapter._upTargets().error, 'already_open');
 });
 
+test('up targets include the ceiling above the bot when it blocks the jump', () => {
+  const { adapter } = upAdapter({ '92,70,148': solid('dirt') });
+  const plan = adapter._upTargets();
+  assert.equal(plan.error, undefined);
+  assert.deepEqual(plan.targets.map(t => t.label), ['ceiling', 'step', 'head']);
+});
+
 test('dig_up mines step and head then climbs the stair', async () => {
   const { adapter } = upAdapter();
   const mined = [];
