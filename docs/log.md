@@ -456,3 +456,25 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   nor the chunks it has explored.
 - Recorded in `wiki/open-questions.md` ("No persistent memory") and
   `wiki/exploration.md` (current status).
+
+## [2026-10-02] feat | Goal Contract thin slice (Slice A)
+
+- New pure module `survival/goal-contract.mjs`: `normalizeContract`,
+  `evaluateContract`, `contractFromEnv`, `hasContractConfig`,
+  `CONTRACT_STATUSES`. A contract is `{goal,target,constraints,success,failure}`
+  and evaluates to `RUNNING | SUCCESS | FAILED | BLOCKED` (success wins, then
+  failure/constraint violation, then running; invalid/static contradictions are
+  blocked). Exported through `survival/index.mjs`.
+- New verifier criteria in `survival/verify.mjs`: `deathsAtLeast n` and
+  `itemPreserved [item]` (compares the `before` inventory; a held item must not
+  decrease). Validation + `CRITERIA_KEYS` updated.
+- `controller.mjs` wiring: opt-in via `GOAL_CONTRACT` (JSON), `MAX_DEATHS`,
+  `PRESERVE_ITEMS`; evaluates the contract before the loop and every step, logs
+  `goal_contract` / `goal_contract_met` / `goal_contract_stop` to
+  `runs/<run>/controller.jsonl` and stops on SUCCESS/FAILED/BLOCKED. No contract
+  configured = previous behaviour (backward compatible).
+- 18 unit tests (`tests/goal-contract.test.mjs`); full suite green (325).
+- Docs: `docs/raw/SURVIVAL-INTELLIGENCE.md` (module + criteria + Goal Contract
+  section), `wiki/survival-intelligence.md`, `wiki/goal-achievement.md` (G1 thin
+  slice implemented), `wiki/roadmap.md`, `wiki/open-questions.md`,
+  `wiki/verification.md` (row 56), `.env.example`.

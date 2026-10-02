@@ -25,6 +25,7 @@ import {
 import {
   evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
   resolveMilestone, resolveActiveSkill, skillPreferredIntents, verifySkill, buildSkillRecord, appendSkillRecord,
+  contractFromEnv, evaluateContract, hasContractConfig,
 } from './survival/index.mjs';
 
 const HARNESS = process.env.HARNESS || 'http://127.0.0.1:3077';
@@ -324,6 +325,37 @@ const goalMet = (obs, plan, skillStatus) => {
 };
 
 let obs = await api('GET', '/observe');
+
+// ---- Goal Contract (opzionale, Slice A) -----------------------------------------------------
+// Con GOAL_CONTRACT (JSON), MAX_DEATHS o PRESERVE_ITEMS il controller valuta un
+// contratto strutturato a ogni passo e ne deriva uno stato deterministico:
+// RUNNING | SUCCESS | FAILED | BLOCKED. Senza configurazione resta il
+// comportamento precedente (nessun contratto).
+const goalContract = hasContractConfig() ? contractFromEnv() : null;
+const contractBaseline = obs;
+let lastContractStatus = null;
+function evaluateGoalContract (observation, step) {
+  if (!goalContract) return null;
+  const status = evaluateContract(goalContract, observation, { before: contractBaseline });
+  if (status.status !== lastContractStatus) {
+    lastContractStatus = status.status;
+    log('goal_contract', {
+      step, status: status.status, goal: goalContract.goal ?? null,
+      reasons: status.reasons, evidence: status.evidence,
+    });
+    console.log(`GOAL CONTRACT ${status.status.toUpperCase()}${status.reasons.length ? ' ' + status.reasons.join('; ') : ''}`);
+  }
+  return status;
+}
+if (goalContract) {
+  const initialContract = evaluateGoalContract(obs, 0);
+  if (initialContract.status !== 'running') {
+    log('goal_contract_stop', {step: 0, status: initialContract.status, reasons: initialContract.reasons, evidence: initialContract.evidence});
+    console.log(`GOAL CONTRACT ${initialContract.status.toUpperCase()} before the first action`);
+    process.exit(0);
+  }
+}
+
 let initialPlan = await planForStep(obs, 'start');
 if (initialPlan?.met) {
   console.log('CURRICULUM GOAL already met');
@@ -344,6 +376,20 @@ let totalCost = 0;
 let goalReached = false;
 for (let step = 1; step <= MAX_STEPS; step++) {
   obs = await api('GET', '/observe');
+  // Goal Contract: SUCCESS/FAILED/BLOCKED interrompono il loop prima delle
+  // altre logiche (il contratto è la fonte di verità del run quando presente).
+  const contractStatus = evaluateGoalContract(obs, step);
+  if (contractStatus?.status === 'success') {
+    console.log(`GOAL CONTRACT MET after ${step - 1} actions`, JSON.stringify(contractStatus.evidence));
+    log('goal_contract_met', {steps: step - 1, totalCost, goal: goalContract.goal ?? null, evidence: contractStatus.evidence});
+    goalReached = true;
+    break;
+  }
+  if (contractStatus?.status === 'failed' || contractStatus?.status === 'blocked') {
+    console.log(`GOAL CONTRACT ${contractStatus.status.toUpperCase()} after ${step - 1} actions: ${contractStatus.reasons.join('; ')}`);
+    log('goal_contract_stop', {steps: step - 1, totalCost, status: contractStatus.status, reasons: contractStatus.reasons, evidence: contractStatus.evidence});
+    break;
+  }
   // Comando umano via chat (M3): priorità sul piano autonomo finché non arriva
   // un nuovo ordine. Il governor resta comunque l'ultima parola sulle opzioni.
   const humanCmd = await maybeHumanCommand(obs);

@@ -89,6 +89,7 @@ Unchanged principles:
 | `survival/item-tags.mjs` | Item tags (`logs`, `food`, `stone_tools`, ...) used by verifier and progression. |
 | `survival/skills.mjs` | Loader/validator of the declarative gameplay skills in `skills/gameplay/`. |
 | `survival/verify.mjs` | Deterministic verification: `verifySkill(skill, before, after)` + criteria vocabulary. |
+| `survival/goal-contract.mjs` | Structured Goal Contract (`target`/`constraints`/`success`/`failure`) → `RUNNING/SUCCESS/FAILED/BLOCKED`, evaluated with the verifier vocabulary. |
 | `survival/resolver.mjs` | Active skill, emergency filter of options, preferred intents for ranking. |
 | `survival/progression.mjs` | Progression graph, validation, resolution of the next missing prerequisite. |
 | `survival/experience.mjs` | JSONL rows for `runs/<run>/skills.jsonl`. |
@@ -217,8 +218,9 @@ travel, mine, craft, smelt, build, wait`.
 2. declare `preconditions` and `success` with the criteria vocabulary
    (`inventoryGte`, `inventoryTagGte`, `healthAtLeast`, `foodAtLeast`, `phaseIn`,
    `dimension`, `nearbyBlock`, `foodIncreased`, `healthIncreased`,
-   `noHostileWithin`, `threatDistanceIncreasedBy`, `nightSurvived`, `allOf`,
-   `anyOf`; for tags see `survival/item-tags.mjs`);
+   `noHostileWithin`, `threatDistanceIncreasedBy`, `nightSurvived`,
+   `deathsAtLeast`, `itemPreserved`, `allOf`, `anyOf`; for tags see
+   `survival/item-tags.mjs`);
 3. list the `intents` useful for option ranking and, if needed, the suggested
    `planTargets`;
 4. optionally link a milestone in `knowledge/progression.json` with
@@ -253,6 +255,42 @@ outcome lands in `runs/<run>/skills.jsonl`:
 
 No embeddings or vector database: flat JSON rows, ready for future retrievable
 experience.
+
+---
+
+## Goal Contract (Slice A)
+
+`survival/goal-contract.mjs` wraps the shallow `plan` in a structured objective
+and gives the controller a deterministic status:
+
+```text
+RUNNING | SUCCESS | FAILED | BLOCKED
+```
+
+```json
+{
+  "goal": "obtain_diamonds",
+  "target": { "item": "diamond", "count": 20 },
+  "constraints": { "maxDeaths": 2, "preserveItems": ["diamond_pickaxe"] },
+  "success": { "inventoryTagGte": { "diamonds": 20 } },
+  "failure": { "deathsAtLeast": 3 }
+}
+```
+
+- `normalizeContract(raw)` validates `success`/`failure` with the verifier
+  vocabulary and collects errors instead of throwing; invalid contracts are
+  `blocked`, never a silent success.
+- `evaluateContract(contract, obs, { before })` precedence: invalid/static
+  contradiction → `blocked`; `success` → `success`; `failure` **or a violated
+  constraint** (`maxDeaths`, `preserveItems`) → `failed`; otherwise `running`.
+- `contractFromEnv()` reads `GOAL_CONTRACT` (JSON) with the `MAX_DEATHS` and
+  `PRESERVE_ITEMS` shortcuts; `hasContractConfig()` keeps the controller
+  backward-compatible when no contract is configured (opt-in).
+- The controller evaluates the contract at the start and every step, logs
+  `goal_contract` / `goal_contract_met` / `goal_contract_stop` to
+  `runs/<run>/controller.jsonl`, and stops on `SUCCESS`/`FAILED`/`BLOCKED`.
+- New criteria: `deathsAtLeast n` and `itemPreserved [item]` (compares against
+  the `before` inventory; an item held at the start must not decrease).
 
 ---
 

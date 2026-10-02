@@ -156,9 +156,10 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   pistons, hoppers, dispensers. Roadmap (R0–R6) in [redstone](redstone.md) /
   [`raw/REDSTONE_ROADMAP.md`](../raw/REDSTONE_ROADMAP.md); no redstone support
   today, but the world model already exposes component `getProperties()` state.
-- **Goal Contract / task graph** — no structured goal (constraints, formal
-  `success`/`failure`, `RUNNING/SUCCESS/FAILED/BLOCKED`), no persistent Goal
-  Manager, no semantic-goal interpreter. Proposal in
+- **Goal Contract** — thin slice implemented (`survival/goal-contract.mjs`,
+  opt-in via `GOAL_CONTRACT`/`MAX_DEATHS`/`PRESERVE_ITEMS`; status logged). Still
+  missing: the persistent Goal Manager/queue, a `target`-driven `obtain_item`
+  executor and the semantic-goal interpreter. Proposal in
   [goal-achievement](goal-achievement.md) /
   [`raw/GOAL_ACHIEVEMENT_MINECRAFT.txt`](../raw/GOAL_ACHIEVEMENT_MINECRAFT.txt).
 - **Nether / End** — `enter_nether` has no portal action; no fire/lava hazard,

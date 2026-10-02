@@ -96,6 +96,7 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 53 | Enderman gaze discipline | gaze sensing / look-away | ❌ | no aggro while collecting pearls | Spec N5 in [nether](nether.md). |
 | 54 | Fortress / blaze rods | `obtain_blaze_rods` | ❌ | 7 blaze rods, return alive | Spec N6 in [nether](nether.md); needs exploration + ranged combat. |
 | 55 | Endgame (stronghold/End/dragon) | `find_stronghold`, `enter_end`, `beat_the_dragon` | ❌ | reach the End; dragon gated | Spec N7 in [nether](nether.md); no `bossDefeated` criterion. |
+| 56 | Goal Contract | `survival/goal-contract.mjs`, `GOAL_CONTRACT`/`MAX_DEATHS`/`PRESERVE_ITEMS` | 🧪 | run the controller with a contract | Thin slice Slice A; 18 unit tests; a live run with a contract is pending. |
 
 ## Still not implemented
 
@@ -111,6 +112,9 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 - **Redstone and primitive automation**: sensing, oriented placement, switches,
   delay lines, observers/pistons, hoppers, dispensers, circuit blueprints. Spec
   in [redstone](redstone.md) (rows 44–48); no redstone support today.
+- **Goal Contract** — thin slice implemented and unit-tested (row 56); the
+  persistent Goal Manager / queue, a `target`-driven `obtain_item` executor and
+  the semantic-goal interpreter are still missing.
 - **Goal-driven benchmarks** (proposal in [goal-achievement](goal-achievement.md)):
   never run end-to-end — 16 logs (wood live, target 16 not run);
   shelter + survive a night (`first_night`, not run); iron pickaxe (iron + smelt

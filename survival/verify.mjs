@@ -13,6 +13,8 @@
 //   noHostileWithin n               nessun ostile entro n blocchi
 //   threatDistanceIncreasedBy n     fuga riuscita di almeno n blocchi
 //   nightSurvived                   una notte è passata (before/context.sawNight)
+//   deathsAtLeast n                 il contatore morti ha raggiunto n
+//   itemPreserved [item]            nessun item della lista è diminuito vs `before`
 //   allOf [criteri] | anyOf [criteri]
 //
 // Modulo puro (l'unico I/O è nel loader delle skill).
@@ -129,6 +131,27 @@ export function evaluateCriteria (criteria, observation, { before = null, contex
       ? { ok: true, evidence }
       : fail(`health ${beforeHealth} -> ${afterHealth}`);
   }
+  if ('deathsAtLeast' in criteria) {
+    const deaths = after.deaths ?? null;
+    evidence.deaths = deaths;
+    return deaths != null && deaths >= criteria.deathsAtLeast ? { ok: true, evidence } : fail(`deaths=${deaths}`);
+  }
+  if ('itemPreserved' in criteria) {
+    const items = Array.isArray(criteria.itemPreserved) ? criteria.itemPreserved : [];
+    const beforeInventory = before?.inventory && typeof before.inventory === 'object' ? before.inventory : null;
+    const afterInventory = after.inventory && typeof after.inventory === 'object' ? after.inventory : {};
+    for (const item of items) {
+      const beforeCount = beforeInventory ? (beforeInventory[item] || 0) : null;
+      const afterCount = afterInventory[item] || 0;
+      evidence[`inventory.before.${item}`] = beforeCount;
+      evidence[`inventory.after.${item}`] = afterCount;
+      // Without a baseline a loss cannot be detected; only compare when held before.
+      if (beforeCount != null && beforeCount > 0 && afterCount < beforeCount) {
+        return fail(`preserved item lost: ${item} ${beforeCount} -> ${afterCount}`);
+      }
+    }
+    return { ok: true, evidence };
+  }
   if ('noHostileWithin' in criteria) {
     const distance = nearestThreatDistance(after);
     evidence.nearestHostile = Number.isFinite(distance) ? distance : null;
@@ -188,7 +211,8 @@ export function tagEvidence (inventory, tag) {
 export const CRITERIA_KEYS = [
   'inventoryGte', 'inventoryTagGte', 'healthAtLeast', 'foodAtLeast', 'phaseIn',
   'dimension', 'nearbyBlock', 'foodIncreased', 'healthIncreased', 'noHostileWithin',
-  'threatDistanceIncreasedBy', 'nightSurvived', 'allOf', 'anyOf',
+  'threatDistanceIncreasedBy', 'nightSurvived', 'deathsAtLeast', 'itemPreserved',
+  'allOf', 'anyOf',
 ];
 
 // Validazione ricorsiva usata dal loader delle skill e del grafo: un refuso in
@@ -216,6 +240,8 @@ export function validateCriteria (criteria, where = 'criteria') {
       }
     }
     if (key === 'phaseIn' && !Array.isArray(value)) errors.push(`${where}.${key}: must be an array of phases`);
+    if (key === 'deathsAtLeast' && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) errors.push(`${where}.${key}: must be a non-negative number`);
+    if (key === 'itemPreserved' && (!Array.isArray(value) || !value.length || value.some(item => typeof item !== 'string' || !item))) errors.push(`${where}.${key}: must be a non-empty array of item names`);
     if (key === 'nearbyBlock' && typeof value !== 'string' && (typeof value !== 'object' || !value?.name)) errors.push(`${where}.${key}: must be a block name or {name, within}`);
   }
   return errors;

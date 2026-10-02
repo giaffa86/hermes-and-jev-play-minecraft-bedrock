@@ -120,11 +120,12 @@ an exploration/expedition needs, so a persistent layer is required:
   four cells adjacent to the bot, so the bot must already stand next to the 1×2
   opening; it does not search ahead or walk to a gap. Fine for a corridor, hard
   to trigger in the open base (see `verification.md` row 37).
-- **No Goal Contract / task graph.** A goal is a string plus a step budget; there
-  are no constraints (`maxDeaths`, `preserveItems`), no formal `success`/`failure`
-  expression, and no `RUNNING/SUCCESS/FAILED/BLOCKED` status. The deterministic
-  progression graph (`knowledge/progression.json`) is only a seed of the proposed
-  task graph. Proposal and gaps in [goal-achievement](goal-achievement.md).
+- **Goal Contract**: the thin slice exists (`survival/goal-contract.mjs`, opt-in
+  via `GOAL_CONTRACT`/`MAX_DEATHS`/`PRESERVE_ITEMS`, status
+  `RUNNING/SUCCESS/FAILED/BLOCKED`), but there is still **no persistent Goal
+  Manager/queue, no `target`-driven `obtain_item` executor and no semantic-goal
+  interpreter** — a goal is still a string plus a step budget. Proposal and gaps
+  in [goal-achievement](goal-achievement.md).
 - **`beat_the_dragon` (resolved)**: `goals.beat_the_dragon` used to alias
   `enter_nether`; the graph now has the full
   `nether_portal → … → enter_end → beat_the_dragon` chain and the goal points to

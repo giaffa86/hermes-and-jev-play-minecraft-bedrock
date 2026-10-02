@@ -30,10 +30,17 @@ actions → verification → next milestone.**
    (inventory by tag, hunger/health deltas, threat distance, night survived) — never
    the model's opinion. Outcomes land in `runs/<run>/skills.jsonl`.
 5. **Progression Engine** (`survival/progression.mjs` + `knowledge/progression.json`)
-   is a dependency graph (`wood → crafting_table → stone_tools → … → enter_nether`).
+   is a dependency graph (`wood → crafting_table → stone_tools → … → enter_nether →
+   nether_survival → … → enter_end → beat_the_dragon`; see [nether](nether.md)).
    `resolveMilestone` returns the first missing prerequisite; with
    `CURRICULUM=<milestone>` the controller drives the chain deterministically and
    uses Hermes only as fallback.
+6. **Goal Contract** (`survival/goal-contract.mjs`, Slice A) wraps the shallow
+   `plan` in `target`/`constraints`/`success`/`failure` and derives a status
+   (`RUNNING`/`SUCCESS`/`FAILED`/`BLOCKED`) with the same verifier vocabulary;
+   `maxDeaths`/`preserveItems` become constraints and `deathsAtLeast`/
+   `itemPreserved` the new criteria. Opt-in via `GOAL_CONTRACT`/`MAX_DEATHS`/
+   `PRESERVE_ITEMS`; see [goal-achievement](goal-achievement.md).
 
 ## Key principle
 

@@ -148,6 +148,16 @@ spawn with no per-seed script would already be a credible milestone.
 | # | Workstream | Deliverable | Depends on |
 |---|---|---|---|
 | G1 | Goal Contract | JSON schema + status machine (`RUNNING/SUCCESS/FAILED/BLOCKED`), `success`/`failure`/`constraints` evaluable on `/observe` | AI-player M1 |
+
+**G1 thin slice — implemented.** `survival/goal-contract.mjs` (`normalizeContract`,
+`evaluateContract`, `contractFromEnv`, `hasContractConfig`), exported through
+`survival/index.mjs`, wired into `controller.mjs`: opt-in via `GOAL_CONTRACT`
+(JSON) + `MAX_DEATHS` + `PRESERVE_ITEMS`; the controller logs `goal_contract` /
+`goal_contract_met` / `goal_contract_stop` and stops on
+`SUCCESS`/`FAILED`/`BLOCKED`. New verifier criteria `deathsAtLeast` and
+`itemPreserved`. 18 unit tests (`tests/goal-contract.test.mjs`). Still missing:
+the persistent Goal Manager / queue (AI-player M1), a `target`-driven
+`obtain_item` executor, and the semantic-goal interpreter (G4).
 | G2 | Primitive vocabulary | Normalize the proposal's skill API onto the existing intents/actions/gameplay skills | — |
 | G3 | Task graph | Merge the progression graph with sub-goal nodes + prerequisites; keep deterministic resolution | AI-player M7 |
 | G4 | Interpreter | NL goal → capability list (shelter/bed/table/...) as a Hermes artifact, then deterministic execution | human-command |

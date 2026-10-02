@@ -17,6 +17,7 @@ export { loadSurvivalRules, evaluateRules, ruleMatches, evaluateCondition, valid
 export { optionIntents, keyMatchesIntents, intentMatchesKey, INTENTS } from './intents.mjs';
 export { ITEM_TAGS, itemMatchesTag, tagCount, tagItems, isKnownTag } from './item-tags.mjs';
 export { evaluateCriteria, verifySkill, validateCriteria, CRITERIA_KEYS } from './verify.mjs';
+export { normalizeContract, evaluateContract, contractFromEnv, hasContractConfig, CONTRACT_STATUSES } from './goal-contract.mjs';
 export { loadGameplaySkills, validateSkill, skillById } from './skills.mjs';
 export { filterOptionsForGovernor, resolveActiveSkill, skillApplicable, skillPreferredIntents, findOptionForIntents } from './resolver.mjs';
 export { loadProgression, validateProgression, resolveMilestone, progressionSnapshot } from './progression.mjs';
