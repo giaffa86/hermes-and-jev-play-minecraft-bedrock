@@ -39,6 +39,7 @@ const ENTITY_HEIGHTS = {
   cow: 1.4, mooshroom: 1.4, sheep: 1.3, pig: 0.9, chicken: 0.7, rabbit: 0.5,
   wolf: 0.85, cat: 0.7, ocelot: 0.7, horse: 1.6, donkey: 1.5, mule: 1.6,
   llama: 1.87, goat: 1.3, fox: 0.6, panda: 1.25, turtle: 0.4, parrot: 0.9,
+  axolotl: 0.42, nautilus: 0.6,
 };
 
 // Cibi usabili per mangiare, in ordine di preferenza. Restano fuori gli item
@@ -132,14 +133,25 @@ const ANIMAL_FEED = {
   rabbit: 'carrot',
 };
 
-// Animali addomesticabili (taming) e il relativo item. Non sono animali da
-// allevamento: il flag `tamed` + `owner_eid` ne segna l'esito.
-const TAMEABLE_TYPES = new Set(['wolf', 'cat', 'ocelot']);
+// Animali addomesticabili con cibo, e i relativi item (lista, con alternative).
+// Non sono animali da allevamento: il flag `tamed` (lupo/gatto/pappagallo) o
+// `trusting` (ocelot) + `owner_eid` ne segna l'esito.
+const TAMEABLE_TYPES = new Set(['wolf', 'cat', 'ocelot', 'parrot']);
 const TAME_FEED = {
-  wolf: 'bone',
-  cat: 'raw_cod',
-  ocelot: 'raw_cod',
+  wolf: ['bone'],
+  cat: ['raw_cod', 'raw_salmon'],
+  ocelot: ['raw_cod', 'raw_salmon'],
+  parrot: ['wheat_seeds', 'melon_seeds', 'pumpkin_seeds', 'beetroot_seeds'],
 };
+
+// Cavalcabili da domare montandoli ripetutamente (nessun cibo): il flag `tamed`
+// compare quando smettono di disarcionare. Include il nautilus (compagno
+// acquatico aggiunto da poco, con armatura dedicata come i cavalli).
+const RIDE_TAMEABLE_TYPES = new Set(['horse', 'donkey', 'mule', 'llama', 'nautilus']);
+
+// Animali da compagnia in senso lato, incluso l'axolotl che segue (tenendo in
+// mano un secchio di pesci tropicali) ma non ha flag `tamed`/`trusting`.
+const COMPANION_TYPES = new Set([...TAMEABLE_TYPES, ...RIDE_TAMEABLE_TYPES, 'axolotl']);
 
 // Da item piantabile (seme od ortaggio) alla coltura che appare sul terreno.
 const SEED_TO_CROP = {
@@ -163,12 +175,20 @@ export function isTameableType (type) {
   return TAMEABLE_TYPES.has(normalizeEntityType(type));
 }
 
+export function isRideTameableType (type) {
+  return RIDE_TAMEABLE_TYPES.has(normalizeEntityType(type));
+}
+
+export function isCompanionType (type) {
+  return COMPANION_TYPES.has(normalizeEntityType(type));
+}
+
 export function animalFeed (type) {
   return ANIMAL_FEED[normalizeEntityType(type)] || null;
 }
 
 export function tameFeed (type) {
-  return TAME_FEED[normalizeEntityType(type)] || null;
+  return (TAME_FEED[normalizeEntityType(type)] || []).slice();
 }
 
 export function cropForSeed (item) {
@@ -192,3 +212,5 @@ export const ANIMAL_FEED_MAP = { ...ANIMAL_FEED };
 export const SEED_TO_CROP_MAP = { ...SEED_TO_CROP };
 export const TAME_FEED_MAP = { ...TAME_FEED };
 export const TAMEABLE_TYPE_COUNT = TAMEABLE_TYPES.size;
+export const RIDE_TAMEABLE_TYPE_COUNT = RIDE_TAMEABLE_TYPES.size;
+export const COMPANION_TYPE_COUNT = COMPANION_TYPES.size;

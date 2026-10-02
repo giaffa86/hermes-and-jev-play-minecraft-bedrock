@@ -232,15 +232,15 @@ sudo docker cp hermes:/opt/data/runs /home/<ssh-user>/hermes-jev-bedrock/runs-fr
 | `attack_<animal>` | ⚠️ Needs live verification | Hunts the nearest farm animal of the requested type (whitelist `cow`/`mooshroom`/`sheep`/`pig`/`chicken`/`rabbit`) using the same `_combat` loop as hostiles; the drop must be collected with `collect_drop` afterwards. **Never** targets villagers/traders or tamed pets. Not tested live on 03/10 (would kill a family animal without consent). |
 | `breed_<animal>` | ✅ Working | Breeds two nearby adults of the same type: feeds both (via `_feedEntity`) and waits for a new baby entity (flag `baby`). Offered only with ≥2 adults and ≥2 feed items; cooldown is implicit in the two-not-`inlove` adults requirement. **Verified live on 03/10** (`breed_pig` → `babies: 1`, `baby:true` in `/observe.farmAnimals`). |
 | `throw_egg` | ✅ Working | Throws an egg (`use_item` `click_air`); confirmed by the consumed egg. A chick spawns with 1/8 chance and is reported as `chick: observed`/`none`. **Verified live on 03/10** (`chick: none`, egg consumed). |
-| `tame_wolf` / `tame_cat` | ⚠️ Needs live verification | Tames the nearest wild `wolf`/`cat`/`ocelot` (bone / raw cod): repeats the `item_use_on_entity` `interact` until the `tamed` flag (bit 28) or `owner_eid` = bot appears. The owner/tamed signal to confirm live (runtime id vs unique id). Not tested live on 03/10 (no wolf/cat near the bot). |
+| `tame_<companion>` | ⚠️ Needs live verification | Tames the nearest wild companion. **Food-based** (`wolf`→bone, `cat`/`ocelot`→raw cod/salmon, `parrot`→seeds): repeats `item_use_on_entity` `interact` until the `tamed` flag (bit 28, wolf/cat/parrot) or `trusting` (flags_extended bit 1, ocelot) or `owner_eid` = bot appears. **Ride-based** (`horse`/`donkey`/`mule`/`llama`/`nautilus`): mounts with an empty hand until the `tamed` flag appears. Not tested live on 03/10 (no companion near the bot). |
 | `shear_sheep` | ⚠️ Needs live verification | Shears the nearest adult, not-yet-sheared sheep with `shears` in hand (`item_use_on_entity` `interact`); confirmed by the `sheared` flag (bit 31). Requires `craft_shears` (2 iron ingots at the table). Not tested live on 03/10 (no sheep near the bot). |
 | `craft_shears` | ⚠️ Needs live verification | Crafts `shears` from 2 iron ingots at the crafting table (offered when the recipe is present and a table is nearby). Not tested live on 03/10. |
 
-### Farming (update 03/10/2026)
+### Farming and companions (update 03/10/2026)
 
 Crop cycle (`plant_<seed>`), passive-animal interaction (`feed_<animal>`,
 `attack_<animal>`) and the stretch (`throw_egg`, `breed_<animal>`,
-`tame_wolf`/`tame_cat`, `shear_sheep` + `craft_shears`) are implemented and
+`tame_<companion>`, `shear_sheep` + `craft_shears`) are implemented and
 unit-tested.
 
 **Live verification (03/10/2026)** on the BDS, driven via the harness HTTP API:
@@ -271,6 +271,14 @@ unit-tested.
 - **World safety**: `farmland`, fences/gates and crop blocks are now in
   `DIG_PROTECTED`, so `dig_down`/`dig_up` never dig through the family farms
   (`mine_*` still harvests crops on purpose).
+- **Companion animals** (`/observe.companions`): the census covers the
+  food-tameable (`wolf`, `cat`, `ocelot`, `parrot`), the ride-tameable
+  (`horse`, `donkey`, `mule`, `llama`, `nautilus` — the recently added aquatic
+  companion with its own armor set) and the `axolotl` (not tameable: it follows
+  a player holding a bucket of tropical fish and can be caught in a bucket; no
+  `tamed`/`trusting` flag, so no `tame_axolotl` action). `tame_<companion>`
+  covers both food- and ride-based taming; `owner_eid` (key 5), `tamed` (flags
+  bit 28) and `trusting` (flags_extended bit 1) are the confirmation signals.
 - **Still not implemented**: milk (bucket + cow), and mature-crop growth
   detection. See `docs/wiki/roadmap.md`.
 

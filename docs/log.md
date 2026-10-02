@@ -145,3 +145,19 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   wandered; a retry close-up succeeded — the action may need one retry for
   distant/wandering animals.
 - `BEDROCK.md` action table and `roadmap.md` status updated.
+
+## [2026-10-03] ingest | Companion animals: cats, wolves, parrots, mounts, axolotl, nautilus
+
+- `bedrock-survival.mjs`: companion categories — food-tameable (`wolf`→bone,
+  `cat`/`ocelot`→raw cod/salmon, `parrot`→seeds), ride-tameable
+  (`horse`/`donkey`/`mule`/`llama`/`nautilus`), and `axolotl` (follows with a
+  tropical-fish bucket, no tamed flag). `tameFeed` now returns a list.
+- `bedrock-adapter.mjs`: parse `trusting` (flags_extended key 92 bit 1);
+  `_nearbyCompanion` census + `/observe.companions`; generalized `_tameAnimal`
+  (food vs ride via `_mountEntity` with an empty hand) and `_isCompanionTamed`.
+- `nautilus` (recently added aquatic companion with its own armor set) is in the
+  ride-tameable set; its exact taming mechanic still needs a live round.
+- Tests: 270 green (`tests/bedrock-survival.test.mjs` + `bedrock-farming.test.mjs`).
+- `BEDROCK.md` + `roadmap.md` updated.
+- New page `wiki/companions.md` (categories, implemented taming vs missing riding,
+  verification status); cross-linked from `index.md`, `overview.md`, `roadmap.md`.

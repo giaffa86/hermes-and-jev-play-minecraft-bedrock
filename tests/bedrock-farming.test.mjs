@@ -269,3 +269,52 @@ test('options offer the farming stretch actions', () => {
   assert.ok(keys.includes('tame_wolf'), 'tame_wolf offered');
   assert.ok(keys.includes('shear_sheep'), 'shear_sheep offered');
 });
+
+// ---- compagni: ocelot trusting, ride-tame, parrot ----------------------------------
+
+test('trusting flag (flags_extended key 92, bit 1) is exposed on ocelots', () => {
+  const adapter = spawnedAdapter();
+  adapter._trackEntity({ runtime_id: 52n, unique_id: 952n, entity_type: 'minecraft:ocelot', position: { x: 2, y: 63, z: 0 } }, 'mob');
+  adapter._applyEntityMetadata({ runtime_entity_id: 52n, metadata: [{ key: 92, value: 1n << 1n }] });
+  const ocelot = adapter.entities.get('52');
+  assert.equal(ocelot.trusting, true);
+  assert.equal(adapter._nearbyCompanion(8).find(e => e.type === 'ocelot').trusting, true);
+});
+
+test('_tameAnimal mounts a rideable horse until tamed', async () => {
+  const adapter = spawnedAdapter();
+  adapter.client.entityId = 7n;
+  adapter.inventory = {};
+  adapter._trackEntity({ runtime_id: 110n, unique_id: 1110n, entity_type: 'minecraft:horse', position: { x: 2, y: 63, z: 0 } }, 'mob');
+  let mounted = 0;
+  adapter._mountEntity = async () => { mounted++; adapter.entities.get('110').tamed = true; };
+  const result = await adapter._tameAnimal('horse');
+  assert.equal(result.ok, true);
+  assert.equal(result.tamed, 'horse');
+  assert.equal(mounted, 1);
+});
+
+test('_tameAnimal tames a parrot with wheat seeds', async () => {
+  const adapter = spawnedAdapter();
+  adapter.client.entityId = 7n;
+  adapter.inventory = { wheat_seeds: 1 };
+  adapter._trackEntity({ runtime_id: 111n, unique_id: 1111n, entity_type: 'minecraft:parrot', position: { x: 2, y: 63, z: 0 } }, 'mob');
+  let fed = null;
+  adapter._feedEntity = async (runtimeId, feed) => { fed = feed; adapter.entities.get('111').tamed = true; return { ok: true, state: 'tamed' }; };
+  const result = await adapter._tameAnimal('parrot');
+  assert.equal(result.ok, true);
+  assert.equal(fed, 'wheat_seeds');
+});
+
+test('options offer tame_ for rideables and food-tameable companions', () => {
+  const adapter = spawnedAdapter();
+  adapter.client.entityId = 7n;
+  adapter.inventory = { wheat_seeds: 1 };
+  adapter._trackEntity({ runtime_id: 110n, unique_id: 1110n, entity_type: 'minecraft:horse', position: { x: 2, y: 63, z: 0 } }, 'mob');
+  adapter._trackEntity({ runtime_id: 111n, unique_id: 1111n, entity_type: 'minecraft:parrot', position: { x: 3, y: 63, z: 0 } }, 'mob');
+  adapter.world.findBlocks = () => [];
+  adapter.world.blockAt = () => ({ name: 'air' });
+  const keys = adapter.options().map(o => o.key);
+  assert.ok(keys.includes('tame_horse'), 'tame_horse offered');
+  assert.ok(keys.includes('tame_parrot'), 'tame_parrot offered');
+});

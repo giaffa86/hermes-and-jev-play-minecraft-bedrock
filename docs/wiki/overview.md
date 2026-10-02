@@ -54,6 +54,8 @@ Both expose the same interface (`observe()`, `options()`, `executeAction()`,
 - **Roadmap and status** — the consolidated implementation status across all
   `.private/` task notes (done / pending-live / not-implemented); see
   [roadmap](roadmap.md).
+- **Companion animals** — taming cats/wolves/parrots, mounts and the axolotl /
+  nautilus census; see [companions](companions.md).
 
 ## Sources
 

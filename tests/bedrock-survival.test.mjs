@@ -6,6 +6,7 @@ import {
   bestFood, isHostileType, entityHeight, normalizeEntityType,
   estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection,
   isFarmAnimalType, animalFeed, cropForSeed, isCropBlock, isFarmlandBlock,
+  isTameableType, isRideTameableType, isCompanionType, tameFeed,
   PLANTABLE_ITEMS,
 } from '../bedrock-survival.mjs';
 
@@ -50,6 +51,23 @@ test('farm animal classification and feed/crop maps', () => {
   assert.equal(isFarmlandBlock('dirt'), false);
   assert.ok(PLANTABLE_ITEMS.includes('wheat_seeds'));
   assert.ok(PLANTABLE_ITEMS.includes('potato'));
+});
+
+test('companion classification: food-tame, ride-tame, axolotl/nautilus', () => {
+  assert.deepEqual(tameFeed('wolf'), ['bone']);
+  assert.deepEqual(tameFeed('cat'), ['raw_cod', 'raw_salmon']);
+  assert.deepEqual(tameFeed('parrot'), ['wheat_seeds', 'melon_seeds', 'pumpkin_seeds', 'beetroot_seeds']);
+  assert.deepEqual(tameFeed('horse'), []); // cavalcabile: nessun cibo
+  assert.equal(isTameableType('parrot'), true);
+  assert.equal(isTameableType('wolf'), true);
+  assert.equal(isRideTameableType('horse'), true);
+  assert.equal(isRideTameableType('nautilus'), true);
+  assert.equal(isRideTameableType('wolf'), false);
+  assert.equal(isCompanionType('axolotl'), true);
+  assert.equal(isCompanionType('nautilus'), true);
+  assert.equal(isCompanionType('parrot'), true);
+  assert.equal(isCompanionType('cow'), false);
+  assert.equal(isCompanionType('zombie'), false);
 });
 
 test('bestFood prefers cooked food and skips unsafe or precious items', () => {
