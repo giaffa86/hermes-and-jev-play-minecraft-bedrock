@@ -841,6 +841,14 @@ export class BedrockAdapter {
         o.push({ key: 'go_home', description: `Return home to ${JSON.stringify({ x: Math.round(this.home.x), y: Math.round(this.home.y), z: Math.round(this.home.z) })} (${homeDist.toFixed(0)} blocks away${atRisk})` });
       }
     }
+    // Armatura: equipaggia i pezzi dall'inventario negli slot armor.
+    if (Object.keys(this.inventory).some(name => this._armorSlotFor(name) >= 0)) {
+      o.push({ key: 'equip_armor', description: 'Equip armor pieces from inventory (helmet/chestplate/leggings/boots)' });
+    }
+    // Porte: chiudi quelle aperte dal bot per sigillare il rifugio.
+    if (this._closeDoorTarget()) {
+      o.push({ key: 'close_door', description: 'Close the open door(s) behind you to keep mobs out' });
+    }
     const food = this._bestFoodItem();
     if (food && (this.food < 18 || (this.health < 20 && this.food < 20))) {
       o.push({ key: 'eat', description: `Eat ${food} to restore hunger (hunger ${this.food}/20, health ${this.health}/20)` });
@@ -1193,6 +1201,10 @@ export class BedrockAdapter {
         result = await this._flee();
       } else if (key === 'go_home' || key === 'retreat') {
         result = await this._goHome();
+      } else if (key === 'equip_armor') {
+        result = await this._equipArmor();
+      } else if (key === 'close_door') {
+        result = await this._closeDoor();
       } else if (key === 'sleep') {
         result = await this._sleepInBed();
       } else if (key === 'recover_loot') {
@@ -4600,6 +4612,94 @@ export class BedrockAdapter {
     } catch (error) {
       return { ok: false, error: `go_home_failed: ${error.message}` };
     }
+  }
+
+  // ---- armatura e porte (difesa) -------------------------------------------------------
+
+  _armorSlotFor (name) {
+    if (!name) return -1;
+    if (name === 'turtle_helmet' || /_helmet$/.test(name)) return 0;
+    if (name === 'elytra' || /_chestplate$/.test(name)) return 1;
+    if (/_leggings$/.test(name)) return 2;
+    if (/_boots$/.test(name)) return 3;
+    return -1;
+  }
+
+  async _equipArmor () {
+    const pieces = [];
+    for (let index = 0; index < this.inventorySlots.length; index++) {
+      const slot = this.inventorySlots[index];
+      const name = this._slotItemName(slot);
+      const armorSlot = this._armorSlotFor(name);
+      if (armorSlot < 0 || !slot?.count) continue;
+      pieces.push({ index, name, armorSlot, stack_id: slot.stack_id || 0, network_id: slot.network_id });
+    }
+    if (!pieces.length) return { ok: false, error: 'no_armor_in_inventory' };
+    const equipped = [];
+    for (const piece of pieces) {
+      const info = this._invSlotAsSource(piece.index);
+      const take = await this._sendStackRequest([{
+        type_id: 'take', legacy_type_id: 0, count: 1,
+        source: this._slotInfo(info.container, info.slot, piece.stack_id),
+        destination: this._slotInfo('cursor', 0, 0),
+      }]).catch(() => null);
+      if (!take || (String(take.status) !== 'ok' && take.status !== 0)) continue;
+      this._applyStackResponse(take);
+      const cursorStack = this._responseSlotStack(take, 'cursor', 0) ?? 0;
+      const place = await this._sendStackRequest([{
+        type_id: 'place', legacy_type_id: 1, count: 1,
+        source: this._slotInfo('cursor', 0, cursorStack),
+        destination: this._slotInfo('armor', piece.armorSlot, 0),
+      }]).catch(() => null);
+      if (!place || (String(place.status) !== 'ok' && place.status !== 0)) {
+        await this._returnCursorToInventory().catch(() => {});
+        continue;
+      }
+      this._applyStackResponse(place, { networkId: piece.network_id });
+      this._cursor = null;
+      equipped.push({ item: piece.name, slot: piece.armorSlot });
+      this.log('armor_equip', { item: piece.name, slot: piece.armorSlot, status: place.status });
+    }
+    this._refreshInventory();
+    if (!equipped.length) return { ok: false, error: 'armor_equip_failed' };
+    return { ok: true, equipped };
+  }
+
+  _closeDoorTarget () {
+    if (!this._feet) return null;
+    const candidates = [];
+    for (const key of this._openDoors) {
+      const parts = key.split(',').map(Number);
+      if (parts.length !== 3) continue;
+      const [x, y, z] = parts;
+      const dist = Math.hypot(this._feet.x - (x + 0.5), this._feet.z - (z + 0.5));
+      if (dist <= 8) candidates.push({ x, y, z, distance: dist });
+    }
+    candidates.sort((a, b) => a.distance - b.distance);
+    return candidates[0] || null;
+  }
+
+  async _closeDoor () {
+    const target = this._closeDoorTarget();
+    if (!target) return { ok: false, error: 'no_open_door' };
+    if (target.distance > 4) {
+      try { await this._moveTo({ x: target.x + 0.5, y: target.y, z: target.z + 0.5 }, 2, 20000); } catch { /* resta dove è e prova comunque */ }
+    }
+    const before = this.world.runtimeIdAt(target);
+    const look = this._lookAt({ x: target.x + 0.5, y: target.y + 0.5, z: target.z + 0.5 });
+    await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch, transaction: this._blockUseTransaction(target) });
+    const deadline = Date.now() + 2500;
+    while (Date.now() < deadline) {
+      await delay(100);
+      const after = this.world.runtimeIdAt(target);
+      if (before != null && after != null && after !== before) {
+        this._openDoors.delete(`${target.x},${target.y},${target.z}`);
+        this.log('door_closed', { position: target });
+        return { ok: true, closed: true, position: target };
+      }
+    }
+    this._openDoors.delete(`${target.x},${target.y},${target.z}`);
+    return { ok: true, closed: true, unconfirmed: true, position: target };
   }
 
   _bestFoodItem () {

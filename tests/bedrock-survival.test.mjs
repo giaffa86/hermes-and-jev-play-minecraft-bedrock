@@ -581,3 +581,75 @@ test('sword crafting options are offered with materials and a crafting table', (
   assert.ok(keys.includes('craft_wooden_sword'), 'wooden sword option');
   assert.ok(keys.includes('craft_stone_sword'), 'stone sword option');
 });
+
+// ---- difesa: armatura e porte ---------------------------------------------------------
+
+test('armor slot mapping classifies helmet/chest/leggings/boots', () => {
+  const adapter = spawnedAdapter();
+  assert.equal(adapter._armorSlotFor('iron_helmet'), 0);
+  assert.equal(adapter._armorSlotFor('diamond_chestplate'), 1);
+  assert.equal(adapter._armorSlotFor('golden_leggings'), 2);
+  assert.equal(adapter._armorSlotFor('leather_boots'), 3);
+  assert.equal(adapter._armorSlotFor('turtle_helmet'), 0);
+  assert.equal(adapter._armorSlotFor('elytra'), 1);
+  assert.equal(adapter._armorSlotFor('stone_sword'), -1);
+  assert.equal(adapter._armorSlotFor(null), -1);
+});
+
+test('equip_armor is offered only when armor pieces are in the inventory', () => {
+  const adapter = spawnedAdapter();
+  adapter.nearbyBlocks = {};
+  adapter.drops = [];
+  adapter.inventory = { iron_chestplate: 1, bread: 2 };
+  adapter.world.findBlocks = () => [];
+  assert.ok(adapter.options().map(o => o.key).includes('equip_armor'), 'equip_armor option');
+  adapter.inventory = { bread: 2 };
+  assert.ok(!adapter.options().map(o => o.key).includes('equip_armor'), 'non offerta senza armatura');
+});
+
+test('close_door is offered only when an open door is nearby', () => {
+  const adapter = spawnedAdapter();
+  adapter.nearbyBlocks = {};
+  adapter.drops = [];
+  adapter.inventory = {};
+  adapter.world.findBlocks = () => [];
+  assert.ok(!adapter.options().map(o => o.key).includes('close_door'), 'non offerta senza porte aperte');
+  adapter._openDoors.add('2,63,1');
+  assert.ok(adapter.options().map(o => o.key).includes('close_door'), 'close_door option');
+});
+
+test('_closeDoorTarget picks the nearest open door within 8 blocks', () => {
+  const adapter = spawnedAdapter();
+  adapter._openDoors.add('20,63,0');
+  adapter._openDoors.add('3,63,0');
+  const target = adapter._closeDoorTarget();
+  assert.deepEqual([target.x, target.y, target.z], [3, 63, 0]);
+  assert.ok(target.distance < 4, 'distanza verso la porta più vicina');
+});
+
+test('_equipArmor takes from inventory and places into the armor slot', async () => {
+  const adapter = spawnedAdapter();
+  adapter.inventorySlots[5] = { network_id: 200, name: 'iron_chestplate', count: 1, stack_id: 7 };
+  const actions = [];
+  adapter._sendStackRequest = async (acts) => { actions.push(acts); return { status: 'ok', containers: [] }; };
+  const result = await adapter._equipArmor();
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.equipped, [{ item: 'iron_chestplate', slot: 1 }]);
+  assert.equal(actions.length, 2);
+  assert.equal(actions[0][0].destination.slot_type.container_id, 'cursor');
+  assert.equal(actions[1][0].destination.slot_type.container_id, 'armor');
+  assert.equal(actions[1][0].destination.slot, 1);
+});
+
+test('_closeDoor clicks the door and clears it from the open set', async () => {
+  const adapter = spawnedAdapter();
+  adapter._openDoors.add('2,63,1');
+  adapter._moveTo = async () => ({ ok: true });
+  adapter.world.runtimeIdAt = () => 5;
+  let clicked = null;
+  adapter._queueAuthInput = async (input) => { clicked = input; };
+  const result = await adapter._closeDoor();
+  assert.equal(result.ok, true);
+  assert.ok(clicked.transaction, 'click_block inviato');
+  assert.equal(adapter._openDoors.size, 0, 'porta rimossa da _openDoors');
+});
