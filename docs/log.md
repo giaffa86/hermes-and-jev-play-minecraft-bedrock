@@ -940,3 +940,16 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Docs: `wiki/open-questions.md` (respawn section rewritten with the findings and
   the mitigation), `wiki/verification.md` row 12 → ✅ (mitigated), `BEDROCK.md`
   (env vars + Known issues). Tests green.
+
+## [2026-10-02] doc | Respawn page: state, limits and refinement path
+
+- New `docs/wiki/respawn.md`: the death→respawn flow, the stuck finding (BDS
+  ignores `player_action respawn`; a client `respawn` packet runs the handshake
+  but the server does not restore health), the **mitigation** (25 s watchdog →
+  reconnect), its **limits** (25-40 s gap, fresh session, depends on the harness
+  reconnect), and the **refinement path**: confirm with a vanilla client (relay
+  capture) to decide server vs client-library bug, then try the in-place ack
+  (`player_auth_input` after `SERVER_READY`, `handled_teleport`), then reduce the
+  watchdog. Also records where to report: **Mojira only if a vanilla client
+  reproduces** (no personal data), otherwise upstream `bedrock-protocol`.
+- `index.md`, `open-questions.md` and `verification.md` (row 12) link the page.

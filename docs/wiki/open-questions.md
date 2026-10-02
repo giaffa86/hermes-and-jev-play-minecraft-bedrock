@@ -84,6 +84,7 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
   server-side protocol exchange; tracked in [verification](verification.md) row 12.
 - Diagnostic for future work: `PACKET_DEBUG=1` on the harness logs the names of
   the clientbound packets received right after a death (`rx_packet`).
+- **Full state, limits and the refinement path**: [respawn](respawn.md).
 
 ## Live verification pending
 
