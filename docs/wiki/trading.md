@@ -66,3 +66,12 @@ difference in BDS 1.26.52 vs the bedrockflayer reference. Needs protocol-level
 capture (compare against a real client or gophertunnel).
 
 See [open-questions](open-questions.md) for the current gaps.
+
+## Known defect (timeout)
+
+`_tradeAt (index, { timeoutMs = 20000 })` in `bedrock-adapter.mjs` never forwards
+its `timeoutMs` to `_waitTradeResult (timeoutMs = 5000)`, so a trade effectively
+waits **5 s instead of 20 s**. Left unfixed on purpose: it changes the timing of
+an area whose live handshake is still unverified, and the fix should be threaded
+through during that live round and observed. Tracked in
+[open-questions](open-questions.md#known-code-defects-not-fixed).
