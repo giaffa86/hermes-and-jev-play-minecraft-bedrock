@@ -131,6 +131,14 @@ test('own attributes use the current field for health and hunger', () => {
   assert.equal(adapter.food, 11);
 });
 
+test('empty bed positions do not mark the bot as sleeping', () => {
+  const adapter = spawnedAdapter();
+  adapter._applyEntityMetadata({ runtime_entity_id: 7n, metadata: [{ key: 'player_bed_position', value: { x: 0, y: 0, z: 0 } }] });
+  assert.equal(adapter.sleeping, false);
+  adapter._applyEntityMetadata({ runtime_entity_id: 7n, metadata: [{ key: 'player_bed_position', value: { x: 92, y: 73, z: 162 } }] });
+  assert.equal(adapter.sleeping, true);
+});
+
 test('death and respawn flip the survival state', () => {
   const adapter = spawnedAdapter();
   adapter.health = 0;

@@ -2410,13 +2410,21 @@ export class BedrockAdapter {
         const resting = this._metadataFlag(entry.value, 'resting');
         if (resting != null) this._setSleeping(resting);
       }
-      if (key === 'player_bed_position' && isSelf && entry.value != null) this._setSleeping(true);
+      // player_bed_position è presente nei dump completi anche da svegli (0,0,0):
+      // vale come "a letto" solo se indica una posizione reale.
+      if (key === 'player_bed_position' && isSelf && this._isBedPosition(entry.value)) this._setSleeping(true);
     }
     if (entity) entity.lastAt = Date.now();
   }
 
-  _metadataFlag (value, name) {
-    if (value && typeof value === 'object') {
+  // Una posizione letto reale ha coordinate non nulle (il metadata "vuoto" è 0,0,0).
+  _isBedPosition (value) {
+    if (!value || typeof value !== 'object') return false;
+    const x = Number(value.x ?? 0), y = Number(value.y ?? 0), z = Number(value.z ?? 0);
+    return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z) && (x !== 0 || y !== 0 || z !== 0);
+  }
+
+  _metadataFlag (value, name) {    if (value && typeof value === 'object') {
       if (typeof value[name] === 'boolean') return value[name];
       if (value[name] != null) return !!value[name];
       return null;
