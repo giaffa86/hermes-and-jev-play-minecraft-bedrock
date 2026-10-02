@@ -6,8 +6,9 @@ import { createRequire } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BedrockWorld } from './bedrock-world.mjs';
 import { trackNethernetClient, closeBedrockClient } from './bedrock-lifecycle.mjs';
-import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isTameableType, isRideTameableType, isCompanionType, animalFeed, tameFeed, cropForSeed, isCropBlock, isFarmlandBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS } from './bedrock-survival.mjs';
+import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isTameableType, isRideTameableType, isCompanionType, isVehicleType, isRideableType, animalFeed, tameFeed, cropForSeed, isCropBlock, isFarmlandBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS } from './bedrock-survival.mjs';
 import { professionName, normalizeProfession, professionMatches, pickBestTrade } from './bedrock-trading.mjs';
+import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -138,6 +139,9 @@ export class BedrockAdapter {
     this._lastYaw = 0;
     this._lastPitch = 0;
     this._motion = null;
+    this.riding = null;                // { riddenEntityId, at } quando il bot è montato
+    this._ridingForward = false;       // vettore avanti continuo mentre cavalca
+    this._ridingYaw = 0;               // yaw verso cui cavalcare
     this._openDoors = new Set();       // celle di porte aperte (fisica passabile)
     this._doorWatchers = new Map();    // key -> runtime id della porta chiusa
     this.recipes = null;               // output -> ricette da crafting_data
@@ -347,6 +351,8 @@ export class BedrockAdapter {
         this._onGround = true;
         this._lastSimTick = null;
         this._motion = null;
+        this.riding = null;
+        this._ridingForward = false;
         this._lastYaw = 0;
         this._lastPitch = 0;
         client.queue('serverbound_loading_screen', { type: 1 });
@@ -418,14 +424,16 @@ export class BedrockAdapter {
         this.world.requestAround(client, this.position);
       });
       client.on('correct_player_move_prediction', packet => {
-        if (packet.prediction_type !== 'player') return;
+        // `player` corregge il bot a piedi; `vehicle` corregge il veicolo su cui
+        // il bot è montato (la posizione del bot è quella del veicolo).
+        if (packet.prediction_type !== 'player' && packet.prediction_type !== 'vehicle') return;
         // La correzione è la posizione autorevole del server (agli occhi).
         // L'ancora di tick viene riallineata per restare nella finestra di rewind.
         if (packet.tick != null) this._tickAnchor = { tick: BigInt(packet.tick), time: Date.now() };
         if (!this._feet) this._syncFeetFromPosition(packet.position);
         const drift = Math.hypot(packet.position.x - this._feet.x, packet.position.z - this._feet.z);
-        if (drift > MAX_CORRECTION_DRIFT) {
-          // Divergenza reale (spinta, disallineamento): accetta X/Z del server.
+        if (drift > MAX_CORRECTION_DRIFT || packet.prediction_type === 'vehicle') {
+          // Divergenza reale (spinta, disallineamento, veicolo): accetta X/Z del server.
           this._feet.x = packet.position.x;
           this._feet.z = packet.position.z;
           this._velocity.x = 0;
@@ -439,6 +447,22 @@ export class BedrockAdapter {
         this._syncPositionFromFeet();
         this.world.requestAround(client, this.position);
         this._refreshNearby();
+      });
+
+      // Collegamento cavaliere→veicolo: il server conferma montata/smontata.
+      client.on('set_entity_link', (packet) => {
+        const self = String(this.client?.entityId ?? '');
+        for (const link of packet.links || []) {
+          if (String(link.rider_entity_id) !== self) continue;
+          if (link.type === 0) {
+            this.riding = null;
+            this._ridingForward = false;
+            this.log('dismount', { ridden: String(link.ridden_entity_id) });
+          } else {
+            this.riding = { riddenEntityId: String(link.ridden_entity_id), at: Date.now() };
+            this.log('mount', { ridden: String(link.ridden_entity_id), type: link.type });
+          }
+        }
       });
 
       this.client.on('set_health', (packet) => {
@@ -743,6 +767,7 @@ export class BedrockAdapter {
       entities: this._nearbyEntities(8),
       farmAnimals: this._nearbyFarmAnimals(8),
       companions: this._nearbyCompanion(8),
+      fishing: this._fishingContext(),
       traders: this._nearbyTraders(8),
       trade: this.tradeOffers.length ? {
         open: this._tradeWindowOpen(),
@@ -916,6 +941,11 @@ export class BedrockAdapter {
           this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
         o.push({ key: 'craft_shears', description: 'Craft shears from 2 iron ingots (uses a crafting table)' });
       }
+      if (this.recipes.has('fishing_rod') && (this.inventory.stick || 0) >= FISHING_ROD_INGREDIENTS.stick &&
+          (this.inventory.string || 0) >= FISHING_ROD_INGREDIENTS.string &&
+          this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
+        o.push({ key: 'craft_fishing_rod', description: 'Craft a fishing rod from 3 sticks and 2 string (uses a crafting table)' });
+      }
     }
     // Piazzamento: solo ciò che serve alla progressione.
     if ((this.inventory.crafting_table || 0) > 0 && !this.world.findBlocks('crafting_table', this.position, 8, 1).length) {
@@ -1024,6 +1054,32 @@ export class BedrockAdapter {
         if (sheep) o.push({ key: 'shear_sheep', description: `Shear the sheep at ${sheep.distance.toFixed(1)} blocks for wool` });
       }
     }
+    // Cavalcare/veicoli: montare un mezzo vicino (barca, carrello, cavallo,
+    // nautilus...) oppure smontare. Con un waypoint attivo goto_waypoint cavalca.
+    if (this.riding) {
+      o.push({ key: 'dismount', description: 'Dismount the current vehicle/mount' });
+    } else {
+      const rideable = this._nearbyRideable(12);
+      const seen = new Set();
+      for (const r of rideable) {
+        if (seen.has(r.type)) continue;
+        seen.add(r.type);
+        o.push({ key: `mount_${r.type}`, description: `Mount the ${r.type} (${r.distance.toFixed(1)} blocks away)` });
+        if (seen.size >= 4) break;
+      }
+    }
+    // Pesca: canna in mano e acqua raggiungibile dalla riva.
+    if ((this.inventory.fishing_rod || 0) > 0) {
+      const spot = this._findFishingSpot();
+      const bobber = this._findBobber();
+      if (spot && !bobber) {
+        o.push({ key: 'fish', description: `Fish at the shore ${spot.distance} blocks away (cast, wait for the bite, reel in)` });
+        o.push({ key: 'cast_rod', description: `Cast the fishing rod into the water at ${JSON.stringify(spot.waterAt)} (${spot.distance} blocks away)` });
+      }
+      if (bobber) {
+        o.push({ key: 'reel_in', description: 'Reel the fishing line in (bobber is out)' });
+      }
+    }
     // Fallback
     if (!o.length) o.push({ key: 'wait', description: 'Wait 2 seconds for fresh observations' });
     return o;
@@ -1047,8 +1103,12 @@ export class BedrockAdapter {
       } else if (key === 'goto_waypoint' && this.plan?.waypoint) {
         const w = this.plan.waypoint;
         const target = { x: w.x, y: this.position?.y ?? 70, z: w.z };
-        const moveResult = await this._moveTo(target, 2, 45000);
-        result = { ok: true, ...moveResult };
+        if (this.riding) {
+          result = await this._rideToward(target, 3, 45000);
+        } else {
+          const moveResult = await this._moveTo(target, 2, 45000);
+          result = { ok: true, ...moveResult };
+        }
       } else if (key === 'follow_player' && this.plan?.follow) {
         result = await this._followPlayer(this.plan.follow);
       } else if (key === 'collect_drop') {
@@ -1076,6 +1136,10 @@ export class BedrockAdapter {
         result = await this._breedAnimals(key.slice('breed_'.length));
       } else if (key.startsWith('tame_')) {
         result = await this._tameAnimal(key.slice('tame_'.length));
+      } else if (key.startsWith('mount_')) {
+        result = await this._mountVehicle(key.slice('mount_'.length));
+      } else if (key === 'dismount') {
+        result = await this._dismount();
       } else if (key === 'shear_sheep') {
         result = await this._shearSheep();
       } else if (key === 'read_container') {
@@ -1109,6 +1173,12 @@ export class BedrockAdapter {
         result = await this._recoverLoot();
       } else if (key.startsWith('attack_')) {
         result = await this._combat(key.slice('attack_'.length));
+      } else if (key === 'cast_rod') {
+        result = await this._castRod();
+      } else if (key === 'reel_in') {
+        result = await this._reelIn();
+      } else if (key === 'fish') {
+        result = await this._fish();
       } else {
         result = { ok: false, error: 'unknown_action', reason: `unknown or invalid action ${key}` };
       }
@@ -3236,6 +3306,7 @@ export class BedrockAdapter {
     this._driveMotion(tick);
     const use = this._motion?.active ? this._motion.useRequest : null;
     let yaw = this._motion?.active ? this._motion.yaw : this._lastYaw;
+    if (this.riding && this._ridingForward) yaw = this._ridingYaw;
     let pitch = this._lastPitch;
     let transaction = null;
     if (use && !use.sent && !this._openDoors.has(use.key)) {
@@ -3298,7 +3369,15 @@ export class BedrockAdapter {
     const inputData = ['block_breaking_delay_enabled'];
     let move = moveVector || { x: 0, z: 0 };
     const motion = this._motion;
-    if (!moveVector && motion?.active) {
+    if (this.riding) {
+      // Veicolo montato: niente fisica locale, il server muove il mezzo.
+      // client_predicted_vehicle (45) segnala la predizione del moto del veicolo.
+      inputData.push('client_predicted_vehicle');
+      if (!moveVector && this._ridingForward) {
+        move = { x: 0, z: 1 };
+        inputData.push('up');
+      }
+    } else if (!moveVector && motion?.active) {
       if (motion.forward) { move = { x: 0, z: 1 }; inputData.push('up'); }
       if (motion.jumpHeldTicks > 0) {
         inputData.push('jumping', 'want_up');
@@ -4775,6 +4854,89 @@ export class BedrockAdapter {
     this._interactEntity(current);
   }
 
+  // ---- cavalcare/veicoli -------------------------------------------------------------
+
+  // Veicoli e cavalcabili vicini (entità montabili), con distanza e tipo.
+  _nearbyRideable (limit = 12) {
+    const rows = [];
+    for (const entity of this.entities.values()) {
+      if (entity.kind !== 'mob' || !entity.position || !isRideableType(entity.type)) continue;
+      if (entity.health != null && entity.health <= 0 && entity.deadAt) continue;
+      const distance = this._entityDistance(entity);
+      if (distance > 32) continue;
+      rows.push({
+        type: entity.type,
+        runtimeId: entity.runtimeId,
+        position: entity.position,
+        distance: +distance.toFixed(1),
+      });
+    }
+    rows.sort((a, b) => a.distance - b.distance);
+    return rows.slice(0, limit);
+  }
+
+  // Monta il veicolo/cavalcabile più vicino del tipo richiesto: mano vuota e
+  // item_use_on_entity `interact`; conferma dal link rider→veicolo (set_entity_link).
+  async _mountVehicle (type, timeoutMs = 20000) {
+    if (this.riding) return { ok: false, error: 'already_riding', ridden: this.riding.riddenEntityId };
+    const wanted = normalizeEntityType(type);
+    const target = this._nearbyRideable(64).find(e => e.type === wanted);
+    if (!target) return { ok: false, error: 'no_rideable_nearby', type: wanted };
+    const empty = this.inventorySlots.findIndex((s, i) => i < 9 && !s?.network_id);
+    if (empty >= 0) this._selectHotbarSlot(empty);
+    const entity = this.entities.get(String(target.runtimeId));
+    if (!entity) return { ok: false, error: 'vehicle_gone' };
+    if (this._entityDistance(entity) > 4.5) {
+      try { await this._moveTo(entity.position, 2.0, Math.min(15000, timeoutMs)); } catch (error) { this.log('mount_approach_failed', { message: error.message }); }
+    }
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline && !this.riding) {
+      const live = this.entities.get(String(target.runtimeId));
+      if (!live) return { ok: false, error: 'vehicle_gone' };
+      if (this._entityDistance(live) > 5) return { ok: false, error: 'vehicle_unreachable' };
+      const look = this._lookAt({ x: live.position.x, y: live.position.y + entityHeight(live.type) * 0.5, z: live.position.z });
+      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+      await delay(120);
+      this._interactEntity(live);
+      const waitUntil = Math.min(deadline, Date.now() + 2000);
+      while (Date.now() < waitUntil && !this.riding) await delay(100);
+    }
+    if (!this.riding) return { ok: false, error: 'mount_not_confirmed', type: wanted };
+    return { ok: true, mounted: wanted, ridden: this.riding.riddenEntityId };
+  }
+
+  // Smonta: player_action start_sneak; il server risponde col link di rimozione.
+  async _dismount (timeoutMs = 8000) {
+    if (!this.riding) return { ok: true, alreadyDismounted: true };
+    this._ridingForward = false;
+    const deadline = Date.now() + timeoutMs;
+    this.client.write('player_action', { runtime_entity_id: this.client.entityId, action: 'start_sneak' });
+    while (Date.now() < deadline && this.riding) await delay(100);
+    if (this.riding) return { ok: false, error: 'dismount_not_confirmed' };
+    return { ok: true, dismounted: true };
+  }
+
+  // Cavalca verso un punto: invia vettore avanti continuo + flag veicolo; il
+  // server muove il mezzo e corregge la posizione (correct_player_move_prediction
+  // con prediction_type `vehicle`). Nessun pathfinding né fisica locale.
+  async _rideToward (target, stopDistance = 3, timeoutMs = 30000) {
+    if (!this.riding) return { ok: false, error: 'not_riding' };
+    const deadline = Date.now() + timeoutMs;
+    this._ridingForward = true;
+    try {
+      while (Date.now() < deadline) {
+        if (!this.riding) return { ok: false, error: 'dismounted' };
+        const d = Math.hypot(target.x - this.position.x, target.z - this.position.z);
+        if (d <= stopDistance) return { ok: true, distance: +d.toFixed(2) };
+        this._ridingYaw = this._yawTo(this.position, target);
+        await delay(100);
+      }
+      return { ok: false, error: 'ride_timeout' };
+    } finally {
+      this._ridingForward = false;
+    }
+  }
+
   // Lancia un uovo (use_item click_air): 1/8 di probabilità di un pulcino.
   // Conferma dal consumo dell'uovo; il pulcino è rilevato tra le entità.
   async _throwEgg (timeoutMs = 8000) {
@@ -4849,6 +5011,142 @@ export class BedrockAdapter {
       }
     }
     return { ok: false, error: 'shear_not_confirmed' };
+  }
+
+  // ---- pesca --------------------------------------------------------------------------
+
+  // Riva più vicina per pescare: blocchi d'acqua adiacenti a un blocco solido
+  // su cui il bot può stare, entro CAST_RANGE. Restituisce null se non c'è.
+  _findFishingSpot () {
+    if (!this.position) return null;
+    const radius = CAST_RANGE + 1;
+    const water = [
+      ...this.world.findBlocks('water', this.position, radius, 64),
+      ...this.world.findBlocks('flowing_water', this.position, radius, 64),
+    ];
+    if (!water.length) return null;
+    const ground = [];
+    const seen = new Set();
+    for (const w of water) {
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const key = `${w.position.x + dx},${w.position.y},${w.position.z + dz}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const g = this.world.blockAt({ x: w.position.x + dx, y: w.position.y, z: w.position.z + dz });
+        if (g && g.name !== 'air' && g.name !== 'unknown' && !isWaterBlock(g.name)) {
+          ground.push({ name: g.name, position: { x: w.position.x + dx, y: w.position.y, z: w.position.z + dz } });
+        }
+      }
+    }
+    const candidates = shoreCandidates(
+      [...water.map(w => ({ name: w.name, position: w.position })), ...ground],
+      this.position,
+    );
+    return candidates[0] || null;
+  }
+
+  // Bobber (fishing_hook) attualmente in acqua, se tracciato.
+  _findBobber () {
+    for (const entity of this.entities.values()) {
+      if (entity.type === 'fishing_hook') return entity;
+    }
+    return null;
+  }
+
+  // Contesto pesca per /observe.
+  _fishingContext () {
+    if (!this.position) return null;
+    const spot = this._findFishingSpot();
+    return {
+      available: !!spot,
+      spot: spot ? { position: spot.position, waterAt: spot.waterAt, distance: spot.distance } : null,
+      rod: (this.inventory.fishing_rod || 0) > 0,
+      string: (this.inventory.string || 0) > 0,
+      bobberOut: !!this._findBobber(),
+      fish: fishCount(this.inventory),
+    };
+  }
+
+  // Lancia la canna verso la riva più vicina: equipaggia la canna, guarda
+  // l'acqua e invia use_item click_air. Conferma: il bobber (fishing_hook)
+  // appare tra le entità.
+  async _castRod ({ timeoutMs = 8000 } = {}) {
+    if ((this.inventory.fishing_rod || 0) < 1) return { ok: false, error: 'missing_fishing_rod' };
+    const spot = this._findFishingSpot();
+    if (!spot) return { ok: false, error: 'no_water_nearby' };
+    let slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === 'fishing_rod' && s.count > 0);
+    if (slotIndex < 0) {
+      try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
+      slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === 'fishing_rod' && s.count > 0);
+      if (slotIndex < 0) return { ok: false, error: 'missing_fishing_rod' };
+    }
+    if (slotIndex > 8) {
+      try { slotIndex = await this._moveSlotToHotbar(slotIndex); }
+      catch (error) { return { ok: false, error: `rod_equip_failed: ${error.message}` }; }
+    }
+    this._selectHotbarSlot(slotIndex);
+    if (this._openContainer) await this._closeContainer();
+    const shoreCenter = { x: spot.position.x + 0.5, y: spot.position.y + 1, z: spot.position.z + 0.5 };
+    if (this._pointDistance(shoreCenter) > 4.5) {
+      try { await this._moveTo(shoreCenter, 2.0, 25000); } catch (error) { this.log('fishing_shore_approach_failed', { message: error.message }); }
+    }
+    const look = this._lookAt({ x: spot.waterAt.x + 0.5, y: spot.waterAt.y + 0.5, z: spot.waterAt.z + 0.5 });
+    await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+    await delay(120);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const held = this.inventorySlots[this.selectedHotbar] || { network_id: 0 };
+      await this._queueAuthInput({ yaw: this._lastYaw, pitch: this._lastPitch, transaction: this._useItemTransaction(held, 'click_air') });
+      const waitUntil = Math.min(deadline, Date.now() + 2200);
+      while (Date.now() < waitUntil) {
+        const bobber = this._findBobber();
+        if (bobber?.position) {
+          return { ok: true, bobber: { x: +bobber.position.x.toFixed(1), y: +bobber.position.y.toFixed(1), z: +bobber.position.z.toFixed(1) }, waterAt: spot.waterAt };
+        }
+        await delay(100);
+      }
+    }
+    return { ok: false, error: 'cast_not_confirmed', waterAt: spot.waterAt };
+  }
+
+  // Recupera la lenza: secondo use_item click_air. Conferma dal delta inventario
+  // (un pesce in più). Restituisce caught=[] se il morso è mancato.
+  async _reelIn ({ timeoutMs = 4000 } = {}) {
+    if ((this.inventory.fishing_rod || 0) < 1) return { ok: false, error: 'missing_fishing_rod' };
+    const before = fishCount(this.inventory);
+    const held = this.inventorySlots[this.selectedHotbar] || { network_id: 0 };
+    await this._queueAuthInput({ yaw: this._lastYaw, pitch: this._lastPitch, transaction: this._useItemTransaction(held, 'click_air') });
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const after = fishCount(this.inventory);
+      if (after > before) {
+        return { ok: true, caught: fishItems(this.inventory), gained: after - before };
+      }
+      await delay(100);
+    }
+    return { ok: true, caught: [], gained: 0, note: 'no_bite' };
+  }
+
+  // Pesca completa: lancia, attende il morso (bobber che affonda o finestra
+  // temporale) e recupera. Un solo ciclo per invocazione.
+  async _fish ({ castTimeoutMs = 8000, reelTimeoutMs = 4000 } = {}) {
+    const cast = await this._castRod({ timeoutMs: castTimeoutMs });
+    if (!cast.ok) return cast;
+    const bobber = this._findBobber();
+    const startY = bobber?.position?.y ?? null;
+    const deadline = Date.now() + nextBiteDelay();
+    let biteDetected = false;
+    while (Date.now() < deadline) {
+      const b = this._findBobber();
+      if (!b) break; // bobber sparito: la lenza è rientrata da sola
+      if (startY != null && b.position?.y != null && startY - b.position.y >= 0.2) {
+        biteDetected = true;
+        break;
+      }
+      await delay(100);
+    }
+    const reel = await this._reelIn({ timeoutMs: reelTimeoutMs });
+    return { ...reel, biteDetected };
   }
 
   // Letto più vicino nel mondo caricato (scansione con TTL di 30 s).

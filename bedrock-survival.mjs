@@ -191,6 +191,21 @@ export function tameFeed (type) {
   return (TAME_FEED[normalizeEntityType(type)] || []).slice();
 }
 
+// Veicoli (barche e carrelli): entità su cui il bot può salire e viaggiare.
+// Le barche hanno una variante per legno (…_boat) e con baule (…_chest_boat) più
+// il bamboo_raft; i carrelli hanno le varianti con baule/tramoggia/TNT/comando.
+export function isVehicleType (type) {
+  const name = normalizeEntityType(type);
+  if (name === 'boat' || name.endsWith('_boat') || name.endsWith('_chest_boat') || name.endsWith('_raft')) return true;
+  if (name === 'minecart' || name.endsWith('_minecart')) return true;
+  return false;
+}
+
+// Tutto ciò che si può montare/cavalcare: veicoli + cavalcabili domabili.
+export function isRideableType (type) {
+  return isVehicleType(type) || isRideTameableType(type);
+}
+
 export function cropForSeed (item) {
   return SEED_TO_CROP[String(item).replace(/^minecraft:/, '')] || null;
 }

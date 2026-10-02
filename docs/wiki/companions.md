@@ -36,21 +36,32 @@ needs a live round on the BDS.
 - **Options**: `tame_<type>` is offered for each wild companion — with the food
   item for food-tameable types, and mount-based for rideable types.
 
-## What is NOT implemented (riding as transport)
+## Riding as transport
 
-The current code only mounts to **tame**. It does **not** ride a mount around:
+Riding is now wired (`mount_<vehicle>`, `dismount`, `_rideToward`):
 
-- no `ride_<mount>` / `mount_<mount>` action (mount + move + dismount);
-- no **saddle** equipping (`horse`/`donkey`/`mule` need a saddle to be ridden);
-- no control of a mounted mount (movement while riding, dismount);
-- no mount inventory (donkey/mule chest, horse armor / nautilus armor equipping);
-- no `axolotl` capture with a bucket, nor `nautilus` armor handling.
+- **Mount** (`mount_<type>`): empty hand + `item_use_on_entity` `interact`;
+  confirmed by the rider→vehicle link (`set_entity_link`, `Link.type` 1 = rider),
+  tracked in `this.riding`.
+- **Ride**: while mounted, `goto_waypoint` calls `_rideToward` — continuous
+  forward `player_auth_input` with `client_predicted_vehicle` (45) + `up`, no
+  local physics; the server moves the vehicle and corrects position via
+  `correct_player_move_prediction` (`prediction_type: 'vehicle'`).
+- **Dismount** (`dismount`): `player_action` `start_sneak`; `Link.type` 0 clears
+  `this.riding`.
+- **Vehicles**: `isVehicleType` covers boats (`…_boat`, `…_chest_boat`,
+  `bamboo_raft`) and minecarts (`…_minecart`); `isRideableType` adds the
+  ride-tameable mounts (`horse`/`donkey`/`mule`/`llama`/`nautilus`).
 
-To add real riding, the likely pieces are: a `mount` action (empty hand
-`interact`), a `saddle` equipping step via `item_use_on_entity` with the saddle
-or `inventory_transaction`, a dismount (`player_action` `start_sneaking` / a
-dismount input), and keeping the server-authoritative movement while mounted
-(the `player_auth_input` `riding` flag, MetadataFlags1 bit 2).
+### Still not implemented
+
+- **Saddle** equipping for `horse`/`donkey`/`mule` (they need a saddle to be
+  steered once ridden).
+- Mount **inventory/armor** (donkey/mule chest, horse armor, nautilus armor).
+- `rider_jump` (mount jump) and **minecart steering on rails** (the current ride
+  is a straight "forward toward the waypoint" heuristic).
+- Boat `paddling_left`/`paddling_right` (46/47) oar animation flags.
+- `axolotl` capture with a bucket.
 
 ## Verification status
 

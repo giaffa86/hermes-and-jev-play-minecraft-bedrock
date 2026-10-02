@@ -177,3 +177,16 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - `BEDROCK.md` + `roadmap.md` updated.
 - New page `wiki/companions.md` (categories, implemented taming vs missing riding,
   verification status); cross-linked from `index.md`, `overview.md`, `roadmap.md`.
+
+## [2026-10-03] ingest | Riding as transport: boats, minecarts, mounts
+
+- `bedrock-survival.mjs`: `isVehicleType` (boats `…_boat`/`…_chest_boat`/
+  `…_raft`, minecarts `…_minecart`) + `isRideableType` (vehicles + ride-tameable).
+- `bedrock-adapter.mjs`: `set_entity_link` handler → `this.riding`; handle
+  `correct_player_move_prediction` `vehicle` type; `mount_<vehicle>` (empty hand
+  + interact), `dismount` (`player_action` start_sneak), `_rideToward` (forward
+  `player_auth_input` with `client_predicted_vehicle` flag, no local physics);
+  `goto_waypoint` rides when mounted; options offer `mount_*`/`dismount`.
+- Tests: `tests/bedrock-riding.test.mjs` (8); suite 285 green.
+- `BEDROCK.md` + `companions.md` updated (riding wired; saddle/inventory/steering
+  still open).

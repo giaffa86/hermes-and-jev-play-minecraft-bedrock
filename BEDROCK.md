@@ -235,6 +235,30 @@ sudo docker cp hermes:/opt/data/runs /home/<ssh-user>/hermes-jev-bedrock/runs-fr
 | `tame_<companion>` | ⚠️ Needs live verification | Tames the nearest wild companion. **Food-based** (`wolf`→bone, `cat`/`ocelot`→raw cod/salmon, `parrot`→seeds): repeats `item_use_on_entity` `interact` until the `tamed` flag (bit 28, wolf/cat/parrot) or `trusting` (flags_extended bit 1, ocelot) or `owner_eid` = bot appears. **Ride-based** (`horse`/`donkey`/`mule`/`llama`/`nautilus`): mounts with an empty hand until the `tamed` flag appears. Not tested live on 03/10 (no companion near the bot). |
 | `shear_sheep` | ⚠️ Needs live verification | Shears the nearest adult, not-yet-sheared sheep with `shears` in hand (`item_use_on_entity` `interact`); confirmed by the `sheared` flag (bit 31). Requires `craft_shears` (2 iron ingots at the table). Not tested live on 03/10 (no sheep near the bot). |
 | `craft_shears` | ⚠️ Needs live verification | Crafts `shears` from 2 iron ingots at the crafting table (offered when the recipe is present and a table is nearby). Not tested live on 03/10. |
+| `mount_<vehicle>` | ⚠️ Needs live verification | Mounts the nearest rideable of the requested type (boats, minecarts, `horse`/`donkey`/`mule`/`llama`/`nautilus`): selects an empty hand and sends `item_use_on_entity` `interact`; confirmed by the rider→vehicle link (`set_entity_link`, `Link.type` 1). |
+| `dismount` | ⚠️ Needs live verification | Dismounts the current vehicle via `player_action` `start_sneak`; confirmed by the link removal (`Link.type` 0). |
+
+### Riding and vehicles (update 03/10/2026)
+
+Riding as transport is now wired: mount a vehicle, ride toward a waypoint and
+dismount.
+
+- **Classification**: `isVehicleType` covers boats (every `…_boat`, `…_chest_boat`
+  and `bamboo_raft`) and minecarts (`…_minecart`); `isRideableType` adds the
+  ride-tameable mounts (`horse`/`donkey`/`mule`/`llama`/`nautilus`).
+- **Mount**: `mount_<type>` → empty hand + `item_use_on_entity` `interact`;
+  `set_entity_link` (`Link.type` 1 = rider) sets `this.riding`.
+- **Ride**: when mounted, `goto_waypoint` calls `_rideToward` instead of `_moveTo`:
+  continuous forward `player_auth_input` with the `client_predicted_vehicle` flag
+  (45) + `up`, no local physics; the server moves the vehicle and corrects the
+  position via `correct_player_move_prediction` (`prediction_type: 'vehicle'`).
+  Boats could add `paddling_left`/`paddling_right` (46/47) for oar animation
+  (not wired yet).
+- **Dismount**: `dismount` → `player_action` `start_sneak`; `Link.type` 0 clears
+  `this.riding`.
+- **Not implemented yet**: saddle equipping for `horse`/`donkey`/`mule`, mount
+  inventory/armor, `rider_jump`, and steering a minecart on rails (the current
+  ride is a straight "forward toward the waypoint" heuristic).
 
 ### Farming and companions (update 03/10/2026)
 
