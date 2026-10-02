@@ -25,6 +25,7 @@ question about the project.
 | [fluids.md](wiki/fluids.md) | Fluids roadmap: swimming, drowning/breathing, waterfalls (descent/ascent), lava avoidance, plus buckets/boats/bubble columns/potions — spec only, not implemented. | `docs/raw/FLUIDS_ROADMAP.md`, `bedrock-adapter.mjs`, `bedrock-fishing.mjs` |
 | [redstone.md](wiki/redstone.md) | Redstone and primitive automation roadmap: component sensing (state API), oriented placement, switches/delay lines/observers/hoppers, declarative circuit blueprints — spec only, not implemented. | `docs/raw/REDSTONE_ROADMAP.md`, `bedrock-adapter.mjs`, `bedrock-world.mjs` |
 | [goal-achievement.md](wiki/goal-achievement.md) | Goal-driven gameplay: Goal Contract, task graph, semantic goals, suspend/resume, and the 5 progressive benchmarks; maps the proposal onto the existing progression engine and the AI-player roadmap. | `docs/raw/GOAL_ACHIEVEMENT_MINECRAFT.txt`, `knowledge/progression.json`, `docs/raw/AI_PLAYER_ROADMAP.md` |
+| [nether.md](wiki/nether.md) | Nether/End roadmap: locate/build a portal, survive the Nether, ghast fireball dodge, piglin gold bartering, enderman gaze discipline, blaze rods/pearls, stronghold and End (progress ion chain added, capabilities not implemented). | `docs/raw/NETHER_ROADMAP.md`, `knowledge/progression.json`, `bedrock-survival.mjs` |
 
 ## Raw sources (`raw/`)
 
@@ -38,6 +39,7 @@ question about the project.
 | [FLUIDS_ROADMAP.md](raw/FLUIDS_ROADMAP.md) | Fluids roadmap (Italian): swimming physics, drowning/breathing, waterfalls and bubble columns, lava avoidance, buckets/boats/potions, Survival Intelligence integration (M0–M6). |
 | [REDSTONE_ROADMAP.md](raw/REDSTONE_ROADMAP.md) | Redstone roadmap (Italian): component state sensing, oriented placement, interaction/sensing, declarative primitive circuits, verification/teardown, automation integration (R0–R6). |
 | [GOAL_ACHIEVEMENT_MINECRAFT.txt](raw/GOAL_ACHIEVEMENT_MINECRAFT.txt) | Proposal (Italian): goal-driven agentic gameplay — pipeline, Goal Contract, task graph/primitives, suspend/resume, semantic goals, 5 progressive benchmarks. |
+| [NETHER_ROADMAP.md](raw/NETHER_ROADMAP.md) | Nether/End roadmap (Italian): portal locate/build, Nether survival, ghast dodge, piglin bartering, enderman gaze, fortress/blaze, stronghold/End/dragon (N0–N7). |
 | [evidence/](raw/evidence/) | JSONL evidence from early harness runs (`hermes-01`, `jev-03`). |
 
 ## Meta files

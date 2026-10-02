@@ -1,0 +1,15 @@
+{
+  "id": "piglin_barter",
+  "description": "Give gold ingots to a piglin and collect the bartered Nether loot (ender pearls, obsidian, ...).",
+  "category": "progression",
+  "preconditions": { "allOf": [{ "dimension": "nether" }, { "inventoryTagGte": { "gold_ingots": 1 } }] },
+  "success": {
+    "anyOf": [
+      { "inventoryTagGte": { "ender_pearls": 1 } },
+      { "inventoryTagGte": { "obsidian": 1 } }
+    ]
+  },
+  "intents": ["collect", "travel", "wait"],
+  "planTargets": {},
+  "notes": "Never hit a piglin (aggro) and avoid piglin brutes; use item_use_on_entity with gold in hand."
+}

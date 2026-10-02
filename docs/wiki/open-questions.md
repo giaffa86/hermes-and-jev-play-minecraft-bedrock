@@ -82,9 +82,15 @@ capability collaudo checklist (done / pending live), see
   expression, and no `RUNNING/SUCCESS/FAILED/BLOCKED` status. The deterministic
   progression graph (`knowledge/progression.json`) is only a seed of the proposed
   task graph. Proposal and gaps in [goal-achievement](goal-achievement.md).
-- **`beat_the_dragon` contradiction**: `knowledge/progression.json` aliases
-  `goals.beat_the_dragon` to `enter_nether`, so the graph never reaches the End or
-  the dragon. Either extend the graph or rename the alias.
+- **`beat_the_dragon` (resolved)**: `goals.beat_the_dragon` used to alias
+  `enter_nether`; the graph now has the full
+  `nether_portal → … → enter_end → beat_the_dragon` chain and the goal points to
+  the real milestone. The underlying Nether capabilities are still missing — see
+  [nether](nether.md).
+- **No Nether/End capabilities**: no portal action (`goto_portal`/`build_portal`/
+  `light_portal`), no fire/lava or ghast-fireball hazard, no piglin bartering, no
+  enderman gaze discipline, no fortress/stronghold/End actions, and no
+  `bossDefeated` verifier criterion. Roadmap in [nether](nether.md).
 - **Crafting** only one item at a time; special recipes (smithing, anvil, looms)
   not implemented.
 
@@ -120,6 +126,9 @@ capability collaudo checklist (done / pending live), see
   benchmarks (16 logs, shelter+night, iron pickaxe, 5 diamonds, Nether portal).
   Proposal in [goal-achievement](goal-achievement.md); the 5 benchmarks have
   never been run end-to-end.
+- **Nether / End** — portal locate/build/light/enter, Nether survival (ghasts,
+  piglins, endermen), fortress/blaze, stronghold, End and dragon. Roadmap in
+  [nether](nether.md); the progression chain is already in the graph.
 - **Redstone and primitive automation** — spec only. Roadmap in
   [redstone](redstone.md); start at R0 (protect redstone, `/observe.redstone`,
   state-aware search) and R1 (oriented placement, needs a placement packet

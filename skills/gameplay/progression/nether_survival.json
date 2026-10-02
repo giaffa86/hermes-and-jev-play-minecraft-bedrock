@@ -1,0 +1,10 @@
+{
+  "id": "nether_survival",
+  "description": "Survive in the Nether: avoid fire and lava, dodge ghast fireballs, never meet an enderman's gaze, and stay alive.",
+  "category": "progression",
+  "preconditions": { "dimension": "nether" },
+  "success": { "allOf": [{ "dimension": "nether" }, { "healthAtLeast": 10 }] },
+  "intents": ["escape", "eat", "heal", "shelter", "travel", "mine", "collect", "fight"],
+  "planTargets": {},
+  "notes": "Requires fluids M0/M4 hazards, a ghast projectile dodge and enderman gaze discipline."
+}

@@ -1,0 +1,9 @@
+{
+  "id": "obtain_ender_pearls",
+  "description": "Collect ender pearls from piglin bartering or endermen, without ever meeting an enderman's gaze.",
+  "category": "progression",
+  "success": { "inventoryTagGte": { "ender_pearls": 12 } },
+  "intents": ["collect", "travel", "fight", "wait"],
+  "planTargets": {},
+  "notes": "If attacking an enderman aim at the body/feet, never the eyes; a carved pumpkin on the head prevents aggro."
+}

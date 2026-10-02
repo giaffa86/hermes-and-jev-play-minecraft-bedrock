@@ -1,0 +1,10 @@
+{
+  "id": "craft_eyes_of_ender",
+  "description": "Craft eyes of ender from blaze powder and ender pearls.",
+  "category": "progression",
+  "preconditions": { "allOf": [{ "inventoryTagGte": { "blaze_rods": 3 } }, { "inventoryTagGte": { "ender_pearls": 1 } }] },
+  "success": { "inventoryTagGte": { "eyes_of_ender": 12 } },
+  "intents": ["craft"],
+  "planTargets": {},
+  "notes": "Each eye needs 1 blaze powder + 1 ender pearl; 1 blaze rod crafts into 2 blaze powder."
+}

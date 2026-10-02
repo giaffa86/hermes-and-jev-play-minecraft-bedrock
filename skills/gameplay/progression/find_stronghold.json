@@ -1,0 +1,10 @@
+{
+  "id": "find_stronghold",
+  "description": "Throw eyes of ender to track a stronghold, then descend to its End portal room.",
+  "category": "progression",
+  "preconditions": { "inventoryTagGte": { "eyes_of_ender": 1 } },
+  "success": { "nearbyBlock": { "name": "end_portal_frame", "within": 24 } },
+  "intents": ["travel", "collect", "mine", "wait"],
+  "planTargets": {},
+  "notes": "Thrown eyes are consumed; keep enough to fill the portal frames."
+}

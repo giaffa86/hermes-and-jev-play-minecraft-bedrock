@@ -1,0 +1,10 @@
+{
+  "id": "obtain_blaze_rods",
+  "description": "Find a Nether fortress and collect blaze rods from blazes.",
+  "category": "progression",
+  "preconditions": { "dimension": "nether" },
+  "success": { "inventoryTagGte": { "blaze_rods": 7 } },
+  "intents": ["travel", "fight", "collect", "heal", "eat"],
+  "planTargets": {},
+  "notes": "Blazes are ranged and set the bot on fire; prefer cover and avoid fortress ledges over lava."
+}

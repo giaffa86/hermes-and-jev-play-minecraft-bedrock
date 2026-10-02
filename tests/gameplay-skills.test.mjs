@@ -20,6 +20,9 @@ test('the shipped gameplay skill library loads and validates', () => {
     'acquire_wood', 'acquire_crafting_table', 'stone_age', 'obtain_food',
     'eat_available_food', 'escape_hostile', 'emergency_shelter', 'first_night',
     'acquire_iron', 'acquire_diamonds', 'enter_nether',
+    'nether_portal', 'nether_survival', 'piglin_barter', 'obtain_blaze_rods',
+    'obtain_ender_pearls', 'craft_eyes_of_ender', 'find_stronghold', 'enter_end',
+    'beat_the_dragon',
   ]) {
     assert.ok(skills.has(id), `skill ${id}`);
   }

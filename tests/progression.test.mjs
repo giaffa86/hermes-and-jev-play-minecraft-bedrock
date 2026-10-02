@@ -13,9 +13,35 @@ const empty = { inventory: {}, nearby: {}, time: { phase: 'day', night: false } 
 
 test('the shipped progression graph is valid and covers the early chain', () => {
   assert.deepEqual(validateProgression(graph), []);
-  for (const id of ['wood', 'crafting_table', 'stone_tools', 'food_and_safety', 'first_night', 'iron_age', 'diamonds', 'enter_nether']) {
+  for (const id of [
+    'wood', 'crafting_table', 'stone_tools', 'food_and_safety', 'first_night',
+    'iron_age', 'diamonds', 'nether_portal', 'enter_nether', 'nether_survival',
+    'piglin_barter', 'obtain_blaze_rods', 'obtain_ender_pearls',
+    'craft_eyes_of_ender', 'find_stronghold', 'enter_end', 'beat_the_dragon',
+  ]) {
     assert.ok(graph.milestones[id], `milestone ${id}`);
   }
+});
+
+test('beat_the_dragon is a real milestone, no longer aliased to enter_nether', () => {
+  assert.equal(graph.goals.beat_the_dragon, 'beat_the_dragon');
+  assert.deepEqual(graph.milestones.beat_the_dragon.requires, ['enter_end']);
+  assert.deepEqual(graph.milestones.enter_end.requires, ['find_stronghold']);
+  assert.deepEqual(graph.milestones.enter_end.satisfiedWhen, { dimension: 'the_end' });
+});
+
+test('nether_portal sits between diamonds and enter_nether and prefers a nearby portal', () => {
+  const completed = new Set(['wood', 'crafting_table', 'stone_tools', 'iron_age']);
+  const ready = { inventory: { diamond: 1 }, nearby: {}, time: { phase: 'day' } };
+  const next = resolveMilestone(graph, { goal: 'enter_nether', observation: ready, completed });
+  assert.equal(next.milestone, 'nether_portal');
+  assert.equal(next.skill, 'nether_portal');
+  const withPortal = resolveMilestone(graph, {
+    goal: 'enter_nether',
+    observation: { inventory: { diamond: 1 }, nearby: { portal: [{ distance: 10 }] }, time: { phase: 'day' } },
+    completed,
+  });
+  assert.equal(withPortal.milestone, 'enter_nether');
 });
 
 test('validation catches unknown requirements and cycles', () => {

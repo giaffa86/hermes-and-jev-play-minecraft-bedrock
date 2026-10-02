@@ -124,9 +124,13 @@ spawn with no per-seed script would already be a credible milestone.
 
 ## Gaps, risks and contradictions
 
-- **`goals.beat_the_dragon` is a lie today**: it is aliased to `enter_nether`, so
-  the graph never reaches the End or the dragon. Either extend the graph or
-  rename the alias.
+- **`goals.beat_the_dragon` (resolved)**: it used to be aliased to
+  `enter_nether`. The graph now has the real chain
+  `nether_portal → enter_nether → nether_survival → {piglin_barter,
+  obtain_blaze_rods, obtain_ender_pearls} → craft_eyes_of_ender →
+  find_stronghold → enter_end → beat_the_dragon`, and `goals.beat_the_dragon`
+  points to `beat_the_dragon`. The *capabilities* behind those milestones are
+  still not implemented (see [nether](nether.md)).
 - **No Goal Contract in code**: no constraints (`maxDeaths`, `preserveItems`), no
   formal success/failure expression; a goal is a string + a step budget.
 - **No persistent Goal Manager / task graph**: `controller.mjs` is one-shot
@@ -149,6 +153,55 @@ spawn with no per-seed script would already be a credible milestone.
 | G4 | Interpreter | NL goal → capability list (shelter/bed/table/...) as a Hermes artifact, then deterministic execution | human-command |
 | G5 | Constraints & recovery | `maxDeaths`, `preserveItems`, failure → replan; unsafe-goal refusal | AI-player M2 |
 | G6 | Benchmarks | The 5 benchmarks as `CURRICULUM` goals, verified live on the real BDS | G1–G4 |
+
+## How to fill the missing agentic meta (concrete plan)
+
+The proposal's meta layer is missing, but the deterministic half already exists.
+The shortest path is to **wrap**, not rewrite:
+
+1. **G1 — Goal Contract as a thin object around `plan`.** Add a
+   `knowledge/goal-contracts.json` (or a `goalContract` field on the plan) with
+   `target`/`constraints`/`success`/`failure`, and evaluate them with the
+   existing `evaluateCriteria` + `evaluateCondition` vocabulary. New criteria
+   needed: `deathsAtLeast`, `itemPreserved`, `bossDefeated`.
+2. **G2 — Reuse the existing vocabularies.** The proposal's `obtain_item`,
+   `mine_block`, `craft_item`, `navigate_to`, ... already exist as `/options`
+   keys + intents + gameplay skills; normalize the names instead of adding a
+   parallel API.
+3. **G3 — Task graph = progression graph + `subgoal`.** `resolveMilestone`
+   already walks prerequisites; add subgoal rotation (receding horizon) rather
+   than a new planner. See [architecture-evolution](architecture-evolution.md).
+4. **G4 — Interpreter as a Hermes artifact.** For a semantic goal, Hermes emits
+   a capability list that must **resolve to existing milestones/skills**; if a
+   capability has no milestone, the goal is `BLOCKED`, not hallucinated.
+5. **G5 — Constraints & recovery in the controller.** Enforce `maxDeaths` and
+   `preserveItems`; on failure mark the contract `FAILED` and replan; the
+   governor keeps preempting (it already does).
+6. **G6 — Persistence.** The Goal Manager itself is AI-player milestone 1
+   (queue + `IDLE`/`GOAL_RUNNING`/`SUSPENDED`). Until then, benchmarks run as
+   one-shot `CURRICULUM` rounds — which is enough to *measure* capability.
+
+## How to execute the unexecuted benchmarks
+
+Each benchmark is already a `CURRICULUM` goal; the gap is capability + a live
+round, not new orchestration:
+
+```bash
+# against the running harness (one bot account: stop the container first)
+RUN_ID=bench1 MAX_STEPS=200 CURRICULUM=first_night \
+  OPENROUTER_API_KEY=... node controller.mjs
+```
+
+| Benchmark | Command (`CURRICULUM=`) | Prerequisite capability | Blocker |
+|---|---|---|---|
+| 16 logs | `wood` | `mine_*`/`collect_drop` | only target count (8 → 16) |
+| shelter + night | `first_night` | shelter building | no wall/shelter actions beyond `barricade`/`dig_down`; `sleep` is not live |
+| iron pickaxe | `iron_age` | smelting + tools | `eat`/long-run durability not live; full run not done |
+| 5 diamonds | `diamonds` | mining | target count (1 → 5); live round |
+| Nether portal | `enter_nether` | portal actions | `enter_nether` not implemented (see [nether](nether.md)) |
+
+The honest measurement today is **steps to `GOAL MET`** per benchmark; the
+sub-goal is to lower it without per-seed scripting.
 
 ## Related pages
 

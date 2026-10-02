@@ -1,0 +1,10 @@
+{
+  "id": "enter_end",
+  "description": "Place eyes of ender into the End portal frames and step into the End.",
+  "category": "progression",
+  "preconditions": { "inventoryTagGte": { "eyes_of_ender": 1 } },
+  "success": { "dimension": "the_end" },
+  "intents": ["build", "travel", "wait"],
+  "planTargets": {},
+  "notes": "A stronghold portal may already have some eyes; count the missing frames before committing eyes."
+}

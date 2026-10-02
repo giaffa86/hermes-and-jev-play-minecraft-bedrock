@@ -1,0 +1,15 @@
+{
+  "id": "nether_portal",
+  "description": "Locate a nearby Nether portal, or gather obsidian and build and light one.",
+  "category": "progression",
+  "preconditions": { "inventoryTagGte": { "diamonds": 1 } },
+  "success": {
+    "anyOf": [
+      { "nearbyBlock": { "name": "portal", "within": 32 } },
+      { "inventoryTagGte": { "obsidian": 10 } }
+    ]
+  },
+  "intents": ["mine", "collect", "craft", "build", "travel"],
+  "planTargets": {},
+  "notes": "Prefer an existing base portal if one is nearby (locate, do not rebuild); otherwise mine obsidian and craft flint and steel."
+}

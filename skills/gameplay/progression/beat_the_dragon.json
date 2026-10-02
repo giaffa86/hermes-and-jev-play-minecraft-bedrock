@@ -1,0 +1,10 @@
+{
+  "id": "beat_the_dragon",
+  "description": "Destroy the end crystals and defeat the Ender Dragon.",
+  "category": "progression",
+  "preconditions": { "dimension": "the_end" },
+  "success": null,
+  "intents": ["fight", "travel", "collect", "heal", "eat"],
+  "planTargets": {},
+  "notes": "Verification needs a new boss-defeated criterion (no static world criterion yet); not implemented."
+}

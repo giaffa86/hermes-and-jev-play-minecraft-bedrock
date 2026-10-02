@@ -89,6 +89,13 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 46 | Trigger components | `use_redstone` | ❌ | `lever → redstone_lamp` toggles | Spec R2 in [redstone](redstone.md); reuses the verified `click_block` path. |
 | 47 | Primitive circuits | `build_circuit_<id>` | ❌ | build `lamp_switch` / `delay_line` | Spec R3 in [redstone](redstone.md); declarative blueprints. |
 | 48 | Teardown / guardrails | `teardown_circuit` | ❌ | build then teardown, materials returned | Spec R4 in [redstone](redstone.md); `DIG_PROTECTED` must cover redstone. |
+| 49 | Nether portal | `goto_portal`, `build_portal`, `light_portal`, `enter_portal` | ❌ | build/light a portal, enter the Nether | Spec N0/N1 in [nether](nether.md); `nether_portal` milestone exists, no action yet. |
+| 50 | Nether survival | fire/lava hazard, hub | ❌ | survive the Nether | Spec N2 in [nether](nether.md); depends on [fluids](fluids.md) M0/M4. |
+| 51 | Ghast dodge | `dodge_projectile` | ❌ | survive a ghast in the open | Spec N3 in [nether](nether.md); no projectile tracking yet. |
+| 52 | Piglin bartering | `barter_piglin` | ❌ | gold barter + collect drops | Spec N4 in [nether](nether.md); reuses `item_use_on_entity`. |
+| 53 | Enderman gaze discipline | gaze sensing / look-away | ❌ | no aggro while collecting pearls | Spec N5 in [nether](nether.md). |
+| 54 | Fortress / blaze rods | `obtain_blaze_rods` | ❌ | 7 blaze rods, return alive | Spec N6 in [nether](nether.md); needs exploration + ranged combat. |
+| 55 | Endgame (stronghold/End/dragon) | `find_stronghold`, `enter_end`, `beat_the_dragon` | ❌ | reach the End; dragon gated | Spec N7 in [nether](nether.md); no `bossDefeated` criterion. |
 
 ## Still not implemented
 
@@ -109,6 +116,10 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
   shelter + survive a night (`first_night`, not run); iron pickaxe (iron + smelt
   live, milestone not run); 5 diamonds (not run); build + cross a Nether portal
   (`enter_nether`, not implemented).
+- **Nether / End** — portal locate/build/light/enter, Nether survival (ghast
+  dodge, piglin bartering, enderman gaze), fortress/blaze, stronghold and End.
+  Spec in [nether](nether.md) (rows 49–55); the progression chain is in
+  `knowledge/progression.json` but no capability is implemented.
 
 ## Related pages
 

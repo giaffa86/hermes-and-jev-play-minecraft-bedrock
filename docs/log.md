@@ -409,3 +409,26 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Cross-links added from `roadmap.md` (benchmarks table + not-implemented + next
   work), `ai-player-roadmap.md` (milestones 1/7), `open-questions.md` and
   `verification.md`; `index.md` + `sources.md` updated.
+
+## [2026-10-02] ingest | Nether/End roadmap + fix beat_the_dragon contradiction
+
+- **Contradiction fixed in code**: `knowledge/progression.json` now has the full
+  chain `diamonds → nether_portal → enter_nether → nether_survival →
+  {piglin_barter, obtain_blaze_rods, obtain_ender_pearls} → craft_eyes_of_ender →
+  find_stronghold → enter_end → beat_the_dragon`, and `goals.beat_the_dragon`
+  points to the real `beat_the_dragon` milestone (no longer to `enter_nether`).
+  Added 9 declarative skills in `skills/gameplay/progression/` and 6 item tags
+  (`gold_ingots`, `obsidian`, `blaze_rods`, `blaze_powder`, `ender_pearls`,
+  `eyes_of_ender`). Tests updated; full suite green (307).
+- New raw source `docs/raw/NETHER_ROADMAP.md` (Italian) digested into a new wiki
+  page `wiki/nether.md`: locate/build/light/enter a portal (reuse the base one),
+  Nether survival (fire/lava), **ghast fireball dodge**, **piglin gold
+  bartering**, **enderman gaze discipline**, fortress/blaze rods, stronghold/End
+  and the dragon (stretch). Status: chain present, capabilities not implemented.
+- Extended `wiki/goal-achievement.md` with the concrete plan to fill the missing
+  agentic meta (Goal Contract wrapping `plan`, reuse the existing vocabularies,
+  progression+subgoal task graph, interpreter as a Hermes artifact) and with the
+  benchmark execution table (`CURRICULUM` commands + blockers).
+- Cross-links from `roadmap.md`, `open-questions.md`, `verification.md`
+  (rows 49–55); `index.md` + `sources.md` updated. Private handoff:
+  `.private/NETHER-TASK.md` (not committed).

@@ -4,7 +4,8 @@
   "goals": {
     "first_night": "first_night",
     "enter_nether": "enter_nether",
-    "beat_the_dragon": "enter_nether"
+    "find_stronghold": "find_stronghold",
+    "beat_the_dragon": "beat_the_dragon"
   },
   "milestones": {
     "wood": {
@@ -58,11 +59,67 @@
       "description": "Mine diamonds with an iron pickaxe or better.",
       "satisfiedWhen": { "inventoryTagGte": { "diamonds": 1 } }
     },
-    "enter_nether": {
+    "nether_portal": {
       "requires": ["diamonds"],
+      "skill": "nether_portal",
+      "description": "Locate a nearby Nether portal, or gather obsidian and build one.",
+      "satisfiedWhen": {
+        "anyOf": [
+          { "nearbyBlock": { "name": "portal", "within": 32 } },
+          { "inventoryTagGte": { "obsidian": 10 } }
+        ]
+      }
+    },
+    "enter_nether": {
+      "requires": ["nether_portal"],
       "skill": "enter_nether",
-      "description": "Build and light a Nether portal and enter it.",
+      "description": "Light the portal and step through into the Nether.",
       "satisfiedWhen": { "dimension": "nether" }
+    },
+    "nether_survival": {
+      "requires": ["enter_nether"],
+      "skill": "nether_survival",
+      "description": "Survive in the Nether: avoid fire/lava, ghast fireballs and enderman gazes, and keep health."
+    },
+    "piglin_barter": {
+      "requires": ["nether_survival"],
+      "skill": "piglin_barter",
+      "description": "Barter gold ingots with piglins for Nether loot."
+    },
+    "obtain_blaze_rods": {
+      "requires": ["nether_survival"],
+      "skill": "obtain_blaze_rods",
+      "description": "Find a Nether fortress and collect blaze rods from blazes.",
+      "satisfiedWhen": { "inventoryTagGte": { "blaze_rods": 7 } }
+    },
+    "obtain_ender_pearls": {
+      "requires": ["nether_survival"],
+      "skill": "obtain_ender_pearls",
+      "description": "Collect ender pearls (piglin bartering or gazeless enderman kills).",
+      "satisfiedWhen": { "inventoryTagGte": { "ender_pearls": 12 } }
+    },
+    "craft_eyes_of_ender": {
+      "requires": ["obtain_blaze_rods", "obtain_ender_pearls"],
+      "skill": "craft_eyes_of_ender",
+      "description": "Craft eyes of ender from blaze powder and ender pearls.",
+      "satisfiedWhen": { "inventoryTagGte": { "eyes_of_ender": 12 } }
+    },
+    "find_stronghold": {
+      "requires": ["craft_eyes_of_ender"],
+      "skill": "find_stronghold",
+      "description": "Throw eyes of ender to locate a stronghold and reach its portal room.",
+      "satisfiedWhen": { "nearbyBlock": { "name": "end_portal_frame", "within": 24 } }
+    },
+    "enter_end": {
+      "requires": ["find_stronghold"],
+      "skill": "enter_end",
+      "description": "Fill the End portal frames and step into the End.",
+      "satisfiedWhen": { "dimension": "the_end" }
+    },
+    "beat_the_dragon": {
+      "requires": ["enter_end"],
+      "skill": "beat_the_dragon",
+      "description": "Destroy the end crystals and defeat the Ender Dragon."
     }
   }
 }

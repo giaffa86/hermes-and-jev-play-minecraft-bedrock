@@ -74,7 +74,7 @@ They map onto the existing progression graph but are not run end-to-end:
 | shelter + survive one night | `first_night` + `emergency_shelter` | ◑ skill exists; full run not executed |
 | iron pickaxe | `iron_age` / `iron_tools` | ◑ iron + smelt live; milestone not run |
 | 5 diamonds | `diamonds` (`diamonds: 1`) | ❌ not run |
-| build + cross a Nether portal | `enter_nether` | ❌ not implemented |
+| build + cross a Nether portal | `enter_nether` | ❌ not implemented; chain added (`nether_portal`) |
 
 The proposal's Goal Contract / persistent Goal Manager layer is missing; the
 deterministic execution half (progression + gameplay skills + verifier) already
@@ -161,6 +161,12 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   Manager, no semantic-goal interpreter. Proposal in
   [goal-achievement](goal-achievement.md) /
   [`raw/GOAL_ACHIEVEMENT_MINECRAFT.txt`](../raw/GOAL_ACHIEVEMENT_MINECRAFT.txt).
+- **Nether / End** — `enter_nether` has no portal action; no fire/lava hazard,
+  no ghast projectile dodge, no piglin bartering, no enderman gaze discipline,
+  no fortress/stronghold/End actions, no `bossDefeated` verifier. Roadmap in
+  [nether](nether.md) / [`raw/NETHER_ROADMAP.md`](../raw/NETHER_ROADMAP.md). The
+  progression chain (incl. the fixed `beat_the_dragon`) is already in
+  `knowledge/progression.json`.
 
 ## Open cross-cutting issues
 
@@ -198,6 +204,10 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    progressive benchmarks (16 logs → shelter+night → iron pickaxe → 5 diamonds
    → Nether portal) as `CURRICULUM` goals run end-to-end. Depends on the
    AI-player Goal Manager (milestone 1).
+9. **Nether / End** (spec in [nether](nether.md)): start at N0/N1 (locate or
+   build a portal, `/observe.portals`, fire/lava + projectile/gaze sensing),
+   then N2/N3 (survive the Nether, dodge ghast fireballs), N4/N5 (piglin
+   bartering, enderman gaze discipline), N6/N7 (fortress, blaze rods, End).
 
 ## Related pages
 
@@ -213,3 +223,4 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 - [fluids](fluids.md) — swimming/drowning/breathing, waterfalls, lava avoidance, buckets/boats/potions.
 - [redstone](redstone.md) — redstone sensing/placement and primitive circuit automation.
 - [goal-achievement](goal-achievement.md) — Goal Contract, task graph, semantic goals, 5 progressive benchmarks.
+- [nether](nether.md) — Nether/End survival, ghasts, piglins, endermen, portals.
