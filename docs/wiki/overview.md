@@ -42,6 +42,9 @@ Both expose the same interface (`observe()`, `options()`, `executeAction()`,
   bounded actions; see [survival-intelligence](survival-intelligence.md).
 - **Validity owned by the harness** — the model chooses only keys returned by
   `GET /options`; bad behaviour is fixed in the harness, not the prompt.
+- **Human chat command channel** — a planned input channel that lets a human
+  order the bot in natural language via in-game chat; see
+  [human-command](human-command.md).
 
 ## Sources
 

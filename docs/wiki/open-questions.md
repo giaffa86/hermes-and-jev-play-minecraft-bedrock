@@ -35,3 +35,11 @@ and `docs/raw/SURVIVAL-INTELLIGENCE.md` (Verification status).
 - **Placement** only on a top face adjacent to the bot; no scaling/orientation.
 - **Crafting** only one item at a time; special recipes (smithing, anvil, looms)
   not implemented.
+
+## Planned (not implemented)
+
+- **Human chat command channel**: a natural-language remote-control channel via
+  in-game chat (`@bot seguimi`, `@bot aiutami coi mob`). Chat is already received
+  (packet `text` id 9) but ignored; linking a chat sender to a tracked player
+  entity, a `follow_player` action, and allowlist-gated NL planning are still to
+  build. Roadmap in [human-command](human-command.md).

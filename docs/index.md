@@ -11,6 +11,7 @@ question about the project.
 | [headless-client.md](wiki/headless-client.md) | How the bot sees and acts in the world with no graphics: protocol-level perception and actions, the bounded-action loop, short-range x-ray vision, the absence of real exploration, and why its "render distance" is not comparable to a human's. | `bedrock-adapter.mjs`, `bedrock-world.mjs`, `BEDROCK.md` |
 | [survival-intelligence.md](wiki/survival-intelligence.md) | Synthesis of the deterministic Survival Intelligence Layer: governor, declarative skills, resolver, verification, progression. | `docs/raw/SURVIVAL-INTELLIGENCE.md` |
 | [reproduction.md](wiki/reproduction.md) | Summary of the Ender Dragon reproduction of `rmalde/minecraft-agent` (7:45, exact models). | `docs/raw/REPRODUCTION-REPORT.md` |
+| [human-command.md](wiki/human-command.md) | Roadmap for a human-in-chat natural-language command channel (follow, combat assist, guided mining). | `bedrock-adapter.mjs`, `bedrock-harness.mjs`, `controller.mjs` |
 | [open-questions.md](wiki/open-questions.md) | Known issues, blockers, and verification gaps. | `BEDROCK.md` (Known issues), `SURVIVAL-INTELLIGENCE.md` (status) |
 
 ## Raw sources (`raw/`)
