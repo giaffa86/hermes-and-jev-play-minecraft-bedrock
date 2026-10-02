@@ -110,11 +110,12 @@ server = createServer(async (req, res) => {
       const bed = a._findBed();
       const bedCenter = bed ? { x: bed.position.x + 0.5, y: bed.position.y, z: bed.position.z + 0.5 } : null;
       const blocks = [];
-      for (let dy = -1; dy <= 3; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          for (let dz = -1; dz <= 1; dz++) {
+      for (let dy = -1; dy <= 4; dy++) {
+        for (let dx = -4; dx <= 4; dx++) {
+          for (let dz = -4; dz <= 4; dz++) {
             const b = a.world.blockAt({ x: cx + dx, y: cy + dy, z: cz + dz });
-            blocks.push(`${dx >= 0 ? '+' : ''}${dx},${dy >= 0 ? '+' : ''}${dy},${dz >= 0 ? '+' : ''}${dz}=${b ? `${b.name}#${b.runtimeId ?? '?'}${b.diggable ? 'D' : '-'}${b.name === 'air' ? '' : `/${b.hardness ?? '?'}`}` : 'NULL'}`);
+            if (b && b.name === 'air') continue;
+            blocks.push(`${dx >= 0 ? '+' : ''}${dx},${dy >= 0 ? '+' : ''}${dy},${dz >= 0 ? '+' : ''}${dz}=${b ? `${b.name}${b.diggable ? 'D' : '-'}` : 'NULL'}`);
           }
         }
       }
