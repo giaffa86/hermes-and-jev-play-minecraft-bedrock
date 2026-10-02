@@ -72,6 +72,12 @@ Verified live twice, **without a BDS restart**.
 
 Order matters — settle *whose bug it is* before touching more client code.
 
+- **Already tried and failed (2026-10-02)**: reading the self player's health
+  from `set_entity_data` metadata (the adapter previously used only `set_health`
+  / `update_attributes`). The server does not send it there either: the bot
+  stayed `dead` and the watchdog fired. So after the handshake the server
+  **genuinely does not restore health** — it is not a missing client parse.
+
 1. **Reproduce with a vanilla Bedrock client** on the same BDS/version/network:
    - If a vanilla client dies and respawns normally → it is a **client-library**
      issue (`bedrock-protocol` / NetherNet), not the server.
