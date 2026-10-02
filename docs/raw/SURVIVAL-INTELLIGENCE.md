@@ -264,7 +264,7 @@ experience.
 and gives the controller a deterministic status:
 
 ```text
-RUNNING | SUCCESS | FAILED | BLOCKED
+RUNNING | SUCCESS | FAILED | BLOCKED | EXHAUSTED
 ```
 
 ```json
@@ -286,9 +286,18 @@ RUNNING | SUCCESS | FAILED | BLOCKED
 - `contractFromEnv()` reads `GOAL_CONTRACT` (JSON) with the `MAX_DEATHS` and
   `PRESERVE_ITEMS` shortcuts; `hasContractConfig()` keeps the controller
   backward-compatible when no contract is configured (opt-in).
+- `contractStop(contract, obs, { stepsUsed, maxSteps })` is `evaluateContract`
+  plus the **action budget**: while actions remain the contract is `running`;
+  when `stepsUsed >= maxSteps` (controller `MAX_STEPS`) and no success/failure
+  fired, it becomes `exhausted`. `exhausted` is terminal and means "out of
+  actions", not "a failure criterion fired".
 - The controller evaluates the contract at the start and every step, logs
   `goal_contract` / `goal_contract_met` / `goal_contract_stop` to
-  `runs/<run>/controller.jsonl`, and stops on `SUCCESS`/`FAILED`/`BLOCKED`.
+  `runs/<run>/controller.jsonl`, and stops on
+  `SUCCESS`/`FAILED`/`BLOCKED`/`EXHAUSTED`.
+- Exit code is `0` on `SUCCESS` (and when no contract is configured) and `2` on
+  `FAILED`/`BLOCKED`/`EXHAUSTED`, so a runner can distinguish an unmet goal from
+  a completed one.
 - New criteria: `deathsAtLeast n` and `itemPreserved [item]` (compares against
   the `before` inventory; an item held at the start must not decrease).
 

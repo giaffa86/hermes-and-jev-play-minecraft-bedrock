@@ -96,7 +96,7 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 53 | Enderman gaze discipline | gaze sensing / look-away | ❌ | no aggro while collecting pearls | Spec N5 in [nether](nether.md). |
 | 54 | Fortress / blaze rods | `obtain_blaze_rods` | ❌ | 7 blaze rods, return alive | Spec N6 in [nether](nether.md); needs exploration + ranged combat. |
 | 55 | Endgame (stronghold/End/dragon) | `find_stronghold`, `enter_end`, `beat_the_dragon` | ❌ | reach the End; dragon gated | Spec N7 in [nether](nether.md); no `bossDefeated` criterion. |
-| 56 | Goal Contract | `survival/goal-contract.mjs`, `GOAL_CONTRACT`/`MAX_DEATHS`/`PRESERVE_ITEMS` | ✅ | run the controller with a contract | Slice A; 18 unit tests. **Live (2026-10-02)**: pre-loop SUCCESS (`dirt>=1`) and FAILED (`deathsAtLeast:0`), and in-loop RUNNING with real Jev actions. The natural in-loop SUCCESS transition was not reached because the mined dirt drops were not collected (target/height issue, unrelated), so the threshold was never met — same `evaluateContract` call as the live pre-loop cases. |
+| 56 | Goal Contract | `survival/goal-contract.mjs`, `GOAL_CONTRACT`/`MAX_DEATHS`/`PRESERVE_ITEMS` | ✅ | run the controller with a contract | Slice A; 22 unit tests. **Live (2026-10-02)**: pre-loop SUCCESS (`dirt>=1`, exit 0) and FAILED (`deathsAtLeast:0`, exit 2); in-loop RUNNING with real Jev actions; `EXHAUSTED` at budget end (`MAX_STEPS=1` and `0`, exit 2). The natural in-loop SUCCESS transition was not reached because the mined dirt drops were not collected (target/height issue, unrelated), so the threshold was never met — same `evaluateContract` call as the live pre-loop cases. |
 
 ## Still not implemented
 

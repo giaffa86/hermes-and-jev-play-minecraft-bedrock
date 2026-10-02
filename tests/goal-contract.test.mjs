@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   evaluateCriteria, validateCriteria,
-  normalizeContract, evaluateContract, contractFromEnv, hasContractConfig, CONTRACT_STATUSES,
+  normalizeContract, evaluateContract, contractStop, contractFromEnv, hasContractConfig, CONTRACT_STATUSES,
 } from '../survival/index.mjs';
 
 const obs = (overrides = {}) => ({ inventory: {}, deaths: 0, ...overrides });
@@ -114,6 +114,35 @@ test('invalid contracts are BLOCKED before any telemetry is trusted', () => {
   assert.equal(evaluateContract(bad, obs({ inventory: { dirt: 1 } })).status, 'blocked');
 });
 
+// ---- budget esaurito (contractStop) ----------------------------------------------------
+
+test('contractStop keeps RUNNING while actions are still available', () => {
+  const contract = normalizeContract({ success: { inventoryGte: { dirt: 4 } } });
+  assert.equal(contractStop(contract, obs(), { stepsUsed: 0, maxSteps: 8 }).status, 'running');
+  assert.equal(contractStop(contract, obs(), { stepsUsed: 7, maxSteps: 8 }).status, 'running');
+});
+
+test('contractStop turns RUNNING at the budget into EXHAUSTED', () => {
+  const contract = normalizeContract({ success: { inventoryGte: { dirt: 4 } } });
+  const status = contractStop(contract, obs(), { stepsUsed: 8, maxSteps: 8 });
+  assert.equal(status.status, 'exhausted');
+  assert.match(status.reasons[0], /step budget exhausted \(8\/8\)/);
+  assert.equal(contractStop(contract, obs(), { stepsUsed: 9, maxSteps: 8 }).status, 'exhausted');
+});
+
+test('contractStop lets SUCCESS and FAILED win over exhaustion', () => {
+  const success = normalizeContract({ success: { inventoryGte: { dirt: 4 } } });
+  assert.equal(contractStop(success, obs({ inventory: { dirt: 4 } }), { stepsUsed: 8, maxSteps: 8 }).status, 'success');
+  const failed = normalizeContract({ success: { inventoryGte: { dirt: 4 } }, failure: { deathsAtLeast: 1 } });
+  assert.equal(contractStop(failed, obs({ deaths: 1 }), { stepsUsed: 8, maxSteps: 8 }).status, 'failed');
+});
+
+test('contractStop without a budget never exhausts', () => {
+  const contract = normalizeContract({ success: { inventoryGte: { dirt: 4 } } });
+  assert.equal(contractStop(contract, obs(), {}).status, 'running');
+  assert.equal(contractStop(contract, obs(), { stepsUsed: 99, maxSteps: null }).status, 'running');
+});
+
 // ---- env -------------------------------------------------------------------------------
 
 test('contractFromEnv builds constraints from shortcut env vars', () => {
@@ -144,5 +173,5 @@ test('hasContractConfig is opt-in', () => {
 });
 
 test('CONTRACT_STATUSES is the closed vocabulary', () => {
-  assert.deepEqual(CONTRACT_STATUSES, ['running', 'success', 'failed', 'blocked']);
+  assert.deepEqual(CONTRACT_STATUSES, ['running', 'success', 'failed', 'blocked', 'exhausted']);
 });

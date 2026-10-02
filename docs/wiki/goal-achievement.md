@@ -154,8 +154,11 @@ spawn with no per-seed script would already be a credible milestone.
 `survival/index.mjs`, wired into `controller.mjs`: opt-in via `GOAL_CONTRACT`
 (JSON) + `MAX_DEATHS` + `PRESERVE_ITEMS`; the controller logs `goal_contract` /
 `goal_contract_met` / `goal_contract_stop` and stops on
-`SUCCESS`/`FAILED`/`BLOCKED`. New verifier criteria `deathsAtLeast` and
-`itemPreserved`. 18 unit tests (`tests/goal-contract.test.mjs`). Still missing:
+`SUCCESS`/`FAILED`/`BLOCKED`/`EXHAUSTED` (the action budget `MAX_STEPS`, when it
+runs out while the contract is `RUNNING`, is translated by `contractStop` into a
+terminal `exhausted`). Exit code `0` on success/no-contract, `2` on
+`FAILED`/`BLOCKED`/`EXHAUSTED`. New verifier criteria `deathsAtLeast` and
+`itemPreserved`. 22 unit tests (`tests/goal-contract.test.mjs`). Still missing:
 the persistent Goal Manager / queue (AI-player M1), a `target`-driven
 `obtain_item` executor, and the semantic-goal interpreter (G4).
 | G2 | Primitive vocabulary | Normalize the proposal's skill API onto the existing intents/actions/gameplay skills | — |

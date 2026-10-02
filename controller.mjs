@@ -25,7 +25,7 @@ import {
 import {
   evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
   resolveMilestone, resolveActiveSkill, skillPreferredIntents, verifySkill, buildSkillRecord, appendSkillRecord,
-  contractFromEnv, evaluateContract, hasContractConfig,
+  contractFromEnv, contractStop, hasContractConfig,
 } from './survival/index.mjs';
 
 const HARNESS = process.env.HARNESS || 'http://127.0.0.1:3077';
@@ -334,13 +334,16 @@ let obs = await api('GET', '/observe');
 const goalContract = hasContractConfig() ? contractFromEnv() : null;
 const contractBaseline = obs;
 let lastContractStatus = null;
-function evaluateGoalContract (observation, step) {
+let runExitCode = 0; // non-zero quando un contratto termina FAILED/BLOCKED/EXHAUSTED
+// `stepsUsed` = azioni già eseguite; a fine budget il contratto ancora RUNNING
+// viene tradotto in `exhausted` (vedi survival/goal-contract.mjs).
+function evaluateGoalContract (observation, stepsUsed) {
   if (!goalContract) return null;
-  const status = evaluateContract(goalContract, observation, { before: contractBaseline });
+  const status = contractStop(goalContract, observation, { before: contractBaseline, stepsUsed, maxSteps: MAX_STEPS });
   if (status.status !== lastContractStatus) {
     lastContractStatus = status.status;
     log('goal_contract', {
-      step, status: status.status, goal: goalContract.goal ?? null,
+      step: stepsUsed, status: status.status, goal: goalContract.goal ?? null,
       reasons: status.reasons, evidence: status.evidence,
     });
     console.log(`GOAL CONTRACT ${status.status.toUpperCase()}${status.reasons.length ? ' ' + status.reasons.join('; ') : ''}`);
@@ -350,9 +353,10 @@ function evaluateGoalContract (observation, step) {
 if (goalContract) {
   const initialContract = evaluateGoalContract(obs, 0);
   if (initialContract.status !== 'running') {
+    if (initialContract.status !== 'success') runExitCode = 2;
     log('goal_contract_stop', {step: 0, status: initialContract.status, reasons: initialContract.reasons, evidence: initialContract.evidence});
     console.log(`GOAL CONTRACT ${initialContract.status.toUpperCase()} before the first action`);
-    process.exit(0);
+    process.exit(runExitCode);
   }
 }
 
@@ -378,14 +382,15 @@ for (let step = 1; step <= MAX_STEPS; step++) {
   obs = await api('GET', '/observe');
   // Goal Contract: SUCCESS/FAILED/BLOCKED interrompono il loop prima delle
   // altre logiche (il contratto è la fonte di verità del run quando presente).
-  const contractStatus = evaluateGoalContract(obs, step);
+  const contractStatus = evaluateGoalContract(obs, step - 1);
   if (contractStatus?.status === 'success') {
     console.log(`GOAL CONTRACT MET after ${step - 1} actions`, JSON.stringify(contractStatus.evidence));
     log('goal_contract_met', {steps: step - 1, totalCost, goal: goalContract.goal ?? null, evidence: contractStatus.evidence});
     goalReached = true;
     break;
   }
-  if (contractStatus?.status === 'failed' || contractStatus?.status === 'blocked') {
+  if (contractStatus?.status === 'failed' || contractStatus?.status === 'blocked' || contractStatus?.status === 'exhausted') {
+    runExitCode = 2;
     console.log(`GOAL CONTRACT ${contractStatus.status.toUpperCase()} after ${step - 1} actions: ${contractStatus.reasons.join('; ')}`);
     log('goal_contract_stop', {steps: step - 1, totalCost, status: contractStatus.status, reasons: contractStatus.reasons, evidence: contractStatus.evidence});
     break;
@@ -530,8 +535,25 @@ for (let step = 1; step <= MAX_STEPS; step++) {
   console.log(`#${step} ${key} ->`, JSON.stringify(result));
   if (step === MAX_STEPS) { console.log('step budget exhausted'); log('budget_exhausted', {steps: step, totalCost}); }
 }
+// Budget esaurito con il contratto ancora RUNNING: chiude il contratto con
+// esito `exhausted` (dopo aver riletto lo stato, nel caso l'ultima azione
+// abbia centrato il successo).
+if (!goalReached && goalContract && lastContractStatus === 'running') {
+  const finalObs = await api('GET', '/observe').catch(() => null);
+  if (finalObs) {
+    const final = evaluateGoalContract(finalObs, MAX_STEPS);
+    if (final.status === 'success') {
+      console.log(`GOAL CONTRACT MET after ${MAX_STEPS} actions`, JSON.stringify(final.evidence));
+      log('goal_contract_met', {steps: MAX_STEPS, totalCost, goal: goalContract.goal ?? null, evidence: final.evidence});
+      goalReached = true;
+    } else if (final.status === 'failed' || final.status === 'blocked' || final.status === 'exhausted') {
+      runExitCode = 2;
+      log('goal_contract_stop', {steps: MAX_STEPS, totalCost, status: final.status, reasons: final.reasons, evidence: final.evidence});
+    }
+  }
+}
 if (!goalReached) {
   log('run_end', {steps: MAX_STEPS, totalCost, curriculum: CURRICULUM, completedMilestones: [...completedMilestones]});
 }
 // Le connessioni keep-alive di fetch tengono vivo il processo: esci esplicitamente.
-process.exit(0);
+process.exit(runExitCode);

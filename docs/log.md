@@ -511,3 +511,23 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   (`explore.findCave/findMineshaft/findSpawner/findDeepDark`).
 - `wiki/exploration.md` updated (M6 row, "Underground targets (M6)" section,
   skill API, status), `wiki/open-questions.md` and `index.md` cross-links.
+
+## [2026-10-02] feat | Goal Contract: action budget → EXHAUSTED outcome
+
+- `survival/goal-contract.mjs`: `CONTRACT_STATUSES` adds `exhausted`; new
+  `contractStop(contract, obs, {stepsUsed, maxSteps})` = `evaluateContract` plus
+  the action budget. While actions remain the contract is `running`; when
+  `stepsUsed >= maxSteps` and no success/failure fired it becomes terminal
+  `exhausted` (reason `step budget exhausted (n/m)`). Success/failure still win.
+- `controller.mjs`: contract evaluated with `stepsUsed = step - 1`; the loop
+  stops on `exhausted` too; a post-loop check re-reads `/observe` and closes a
+  still-running contract as `exhausted` (or `success` if the last action met it).
+  Exit code: `0` on success/no-contract, `2` on `FAILED`/`BLOCKED`/`EXHAUSTED`.
+- Tests: +4 in `tests/goal-contract.test.mjs` (22 total). My suite green (329,
+  0 fail; the 3 failures in `*memory*.test.mjs` are the concurrent session's
+  uncommitted work, not mine).
+- Live (2026-10-02): `MAX_STEPS=1` + impossible success → `GOAL CONTRACT
+  EXHAUSTED step budget exhausted (1/1)`, log `goal_contract_stop` exhausted,
+  real exit code `2`; `MAX_STEPS=0` pre-loop → exhausted, exit `2`; pre-loop
+  SUCCESS → exit `0`. `docs/raw/SURVIVAL-INTELLIGENCE.md`,
+  `wiki/goal-achievement.md`, `wiki/verification.md` (row 56) updated.

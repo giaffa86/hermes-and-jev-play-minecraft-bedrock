@@ -13,7 +13,7 @@
 
 import { evaluateCriteria, validateCriteria } from './verify.mjs';
 
-export const CONTRACT_STATUSES = ['running', 'success', 'failed', 'blocked'];
+export const CONTRACT_STATUSES = ['running', 'success', 'failed', 'blocked', 'exhausted'];
 
 function normalizeItems (value) {
   if (value == null) return null;
@@ -107,6 +107,18 @@ export function evaluateContract (contract, observation, { before = null, contex
   }
   if (reasons.length) return { status: 'failed', reasons, evidence };
   return { status: 'running', reasons: [], evidence };
+}
+
+// Come evaluateContract, ma traduce anche l'esaurimento del budget di azioni in
+// uno stato terminale `exhausted`: il contratto resta `running` finché non
+// scadono le azioni disponibili. `stepsUsed` è il numero di azioni già eseguite,
+// `maxSteps` il tetto del run (MAX_STEPS del controller).
+export function contractStop (contract, observation, { before = null, context = {}, stepsUsed = null, maxSteps = null } = {}) {
+  const status = evaluateContract(contract, observation, { before, context });
+  if (status.status === 'running' && maxSteps != null && stepsUsed != null && stepsUsed >= maxSteps) {
+    return { status: 'exhausted', reasons: [`step budget exhausted (${stepsUsed}/${maxSteps})`], evidence: status.evidence };
+  }
+  return status;
 }
 
 // Costruisce il contratto dall'ambiente del controller:
