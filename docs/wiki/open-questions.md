@@ -20,6 +20,12 @@ capability collaudo checklist (done / pending live), see
   testing of `eat` with hunger < 20 and food in inventory).
 - **Advanced shelter** — no wall/shelter building actions.
 - **Nether portal** — not implemented.
+- **Fluids** — swimming, drowning/breathing, waterfalls and lava avoidance are
+  not implemented; `_passable()` treats `water|lava` as walls (`bedrock-adapter.mjs`).
+  Roadmap in [fluids](fluids.md). Two discovery items block M1: the exact Bedrock
+  water-movement `input_data` flags/`delta` semantics (needs a packet capture of a
+  real player swimming) and whether self metadata exposes `breathing`/air or the
+  air budget must be simulated.
 
 ## Respawn stuck on live BDS (2026-10-02, resolved)
 
@@ -85,6 +91,9 @@ capability collaudo checklist (done / pending live), see
   `cast_rod`/`reel_in`/`fish`, water/shore detection. The open technical
   question is **bite detection** on a headless client (bobber metadata vs.
   timing fallback). Roadmap in [fishing](fishing.md).
+- **Fluids** (swimming, drowning/breathing, waterfalls, lava avoidance, buckets/
+  boats/potions) — spec only. Roadmap in [fluids](fluids.md); start at M0 (fluid
+  awareness) and M1 (swimming physics + air budget).
 
 ## Architecture evolution
 

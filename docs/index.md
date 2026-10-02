@@ -22,6 +22,7 @@ question about the project.
 | [open-questions.md](wiki/open-questions.md) | Known issues, blockers, and verification gaps. | `BEDROCK.md` (Known issues), `SURVIVAL-INTELLIGENCE.md` (status) |
 | [ai-player-roadmap.md](wiki/ai-player-roadmap.md) | Synthesis of the persistent-AI-player roadmap (Goal Manager, emergency, autonomy, navigation, personality) and the milestone-0 lifecycle audit: the bot stays connected after a goal ends, but the controller exits and there is no explicit IDLE state yet. | `docs/raw/AI_PLAYER_ROADMAP.md`, `controller.mjs`, `bedrock-harness.mjs` |
 | [exploration.md](wiki/exploration.md) | Autonomous-exploration spec (find biome/block/structure, deterministic spiral planner, checkpoints, route replay, escort) — spec only, not implemented. | `docs/raw/GOAL_EXPLORATION.md` |
+| [fluids.md](wiki/fluids.md) | Fluids roadmap: swimming, drowning/breathing, waterfalls (descent/ascent), lava avoidance, plus buckets/boats/bubble columns/potions — spec only, not implemented. | `docs/raw/FLUIDS_ROADMAP.md`, `bedrock-adapter.mjs`, `bedrock-fishing.mjs` |
 
 ## Raw sources (`raw/`)
 
@@ -32,6 +33,7 @@ question about the project.
 | [REPRODUCTION-REPORT.md](raw/REPRODUCTION-REPORT.md) | Full report of reproducing the original Ender Dragon run. |
 | [AI_PLAYER_ROADMAP.md](raw/AI_PLAYER_ROADMAP.md) | Evolutionary roadmap from chat-controllable bot to persistent autonomous agent (Goal Manager, suspend/resume, emergency, autonomy, home, navigation, personality). |
 | [GOAL_EXPLORATION.md](raw/GOAL_EXPLORATION.md) | Autonomous Exploration v1 spec: find-biome MVP, mission model, deterministic planner, checkpoints, route replay, escort, search blocks/structures. |
+| [FLUIDS_ROADMAP.md](raw/FLUIDS_ROADMAP.md) | Fluids roadmap (Italian): swimming physics, drowning/breathing, waterfalls and bubble columns, lava avoidance, buckets/boats/potions, Survival Intelligence integration (M0–M6). |
 | [evidence/](raw/evidence/) | JSONL evidence from early harness runs (`hermes-01`, `jev-03`). |
 
 ## Meta files

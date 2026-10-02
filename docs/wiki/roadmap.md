@@ -127,6 +127,10 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 - Defense gaps (remaining): shield (stretch).
 - Human chat command M5 (ack/reply in chat) and autonomous exploration
   (spec in [exploration](exploration.md)).
+- **Fluids** — swimming, drowning/breathing, waterfalls (descent/ascent), lava
+  avoidance, buckets/boats/bubble columns/potions. Roadmap (M0–M6) in
+  [fluids](fluids.md) / [`raw/FLUIDS_ROADMAP.md`](../raw/FLUIDS_ROADMAP.md);
+  fluids are currently walls (`_passable` rejects `water|lava`).
 
 ## Open cross-cutting issues
 
@@ -151,6 +155,10 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
    `CURRICULUM=first_night` run.
 5. Live-verify fishing: `craft_fishing_rod` → `cast_rod`/`reel_in` (or a single
    `fish`), bite detection, `food` tag integration — see [fishing](fishing.md).
+6. **Fluids** (spec in [fluids](fluids.md)): start with M0 (fluid awareness,
+   `/observe.fluids`, lava forbidden in A*, dig adjacency check), then M1
+   (swimming physics + air budget). Requires a packet capture of a real player
+   swimming to confirm the Bedrock water movement flags/`delta` semantics.
 
 ## Related pages
 
@@ -163,3 +171,4 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 - [open-questions](open-questions.md) — blockers and verification gaps.
 - [ai-player-roadmap](ai-player-roadmap.md) — persistent-autonomous-agent roadmap and the post-goal lifecycle audit.
 - [exploration](exploration.md) — autonomous-exploration spec (find biome/block/structure).
+- [fluids](fluids.md) — swimming/drowning/breathing, waterfalls, lava avoidance, buckets/boats/potions.

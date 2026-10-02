@@ -313,3 +313,22 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   worn pieces. 7 new unit tests; full suite green (304).
 - `BEDROCK.md` action table + `roadmap.md` + `verification.md` (rows 37-38)
   updated: defense only leaves the shield (stretch).
+
+## [2026-10-02] ingest | Fluids roadmap (swimming, drowning, waterfalls, lava)
+
+- New raw source `docs/raw/FLUIDS_ROADMAP.md` (Italian) digested into a new wiki
+  page `wiki/fluids.md`: the bot cannot currently enter water (`_passable()`
+  returns false for `water|lava`), there is no air/breathing tracking,
+  `/observe.nearby` does not scan fluids, and digging only refuses a fluid cell
+  at the target. The roadmap defines M0–M6: fluid awareness (`bedrock-fluids.mjs`,
+  `/observe.fluids`, governor `drowning`/`lava_contact`/`lava_near`, lava
+  forbidden in A*, dig adjacency check), swimming physics + air budget,
+  controlled dives, waterfall descent/ascent + bubble columns, lava avoidance
+  (gated crossing), buckets/boats/potions, and Survival Intelligence integration
+  (skills/progression/verifier tags).
+- Status recorded as **spec only, not implemented**; two protocol-discovery
+  items block M1 (Bedrock water-movement `input_data`/`delta` semantics, and
+  whether self metadata exposes `breathing`/air).
+- Cross-links added from `roadmap.md` (not-implemented + next work),
+  `open-questions.md` and `verification.md` (rows 39–43); `index.md` +
+  `sources.md` updated. Private handoff: `.private/FLUIDS-TASK.md` (not committed).

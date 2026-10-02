@@ -79,6 +79,11 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 36 | Close doors | `close_door` | 🧪 | `/act close_door` after opening a door | Clicks `_openDoors` doors closed; unit-tested; live pending. |
 | 37 | Barricade a gap | `barricade` | 🧪 | `/act barricade` at a 1×2 opening | Places 2 blocks (feet+head) via top-face clicks; unit-tested; live pending. |
 | 38 | Armor points in `/observe` | `observe().armor` | 🧪 | read `/observe.armor` | Pieces + computed vanilla points; unit-tested; live pending. |
+| 39 | Swim / cross water | `swim_to`, `surface` | ❌ | `POST /act swim_to` … cross a river | Spec M1 in [fluids](fluids.md); `_passable` currently rejects water. Needs water physics + packet capture. |
+| 40 | Drowning / breathing | `/observe.fluids.air`, `dive`, governor `drowning` | ❌ | `dive` underwater and `surface` | Spec M0/M2 in [fluids](fluids.md); air signal vs simulation open. |
+| 41 | Waterfall descent / ascent | `descend_waterfall`, `climb_waterfall`, `use_bubble_column` | ❌ | descend + climb a natural waterfall | Spec M3 in [fluids](fluids.md); needs fall-safe landing. |
+| 42 | Lava avoidance | `avoid_lava`, A* forbid + repulsion | ❌ | path near lava stays clear | Spec M0/M4 in [fluids](fluids.md); lava currently a wall, so never mined into. |
+| 43 | Buckets / boats / potions | `craft_bucket`, `fill_bucket`, `place_water`, `mount_boat`, `brew_*` | ❌ | place water → obsidian; boat across water | Spec M4/M5 in [fluids](fluids.md). |
 
 ## Still not implemented
 
@@ -88,6 +93,9 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
   minecart steering, boat paddling animation.
 - Axolotl capture with a bucket.
 - Human chat channel M5 (ack/reply) and autonomous exploration.
+- **Fluids**: swimming, drowning/breathing, waterfalls (descent/ascent), lava
+  avoidance, buckets/boats/bubble columns/potions. Spec in [fluids](fluids.md)
+  (rows 39–43); `_passable()` currently treats `water|lava` as walls.
 
 ## Related pages
 
