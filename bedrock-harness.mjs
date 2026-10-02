@@ -88,6 +88,12 @@ server = createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/observe') response = [200, adapter.observe()];
     else if (req.method === 'GET' && req.url === '/options') response = [200, { options: adapter.options() }];
     else if (req.method === 'GET' && req.url === '/debug/geom') response = [200, geometryReport(adapter)];
+    else if (req.method === 'POST' && req.url === '/debug/mine') {
+      const { x, y, z } = JSON.parse(body);
+      const block = adapter.world.blockAt({ x, y, z });
+      if (!block) response = [200, { ok: false, error: 'block_not_loaded' }];
+      else response = [200, await adapter._mineTarget({ cell: { x, y, z }, block, raw: block.name === 'unknown' })];
+    }
     else if (req.method === 'POST' && req.url === '/plan') { adapter.setPlan(JSON.parse(body)); response = [200, { ok: true, plan: adapter.plan }]; }
     else if (req.method === 'POST' && req.url === '/act') { const { key } = JSON.parse(body); response = [200, await adapter.executeAction(key)]; }
     else response = [404, { error: 'unknown route' }];

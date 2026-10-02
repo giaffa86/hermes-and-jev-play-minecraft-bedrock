@@ -98,6 +98,36 @@ test('options offer dig_up while a climbable step exists', () => {
   assert.equal(open.adapter.options().some(o => o.key === 'dig_up'), false);
 });
 
+test('the live pit: steps north from feet 67 under a ceiling 3 above are climbed', () => {
+  const blocks = new Set();
+  const BX = 92, BZ = 155, FY = 67;
+  for (let x = 91; x <= 94; x++) for (let z = 150; z <= 158; z++) blocks.add(`${x},${FY - 1},${z}`); // pavimento
+  for (let x = 91; x <= 94; x++) for (let z = 150; z <= 158; z++) blocks.add(`${x},${FY + 4},${z}`); // superficie
+  for (let x = 91; x <= 94; x++) for (let z = 150; z <= 158; z++) {
+    if (x === BX && z === BZ) continue; // cella del bot
+    if (x === BX + 1 && z === BZ) continue; // cunicolo 1 alto a est
+    blocks.add(`${x},${FY},${z}`);
+  }
+  for (let z = 154; z <= 156; z++) for (const y of [FY + 1, FY + 2]) blocks.delete(`${BX},${y},${z}`);
+  blocks.delete(`${BX},${FY + 3},${BZ}`); // volta aperta sopra il cunicolo nord
+  blocks.add(`${BX},${FY + 3},${BZ}`);    // ...tranne sopra il bot
+  const world = { blockAt: ({ x, y, z }) => blocks.has(`${x},${y},${z}`) ? SOLID : AIR };
+  const adapter = new BedrockAdapter({ logger: { log () {} } });
+  adapter.world = world;
+  adapter._feet = { x: BX + 0.5, y: FY, z: BZ + 0.7 };
+  adapter._velocity = { x: 0, y: 0, z: 0 };
+  adapter._onGround = true;
+  adapter._syncPositionFromFeet();
+  adapter._motion = { active: true, forward: true, yaw: 180, jumpQueued: false, jumpHeldTicks: 0, jumpStart: false }; // nord
+  let climbed = 0;
+  for (let i = 0; i < 60; i++) {
+    adapter._physicsStep();
+    climbed = Math.max(climbed, adapter._feet.y);
+  }
+  assert.ok(climbed >= FY + 1 - 1e-6, `sale sul primo gradino (max ${climbed})`);
+  assert.ok(adapter._feet.z <= 154.9, 'avanza verso nord');
+});
+
 // ---- fisica: buca alta due blocchi con gradino e volta --------------------------------
 
 const SOLID = { name: 'stone', boundingBox: 'block' };
