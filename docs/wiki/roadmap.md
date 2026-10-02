@@ -142,10 +142,11 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   goals generated from real needs (`escape` resolved by `flee`, `sleep` verified
   by the harness) and closed deterministically.
 - **Still missing**: the remaining needs-driven goals (inventory-full → store,
-  else explore) and world-event/emergency producers that preempt a *running*
-  goal. Cross-session **resume** and the first autonomy slice (survival-need
-  goals in `IDLE`, opt-in `AUTONOMY=on`) are implemented — see
-  [ai-player-roadmap](ai-player-roadmap.md).
+  else explore) and the loot-priority executor / fluid-dependent events.
+  Cross-session **resume**, the first autonomy slice (survival-need goals in
+  `IDLE`, opt-in `AUTONOMY=on`) and the first **emergency producer**
+  (`PLAYER_DIED → recover_loot`) are implemented — see
+  [ai-player-roadmap](ai-player-roadmap.md) and [emergency](emergency.md).
 
 ## What is not implemented
 
@@ -186,10 +187,12 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 ## Next planned work
 
 1. **Goal Manager producers** (AI-player roadmap milestone 2+): the session
-   loop, the goal queue and the first autonomy slice (survival-need goals in
-   `IDLE`, `idle-goals.mjs`, opt-in `AUTONOMY=on`) exist. Next: inventory-full →
-   store / else-explore autonomy, and world-event/emergency goals that preempt a
-   running goal — see [ai-player-roadmap](ai-player-roadmap.md).
+   loop, the goal queue, the first autonomy slice (survival-need goals in
+   `IDLE`, `idle-goals.mjs`, opt-in `AUTONOMY=on`) and the first emergency
+   producer (`PLAYER_DIED → recover_loot`, [emergency](emergency.md)) exist.
+   Next: inventory-full → store / else-explore autonomy, and promoting the
+   `LOW_HEALTH`/`HOSTILE_AMBUSH` events — see
+   [ai-player-roadmap](ai-player-roadmap.md).
 2. **Live-verify the farming actions** on the BDS (`plant_<seed>`/`feed_`/
    `attack_<animal>`/`throw_egg`/`breed_*`/`tame_*`/`shear_sheep`), then milk +
    mature-crop detection.

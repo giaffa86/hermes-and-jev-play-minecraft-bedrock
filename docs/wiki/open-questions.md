@@ -39,17 +39,12 @@ An exploration mission can last **several in-game days**, so the bot needs an
 expedition kit and night survival (spec addition in [exploration](exploration.md),
 "Travel survival kit and adaptation"). Missing pieces:
 
-- **`craft_bed` / `place_bed`** — a bed (3 wool + 3 planks) to skip the night on
-  the road; `shear_sheep` provides the wool but the craft/place actions do not
-  exist.
-- **Travel-kit / loadout** — no concept of "prepare X before leaving" (food,
-  blocks, torches, sword, armor, bed or wool+wood, crafting table, water bucket),
-  nor of checking inventory space before the trip.
-- **Inventory-full handling** — no drop/consume/abort logic during a long trip.
-- **Pillar-up** — no "place a block under the feet and climb" action (helps vs
-  ground mobs only, unreliable vs flying mobs such as phantoms).
-- **Provisional-hut skill** — `barricade`/`place_*` exist, but there is no
-  "seal a small shelter and hide until dawn" skill for the night.
+- **`craft_bed` / `place_bed`** — **implemented** (3 wool + 3 planks; the `wool`
+  tag matches any colour), and `/observe.travel` reports what is missing for a
+  trip. Live round pending (no wool available on the server).
+- **Travel-kit / loadout** *action* — still no auto-prepare, only the readiness
+  checklist. Also missing: inventory-full handling, pillar-up, provisional-hut
+  skill.
 
 ## Respawn stuck on live BDS (2026-10-02, resolved)
 
@@ -154,11 +149,12 @@ Still missing (the rest of the original gap):
   persistence in `runs/<RUN_ID>/goals/world.json`). While idle the bot accepts a
   new `@bot` order as a `chat` goal and runs it without reconnecting; with
   `AUTONOMY=on` it also derives goals from survival needs (`idle-goals.mjs`,
-  milestone 3 first slice). Cross-session **resume** is implemented: a goal left
-  `running` is suspended on startup and, with `RESUME=on` (default in session
-  mode), re-queued from its persisted plan. Still missing: the remaining
-  needs-driven goals (inventory-full → store, else explore), and world-event/
-  emergency producers that preempt a running goal. Full analysis in
+  milestone 3 first slice); cross-session **resume** re-queues suspended goals
+  on startup (`RESUME`, default in session mode); an **emergency producer**
+  suspends a running goal and starts a higher-priority one on a world event
+  (`PLAYER_DIED → recover_loot`, [emergency](emergency.md)). Still missing: the
+  remaining needs-driven goals (inventory-full → store, else explore), the
+  loot-priority executor and the fluid/fire-dependent events. Full analysis in
   [ai-player-roadmap](ai-player-roadmap.md).
 
 - **Farming** (`.private/FARMING-TASK.md`) — **done and verified live 03/10** for

@@ -252,6 +252,76 @@ test('resume off (RESUME=off) does not resurrect a suspended goal', async () => 
   }
 });
 
+function startEmergencyHarness () {
+  return new Promise(resolve => {
+    let acts = 0;
+    let deathSite = null;
+    let dirt = 2;
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (req.method === 'GET' && req.url === '/observe') {
+        res.end(JSON.stringify({
+          ...OBSERVATION, inventory: { dirt }, dirt, deathSite, drops: deathSite ? [{ item: 'diamond' }] : [],
+        }));
+      } else if (req.method === 'GET' && req.url === '/options') {
+        res.end(JSON.stringify({ options: deathSite
+          ? [{ key: 'recover_loot', description: 'recover the death site' }]
+          : [{ key: 'wait', description: 'wait' }] }));
+      } else if (req.method === 'POST' && req.url === '/act') {
+        acts += 1;
+        if (acts === 1) deathSite = { position: { x: 0, y: 64, z: 0 }, at: Date.now() };
+        if (deathSite && acts >= 2) { deathSite = null; dirt = 5; } // recover_loot clears the site
+        res.end(JSON.stringify({ ok: true, ms: 1 }));
+      } else {
+        res.end('{}');
+      }
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
+  });
+}
+
+test('emergency: a death preempts the running goal, recovers loot and resumes it', async () => {
+  const { server, port } = await startEmergencyHarness();
+  const runId = `test-emergency-${process.pid}-${Date.now()}`;
+  const dir = join(ROOT, 'runs', runId);
+  const hermes = fakeHermesBin({ objective: 'collect dirt', targets: {}, waypoint: null });
+  try {
+    const { code, stdout } = await runController({
+      HARNESS: `http://127.0.0.1:${port}`,
+      RUN_ID: runId,
+      CONTROLLER: 'hermes',
+      MAX_STEPS: '6',
+      TARGETS: '{"dirt":5}',
+      WAYPOINT: '',
+      GOAL: 'Collect 5 dirt',
+      SESSION: 'on',
+      EMERGENCY: 'on',
+      AUTONOMY: 'off',
+      IDLE_POLL_MS: '50',
+      IDLE_TIMEOUT_MS: '800',
+      OPENROUTER_API_KEY: '',
+      TYPESAFE_API_KEY: '',
+      CHAT_ALLOWLIST: '',
+      PATH: `${hermes.path}:${process.env.PATH}`,
+    });
+    assert.equal(code, 0, `unexpected exit code; stdout:\n${stdout}`);
+    assert.match(stdout, /EMERGENCY PLAYER_DIED: suspend g1 -> run g2/);
+    assert.match(stdout, /GOAL g2 \[emergency\] Recover the dropped items/);
+    assert.match(stdout, /GOAL g2 COMPLETED/);
+    assert.match(stdout, /GOAL g1 COMPLETED/); // the parent resumed and finished
+    const saved = JSON.parse(readFileSync(join(dir, 'goals', 'world.json'), 'utf8'));
+    const byId = Object.fromEntries(saved.records.map(r => [r.id, r]));
+    assert.equal(byId.g1.status, 'completed');
+    assert.equal(byId.g2.status, 'completed');
+    assert.equal(byId.g2.goal.source, 'emergency');
+    assert.equal(byId.g2.goal.parentGoal, 'g1');
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(hermes.dir, { recursive: true, force: true });
+  }
+});
+
 test('one-shot mode (default): exits after the goal without idling', async () => {
   const { server, port } = await startFakeHarness();
   const runId = `test-oneshot-${process.pid}-${Date.now()}`;

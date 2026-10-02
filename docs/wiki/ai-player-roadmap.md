@@ -104,12 +104,11 @@ queue was persisted (`runs/<RUN>/goals/world.json`) and the process stayed alive
 until `IDLE_TIMEOUT_MS`.
 
 Still missing (later milestones): the rest of the needs-driven menu
-(inventory-full → store, else explore), world-event/emergency producers that
-*preempt a running goal* (M2), and a Goal Manager API on the harness HTTP
-surface. Cross-session **resume** is implemented: on startup a goal left
-`running` is suspended and, with `RESUME=on` (default in session mode), every
-suspended goal is re-queued from its persisted plan. The autonomy slice below is
-implemented.
+(inventory-full → store, else explore), a Goal Manager API on the harness HTTP
+surface, and nested preemption. Cross-session **resume** is implemented, and the
+first **emergency producer** (`PLAYER_DIED → recover_loot`, which suspends the
+running goal and resumes it afterwards) is implemented — see
+[emergency](emergency.md). The autonomy slice below is implemented.
 
 ## Milestone 3 — Autonomy, first slice (implemented)
 
@@ -141,7 +140,7 @@ implemented yet:
 |---|---|---|
 | 0 | Lifecycle persistence | separate goal/connection lifecycle, idle state, new goal without reconnect, reconnect without losing agent state. ✅ session loop + `IDLE` (opt-in `SESSION=on`) + cross-session resume (`RESUME`, default on) |
 | 1 | Agent Core | a **Goal Manager**: every activity is a `goal {id, type, source, priority, status, parameters, parentGoal, createdAt}` with status `PENDING/RUNNING/SUSPENDED/COMPLETED/FAILED` and sources `CHAT/AUTONOMOUS/WORLD_EVENT/PLAYER_BEHAVIOR/EMERGENCY`. Chat commands become goals, never raw primitives. ✅ `goal-manager.mjs` (persistence + preempt/suspend/resume + cross-session resume; producers: chat/curriculum/autonomy) |
-| 2 | Emergency system | world events auto-create preempting goals — `PLAYER_DIED → RECOVER_PLAYER_LOOT (CRITICAL)` with loot priorities (netherite/diamond → enchanted → elytra → …) and risk awareness (lava/warden/nether). |
+| 2 | Emergency system | world events auto-create preempting goals — `PLAYER_DIED → RECOVER_PLAYER_LOOT (CRITICAL)` with loot priorities (netherite/diamond → enchanted → elytra → …) and risk awareness (lava/warden/nether). ◑ `PLAYER_DIED → recover_loot` implemented (`world-events.mjs` + `emergency-goals.mjs`, opt-in default in session); see [emergency](emergency.md). Loot-priority executor, fluid/fire events and nested preemption still open |
 | 3 | Autonomy | needs-driven idle behaviour (food low → find food; tool missing → craft; inventory full → store; night → shelter; else explore) via state + rules + utility score, **not** an LLM per decision. ◑ survival needs implemented (`idle-goals.mjs`, opt-in `AUTONOMY=on`); storage/explore still open |
 | 4 | Social behaviour | attention system (crouch/jump/stare/light hit → `PLAYER_REQUESTS_ATTENTION`) and contextual assistance (mining/fighting/building/fleeing/exploring → assist/observe/ignore). |
 | 5 | World awareness | home system (bed/chest/furnace/table/storage/safe area) and world memory (resource spots, caves, villages, danger zones, structures, death locations). |

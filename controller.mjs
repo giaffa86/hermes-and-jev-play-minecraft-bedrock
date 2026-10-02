@@ -22,6 +22,8 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {createGoalManager, GOAL_SOURCE, GOAL_STATUS} from './goal-manager.mjs';
 import {JsonMemoryRepository} from './memory-store.mjs';
 import {nextIdleGoal, isNeedResolved, DEFAULT_AUTONOMY_COOLDOWN_MS, DEFAULT_MAX_AUTONOMOUS_GOALS} from './idle-goals.mjs';
+import {detectEvents} from './world-events.mjs';
+import {emergencyGoalFor, DEFAULT_EMERGENCY_COOLDOWN_MS} from './emergency-goals.mjs';
 import {
   buildCriteria, buildDecisionInstructions, detectRepeatedAction, filterOptions,
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
@@ -69,6 +71,11 @@ const RESUME = process.env.RESUME == null ? SESSION : /^(1|on|true|yes)$/i.test(
 const AUTONOMY = /^(1|on|true|yes)$/i.test(process.env.AUTONOMY || '');
 const AUTONOMY_COOLDOWN_MS = +(process.env.AUTONOMY_COOLDOWN_MS || DEFAULT_AUTONOMY_COOLDOWN_MS);
 const AUTONOMY_MAX_GOALS = +(process.env.AUTONOMY_MAX_GOALS || DEFAULT_MAX_AUTONOMOUS_GOALS);
+// Emergenze (milestone 2): un evento del mondo può sospendere il goal in corso e
+// avviarne uno a priorità 100 (es. morte -> recupero loot). Default: attivo in
+// modalità sessione.
+const EMERGENCY = process.env.EMERGENCY == null ? SESSION : /^(1|on|true|yes)$/i.test(process.env.EMERGENCY);
+const EMERGENCY_COOLDOWN_MS = +(process.env.EMERGENCY_COOLDOWN_MS || DEFAULT_EMERGENCY_COOLDOWN_MS);
 
 mkdirSync(`runs/${RUN}`, {recursive: true});
 const SKILLS_LOG = `runs/${RUN}/skills.jsonl`;
@@ -99,6 +106,7 @@ const completedMilestones = new Set();   // verificati davvero in questa session
 let skillRun = null;                     // {id, def, milestone, startedAt, startObservation, actions, sawNight}
 let autonomousGoalCount = 0;             // goal autonomi generati in questa sessione (cap)
 const autonomousAttempts = new Map();    // need -> ultimo tentativo (anti-loop in IDLE)
+const emergencyAttempts = new Map();     // dedupKey evento -> ultima emergenza creata
 
 function milestoneForSkill (skillId) {
   for (const [id, node] of Object.entries(progressionGraph.milestones)) {
@@ -344,6 +352,9 @@ const goalMet = (obs, plan, skillStatus) => {
   // Un goal autonomo è ancorato al bisogno che l'ha generato: il successo è la
   // scomparsa del bisogno dallo stato del harness, non un target inventato.
   if (plan.need) return isNeedResolved(plan.need, obs, {rules: survivalRules});
+  // Un goal di emergenza per il recupero loot termina quando l'harness azzera
+  // il sito di morte (nessun drop rimasto).
+  if (plan.recover) return !obs.deathSite;
   const targetMap = plan.targets && Object.keys(plan.targets).length ? plan.targets : TARGETS;
   const targets = Object.entries(targetMap).every(([item, n]) => (obs.inventory[item] || 0) >= n);
   const w = plan.waypoint || WAYPOINT;
@@ -419,6 +430,7 @@ let lastSurvivalFingerprint = null;
 let totalCost = 0;
 let goalReached = false;
 let stepsUsed = 0;
+let prevObs = null;             // osservazione del passo precedente (eventi del mondo)
 for (let step = 1; step <= MAX_STEPS; step++) {
   obs = await api('GET', '/observe');
   stepsUsed = step;
@@ -437,6 +449,21 @@ for (let step = 1; step <= MAX_STEPS; step++) {
     log('goal_contract_stop', {steps: step - 1, totalCost, status: contractStatus.status, reasons: contractStatus.reasons, evidence: contractStatus.evidence});
     break;
   }
+  // Emergenze (M2): un evento del mondo può sospendere il goal in corso e
+  // creare un goal a priorità 100. Qui si decide solo di *preemptare*: il
+  // session loop (main) sospende il goal e accoda l'emergenza, che verrà
+  // eseguita al prossimo giro; il padre è ripreso quando l'emergenza finisce.
+  // Un goal di emergenza non si preempta da solo (un livello di annidamento).
+  if (EMERGENCY && goal.source !== GOAL_SOURCE.EMERGENCY) {
+    for (const event of detectEvents(prevObs, obs)) {
+      const spec = emergencyGoalFor(event, {parentGoal: goal.id, attempts: emergencyAttempts, cooldownMs: EMERGENCY_COOLDOWN_MS});
+      if (!spec) continue;
+      emergencyAttempts.set(spec.dedupKey, Date.now());
+      log('emergency_event', {step, type: event.type, severity: event.severity, dedupKey: spec.dedupKey, goalId: goal.id});
+      return {status: 'preempted', emergency: spec, steps: stepsUsed, totalCost};
+    }
+  }
+  prevObs = obs;
   // Comando umano via chat (M3): priorità sul piano autonomo finché non arriva
   // un nuovo ordine. Il governor resta comunque l'ultima parola sulle opzioni.
   const humanCmd = await maybeHumanCommand(obs);
@@ -690,6 +717,15 @@ async function main () {
     console.log(`GOAL ${goal.id} [${goal.source}] ${goal.objective}`);
     log('goal_start', {goalId: goal.id, source: goal.source, priority: goal.priority, objective: goal.objective, plan: goal.plan ?? null});
     const outcome = await runGoal(goal);
+    if (outcome.status === 'preempted') {
+      // Sospende il goal in corso e accoda l'emergenza (priorità più alta):
+      // verrà eseguita al prossimo giro e, al termine, il padre riprenderà.
+      const suspended = goalManager.preempt(`emergency:${outcome.emergency.type}`);
+      const child = goalManager.enqueue(outcome.emergency);
+      console.log(`EMERGENCY ${outcome.emergency.eventType ?? outcome.emergency.type}: suspend ${goal.id} -> run ${child.id}`);
+      log('emergency_preempt', {parentGoalId: goal.id, emergencyGoalId: child.id, eventType: outcome.emergency.eventType ?? null, type: outcome.emergency.type, suspended: suspended?.id ?? null});
+      continue;
+    }
     if (outcome.status === 'success') goalManager.complete(goal.id, {steps: outcome.steps, totalCost: outcome.totalCost});
     else if (outcome.status === 'failed') goalManager.fail(goal.id, outcome.reason ?? 'failed', {steps: outcome.steps, totalCost: outcome.totalCost});
     else goalManager.cancel(goal.id, outcome.reason ?? 'exhausted');
