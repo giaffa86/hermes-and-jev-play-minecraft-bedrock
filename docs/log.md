@@ -190,3 +190,20 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Tests: `tests/bedrock-riding.test.mjs` (8); suite 285 green.
 - `BEDROCK.md` + `companions.md` updated (riding wired; saddle/inventory/steering
   still open).
+
+## [2026-10-03] doc | Verification checklist page (collaudi status)
+
+- Added `wiki/verification.md`: the single collaudo checklist — every capability
+  with status (live-verified / unit-tested / pending live / not implemented),
+  how to run unit tests and a live round, and how to trigger each live collaudo.
+- Cross-linked from `index.md`, `roadmap.md`, `open-questions.md`.
+
+## [2026-10-03] lint | Roadmap status refresh (test count + riding)
+
+- Verified the consolidated tracker `wiki/roadmap.md` against the code: every
+  `.private/` task note is represented; the "not implemented" list is accurate
+  (`place_torch`, `craft_*_sword`, `retreat`/`go_home`, `close_door`, `barricade`,
+  armor, shield, milk, mature-crop detection, chat M5, autonomous exploration).
+- Fixed stale test count (265 → 285) and added riding-as-transport to the
+  implemented-pending-live list (boats/minecarts/mounts).
+- No contradictions found between `roadmap.md`, `open-questions.md` and the code.

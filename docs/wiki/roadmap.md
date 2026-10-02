@@ -79,9 +79,12 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 - Farming core **verified live on 03/10**: `read_container` (6 chests/barrels),
   `mine_<crop>` → `collect_drop` → `plant_potato` (re-sow, `server_world`),
   `throw_egg`, `feed_pig` (`inlove`), `breed_pig` (`babies: 1`).
-- 265 green unit tests.
+- 285 green unit tests.
 
 ## What is implemented but not verified live
+
+- Riding as transport (`mount_<vehicle>`, `dismount`, `_rideToward` for
+  boats/minecarts/mounts) — see [companions](companions.md).
 
 - `eat` (needs hunger < 20 and food in inventory).
 - Storage: `take_<item>`, `deposit_<item>` (`read_container` is verified live).
@@ -132,4 +135,5 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 - [human-command](human-command.md) — chat command roadmap M1–M5.
 - [trading](trading.md) — villager trade + levelling.
 - [companions](companions.md) — taming/riding companion animals.
+- [verification](verification.md) — collaudo checklist (status per capability).
 - [open-questions](open-questions.md) — blockers and verification gaps.

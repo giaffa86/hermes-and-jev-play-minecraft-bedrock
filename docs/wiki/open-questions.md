@@ -1,7 +1,9 @@
 # Open questions
 
 Known issues, blockers and verification gaps. Sources: `BEDROCK.md` (Known issues)
-and `docs/raw/SURVIVAL-INTELLIGENCE.md` (Verification status).
+and `docs/raw/SURVIVAL-INTELLIGENCE.md` (Verification status). For the per-
+capability collaudo checklist (done / pending live), see
+[verification](verification.md).
 
 ## NetherNet instability
 
