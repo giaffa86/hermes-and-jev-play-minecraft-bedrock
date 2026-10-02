@@ -994,3 +994,15 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   the respawn handshake, so it is not a missing parse on our side.
 - `docs/wiki/respawn.md` "Refinement path" records the failed attempt; remaining
   options are the vanilla-client capture and the in-place ack experiments.
+
+## [2026-10-02] feat | Respawn capture tool (vanilla-client relay)
+
+- New `tools/respawn-capture.mjs`: a ready-to-run MITM relay (`bedrock-protocol`
+  `Relay`, `jsp-raknet`, no native binding) that records the death→respawn packet
+  sequence of a real client. Logs `respawn`/`player_action`/`set_health`/
+  `update_attributes`/`move_player`/`play_status` (+ `player_auth_input` for 6 s
+  after a death) to `runs/respawn-capture.jsonl` (git-ignored) and prints a
+  timeline on Ctrl+C. This is the step-1 capture of the respawn refinement
+  (settle server vs client-library before filing anything).
+- `docs/wiki/respawn.md` documents the tool and usage; `sources.md` lists it.
+- Verified locally: the relay starts and listens on the configured port.

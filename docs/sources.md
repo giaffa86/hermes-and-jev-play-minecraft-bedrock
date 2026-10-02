@@ -36,6 +36,7 @@ never committed.
 | `exploration.mjs` | Deterministic exploration M1 planner: biome target resolution, expanding-square/spiral over unexplored chunks, biome detection, report. |
 | `explore.mjs` | Exploration M1 driver: loop planner (`GET /explore`) → `goto_waypoint` until FOUND. |
 | `bedrock-lifecycle.mjs` | Disconnect/teardown lifecycle. |
+| `tools/respawn-capture.mjs` | Diagnostic MITM relay (bedrock-protocol `Relay`) that records a vanilla client's death→respawn packet sequence to `runs/` (git-ignored). |
 | `controller.mjs` | The planner/controller loop (incl. the human chat command channel: `CHAT_ALLOWLIST` → Hermes → `/plan`) and the **persistent session loop** (`SESSION=on`): goal → run → IDLE → next goal, with cross-session resume (`RESUME`), no reconnect. |
 | `goal-manager.mjs` | Pure **Goal Manager** (Agent Core, M1): goal model, sources/priorities, `PENDING/RUNNING/SUSPENDED/COMPLETED/FAILED` transitions, preemption, snapshot/restore, cross-session resume, persistence via a repository (`kind: 'goal'`). |
 | `idle-goals.mjs` | Pure **idle autonomy** (M3): maps survival needs to ranked candidate goals (+`nextIdleGoal` cooldown) and the deterministic `isNeedResolved` success predicate. |

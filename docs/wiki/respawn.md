@@ -82,9 +82,28 @@ Order matters — settle *whose bug it is* before touching more client code.
    - If a vanilla client dies and respawns normally → it is a **client-library**
      issue (`bedrock-protocol` / NetherNet), not the server.
    - If a vanilla client also gets stuck → it is a **server** bug.
-   - Capture the vanilla client's respawn packets with the `bedrock-protocol`
-     **relay/proxy** (`node_modules/bedrock-protocol/src/relay.js`) to mirror the
-     exact sequence.
+   - Capture the vanilla client's respawn packets with the ready relay below.
+
+### Capture tool
+
+`tools/respawn-capture.mjs` is a MITM relay (`bedrock-protocol` `Relay`) that
+records the death→respawn sequence of a real client:
+
+```bash
+CAPTURE_PORT=19133 BEDROCK_HOST=<ip-bds> BEDROCK_PORT=19132 \
+  node tools/respawn-capture.mjs
+# join <this-host>:19133 with a vanilla client, die once, wait for the respawn
+# screen, respawn, then Ctrl+C
+```
+
+- Logs `respawn` / `player_action` / `set_health` / `update_attributes` /
+  `move_player` / `play_status` (plus `player_auth_input` for 6 s after a death)
+  to `runs/respawn-capture.jsonl` (git-ignored) and prints a timeline on exit.
+- Uses `jsp-raknet` (no native binding); the backend transport is configurable
+  (`CAPTURE_DEST_TRANSPORT=nethernet`). On an online-mode BDS it may ask for MSA
+  (`CAPTURE_RELAY_OFFLINE=1` only for offline test servers).
+- Compare the printed timeline with the adapter logs
+  (`respawn_packet` / `respawn_ready` in the harness output).
 2. **Client-side experiments** (once the expected sequence is known), in order:
    - After `SERVER_READY` (state 1), send a `player_auth_input` with the spawn
      position (server-authoritative ack) instead of just `_finishRespawn`.
