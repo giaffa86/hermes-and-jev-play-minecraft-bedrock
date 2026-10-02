@@ -1257,3 +1257,48 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - **Stato del task**: la parte offline di `p2-trade-timeout` è chiusa; il round
   live resta aperto (il server ignora l'interazione: prossimi passi in
   `wiki/trading.md` — cattura da un client reale, secondo villager).
+
+## [2026-10-03] verify | Curriculum `first_night`: test di scenario, due bug del controller, catena live fino a `acquire_wood`
+
+- **Test di scenario nuovo** `tests/controller-curriculum.test.mjs` (2 casi):
+  fake harness HTTP **a stadi** (una sola azione valida per stadio:
+  `mine_oak_log` → `craft_crafting_table` → `hunt_cow` → `sleep`) + stub del
+  binario `hermes` che pesca le decisioni da una coda (`CONTROLLER=hermes`,
+  nessuna API esterna). Il test 1 asserisce l'intera catena
+  `wood → crafting_table → food_and_safety → first_night`, i record `plan` con
+  `notes = curriculum:<milestone>`, i `skills.jsonl`, l'assenza di
+  `curriculum_fallback` e `GOAL MET after 4 actions (curriculum first_night)`.
+  Il test 2 parte con i prerequisiti già soddisfatti e verifica che il motore
+  risolva direttamente a `first_night` (nessuna sequenza hardcoded).
+- **Due bug reali trovati dal test e corretti in `controller.mjs`**:
+  1. `goalMet()` chiudeva il goal al **primo** prerequisito completato (dopo
+     `skill_success` `skillRun` è `null`, quindi cadeva sul ramo target con
+     `planTargets: {}`). Fix: guardia `if (CURRICULUM) return false;` dopo i rami
+     `follow`/`need`/`recover` e prima del ramo target — in curriculum il goal si
+     chiude solo quando il milestone finale è verificato.
+  2. `planFromMilestone()` ereditava il `WAYPOINT` ambientale (knob della demo):
+     live il primo passo di `first_night` partiva per `{x:380,z:16}`
+     (`#1 goto_waypoint -> target_not_found`). Fix: `waypoint: null`.
+- **Collaudo live (BDS 1.26.52, container `hermes-jev-bedrock`, VM 100)**:
+  - run con il controller **vecchio** (rsync fallito: `rsync: [sender]
+    change_dir "/root/hermes-and-jev-play-minecraft-bedrock" failed: Permission
+    denied` — rsync va lanciato **dal locale**, non dentro la VM): evidenza live
+    del bug del waypoint (`PLAN … {"x":380,"z":16}`, `#1 goto_waypoint ->
+    target_not_found`, `#3` idem, goal exhausted);
+  - run dopo il deploy (`sudo docker cp controller.mjs hermes-jev-bedrock:/app/`,
+    il controller è un processo nuovo a ogni `docker exec`): `#1 sleep ->
+    {"ok":true,"slept":"night_skipped","bed":{"x":116,"y":76,"z":160}}`,
+    `#2/#3 mine_oak_log ok` → **la stanza non è un blocker assoluto**: il bot
+    dorme e raggiunge i tronchi sopra la stanza;
+  - run `MAX_STEPS=12` (`RUN_ID=p3-curriculum-live-3`): `#5 mine_oak_log ok`,
+    **`SKILL acquire_wood SUCCESS {"inventory.logs":8}`** dopo 5 azioni (39,9 s:
+    mining + `collect_drop`, inventario reale `{oak_log: 8, rabbit_foot: 2,
+    torch: 1}`), `REPLAN curriculum Craft a crafting table…` (il motore avanza da
+    solo al milestone successivo) e `#6 flee` (zombie_villager_v2 a 11,7 blocchi)
+    seguito da `REPLAN periodic … [skill acquire_crafting_table]`: la prelazione
+    d'emergenza **non perde il milestone**.
+- **Limiti residui**: il milestone finale (`first_night`) non è ancora chiuso live
+  (servono cibo e una notte reale dopo il crafting; il budget di 12 passi si
+  esaurisce su `acquire_crafting_table`); il test reale multiplayer resta
+  impossibile in questa sessione (nessun player umano collegato). Suite: 516
+  test verdi.

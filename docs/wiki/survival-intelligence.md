@@ -75,7 +75,28 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-465 unit tests green (2026-10-02); offline smoke (`wood → crafting table → food → first_night`)
-with an emergency interruption passed; live BDS verification of the full milestone
-still pending (food beyond crops, shelter, Nether portal). See
-[open-questions](open-questions.md).
+**516 unit tests green (2026-10-03)**; the curriculum chain is covered by a
+scenario test and partially verified live.
+
+- **Offline (deterministic, no model)**: `tests/controller-curriculum.test.mjs`
+drives `CURRICULUM=first_night` against a staged fake harness (one valid action
+per stage) plus a stub `hermes` binary, and asserts the whole chain
+`wood → crafting_table → food_and_safety → first_night`,
+the `plan.notes = curriculum:<milestone>` provenance, the `skills.jsonl`
+milestones, the absence of `curriculum_fallback` (the planner is not needed)
+and `GOAL MET after 4 actions (curriculum first_night)`. A second test starts
+with the prerequisites already satisfied and asserts that the engine resolves
+straight to `first_night` (no hardcoded sequence).
+- **Two controller bugs fixed by that test** (2026-10-03): `goalMet()` closed the
+goal after the *first* prerequisite (in curriculum mode it must only close on the
+final milestone), and `planFromMilestone()` inherited the ambient `WAYPOINT`
+knob, so every milestone was anchored to the demo waypoint (`goto_waypoint →
+target_not_found` at step 1).
+- **Live (BDS 1.26.52, container `hermes-jev-bedrock`)**: a `CURRICULUM=first_night`
+run reached `SKILL acquire_wood SUCCESS {"inventory.logs":8}` after 5 actions
+(39.9 s: mining + `collect_drop`) and the engine replanned to
+`acquire_crafting_table` on its own; an unrelated zombie_villager_v2 preempted
+one step (`flee`) and the milestone survived the periodic replan. The full
+milestone is not closed yet (night handling + food are still unproven live).
+
+See [open-questions](open-questions.md) and [verification](verification.md).

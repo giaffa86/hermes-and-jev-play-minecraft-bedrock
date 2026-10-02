@@ -1,0 +1,247 @@
+// Scenario test for CURRICULUM=<milestone> (P3): the progression engine drives
+// the whole chain `wood -> crafting_table -> food_and_safety -> first_night`
+// against a scripted world, and the run stops with the milestone MET.
+//
+// The fake harness owns the world (it *is* the source of truth for options) and
+// the fake `hermes` binary only picks one of the offered keys, so the test
+// proves: (a) the plan at every step comes from knowledge/progression.json and
+// never from the planner ("curriculum_fallback" absent), (b) each skill is
+// closed by verifySkill on harness state (not by the model's opinion), and
+// (c) the goal ends exactly when the curriculum milestone is verified.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+// A fake `hermes` CLI that pops the next decision key from a queue file: the
+// controller still owns the loop, we only script the *choice*. In curriculum
+// mode the planner never runs, so every `hermes` call here is a decision.
+function fakeHermesQueue (keys) {
+  const dir = mkdtempSync(join(tmpdir(), 'fake-hermes-'));
+  const queuePath = join(dir, 'queue.json');
+  const popPath = join(dir, 'pop.mjs');
+  writeFileSync(queuePath, JSON.stringify(keys));
+  writeFileSync(popPath, `
+import { readFileSync, writeFileSync } from 'node:fs';
+const path = ${JSON.stringify(queuePath)};
+const queue = JSON.parse(readFileSync(path, 'utf8'));
+const next = queue.shift() ?? 'wait';
+writeFileSync(path, JSON.stringify(queue));
+process.stdout.write(next);
+`);
+  const bin = join(dir, 'hermes');
+  writeFileSync(bin, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(popPath)}\n`);
+  chmodSync(bin, 0o755);
+  return { dir, path: dir };
+}
+
+// Scripted world for the first_night chain. The stage is derived from the
+// inventory (logs -> table -> food) and from the clock, so `/options` always
+// reflects what is actually valid right now.
+function startCurriculumHarness (initial = {}) {
+  return new Promise(resolve => {
+    // The harness owns validity: it offers exactly one action per stage, so a
+    // wrong decision can only be taken if the progression chain is wrong.
+    const state = {
+      stage: 'wood',
+      inventory: {},
+      health: 20,
+      food: 20,
+      time: { ticks: 2000, night: false, phase: 'day' },
+      acts: [],
+      ...initial,
+      inventory: { ...(initial.inventory || {}) },
+      time: { ...(initial.time || { ticks: 2000, night: false, phase: 'day' }) },
+    };
+    const optionsFor = () => {
+      switch (state.stage) {
+        case 'wood': return [{ key: 'mine_oak_log', description: 'mine an oak log' }];
+        case 'table': return [{ key: 'craft_crafting_table', description: 'craft a crafting table' }];
+        case 'food': return [{ key: 'hunt_cow', description: 'hunt a cow for beef' }];
+        case 'sleep': return [{ key: 'sleep', description: 'sleep in the bed through the night' }];
+        default: return [{ key: 'wait', description: 'wait' }];
+      }
+    };
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (req.method === 'GET' && req.url === '/observe') {
+        res.end(JSON.stringify({
+          position: { x: 0, y: 64, z: 0 },
+          dimension: 'overworld',
+          inventory: { ...state.inventory },
+          health: state.health,
+          food: state.food,
+          dead: false,
+          time: { ...state.time },
+          entities: [],
+          chat: [],
+          drops: [],
+          containers: [],
+        }));
+      } else if (req.method === 'GET' && req.url === '/options') {
+        res.end(JSON.stringify({ options: optionsFor() }));
+      } else if (req.method === 'POST' && req.url === '/act') {
+        let body = '';
+        req.on('data', c => { body += c; });
+        req.on('end', () => {
+          let key = null;
+          try { key = JSON.parse(body || '{}').key; } catch { key = null; }
+          state.acts.push(key);
+          if (key === 'mine_oak_log' && state.stage === 'wood') { state.inventory.oak_log = 8; state.stage = 'table'; }
+          if (key === 'craft_crafting_table' && state.stage === 'table') { state.inventory.oak_log = 4; state.inventory.crafting_table = 1; state.stage = 'food'; }
+          // Hunting takes long enough that night falls before the next step:
+          // the observation right after it is already dark.
+          if (key === 'hunt_cow' && state.stage === 'food') { state.inventory.beef = 2; state.time = { ticks: 14000, night: true, phase: 'night' }; state.stage = 'sleep'; }
+          if (key === 'sleep' && state.stage === 'sleep') { state.time = { ticks: 23000, night: false, phase: 'day' }; state.stage = 'done'; }
+          res.end(JSON.stringify({ ok: true, ms: 1 }));
+        });
+      } else {
+        res.end('{}');
+      }
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, state }));
+  });
+}
+
+function runController (env) {
+  return new Promise(resolve => {
+    const child = spawn(process.execPath, ['controller.mjs'], { cwd: ROOT, env: { ...process.env, ...env } });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => { child.kill('SIGKILL'); }, 25000);
+    child.stdout.on('data', c => { stdout += c; });
+    child.stderr.on('data', c => { stderr += c; });
+    child.on('close', code => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+  });
+}
+
+test('CURRICULUM=first_night: the progression engine drives the chain to the milestone', async () => {
+  const { server, port, state } = await startCurriculumHarness();
+  const runId = `test-curriculum-${process.pid}-${Date.now()}`;
+  const dir = join(ROOT, 'runs', runId);
+  const hermes = fakeHermesQueue(['mine_oak_log', 'craft_crafting_table', 'hunt_cow', 'sleep']);
+  try {
+    const { code, stdout, stderr } = await runController({
+      HARNESS: `http://127.0.0.1:${port}`,
+      RUN_ID: runId,
+      CONTROLLER: 'hermes',
+      CURRICULUM: 'first_night',
+      MAX_STEPS: '8',
+      TARGETS: '{}',
+      // The demo waypoint must NOT leak into a milestone plan: it would offer
+      // `goto_waypoint` and drag the curriculum to arbitrary coordinates.
+      WAYPOINT: '{"x":380,"z":16}',
+      SESSION: '',
+      AUTONOMY: 'off',
+      OPENROUTER_API_KEY: '',
+      TYPESAFE_API_KEY: '',
+      CHAT_ALLOWLIST: '',
+      PATH: `${hermes.path}:${process.env.PATH}`,
+    });
+    assert.equal(code, 0, `unexpected exit code ${code}; stdout:\n${stdout}\nstderr:\n${stderr}`);
+
+    // The seeded goal is the curriculum one, and it closes on the milestone.
+    assert.match(stdout, /GOAL g1 \[curriculum\]/);
+    assert.match(stdout, /GOAL MET after 4 actions \(curriculum first_night\)/);
+    assert.match(stdout, /GOAL g1 COMPLETED/);
+    // Every skill of the chain was verified on harness state.
+    for (const skill of ['acquire_wood', 'acquire_crafting_table', 'obtain_food', 'first_night']) {
+      assert.match(stdout, new RegExp(`SKILL ${skill} SUCCESS`), `${skill} was not verified`);
+    }
+    assert.deepEqual(state.acts, ['mine_oak_log', 'craft_crafting_table', 'hunt_cow', 'sleep'],
+      'the actions must follow the progression chain');
+
+    const events = readFileSync(join(dir, 'controller.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const plans = events.filter(e => e.type === 'plan');
+    assert.deepEqual(
+      plans.map(e => e.plan.skill),
+      ['acquire_wood', 'acquire_crafting_table', 'obtain_food', 'first_night'],
+      'plans must come from the progression graph, in prerequisite order',
+    );
+    assert.ok(plans.every(e => e.curriculum === true && e.plan.notes === `curriculum:${e.plan.milestone}`),
+      'every plan must come from the progression engine');
+    assert.ok(plans.every(e => e.plan.waypoint === null),
+      'an ambient WAYPOINT must not be inherited by a milestone plan');
+    assert.ok(!events.some(e => e.type === 'curriculum_fallback'),
+      'the planner must not be needed: the progression engine resolved every milestone');
+    // Skill records carry the milestone they close (provenance for the memory layer).
+    const skills = readFileSync(join(dir, 'skills.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    assert.deepEqual(
+      skills.map(s => [s.skill, s.status, s.context?.milestone]),
+      [
+        ['acquire_wood', 'success', 'wood'],
+        ['acquire_crafting_table', 'success', 'crafting_table'],
+        ['obtain_food', 'success', 'food_and_safety'],
+        ['first_night', 'success', 'first_night'],
+      ],
+    );
+    const met = events.find(e => e.type === 'goal_met');
+    assert.equal(met.curriculum, 'first_night');
+    assert.equal(met.steps, 4);
+    assert.deepEqual(
+      [...met.completedMilestones].sort(),
+      ['crafting_table', 'first_night', 'food_and_safety', 'wood'],
+    );
+    // The goal store keeps the curriculum source and the completed status.
+    if (existsSync(join(dir, 'world.json'))) {
+      const saved = JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8'));
+      const goal = saved.records.find(r => r.kind === 'goal');
+      assert.equal(goal.status, 'completed');
+      assert.equal(goal.goal.source, 'curriculum');
+    }
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(hermes.dir, { recursive: true, force: true });
+  }
+});
+
+test('CURRICULUM=first_night: satisfied prerequisites are skipped, only the open one is planned', async () => {
+  // The bot already has logs, a crafting table and food: the progression engine
+  // must resolve straight to the final milestone instead of replaying a fixed
+  // sequence. Night is already falling, so a single `sleep` closes it.
+  const { server, port } = await startCurriculumHarness({
+    stage: 'sleep',
+    inventory: { oak_log: 8, crafting_table: 1, beef: 2 },
+    time: { ticks: 14000, night: true, phase: 'night' },
+  });
+  const runId = `test-curriculum-skip-${process.pid}-${Date.now()}`;
+  const dir = join(ROOT, 'runs', runId);
+  const hermes = fakeHermesQueue(['sleep']);
+  try {
+    const { code, stdout } = await runController({
+      HARNESS: `http://127.0.0.1:${port}`,
+      RUN_ID: runId,
+      CONTROLLER: 'hermes',
+      CURRICULUM: 'first_night',
+      MAX_STEPS: '6',
+      TARGETS: '{}',
+      WAYPOINT: '',
+      SESSION: '',
+      AUTONOMY: 'off',
+      OPENROUTER_API_KEY: '',
+      TYPESAFE_API_KEY: '',
+      CHAT_ALLOWLIST: '',
+      PATH: `${hermes.path}:${process.env.PATH}`,
+    });
+    assert.equal(code, 0, `unexpected exit code ${code}; stdout:\n${stdout}`);
+    const events = readFileSync(join(dir, 'controller.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const plans = events.filter(e => e.type === 'plan');
+    assert.deepEqual(plans.map(e => e.plan.skill), ['first_night'],
+      'satisfied prerequisites must not be planned again');
+    assert.match(stdout, /GOAL MET after 1 actions \(curriculum first_night\)/);
+    const skills = readFileSync(join(dir, 'skills.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    assert.deepEqual(skills.map(s => s.skill), ['first_night']);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(hermes.dir, { recursive: true, force: true });
+  }
+});

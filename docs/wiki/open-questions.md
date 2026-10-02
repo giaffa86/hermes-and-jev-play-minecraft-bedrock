@@ -136,8 +136,15 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
   the same level, `take_`/`deposit_`/`eat` need a reachable chest/table, fishing
   needs water. Their offline half (unit + packet-serialization tests) is complete.
   [trading](trading.md).
-- A live `CURRICULUM=first_night` round on the BDS was not run (the bot container
-  was connected; a concurrent session with the same account would kick it out).
+- `CURRICULUM=first_night` is now covered offline end-to-end
+  (`tests/controller-curriculum.test.mjs`, staged fake harness + stub planner)
+  and **partially verified live** (2026-10-03): a run reached
+  `SKILL acquire_wood SUCCESS {"inventory.logs":8}` after 5 actions and the engine
+  advanced to `acquire_crafting_table` on its own, surviving an emergency
+  (`flee` from a zombie_villager_v2) across the periodic replan. Still open: the
+  final milestone needs food + a real night (the live run exhausted its step
+  budget at `acquire_crafting_table`), and the room is a hostile start (see the
+  P2 bullet above).
 
 ## Persistent memory (landmarks, chests, chunks)
 

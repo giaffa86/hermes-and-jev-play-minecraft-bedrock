@@ -161,7 +161,12 @@ function planFromMilestone (result) {
     skill: result.skill,
     milestone: result.milestone,
     targets: def?.planTargets && Object.keys(def.planTargets).length ? def.planTargets : {},
-    waypoint: WAYPOINT,
+    // Il waypoint ambientale (`WAYPOINT`, knob della demo) non appartiene al
+    // milestone: appeso a ogni passo farebbe offrire `goto_waypoint` e
+    // devierebbe il goal verso coordinate arbitrarie (visto live: il primo
+    // passo di `first_night` partiva per {x:380,z:16} e finiva in
+    // `target_not_found`). Il curriculum naviga per milestone, non per waypoint.
+    waypoint: null,
     priority: 'progression',
     notes: `curriculum:${result.milestone}`,
   };
@@ -421,6 +426,12 @@ const goalMet = (obs, plan, skillStatus) => {
   // Un goal di emergenza per il recupero loot termina quando l'harness azzera
   // il sito di morte (nessun drop rimasto).
   if (plan.recover) return !obs.deathSite;
+  // In modalità curriculum il goal si chiude solo quando il milestone finale è
+  // verificato (ramo `skill` più sotto o progression engine nel replan): i
+  // target dell'ultimo piano sono i *prerequisiti* del milestone, non il
+  // successo. Senza questa guardia un prerequisito completato (es. `wood`)
+  // chiuderebbe il goal al primo passo.
+  if (CURRICULUM) return false;
   const targetMap = plan.targets && Object.keys(plan.targets).length ? plan.targets : TARGETS;
   const targets = Object.entries(targetMap).every(([item, n]) => (obs.inventory[item] || 0) >= n);
   const w = plan.waypoint || WAYPOINT;
