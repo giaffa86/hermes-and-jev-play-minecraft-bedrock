@@ -121,7 +121,13 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
   verified live. `read_container` **was verified live on 03/10** (6 chests/barrels).
 - Farming leftovers: `attack_<animal>` (skipped live, would kill a base animal),
   `tame_<companion>` (no companion near the bot on 03/10), `shear_sheep` +
-  `craft_shears` (no sheep nearby), milk (bucket + cow, needs 3 iron ingots).
+  `craft_shears` (no sheep nearby). **Milking is implemented and offline-tested
+  (03/10)** — `craft_bucket` + `milk_<animal>`, `tests/bedrock-milk.test.mjs` —
+  but its live round is blocked by the environment: the farm census has no
+  cow/mooshroom, the bot holds no bucket and no iron ingots, and the cage blocks
+  any trip to one. Live gate evidence: `/options` withholds `milk_*` and
+  `craft_bucket`, `POST /act milk_cow` → `missing_bucket` in 0.00 s, and
+  `craft_bucket` → `missing_ingredients` (so the recipe *is* in the server data).
   Mature-crop detection is implemented (03/10) but its end-to-end live harvest
   is blocked by the cage: the only fields (z ≈ 188) are outside the bot's
   walkable component.
@@ -281,7 +287,9 @@ Still missing (the rest of the original gap):
 - **Farming** (`.private/FARMING-TASK.md`) — **done and verified live 03/10** for
   the core (`plant_<seed>`, `feed_<animal>`, `breed_<animal>`, `throw_egg`,
   `read_container`); `attack_<animal>`/`tame_<companion>`/`shear_sheep` are
-  implemented but live-pending. Remaining gaps: milk. Mature-crop detection is
+  implemented but live-pending. Remaining gaps: the live milk round (the code is
+  done and offline-tested: `craft_bucket` + `milk_<animal>`, 03/10 — blocked by
+  the environment, no cow/bucket/iron and the cage). Mature-crop detection is
   implemented (`harvest_<crop>`, 03/10) with the live state verified, but the
   end-to-end harvest is blocked by the cage.
   Consolidated status in [roadmap](roadmap.md).

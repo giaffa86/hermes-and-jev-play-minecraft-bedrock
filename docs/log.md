@@ -1570,3 +1570,38 @@ Suite completa: **564 test, 564 pass, 0 fail**.
 evidence" con i due difetti e i limiti), `verification.md` (riga 18 → 🧪),
 `open-questions.md`, `roadmap.md`, `AGENTS.md` (env `CHAT_REPLY`,
 `CHAT_REPLY_MAX_LENGTH`, `CHAT_MAX_AGE_MS`, `CHAT_ECHO_WINDOW_MS`).
+
+## [2026-10-03] feat | Mungitura: `craft_bucket` + `milk_<animale>` (P4.1)
+
+Implementata la mungitura (latte). Codice completo e testato offline; il round
+live resta bloccato dall'ambiente.
+
+- **Dati** (`bedrock-survival.mjs`): `MILKABLE_TYPES`/`isMilkableType` (cow,
+  mooshroom; `pig`/`sheep`/villager restano fuori) e `BUCKET_INGREDIENTS`
+  (`iron_ingot: 3`), coerenti con lo stile dei dati già presenti nel modulo.
+- **Adapter**: nuova opzione `craft_bucket` (3 lingotti + crafting table, come
+  `craft_shears`) e `milk_<animale>` nel blocco fattoria, offerta solo con un
+  secchio e una mucca raggiungibile (eredita il gate `entityApproachable`).
+  `_milkAnimal(type, timeoutMs = 15000)` equipaggia il secchio, si avvicina e
+  ripete `item_use_on_entity interact` come `feed`/`shear`; la conferma è il
+  delta d'inventario (`milk_bucket` +1, oppure `bucket` −1) perché il server non
+  manda un evento dedicato; errori tipizzati `not_milkable`, `missing_bucket`,
+  `no_milkable_nearby`, `animal_unreachable`, `milk_not_confirmed`.
+- **Test**: `tests/bedrock-milk.test.mjs` (10 casi: dati, opzioni col/gate del
+  secchio e mai per un maiale, `craft_bucket` a 3 lingotti ma non a 2, conferma
+  da `milk_bucket` e da `bucket_consumed`, errori tipizzati, timeout breve,
+  dispatch di `executeAction('milk_cow')`). Suite completa: **574 test, 574 pass,
+  0 fail**.
+- **Live (BDS 1.26.52, container `hermes-jev-bedrock`)**: i gate tengono sul
+  server vero — `/options` non contiene né `milk_*` né `craft_bucket` (nessun
+  secchio, nessun lingotto, e il censimento animali è `sheep` + `chicken`,
+  **nessuna mucca/mooshroom**); `POST /act milk_cow` → `missing_bucket` in
+  **0,00 s** (tre volte), `POST /act craft_bucket` → `missing_ingredients` (la
+  ricetta del secchio **è** nei crafting data del server, altrimenti sarebbe
+  `craft_recipe_missing`).
+- **Blocker del round live** (documentato, non un difetto): servono una mucca e
+  un secchio (3 lingotti di ferro) che la gabbia non permette di procurarsi. La
+  gabbia è la stessa domanda A/B/C in vigore **(C)**.
+- **Doc**: `verification.md` nuova riga 19.2 + lista "still not implemented"
+  aggiornata, `open-questions.md` (due punti sul latte), `roadmap.md` (riga
+  farming, leftovers, prossimi passi).

@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BedrockWorld } from './bedrock-world.mjs';
 import { trackNethernetClient, closeBedrockClient } from './bedrock-lifecycle.mjs';
-import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isTameableType, isRideTameableType, isCompanionType, isRideableType, animalFeed, tameFeed, cropForSeed, cropMaturity, seedForCrop, isCropBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS } from './bedrock-survival.mjs';
+import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isMilkableType, isTameableType, isRideTameableType, isCompanionType, isRideableType, animalFeed, tameFeed, cropForSeed, cropMaturity, seedForCrop, isCropBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS, BUCKET_INGREDIENTS } from './bedrock-survival.mjs';
 import { professionName, normalizeProfession, professionMatches, pickBestTrade } from './bedrock-trading.mjs';
 import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
 import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
@@ -1194,6 +1194,11 @@ export class BedrockAdapter {
           this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
         o.push({ key: 'craft_shears', description: 'Craft shears from 2 iron ingots (uses a crafting table)' });
       }
+      // Secchio: 3 lingotti di ferro. Serve per mungere (e, più avanti, per i fluidi).
+      if (this.recipes.has('bucket') && (this.inventory.iron_ingot || 0) >= BUCKET_INGREDIENTS.iron_ingot &&
+          this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
+        o.push({ key: 'craft_bucket', description: `Craft a bucket from ${BUCKET_INGREDIENTS.iron_ingot} iron ingots (uses a crafting table)` });
+      }
       if (this.recipes.has('fishing_rod') && (this.inventory.stick || 0) >= FISHING_ROD_INGREDIENTS.stick &&
           (this.inventory.string || 0) >= FISHING_ROD_INGREDIENTS.string &&
           this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
@@ -1289,6 +1294,10 @@ export class BedrockAdapter {
         const feed = animalFeed(animal.type);
         if (feed && (this.inventory[feed] || 0) > 0) {
           o.push({ key: `feed_${animal.type}`, description: `Feed the ${animal.type} ${feed} to make it breed (${animal.distance.toFixed(1)} blocks away)` });
+        }
+        // Mungitura: serve un secchio vuoto e una mucca (o mooshroom) a tiro.
+        if ((this.inventory.bucket || 0) > 0 && isMilkableType(animal.type)) {
+          o.push({ key: `milk_${animal.type}`, description: `Milk the ${animal.type} with a bucket (${animal.distance.toFixed(1)} blocks away)` });
         }
         if (offered.size >= 4) break;
       }
@@ -1414,6 +1423,8 @@ export class BedrockAdapter {
         result = await this._plantSeed(key.slice('plant_'.length));
       } else if (key.startsWith('feed_')) {
         result = await this._feedAnimal(key.slice('feed_'.length));
+      } else if (key.startsWith('milk_')) {
+        result = await this._milkAnimal(key.slice('milk_'.length));
       } else if (key === 'throw_egg') {
         result = await this._throwEgg();
       } else if (key.startsWith('breed_')) {
@@ -5965,6 +5976,61 @@ export class BedrockAdapter {
       }
     }
     return { ok: false, error: 'shear_not_confirmed' };
+  }
+
+  // Munge una mucca/mooshroom: equipaggia il secchio vuoto e ripete
+  // item_use_on_entity `interact`, come feed/shear. Il server non manda un
+  // evento dedicato per il latte: la conferma è il delta d'inventario
+  // (`bucket` -1, `milk_bucket` +1).
+  async _milkAnimal (type, timeoutMs = 15000) {
+    const wanted = normalizeEntityType(type);
+    if (!isMilkableType(wanted)) return { ok: false, error: 'not_milkable', type: wanted };
+    if ((this.inventory.bucket || 0) < 1) return { ok: false, error: 'missing_bucket' };
+    const animal = this._nearbyFarmAnimals(64).find(e => e.type === wanted);
+    if (!animal) return { ok: false, error: 'no_milkable_nearby', type: wanted };
+    let slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === 'bucket' && s.count > 0);
+    if (slotIndex < 0) {
+      try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
+      slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === 'bucket' && s.count > 0);
+      if (slotIndex < 0) return { ok: false, error: 'missing_bucket' };
+    }
+    if (slotIndex > 8) {
+      try { slotIndex = await this._moveSlotToHotbar(slotIndex); }
+      catch (error) { return { ok: false, error: `bucket_equip_failed: ${error.message}` }; }
+    }
+    this._selectHotbarSlot(slotIndex);
+    if (this._openContainer) await this._closeContainer();
+    const entity = this.entities.get(String(animal.runtimeId));
+    if (!entity) return { ok: false, error: 'animal_gone' };
+    if (this._entityDistance(entity) > 4.5) {
+      try { await this._moveTo(entity.position, 2.0, 25000); } catch (error) { this.log('animal_approach_failed', { message: error.message }); }
+    }
+    const bucketsBefore = this.inventory.bucket || 0;
+    const milkBefore = this.inventory.milk_bucket || 0;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const live = this.entities.get(String(animal.runtimeId));
+      if (!live) return { ok: false, error: 'animal_gone' };
+      if (this._entityDistance(live) > 5) return { ok: false, error: 'animal_unreachable' };
+      const look = this._lookAt({ x: live.position.x, y: live.position.y + entityHeight(live.type) * 0.5, z: live.position.z });
+      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+      await delay(120);
+      this._interactEntity(live);
+      const waitUntil = Math.min(deadline, Date.now() + 2500);
+      while (Date.now() < waitUntil) {
+        const milkNow = this.inventory.milk_bucket || 0;
+        if (milkNow > milkBefore) {
+          return { ok: true, milked: live.type, milk: milkNow - milkBefore, bucketLeft: this.inventory.bucket || 0, confirmedBy: 'milk_bucket' };
+        }
+        if ((this.inventory.bucket || 0) < bucketsBefore) {
+          // Il server ha consumato il secchio ma l'item di ritorno non è ancora
+          // nella cache: vale come conferma (l'inventario si riallinea da sé).
+          return { ok: true, milked: live.type, milk: 1, bucketLeft: this.inventory.bucket || 0, confirmedBy: 'bucket_consumed' };
+        }
+        await delay(100);
+      }
+    }
+    return { ok: false, error: 'milk_not_confirmed', type: wanted };
   }
 
   // ---- pesca --------------------------------------------------------------------------

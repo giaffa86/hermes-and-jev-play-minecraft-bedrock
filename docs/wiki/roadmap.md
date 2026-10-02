@@ -31,7 +31,7 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 | `GOAL.md` | Original goal + launch runbook (Phases 1–10, two gameplay milestones) | ◑ Phases 1–9 done; Phase 10 (real multiplayer) open; `first_night` chain verified live end-to-end (03/10) | `BEDROCK.md`, `survival/` |
 | `JEV-TASK.md` | Jev decision quality + evaluation with new actions | ✅ implemented; live eval scenarios open | `controller-decisions.mjs`, `tests/controller-decisions.test.mjs` |
 | `DEFENSE-TASK.md` | Defense strategies (torch/lighting, weapons, shelter, armor, shield) | ◑ partial — `attack_*`, `flee`, `sleep`, `craft_torch`, `recover_loot`, **`place_torch`, `craft_wooden_sword`/`craft_stone_sword`, `go_home`/`retreat`, `equip_armor`, `close_door`, `barricade`, armor points in `/observe`** (02/10); only the shield (stretch) remains | `bedrock-adapter.mjs` |
-| `FARMING-TASK.md` | Farming (plant/resow crops, passive animals, feed/breed/tame/shear) | ◑ mostly done — `plant_<seed>`, `feed_<animal>`, `attack_<animal>`, `throw_egg`, `breed_<animal>`, `tame_<companion>` (wolf/cat/ocelot/parrot + ride horse/donkey/mule/llama/nautilus), `shear_sheep` + `craft_shears` implemented; `plant`/`feed`/`breed`/`throw_egg` + `read_container` **verified live 03/10**; `attack`/`tame`/`shear` live pending; axolotl in census (not tameable), mature-crop detection implemented 03/10 (`harvest_<crop>`, live state verified, end-to-end harvest blocked by the cage), milk still open | `bedrock-adapter.mjs`, `bedrock-survival.mjs` |
+| `FARMING-TASK.md` | Farming (plant/resow crops, passive animals, feed/breed/tame/shear) | ◑ mostly done — `plant_<seed>`, `feed_<animal>`, `attack_<animal>`, `throw_egg`, `breed_<animal>`, `tame_<companion>` (wolf/cat/ocelot/parrot + ride horse/donkey/mule/llama/nautilus), `shear_sheep` + `craft_shears`, `craft_bucket` + `milk_<animal>` (03/10, offline-tested) implemented; `plant`/`feed`/`breed`/`throw_egg` + `read_container` **verified live 03/10**; `attack`/`tame`/`shear`/`milk` live pending; axolotl in census (not tameable), mature-crop detection implemented 03/10 (`harvest_<crop>`, live state verified, end-to-end harvest blocked by the cage) | `bedrock-adapter.mjs`, `bedrock-survival.mjs` |
 | `STORAGE-TASK.md` | Chest/barrel storage: read, take, deposit | ◑ partial — `read_container` **verified live 03/10** (6 chests/barrels); `take_<item>`/`deposit_<item>` still live pending | `bedrock-adapter.mjs` (`read_container`, `take_<item>`, `deposit_<item>`) |
 | `TRADING-TASK.md` | Villager/wandering-trader trade + levelling | ⚠️ implemented, live verification pending | `bedrock-adapter.mjs` + `bedrock-trading.mjs`; see [trading](trading.md) |
 | `MINING-20261001.md` | Mining collaudo report | ✅ superseded (ore/durability live) | `BEDROCK.md` (Minerals and durability phase) |
@@ -186,7 +186,9 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 
 ## What is not implemented
 
-- Farming leftovers (`.private/FARMING-TASK.md`): milk (bucket + cow).
+- Farming leftovers (`.private/FARMING-TASK.md`): the live milk round (code done
+  03/10: `craft_bucket` + `milk_<animal>`, live gate evidence only — no
+  cow/bucket/iron, cage).
 - Defense gaps (remaining): shield (stretch).
 - Human chat command M5 leftovers (a **human** sender on the BDS) and
   autonomous exploration **M2–M6** (M1 core implemented — see
@@ -230,7 +232,8 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    `LOW_HEALTH`/`HOSTILE_AMBUSH` events — see
    [ai-player-roadmap](ai-player-roadmap.md).
 2. **Live-verify the farming actions** on the BDS (`plant_<seed>`/`feed_`/
-   `attack_<animal>`/`throw_egg`/`breed_*`/`tame_*`/`shear_sheep`), then milk.
+   `attack_<animal>`/`throw_egg`/`breed_*`/`tame_*`/`shear_sheep`), then the
+   live round of milk (code done 03/10).
 3. Live verification of the other ⚠️ items (storage, trading, `eat`, chat
    channel).
 4. Defense completions (torch placement, swords, shelter); the

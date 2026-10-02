@@ -123,6 +123,11 @@ const FARM_ANIMAL_TYPES = new Set([
   'cow', 'mooshroom', 'sheep', 'pig', 'chicken', 'rabbit',
 ]);
 
+// Animali mungibili con un secchio vuoto. In Bedrock il munge `bucket` ->
+// `milk_bucket`; il mooshroom dà lo stesso latte (la zuppa di funghi richiede
+// una ciotola e non è implementata).
+const MILKABLE_TYPES = new Set(['cow', 'mooshroom']);
+
 // Cibo per nutrire/riprodurre ogni specie (item Bedrock senza prefisso).
 const ANIMAL_FEED = {
   chicken: 'wheat_seeds',
@@ -169,6 +174,10 @@ const CROP_BLOCKS = new Set(Object.values(SEED_TO_CROP));
 
 export function isFarmAnimalType (type) {
   return FARM_ANIMAL_TYPES.has(normalizeEntityType(type));
+}
+
+export function isMilkableType (type) {
+  return MILKABLE_TYPES.has(normalizeEntityType(type));
 }
 
 export function isTameableType (type) {
@@ -275,6 +284,9 @@ export function cropMaturity (block) {
 export const HOSTILE_TYPE_COUNT = HOSTILE_TYPES.size;
 export const TRADER_TYPE_COUNT = TRADER_TYPES.size;
 export const FARM_ANIMAL_TYPE_COUNT = FARM_ANIMAL_TYPES.size;
+export const MILKABLE_TYPE_COUNT = MILKABLE_TYPES.size;
+// Materiali per craftare un secchio vuoto (Bedrock: 3 lingotti di ferro).
+export const BUCKET_INGREDIENTS = { iron_ingot: 3 };
 export const FOODS = [...FOOD_PRIORITY];
 export const PLANTABLE_ITEMS = Object.keys(SEED_TO_CROP);
 export const ANIMAL_FEED_MAP = { ...ANIMAL_FEED };
