@@ -339,13 +339,7 @@ export class BedrockAdapter {
         this._onOwnHealth();
       });
 
-      this.client.on('update_attributes', (packet) => {
-        if (packet.runtime_entity_id != null && String(packet.runtime_entity_id) !== String(this.client?.entityId)) return;
-        for (const attr of packet.attributes || []) {
-          if (attr.name === 'minecraft:health') { this.health = attr.value; this._onOwnHealth(); }
-          if (attr.name === 'minecraft:player.hunger') this.food = attr.value;
-        }
-      });
+      this.client.on('update_attributes', (packet) => this._applyOwnAttributes(packet));
 
       this.client.on('inventory_content', (packet) => {
         const containerId = packet.container?.container_id;
@@ -2432,6 +2426,21 @@ export class BedrockAdapter {
       return ((BigInt(value) >> 23n) & 1n) === 1n;
     }
     return null;
+  }
+
+  // PlayerAttributes usa `current`; `value` resta per compatibilità col formato
+  // EntityAttributes delle versioni precedenti.
+  _applyOwnAttributes (packet) {
+    if (packet.runtime_entity_id != null && String(packet.runtime_entity_id) !== String(this.client?.entityId)) return;
+    for (const attr of packet.attributes || []) {
+      const value = attr.current ?? attr.value;
+      if (!Number.isFinite(value)) continue;
+      if (attr.name === 'minecraft:health') {
+        this.health = value;
+        this._onOwnHealth();
+      }
+      if (attr.name === 'minecraft:player.hunger') this.food = value;
+    }
   }
 
   _applyEntityAttributes (packet) {

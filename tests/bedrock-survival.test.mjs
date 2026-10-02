@@ -118,6 +118,19 @@ test('numeric metadata flags fall back to the resting bit', () => {
   assert.equal(adapter.sleeping, false);
 });
 
+test('own attributes use the current field for health and hunger', () => {
+  const adapter = spawnedAdapter();
+  adapter._applyOwnAttributes({ runtime_entity_id: 7n, attributes: [
+    { name: 'minecraft:health', current: 15, value: 0 },
+    { name: 'minecraft:player.hunger', current: 11, value: 0 },
+  ] });
+  assert.equal(adapter.health, 15);
+  assert.equal(adapter.food, 11);
+  // Pacchetto di un'altra entità: ignorato.
+  adapter._applyOwnAttributes({ runtime_entity_id: 42n, attributes: [{ name: 'minecraft:player.hunger', current: 3 }] });
+  assert.equal(adapter.food, 11);
+});
+
 test('death and respawn flip the survival state', () => {
   const adapter = spawnedAdapter();
   adapter.health = 0;
