@@ -14,6 +14,19 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Added synthesis pages: `wiki/overview.md`, `wiki/survival-intelligence.md`,
   `wiki/reproduction.md`, `wiki/open-questions.md`.
 
+## [2026-10-03] doc | Fishing roadmap (rod, cast/bite/reel, water detection)
+
+- Added `wiki/fishing.md`: roadmap for fishing — string source (spiders/cobweb),
+  `craft_fishing_rod` (recipe already indexed from `crafting_data`),
+  `cast_rod`/`reel_in` via `_useItemTransaction(click_air)`, water/shore
+  perception (`_findWater`), and the open bite-detection problem (bobber
+  metadata vs. timing fallback). Roadmaps now live in the wiki layer, not in
+  `.private/`.
+- Noted existing reuse: `cod`/`salmon` already in `FOOD_PRIORITY` (→ `food` tag)
+  and `SMELT_RECIPES` (`cooked_cod`/`cooked_salmon` via `smoker`).
+- Updated `index.md`, `roadmap.md` (not-implemented + next planned work) and
+  `open-questions.md`.
+
 ## [2026-10-02] doc | Human chat command channel roadmap
 
 - Added `wiki/human-command.md`: roadmap for a human-in-chat natural-language

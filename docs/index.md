@@ -15,6 +15,7 @@ question about the project.
 | [reproduction.md](wiki/reproduction.md) | Summary of the Ender Dragon reproduction of `rmalde/minecraft-agent` (7:45, exact models). | `docs/raw/REPRODUCTION-REPORT.md` |
 | [human-command.md](wiki/human-command.md) | Roadmap for a human-in-chat natural-language command channel (follow, combat assist, guided mining). | `bedrock-adapter.mjs`, `bedrock-harness.mjs`, `controller.mjs` |
 | [trading.md](wiki/trading.md) | Trading with villagers/wandering traders and autonomous levelling ("maxxing") with a cheap-only economy. | `bedrock-adapter.mjs`, `bedrock-trading.mjs`, `BEDROCK.md`, `.private/TRADING-TASK.md` |
+| [fishing.md](wiki/fishing.md) | Roadmap for fishing (rod crafting, cast/bite/reel, water detection, food integration) — not yet implemented. | `bedrock-adapter.mjs`, `bedrock-survival.mjs`, `BEDROCK.md` |
 | [roadmap.md](wiki/roadmap.md) | Consolidated roadmap and implementation status: done/verified-live vs implemented-pending-live vs not-implemented, across all `.private/` task notes. | `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/*-TASK.md`, `BEDROCK.md` |
 | [open-questions.md](wiki/open-questions.md) | Known issues, blockers, and verification gaps. | `BEDROCK.md` (Known issues), `SURVIVAL-INTELLIGENCE.md` (status) |
 

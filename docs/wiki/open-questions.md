@@ -54,6 +54,10 @@ and `docs/raw/SURVIVAL-INTELLIGENCE.md` (Verification status).
 - **Defense completions** — still missing: `place_torch`, `craft_*_sword`,
   `retreat`/`go_home`, `close_door`/`barricade`, armor, shield. See
   [roadmap](roadmap.md).
+- **Fishing** — not started: string source, `craft_fishing_rod`,
+  `cast_rod`/`reel_in`/`fish`, water/shore detection. The open technical
+  question is **bite detection** on a headless client (bobber metadata vs.
+  timing fallback). Roadmap in [fishing](fishing.md).
 
 ## Architecture evolution
 
