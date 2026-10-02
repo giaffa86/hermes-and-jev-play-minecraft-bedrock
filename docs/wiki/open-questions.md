@@ -163,12 +163,17 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
   (verification row 23) **and** a reachable animal — inside the base room
   `attack_pig` answers `cannot_reach_target` in 24 s even though a pig pen sits just
   outside the wall.
-- **Drop pickup residue** (2026-10-03, live): with the reachability primitive in
-  place `collect_drop` is mostly green, but two mined dirt drops in
-  `p3-first-night-3` still answered `item_not_collected` and were only recovered
-  by a later `collect_drop` (the inventory gained the dirt one step later). The
-  drop exists and is reachable, so this is a pickup-window/latency issue, not the
-  original cavity problem.
+- **Drop pickup residue** (2026-10-03, live): the residue is entirely the
+  *unreachable landing cell* case, and the auto-pickup path now handles it
+  instead of burning budget — `_pickupNearby` reads the reachable component and
+  skips a trapped drop with a `pickup_skipped` log (`reason: 'unreachable'`,
+  `failedAt` marked, zero moves attempted); it was the last drop path without the
+  filter (the mining loop, `_collectDrop`, `_nearestDrop({reachableOnly: true})`,
+  `read_container` and the entity options already had it). Offline: 2 new tests in
+  `tests/bedrock-reachability.test.mjs` (skip with `moves === 0`; collect the
+  reachable drop and skip the trapped one). The *live* proof of the skip needs a
+  mining action with an unreachable landing cell, i.e. an unblocked environment
+  (the room offers no `mine_*` and its floor is protected).
 - **`go_home` movement timeout** (2026-10-03, live):
   `#22 go_home → {"ok":false,"error":"go_home_failed: movement timeout"}` on the
   surface near the base; the run recovered on its own (next step mined an oak
@@ -295,16 +300,17 @@ Still missing (the rest of the original gap):
   value until the next recreate). Still open: retention/pruning policy for the
   episodic layer; the consolidation write happens on every terminal patch
   (cheap but unconditional). See [memory](memory.md).
-- **Drop collection regression** (02/10) — live, mining and pickup disagree:
-  `mine_dirt` reports `destroyedEvent: true` and `picked: []`, then the following
-  `collect_drop` fails with `item_not_collected` (4/4 attempts, `inventory: {}`),
-  and the auto-pickup path (`_pickupNearby` + fresh-drop priority) collects
-  nothing. As a consequence every inventory target (`dirt`, wood, food) is
-  unreachable and the goal contract can never flip to SUCCESS in-loop. This
-  contradicts [verification](verification.md) row 4, which was marked ✅ from an
-  earlier session. Tracked as P2 (inventory/interaction front); the hypothesis to
-  test is a `take_item_entity` handshake/entity-runtimeId mismatch between the
-  drop created by the destroy event and the drop list the adapter caches.
+- **Drop collection regression** (02/10) — **resolved on 03/10**: it was a
+  *geometry* case, not a broken `take_item_entity` handshake. The live event log of
+  `p3-first-night-3` (03/10, 00:34:59→00:43:30) shows the pickup path working
+  throughout (`pickup` events for `torch`, `oak_log`, `potato`, `carrot`, `egg`;
+  `mine_potatoes picked: [{potato: 1}]` and `mine_carrots picked: [{carrot: 1}]`
+  feeding `obtain_food SUCCESS {inventory.food: 3}`; ~14× `collect_drop → {egg}`
+  with the egg count 1→27). What failed were the drops whose landing cell is
+  outside the walkable component — the dirt dug *inside* the base room falls into
+  the cavity under the planks, so `collect_drop` answered `item_not_collected`
+  while the item was still in the block below. See the reachability primitive in
+  [verification](verification.md) row 42.3 and the bullet below.
 - **Human chat command channel**: natural-language remote control via in-game
   chat (`@bot seguimi`, `@bot aiutami coi mob`). M1–M3 implemented (chat capture,
   allowlist + trigger, NL → Hermes → `/plan`, `follow_player`); **live

@@ -1530,13 +1530,28 @@ export class BedrockAdapter {
   // entro il raggio d'azione ma il pickup richiede di camminarci sopra.
   async _pickupNearby ({ maxDistance = 3.5, limit = 2, budgetMs = 6000 } = {}) {
     const deadline = Date.now() + Math.max(1500, budgetMs);
+    const filterReach = this._reachabilityUsable();
     const picked = [];
+    // I drop vicini, dal più vicino: riletti a ogni giro perché il pickup li
+    // rimuove dalla lista quando il server conferma la raccolta.
+    const candidates = () => this.drops
+      .map(entry => ({ ...entry, distance: this._dropDistance(entry) }))
+      .filter(entry => entry.distance <= maxDistance && (!entry.failedAt || Date.now() - entry.failedAt > 10000))
+      .sort((a, b) => a.distance - b.distance);
     for (let i = 0; i < limit && Date.now() < deadline; i++) {
-      const drop = this.drops
-        .map(entry => ({ ...entry, distance: this._dropDistance(entry) }))
-        .filter(entry => entry.distance <= maxDistance && (!entry.failedAt || Date.now() - entry.failedAt > 10000))
-        .sort((a, b) => a.distance - b.distance)[0];
-      if (!drop) break;
+      const near = candidates();
+      if (!near.length) break;
+      const drop = near.find(entry => !filterReach || this.dropReachable(entry.position));
+      if (!drop) {
+        // Solo drop in tasche irraggiungibili (sotto il pavimento, dietro un muro):
+        // non spendere budget di movimento, marchiali e dì perché non si raccoglie.
+        for (const entry of near) {
+          const tracked = this.drops.find(d => String(d.id) === String(entry.id));
+          if (tracked) tracked.failedAt = Date.now();
+        }
+        this.log('pickup_skipped', { item: near[0].item, count: near[0].count || 1, reason: 'unreachable', skipped: near.length });
+        break;
+      }
       try {
         await this._moveTo(drop.position, 0.6, Math.min(3000, Math.max(800, deadline - Date.now())));
       } catch (error) {
@@ -4033,6 +4048,9 @@ export class BedrockAdapter {
   // ---- pathfinding A* sul mondo caricato ---------------------------------------------
 
   _startNode () {
+    // Senza una posizione nota (piedi non ancora risolti, es. subito dopo lo
+    // spawn o nei test con adapter parziale) non c'è nodo di partenza.
+    if (!this._feet) return null;
     const x = Math.floor(this._feet.x), z = Math.floor(this._feet.z);
     const y = Math.floor(this._feet.y + 1e-3);
     if (this._standable(x, y, z)) return { x, y, z };
@@ -4055,6 +4073,7 @@ export class BedrockAdapter {
   // bot davvero incastrato): i filtri di raggiungibilità sarebbero ciechi e
   // bloccherebbero ogni azione, quindi si disattivano (fail-open).
   _reachabilityUsable () {
+    if (!this._feet) return false; // posizione ignota: filtri spenti (fail-open)
     const reach = this.reachableCells();
     // Un componente troncato (mondo grande) non è una verità completa: i
     // filtri vanno spenti anche lì, non solo sul componente degenere.
@@ -4068,6 +4087,7 @@ export class BedrockAdapter {
   // sposta e ogni scavo/piazzamento cambia il mondo.
   reachableCells ({ limit = 1200, ttlMs = 1000, overrides = null } = {}) {
     const start = this._startNode();
+    if (!start) return { start: null, cells: new Set(), truncated: false };
     const startKey = `${start.x},${start.y},${start.z}`;
     if (!overrides) {
       const cached = this._reachCache;

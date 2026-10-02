@@ -267,3 +267,58 @@ test('commercio e leveling non offerti con un trader irraggiungibile', async () 
   keys = adapter.options().map(o => o.key);
   assert.equal(keys.includes('level_farmer'), true, 'trader a tiro offerto');
 });
+
+test('il pickup automatico salta un drop in una tasca irraggiungibile senza spendere move', async () => {
+  // Geometria live: assi a y=72 (il bot ci sta sopra), cavità d'aria a y=71,
+  // terreno a y=70. Il drop del mining finisce nella cavità, sotto le assi.
+  const world = flatWorld({ minX: 0, maxX: 4, minZ: 0, maxZ: 0, floorY: 72, height: 3 });
+  for (let x = 0; x <= 4; x++) {
+    world.set(x, 71, 0, AIR);
+    world.set(x, 70, 0, STONE);
+  }
+  const adapter = reachAdapter(world, { feet: { x: 2.5, y: 73, z: 0.5 } });
+  adapter.drops = [{ id: 'trap', item: 'dirt', count: 1, position: { x: 2.5, y: 71.125, z: 0.5 }, spawnedAt: Date.now() }];
+  const logs = [];
+  adapter.log = (type, data) => logs.push({ type, ...data });
+  let moves = 0;
+  adapter._moveTo = async () => { moves++; return { ok: true }; };
+
+  const picked = await adapter._pickupNearby();
+  assert.deepEqual(picked, [], 'niente raccolto');
+  assert.equal(moves, 0, 'nessun tentativo di movimento verso la cavità');
+  assert.ok(adapter.drops[0].failedAt > 0, 'drop marchiato: non ritentato subito');
+  const skipped = logs.find(e => e.type === 'pickup_skipped');
+  assert.ok(skipped, 'il motivo del mancato pickup finisce nel log');
+  assert.equal(skipped.reason, 'unreachable');
+  assert.equal(skipped.item, 'dirt');
+  assert.equal(skipped.skipped, 1);
+});
+
+test('il pickup automatico raccoglie il drop raggiungibile e ignora quello imprigionato', async () => {
+  const world = flatWorld({ minX: 0, maxX: 4, minZ: 0, maxZ: 0, floorY: 72, height: 3 });
+  for (let x = 0; x <= 4; x++) {
+    world.set(x, 71, 0, AIR);
+    world.set(x, 70, 0, STONE);
+  }
+  const adapter = reachAdapter(world, { feet: { x: 2.5, y: 73, z: 0.5 } });
+  adapter.drops = [
+    { id: 'trap', item: 'dirt', count: 1, position: { x: 2.5, y: 71.125, z: 0.5 }, spawnedAt: Date.now() },
+    { id: 'ok', item: 'dirt', count: 1, position: { x: 3.5, y: 73.02, z: 0.5 }, spawnedAt: Date.now() },
+  ];
+  const logs = [];
+  adapter.log = (type, data) => logs.push({ type, ...data });
+  let moves = 0;
+  // Il server conferma la raccolta rimuovendo l'item entity.
+  adapter._moveTo = async () => { moves++; adapter.drops = adapter.drops.filter(d => d.id !== 'ok'); return { ok: true }; };
+
+  const picked = await adapter._pickupNearby();
+  assert.deepEqual(picked, [{ item: 'dirt', count: 1 }], 'raccolto il drop raggiungibile');
+  assert.equal(moves, 1, 'un solo movimento, verso il drop raggiungibile');
+  assert.ok(logs.some(e => e.type === 'pickup' && e.item === 'dirt'), 'pickup loggato');
+  // Al giro successivo (limit 2) resta solo il drop imprigionato: viene segnalato
+  // e marchiato, senza tentare un movimento inutile.
+  const skipped = logs.find(e => e.type === 'pickup_skipped');
+  assert.ok(skipped, 'il drop imprigionato viene segnalato come skip');
+  assert.equal(skipped.skipped, 1);
+  assert.ok(adapter.drops.find(d => d.id === 'trap').failedAt > 0, 'drop imprigionato marchiato');
+});

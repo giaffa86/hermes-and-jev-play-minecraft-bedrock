@@ -1429,3 +1429,44 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - **Doc**: `fishing.md` (stato, tabella azioni, sezione bite detection, verifica),
   `verification.md` (riga 28 ⏳ → 🧪, riga 8.1 corretta, nuova riga 8.2),
   `open-questions.md` (pesca e combattimento animale), `roadmap.md`.
+
+## [2026-10-03] fix | Pickup automatico: salta i drop in celle irraggiungibili (residuo `item_not_collected` chiuso)
+
+- **Diagnosi live** (`runs/p3-first-night-3`, event log 00:34:59→00:43:30): la
+  raccolta funziona — `pickup` per `torch`, `oak_log`, `potato`, `carrot`, `egg`
+  (`mine_potatoes picked: [{potato: 1}]`, `mine_carrots picked: [{carrot: 1}]` →
+  `obtain_food SUCCESS {inventory.food: 3}`), ~14× `collect_drop ok {egg}` con il
+  conteggio 1→27 dal pollaio sopra la stanza. I `collect_drop ERR
+  item_not_collected` residui sono i drop la cui cella d'arrivo sta **fuori dal
+  componente camminabile**: la `dirt` scavata dentro la stanza cade nella cavità
+  sotto le assi (il `dirt` entrato in inventario più tardi veniva da un altro
+  scavo). La vecchia lettura "regressione del pickup" del 02/10 va quindi
+  riletta come caso geometrico, non come handshake `take_item_entity` rotto.
+- **Fix**: `_pickupNearby` era l'ultimo percorso di raccolta senza filtro di
+  raggiungibilità — prendeva il drop più vicino entro 3.5 blocchi e tentava
+  `_moveTo` (budget 3 s) anche su un drop imprigionato, restituendo `picked: []`
+  senza motivo. Ora legge `_reachabilityUsable()` e sceglie solo drop
+  `dropReachable`, rileggendo la lista a ogni giro; se nessuno è raggiungibile
+  marca `failedAt` su tutti i vicini, logga `pickup_skipped {item, count,
+  reason: 'unreachable', skipped}` e ritorna subito **senza spendere move**. La
+  shape del ritorno (array `picked`) è invariata per i due chiamanti
+  (`_mineBlock`, mining raw).
+- **Fix di robustezza**: `_startNode()` leggeva `this._feet` senza guardia e
+  `_reachabilityUsable()` lanciava `Cannot read properties of null (reading
+  'x')` in 6 test di mining (adapter senza piedi risolti). Ora `_startNode()`
+  ritorna `null`, `reachableCells()` ritorna `{start: null, cells: new Set(),
+  truncated: false}` e `_reachabilityUsable()` ritorna `false` — fail-open,
+  coerente col principio già in vigore per componente degenere e BFS troncato.
+- **Test**: 2 nuovi in `tests/bedrock-reachability.test.mjs` (16 nel file) — il
+  pickup salta il drop imprigionato con `moves === 0` e `failedAt` + log
+  `pickup_skipped`; con un drop raggiungibile e uno imprigionato raccoglie il
+  primo (`picked: [{item:'dirt',count:1}]`, `moves === 1`) e salta il secondo.
+  Suite completa: **530 test verdi**, `npm run wiki:lint` pulito.
+- **Residuo**: la prova live di `pickup_skipped` richiede un mining con cella
+  d'arrivo irraggiungibile — impossibile nella stanza sigillata (nessun `mine_*`
+  offerto, pavimento protetto, `dig_down` indisponibile); va rifatta a ambiente
+  sbloccato.
+- **Doc**: `verification.md` (riga 4 ⚠️ → ✅ con l'evidenza live e la
+  rilettura del caso cavità; riga 42.3 estesa con il filtro dell'auto-pickup, il
+  fail-open sui piedi ignoti e i 16 test), `open-questions.md` (bullet
+  "Drop collection regression" chiuso, "Drop pickup residue" riscritto).
