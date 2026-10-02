@@ -76,6 +76,13 @@ test('an unknown ceiling is a raw target and dig_up dispatches to raw mining', a
   ]);
 });
 
+test('up targets refuse protected blocks like chests', () => {
+  const { adapter } = upAdapter({ '92,69,149': solid('chest') });
+  const plan = adapter._upTargets();
+  assert.equal(plan.error, 'protected_step');
+  assert.equal(plan.block, 'chest');
+});
+
 test('dig_up mines step and head then climbs the stair', async () => {
   const { adapter } = upAdapter();
   const mined = [];

@@ -2426,6 +2426,7 @@ export class BedrockAdapter {
         if (resting != null && resting !== this.sleeping) this.log('sleep_signal', { source: 'flags', resting, raw: entry.value?._value != null ? String(entry.value._value) : entry.value });
         if (resting != null) this._setSleeping(resting);
       }
+      if (isSelf && process.env.BEDROCK_META_LOG) this.log('self_metadata', { key, value: entry.value?._value != null ? String(entry.value._value) : entry.value });
       // player_bed_position è il letto di respawn (presente anche da svegli):
       // non indica lo stato sonno, che resta affidato al flag `resting`.
     }
@@ -2937,6 +2938,7 @@ export class BedrockAdapter {
       if (block.name === 'unknown') { targets.push({ cell, block, label, raw: true }); continue; }
       if (this._passableForPath(block)) continue;
       if (/water|lava/.test(block.name)) return { error: `unsafe_block_${label}` };
+      if (DIG_PROTECTED.test(block.name)) return { error: `protected_${label}`, block: block.name };
       if (!block.diggable || !(block.hardness >= 0)) return { error: `not_diggable_${label}` };
       targets.push({ cell, block, label });
     }
