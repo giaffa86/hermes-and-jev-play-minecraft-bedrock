@@ -23,6 +23,10 @@ and `docs/raw/SURVIVAL-INTELLIGENCE.md` (Verification status).
 
 - `eat` and the container actions `read_container`/`take_<item>`/`deposit_<item>`
   are covered by unit tests but not yet verified live.
+- Trading (`open_trade`/`trade_<index>`/`level_<profession>`) is implemented and
+  unit-tested, but the exact client→server transaction that finalises a trade and
+  the tier-up detection still need a live round on a real villager. See
+  [trading](trading.md).
 - A live `CURRICULUM=first_night` round on the BDS was not run (the bot container
   was connected; a concurrent session with the same account would kick it out).
 
@@ -36,10 +40,33 @@ and `docs/raw/SURVIVAL-INTELLIGENCE.md` (Verification status).
 - **Crafting** only one item at a time; special recipes (smithing, anvil, looms)
   not implemented.
 
-## Planned (not implemented)
+## Planned / in progress
 
-- **Human chat command channel**: a natural-language remote-control channel via
-  in-game chat (`@bot seguimi`, `@bot aiutami coi mob`). Chat is already received
-  (packet `text` id 9) but ignored; linking a chat sender to a tracked player
-  entity, a `follow_player` action, and allowlist-gated NL planning are still to
-  build. Roadmap in [human-command](human-command.md).
+- **Farming** (`.private/FARMING-TASK.md`) — not started: `plant_<seed>`/resow,
+  passive-animal `attack_<animal>`, `feed_*`/`breed_*`/`tame_*`/`shear_*`,
+  `throw_egg`, milk. Next planned work; consolidated status in
+  [roadmap](roadmap.md).
+- **Human chat command channel**: natural-language remote control via in-game
+  chat (`@bot seguimi`, `@bot aiutami coi mob`). M1–M3 implemented (chat capture,
+  allowlist + trigger, NL → Hermes → `/plan`, `follow_player`); **live
+  verification on the BDS still pending**. Ack/reply in chat (M5) and autonomous
+  exploration remain open. Roadmap in [human-command](human-command.md).
+- **Defense completions** — still missing: `place_torch`, `craft_*_sword`,
+  `retreat`/`go_home`, `close_door`/`barricade`, armor, shield. See
+  [roadmap](roadmap.md).
+
+## Architecture evolution
+
+Recorded in [architecture-evolution](architecture-evolution.md): Hermes is best
+framed as a **strategic replanner, not a hierarchical planner** — it emits one
+shallow objective per replan and never decomposes into `goal → subgoal → action`.
+Two open design questions follow from that framing:
+
+- **First-class `subgoal`**: add a `subgoal` field to the plan and let Hermes
+  keep `objective` stable while rotating `subgoal`/`targets`/`skill`
+  (receding-horizon). Today `subgoal` exists only implicitly (the `milestone`
+  field in curriculum mode, the `skill` field in free-goal mode).
+- **Multi-branch progression**: `resolveMilestone` returns a single deterministic
+  `next` (DFS first-hit) — no OR/alternative-path semantics. To support copper /
+  iron / exploration paths the graph needs branch nodes and a Hermes scoring
+  hook, while Jev stays one-action-at-a-time.

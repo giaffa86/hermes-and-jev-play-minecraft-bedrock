@@ -6,7 +6,8 @@ code-generation**: no model generates executable JavaScript for Minecraft
 behaviour.
 
 Full reference: [`docs/raw/SURVIVAL-INTELLIGENCE.md`](../raw/SURVIVAL-INTELLIGENCE.md).
-Related: [headless-client](headless-client.md), [overview](overview.md).
+Related: [headless-client](headless-client.md), [overview](overview.md),
+[control-flow](control-flow.md).
 
 ## What it does
 

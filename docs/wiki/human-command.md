@@ -4,8 +4,9 @@ Topic: let a human player on the same BDS command the bot **live via in-game
 chat**, in natural language, as if talking to Hermes — e.g. *"@bot seguimi,
 andiamo a cercare ferro"* or *"@bot aiutami a liberare la miniera dai mob"*.
 
-Status: **design / roadmap** — not implemented yet. This page records the plan so
-a future agent can build it without re-deriving the analysis.
+Status: **M1–M3 implemented, not verified live**. M4 works indirectly (follow +
+existing `mine_*`), M5 not done. This page records both the plan and what has
+been wired so far.
 
 ## Why this fits the existing architecture
 
@@ -28,13 +29,13 @@ human chat message
 
 | Capability | Status | Notes |
 |---|---|---|
-| Receive chat | **Exists, unused** | The bot receives packet `text` (id 9) with `source_name`, `type` (`chat`/`whisper`/`system`/…), `message` and **`xuid`**. No handler consumes it: only the generic logger behind `BEDROCK_PACKET_LOG` (`bedrock-adapter.mjs`, the `client.on('packet', …)` guard). |
-| Link chat sender → entity | **Missing** | `add_player` carries `username`, but `_trackEntity` keeps only `uniqueId`/uuid; the gamertag is dropped. Needed to answer "who is speaking" and "where are they". |
-| Follow a human | **Missing** | Player positions are already tracked (`add_player` → `_trackEntity(packet,'player')`, `move_entity`/`move_entity_delta` → `_onEntityMove`, exposed in `_nearbyEntities`). There is only a static `goto_waypoint` (via `_moveTo`); no dynamic follow action. |
+| Receive chat | **Implemented (M1)** | `_onChat` on `client.on('text')` keeps only `chat`/`whisper`/`json_whisper`, skips own/system messages, appends `{from, message, type, xuid, at}` to a bounded `chatInbox` (cap 32), exposed as `chat` in `observe()`. |
+| Link chat sender → entity | **Implemented (M1)** | `_trackEntity` now stores `username` from `add_player` and indexes `_playersByName` (gamertag → runtimeId); `_nearbyEntities` exposes `username`. |
+| Follow a human | **Implemented (M2)** | `follow_player` option (offered when `plan.follow` is set and the player is tracked, ~64-block range) + `_followPlayer()` loop over `_moveTo` (stop distance 3, 45 s window). |
 | Combat assist ("help me fight mobs") | **Mostly ready** | `_hostiles()` detection, `attack_<type>` options, `_selectWeapon()`, `flee`, health/hunger awareness already exist. The human order only needs to *bias* the objective toward "stay near the human and fight". |
 | Mine iron the bot can see | **Ready** | `mine_iron_ore` / `mine_deepslate_iron_ore` options and the "obtain iron" progression skill already exist. |
 | Autonomous exploration ("go find iron alone") | **Missing / hard** | No real exploration: see [headless-client](headless-client.md#8-render-distance-not-comparable) and [open-questions](open-questions.md). "Follow me and mine the iron you see" is realistic; "go find iron by yourself" is out of reach for now. |
-| Reply/ack in chat | **Missing** | The bot never writes a `text` packet (or `command_request`, id 77). Optional, not required to obey. |
+| Reply/ack in chat | **Missing (M5)** | The bot never writes a `text` packet (or `command_request`, id 77). Optional, not required to obey. |
 
 ## Target flow
 
@@ -66,30 +67,43 @@ human chat message
 
 ## Milestones
 
-- **M1 — capture & identify**: `text` listener + `chatInbox` + `chat` in
-  `observe()` + allowlist (`BEDROCK_CHAT_ALLOWLIST` or `.env`) + capture
-  `username` from `add_player`/`player_list` into the entity record.
-- **M2 — follow**: a `follow_player` action that re-reads the target player's
-  live position each cycle and calls `_moveTo` in a loop (distance/timeout to be
-  defined).
-- **M3 — NL orders**: controller reads a `@bot` message → Hermes → `/plan`.
-  First working commands: *"seguimi"* and *"aiutami coi mob"* (combat is already
-  ready).
-- **M4 — assist mining**: *"seguimi e mina il ferro che vedi"* — follow + mine
-  iron the bot detects along the way (realistic given the short-range radar).
-- **M5 — stretch**: ack/reply in chat (`client.write('text', …)`); autonomous
+- **M1 — capture & identify** ✅ `text` listener + `chatInbox` + `chat` in
+  `observe()` + `username` captured into the entity record.
+- **M2 — follow** ✅ `follow_player` action (loop over `_moveTo`).
+- **M3 — NL orders** ✅ controller reads a `@bot` message (allowlist-gated) →
+  Hermes → `/plan` with priority over the autonomous plan.
+- **M4 — assist mining** ◑ works indirectly: *"seguimi e mina il ferro che
+  vedi"* = `follow_player` + the existing `mine_iron_ore`/`mine_deepslate_iron_ore`
+  options. No dedicated skill yet.
+- **M5 — stretch** ❌ ack/reply in chat (`client.write('text', …)`); autonomous
   exploration heuristic (out of scope for now).
 
-## Open questions to settle before/while implementing
+### Implemented wiring (M1–M3)
 
-- **Trigger**: mention `@bot`, prefix `!bot`, or both? Public chat, whisper, or
-  both? (Whisper is cleaner for targeted orders.)
-- **Follow semantics**: follow distance, timeout, and when the bot gives up
-  (lost sight, too far, target left).
-- **Priority vs autonomous plan**: how a human order overrides, and how/when the
-  bot returns to its autonomous goal.
-- **Acknowledgement**: with no chat reply, how does the human know the order was
-  received and accepted (e.g. a `/plan` log entry vs an in-game reply).
+- `bedrock-adapter.mjs`: `_onChat` + `chatInbox`; `chat` in `observe()`;
+  `username` in `_trackEntity`/`_nearbyEntities`; `_playerByName`; `follow_player`
+  option and `_followPlayer` action.
+- `controller.mjs`: `CHAT_ALLOWLIST` (gamertag/xuid, comma-separated),
+  `CHAT_PREFIX` (default `@bot`), `CHAT_CONTROL` (default `on` when allowlist is
+  set); `maybeHumanCommand`/`humanCommandPlan`/`isAllowedSender`; follow plans are
+  open-ended (`goalMet` returns false when `plan.follow` is set).
+- `controller-decisions.mjs`: `follow_player` ranked at tier 2 (just below drop
+  pickup).
+- Tests: `node --test tests/*.test.mjs` green; added a `follow_player` priority
+  case in `tests/controller-decisions.test.mjs`.
+- **Live verification pending**: the path is syntax-checked and unit-tested but
+  not yet run on the BDS with a real human player.
+
+## Open questions
+
+- **Trigger**: settled to `CHAT_PREFIX` (default `@bot`), matched on both public
+  chat and whisper. Still open: require whisper only?
+- **Follow semantics**: settled to stop distance 3, 45 s window, ~64-block
+  tracking range. Still open: long escort and behaviour on player disconnect.
+- **Priority vs autonomous plan**: settled to "human order overrides until
+  superseded or budget end". Still open: an explicit "resume autonomy" command.
+- **Acknowledgement**: still open (M5) — with no chat reply, how does the human
+  know the order was received (e.g. a log entry vs an in-game reply).
 
 ## Sources
 

@@ -9,7 +9,7 @@ real world. No screenshots, no keypresses, no generated code from any model.
 
 | Layer | Component | Role |
 |---|---|---|
-| Planner ("System Two") | Hermes (`hermes chat -Q --oneshot`) | Sets `{objective, targets, waypoint}`; runs only at milestones, never per step. |
+| Strategic replanner ("System Two") | Hermes (`hermes chat -Q --oneshot`) | Sets `{objective, targets, waypoint, skill}` — one shallow objective, no action sequence, no hierarchical plan; runs only at replans, never per step. |
 | Controller ("System One") | Jev (TypeSafe via OpenRouter `/api/alpha/decisions`) or Hermes | Picks ONE action per step from the list the harness offers, with probabilities + confidence. |
 | Harness | `bedrock-harness.mjs` + `bedrock-adapter.mjs` | Owns **validity**: offers only executable, currently-useful actions and executes the chosen one. |
 
@@ -42,9 +42,18 @@ Both expose the same interface (`observe()`, `options()`, `executeAction()`,
   bounded actions; see [survival-intelligence](survival-intelligence.md).
 - **Validity owned by the harness** — the model chooses only keys returned by
   `GET /options`; bad behaviour is fixed in the harness, not the prompt.
+- **Control flow** — the full goal → plan → single-action loop, with a diagram;
+  see [control-flow](control-flow.md).
+- **Architecture evolution** — the design thesis: the four-way split, Hermes as
+  a *strategic replanner* (not a hierarchical planner), and the proposed
+  subgoal/receding-horizon and multi-branch evolutions; see
+  [architecture-evolution](architecture-evolution.md).
 - **Human chat command channel** — a planned input channel that lets a human
   order the bot in natural language via in-game chat; see
   [human-command](human-command.md).
+- **Roadmap and status** — the consolidated implementation status across all
+  `.private/` task notes (done / pending-live / not-implemented); see
+  [roadmap](roadmap.md).
 
 ## Sources
 
