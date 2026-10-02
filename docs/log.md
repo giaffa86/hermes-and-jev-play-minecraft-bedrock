@@ -751,3 +751,18 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   run controllers strictly one at a time against the shared bot.
 - `verification.md` rows 59–60 added (✅); `wiki/ai-player-roadmap.md`,
   `wiki/roadmap.md`, `BEDROCK.md` note the live result.
+
+## [2026-10-02] feat | Cross-session goal resume
+
+- `controller.mjs`: at startup a goal left `running` by a previous run is
+  suspended (`session restarted`), then — if `RESUME` is on — every `suspended`
+  goal is re-queued as `pending` and resumed from its **persisted plan** (no
+  reconnect, no LLM re-planning). A new initial goal is seeded only when nothing
+  is pending, so a restart continues the previous queue instead of starting over.
+  New env var `RESUME` (default: on when `SESSION=on`, off otherwise) and a
+  `session_resume` log entry + `RESUME n goal(s) ...` line.
+- Tests: two integration cases in `tests/controller-session.test.mjs` (a
+  pre-seeded `running` goal is resumed and completed; `RESUME=off` leaves a
+  suspended goal parked and seeds a fresh goal). Suite green (399).
+- Docs: `wiki/ai-player-roadmap.md` (M0/M1 rows + "Still missing"), `wiki/roadmap.md`,
+  `wiki/open-questions.md`, `sources.md`, `BEDROCK.md` (env var + resume bullet).

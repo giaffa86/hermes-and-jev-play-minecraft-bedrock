@@ -60,6 +60,10 @@ const humanCommandSeen = new Set(); // dedup: un comando già eseguito non si ri
 const SESSION = /^(1|on|true|yes)$/i.test(process.env.SESSION || '');
 const IDLE_POLL_MS = +(process.env.IDLE_POLL_MS || 2000);
 const IDLE_TIMEOUT_MS = +(process.env.IDLE_TIMEOUT_MS || 0); // 0 = attesa senza scadenza
+// Resume cross-sessione: all'avvio, i goal `suspended` salvati nel run
+// precedente tornano in coda (il loro piano è persistito, niente riconnessione
+// né ri-pianificazione LLM). Default: attivo in modalità sessione.
+const RESUME = process.env.RESUME == null ? SESSION : /^(1|on|true|yes)$/i.test(process.env.RESUME);
 // Autonomia (milestone 3): in IDLE il bot genera da sé goal dai bisogni
 // (deterministico, non un LLM per decisione). Richiede SESSION=on.
 const AUTONOMY = /^(1|on|true|yes)$/i.test(process.env.AUTONOMY || '');
@@ -658,10 +662,21 @@ async function waitForGoal () {
 }
 
 async function main () {
-  // Un goal rimasto RUNNING in un run precedente non va ripreso d'ufficio in
-  // questa slice: lo si sospende (resume/suspend espliciti sono milestone 2).
+  // Un goal rimasto RUNNING in un run precedente viene sospeso (non sappiamo a
+  // che punto dell'azione fosse); poi, se RESUME è attivo, tutti i goal
+  // SUSPENDED vengono rimessi in coda come PENDING. Così un riavvio del
+  // controller riprende il lavoro interrotto senza perdere la coda.
   for (const stale of goalManager.list({status: GOAL_STATUS.RUNNING})) goalManager.suspend(stale.id, 'session restarted');
-  seedInitialGoal();
+  if (RESUME) {
+    const suspended = goalManager.list({status: GOAL_STATUS.SUSPENDED});
+    for (const goal of suspended) goalManager.resume(goal.id);
+    if (suspended.length) {
+      console.log(`RESUME ${suspended.length} goal(s) from a previous session: ${suspended.map(g => g.id).join(', ')}`);
+      log('session_resume', {goalIds: suspended.map(g => g.id), count: suspended.length});
+    }
+  }
+  // Semina un goal iniziale solo se non c'è già lavoro pendente da riprendere.
+  if (goalManager.pending().length === 0) seedInitialGoal();
   let exitCode = 0;
   while (true) {
     let goal = goalManager.pull();

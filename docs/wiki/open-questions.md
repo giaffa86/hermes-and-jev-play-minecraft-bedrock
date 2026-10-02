@@ -154,9 +154,11 @@ Still missing (the rest of the original gap):
   persistence in `runs/<RUN_ID>/goals/world.json`). While idle the bot accepts a
   new `@bot` order as a `chat` goal and runs it without reconnecting; with
   `AUTONOMY=on` it also derives goals from survival needs (`idle-goals.mjs`,
-  milestone 3 first slice). Still missing: goal resume across sessions, the
-  remaining needs-driven goals (inventory-full → store, else explore), and
-  world-event/emergency producers that preempt a running goal. Full analysis in
+  milestone 3 first slice). Cross-session **resume** is implemented: a goal left
+  `running` is suspended on startup and, with `RESUME=on` (default in session
+  mode), re-queued from its persisted plan. Still missing: the remaining
+  needs-driven goals (inventory-full → store, else explore), and world-event/
+  emergency producers that preempt a running goal. Full analysis in
   [ai-player-roadmap](ai-player-roadmap.md).
 
 - **Farming** (`.private/FARMING-TASK.md`) — **done and verified live 03/10** for

@@ -141,10 +141,10 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   a completed goal → `IDLE` → persisted queue, and (with `AUTONOMY=on`) idle
   goals generated from real needs (`escape` resolved by `flee`, `sleep` verified
   by the harness) and closed deterministically.
-- **Still missing**: resume of a suspended goal across sessions, the remaining
-  needs-driven goals (inventory-full → store, else explore), and world-event/
-  emergency producers that preempt a *running* goal. The first autonomy slice
-  (survival-need goals in `IDLE`, opt-in `AUTONOMY=on`) is implemented — see
+- **Still missing**: the remaining needs-driven goals (inventory-full → store,
+  else explore) and world-event/emergency producers that preempt a *running*
+  goal. Cross-session **resume** and the first autonomy slice (survival-need
+  goals in `IDLE`, opt-in `AUTONOMY=on`) are implemented — see
   [ai-player-roadmap](ai-player-roadmap.md).
 
 ## What is not implemented

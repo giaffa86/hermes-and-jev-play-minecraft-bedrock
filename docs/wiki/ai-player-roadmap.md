@@ -103,11 +103,13 @@ the BDS (2026-10-02)**: a seeded goal completed, the loop entered `IDLE`, the
 queue was persisted (`runs/<RUN>/goals/world.json`) and the process stayed alive
 until `IDLE_TIMEOUT_MS`.
 
-Still missing (later milestones): a **persistent Goal Manager across
-sessions** (explicit resume), the rest of the needs-driven menu (inventory-full
-→ store, else explore), world-event/emergency producers that *preempt a running
-goal* (M2), and a Goal Manager API on the harness HTTP surface. The autonomy
-slice below is implemented.
+Still missing (later milestones): the rest of the needs-driven menu
+(inventory-full → store, else explore), world-event/emergency producers that
+*preempt a running goal* (M2), and a Goal Manager API on the harness HTTP
+surface. Cross-session **resume** is implemented: on startup a goal left
+`running` is suspended and, with `RESUME=on` (default in session mode), every
+suspended goal is re-queued from its persisted plan. The autonomy slice below is
+implemented.
 
 ## Milestone 3 — Autonomy, first slice (implemented)
 
@@ -137,8 +139,8 @@ implemented yet:
 
 | # | Milestone | What it introduces |
 |---|---|---|
-| 0 | Lifecycle persistence | separate goal/connection lifecycle, idle state, new goal without reconnect, reconnect without losing agent state. ✅ session loop + `IDLE` (opt-in `SESSION=on`) |
-| 1 | Agent Core | a **Goal Manager**: every activity is a `goal {id, type, source, priority, status, parameters, parentGoal, createdAt}` with status `PENDING/RUNNING/SUSPENDED/COMPLETED/FAILED` and sources `CHAT/AUTONOMOUS/WORLD_EVENT/PLAYER_BEHAVIOR/EMERGENCY`. Chat commands become goals, never raw primitives. ✅ `goal-manager.mjs` (persistence + preempt/suspend/resume; producers still limited to chat/curriculum) |
+| 0 | Lifecycle persistence | separate goal/connection lifecycle, idle state, new goal without reconnect, reconnect without losing agent state. ✅ session loop + `IDLE` (opt-in `SESSION=on`) + cross-session resume (`RESUME`, default on) |
+| 1 | Agent Core | a **Goal Manager**: every activity is a `goal {id, type, source, priority, status, parameters, parentGoal, createdAt}` with status `PENDING/RUNNING/SUSPENDED/COMPLETED/FAILED` and sources `CHAT/AUTONOMOUS/WORLD_EVENT/PLAYER_BEHAVIOR/EMERGENCY`. Chat commands become goals, never raw primitives. ✅ `goal-manager.mjs` (persistence + preempt/suspend/resume + cross-session resume; producers: chat/curriculum/autonomy) |
 | 2 | Emergency system | world events auto-create preempting goals — `PLAYER_DIED → RECOVER_PLAYER_LOOT (CRITICAL)` with loot priorities (netherite/diamond → enchanted → elytra → …) and risk awareness (lava/warden/nether). |
 | 3 | Autonomy | needs-driven idle behaviour (food low → find food; tool missing → craft; inventory full → store; night → shelter; else explore) via state + rules + utility score, **not** an LLM per decision. ◑ survival needs implemented (`idle-goals.mjs`, opt-in `AUTONOMY=on`); storage/explore still open |
 | 4 | Social behaviour | attention system (crouch/jump/stare/light hit → `PLAYER_REQUESTS_ATTENTION`) and contextual assistance (mining/fighting/building/fleeing/exploring → assist/observe/ignore). |

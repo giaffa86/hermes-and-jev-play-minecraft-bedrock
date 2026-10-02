@@ -82,6 +82,7 @@ CHAT_CONTROL=on                    # on/off; default on when CHAT_ALLOWLIST is s
 SESSION=off                        # on = persistent session loop with an IDLE state; off = one-shot (default)
 IDLE_POLL_MS=2000                  # IDLE polling period for new goals
 IDLE_TIMEOUT_MS=0                  # 0 = wait forever; >0 = exit after this idle time
+RESUME=on                          # on = resume goals suspended in a previous session (default: on when SESSION=on)
 AUTONOMY=off                       # on = needs-driven autonomous goals while IDLE (requires SESSION=on)
 AUTONOMY_COOLDOWN_MS=120000        # don't retry the same need within this window
 AUTONOMY_MAX_GOALS=25              # cap on autonomous goals generated per session
@@ -128,8 +129,10 @@ IDLE` (AI-player roadmap milestone 0→1).
   world memory, `kind: 'goal'`), so it survives a restart.
 - State transitions are logged: `session_state`, `goal_start`, `goal_end` in
   `runs/<RUN_ID>/controller.jsonl`.
-- A goal left `running` by a previous run is suspended on startup (explicit
-  suspend/resume across sessions is a later milestone).
+- **Cross-session resume**: a goal left `running` by a previous run is
+  suspended on startup, then (with `RESUME=on`, default when `SESSION=on`)
+  every suspended goal is re-queued as `pending` and resumed from its persisted
+  plan — no reconnect and no LLM re-planning. `RESUME=off` keeps them parked.
 - With `AUTONOMY=on` (and `SESSION=on`) `IDLE` is not passive: the bot derives
   goals from its **survival needs** (`idle-goals.mjs`) — eat, heal, sleep/
   shelter, obtain food/weapon/armor, replace tool, escape — picks the highest

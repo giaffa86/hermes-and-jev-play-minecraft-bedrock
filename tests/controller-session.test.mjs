@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -45,6 +45,23 @@ function fakeHermesBin (plan) {
   writeFileSync(bin, `#!/bin/sh\nprintf '%s' '${JSON.stringify(plan)}'\n`);
   chmodSync(bin, 0o755);
   return { dir, path: dir };
+}
+
+// Pre-seed a goal store (as a previous session would have left it) to exercise
+// cross-session resume.
+function seedGoalStore (runId, goals) {
+  const dir = join(ROOT, 'runs', runId, 'goals');
+  mkdirSync(dir, { recursive: true });
+  const records = goals.map(g => ({
+    id: g.id, kind: 'goal', status: g.status,
+    goal: {
+      id: g.id, type: 'chat', source: 'chat', priority: 80, status: g.status,
+      objective: g.objective, plan: g.plan, parameters: null, parentGoal: null,
+      attempts: 1, createdAt: 1, startedAt: 1, finishedAt: null, reason: g.reason ?? null, result: null,
+    },
+  }));
+  writeFileSync(join(dir, 'world.json'), JSON.stringify({ version: 2, savedAt: Date.now(), records }));
+  return dir;
 }
 
 function runController (env) {
@@ -184,6 +201,54 @@ test('idle autonomy: a survival need becomes an autonomous goal and completes', 
     server.close();
     rmSync(dir, { recursive: true, force: true });
     rmSync(hermes.dir, { recursive: true, force: true });
+  }
+});
+
+test('cross-session resume: a goal left running is resumed and completed', async () => {
+  const { server, port } = await startFakeHarness();
+  const runId = `test-resume-${process.pid}-${Date.now()}`;
+  const dir = seedGoalStore(runId, [{
+    id: 'g7', status: 'running', objective: 'resumed goal from a previous session',
+    plan: { objective: 'resumed goal from a previous session', targets: { dirt: 1 }, waypoint: null },
+  }]);
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, port), SESSION: 'on', IDLE_POLL_MS: '100', IDLE_TIMEOUT_MS: '600',
+    });
+    assert.equal(code, 0, `unexpected exit code; stdout:\n${stdout}`);
+    assert.match(stdout, /RESUME 1 goal\(s\) from a previous session: g7/);
+    assert.match(stdout, /GOAL g7 COMPLETED/);
+    assert.doesNotMatch(stdout, /GOAL g1 \[/, 'a new goal was seeded despite resumable work');
+    const saved = JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8'));
+    const ids = saved.records.map(r => r.id);
+    assert.deepEqual(ids, ['g7'], 'only the resumed goal should exist');
+    assert.equal(saved.records[0].status, 'completed');
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('resume off (RESUME=off) does not resurrect a suspended goal', async () => {
+  const { server, port } = await startFakeHarness();
+  const runId = `test-noresume-${process.pid}-${Date.now()}`;
+  const dir = seedGoalStore(runId, [{
+    id: 'g9', status: 'suspended', objective: 'stale suspended goal',
+    plan: { objective: 'stale suspended goal', targets: { dirt: 1 }, waypoint: null },
+  }]);
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, port), SESSION: 'on', RESUME: 'off', IDLE_POLL_MS: '100', IDLE_TIMEOUT_MS: '600',
+    });
+    assert.equal(code, 0, `unexpected exit code; stdout:\n${stdout}`);
+    assert.doesNotMatch(stdout, /RESUME /);
+    assert.match(stdout, /GOAL g10 \[autonomous\]/);
+    const saved = JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8'));
+    const stale = saved.records.find(r => r.id === 'g9');
+    assert.equal(stale.status, 'suspended', 'suspended goal must stay suspended with RESUME=off');
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
