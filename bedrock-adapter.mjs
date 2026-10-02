@@ -110,6 +110,13 @@ const CONTAINER_SLOT_COUNT = 27;
 // Tetto di lunghezza e intervallo minimo per non floodare il server.
 const CHAT_MAX_LENGTH = +(process.env.CHAT_MAX_LENGTH || 256);
 const CHAT_MIN_INTERVAL_MS = +(process.env.CHAT_MIN_INTERVAL_MS || 1000);
+// Il server rimanda al mittente anche i propri messaggi: se il bot sente se
+// stesso può scambiare la propria voce per un ordine. Il nome di login non basta
+// a riconoscerli (il server riscrive `source_name` con il gamertag reale, che
+// può differire da `BEDROCK_USERNAME`), quindi si confronta il testo appena
+// inviato entro questa finestra.
+const CHAT_ECHO_WINDOW_MS = +(process.env.CHAT_ECHO_WINDOW_MS || 15000);
+const CHAT_ECHO_MEMORY = 8;
 // Raggio entro cui un giocatore umano è "percepito" (gli saluta e gli spiega
 // come dare un ordine). Separato dal tracking entità (64 blocchi).
 const HUMAN_RANGE = +(process.env.HUMAN_RANGE || 32);
@@ -161,6 +168,8 @@ export class BedrockAdapter {
     this.armor = { helmet: null, chestplate: null, leggings: null, boots: null }; // pezzi indossati
     this.chatInbox = [];             // messaggi chat recenti { from, message, type, xuid, at }
     this._lastChatAt = 0;            // ultimo invio chat (rate limit del bot che parla)
+    this._sentChat = [];             // testo dei messaggi inviati { text, at } (riconoscere l'eco)
+    this.selfName = null;            // gamertag che il server attribuisce al bot (imparato dall'eco)
     this._playersByName = new Map(); // gamertag minuscolo -> runtimeId (chat -> entità da seguire)
     this.busy = false;
     this.recent = [];
@@ -4461,11 +4470,43 @@ export class BedrockAdapter {
     if (!message || typeof message !== 'string') return;
     if (type !== 'chat' && type !== 'whisper' && type !== 'json_whisper') return;
     const from = packet.source_name || null;
-    if (from && USERNAME && from.toLowerCase() === USERNAME.toLowerCase()) return;
+    // Eco dei propri messaggi: il server li rimanda indietro con il gamertag
+    // vero, non con il nome di login. Lasciarli entrare in `chatInbox` fa
+    // credere al controller che un umano fidato abbia parlato (e il bot può
+    // ordinare a se stesso). L'eco però rivela il gamertag: si impara e si usa
+    // per riconoscersi anche in futuro.
+    if (this._isOwnChatEcho(message)) {
+      if (from && !this.selfName && !this.isSelfName(from)) {
+        this.selfName = from;
+        this.log('self_name_learned', { name: from });
+      }
+      this.log('chat_echo', { from, chatType: type, message: message.slice(0, 160) });
+      return;
+    }
+    if (this.isSelfName(from)) return;
     const entry = { from, message, type, xuid: packet.xuid != null ? String(packet.xuid) : null, at: Date.now() };
     this.chatInbox.push(entry);
     if (this.chatInbox.length > 32) this.chatInbox.shift();
     this.log('chat', { from, chatType: type, xuid: entry.xuid, message: message.slice(0, 160) });
+  }
+
+  // Testo identico a un messaggio appena inviato dal bot (entro la finestra): è
+  // l'eco del server, non una voce umana.
+  _isOwnChatEcho (message) {
+    const text = String(message ?? '').trim();
+    if (!text) return false;
+    const cutoff = Date.now() - CHAT_ECHO_WINDOW_MS;
+    this._sentChat = this._sentChat.filter(entry => entry.at >= cutoff);
+    return this._sentChat.some(entry => entry.text === text);
+  }
+
+  // Il bot si riconosce per nome di login oppure per il gamertag imparato
+  // dall'eco (sono diversi: `BEDROCK_USERNAME` è il nome di autenticazione).
+  isSelfName (name) {
+    if (!name) return false;
+    const wanted = String(name).toLowerCase();
+    if (USERNAME && wanted === USERNAME.toLowerCase()) return true;
+    return !!this.selfName && wanted === this.selfName.toLowerCase();
   }
 
   // Il bot scrive in chat (M5). Un pacchetto `text` tipo `chat` è ciò che manda
@@ -4494,6 +4535,8 @@ export class BedrockAdapter {
         has_filtered_message: false,
       });
       this._lastChatAt = now;
+      this._sentChat.push({ text, at: now });
+      if (this._sentChat.length > CHAT_ECHO_MEMORY) this._sentChat.shift();
       this.log('chat_out', { chatType: type, message: text });
       return { ok: true, message: text };
     } catch (error) {
@@ -4950,7 +4993,7 @@ export class BedrockAdapter {
     const rows = [];
     for (const entity of this.entities.values()) {
       if (entity.kind !== 'player' || !entity.username || !entity.position) continue;
-      if (USERNAME && entity.username.toLowerCase() === USERNAME.toLowerCase()) continue;
+      if (this.isSelfName(entity.username)) continue;
       const distance = this._entityDistance(entity);
       if (distance > range) continue;
       rows.push({

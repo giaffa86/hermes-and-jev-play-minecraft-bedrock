@@ -29,6 +29,7 @@ import {
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
 import {planGreetings, DEFAULT_GREETING_TEMPLATE, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
+import {orderAck, orderOutcome, isSelfTriggering, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
 import {
   evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
   resolveMilestone, resolveActiveSkill, skillPreferredIntents, verifySkill, buildSkillRecord, appendSkillRecord,
@@ -71,6 +72,21 @@ const CHAT_CONTROL = process.env.CHAT_CONTROL || (process.env.CHAT_ALLOWLIST ? '
 const CHAT_ALLOWLIST = new Set((process.env.CHAT_ALLOWLIST || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
 const CHAT_PREFIX = (process.env.CHAT_PREFIX || '@bot').toLowerCase();
 const humanCommandSeen = new Set(); // dedup: un comando già eseguito non si ripete
+const ignoredChatSeen = new Set(); // dedup della telemetria: un messaggio rifiutato si logga una volta
+// Un ordine vecchio non va rieseguito: l'inbox dell'harness conserva gli ultimi
+// messaggi, quindi un riavvio del controller (osservato live) rileggerebbe
+// ordini già evasi. `at` è l'orologio dell'adapter, non del planner.
+const CHAT_MAX_AGE_MS = +(process.env.CHAT_MAX_AGE_MS || 300000);
+// Dedup con tetto: in una sessione lunga (o con chat ripetuta) i set di chiavi
+// non devono crescere senza limite. Set conserva l'ordine di inserimento,
+// quindi l'eviction FIFO è `values().next().value`.
+const SEEN_LIMIT = 200;
+function rememberSeen (set, key, limit = SEEN_LIMIT) {
+  if (set.has(key)) return false;
+  set.add(key);
+  while (set.size > limit) set.delete(set.values().next().value);
+  return true;
+}
 // Saluto proattivo (roadmap AI player §6, Attention System): percepito un umano
 // vicino, il bot si presenta e gli spiega la sintassi per assegnargli un ordine.
 // Attivo solo se il canale ordini è aperto (allowlist presente), altrimenti
@@ -84,6 +100,14 @@ const CHAT_GREET_COOLDOWN_MS = process.env.CHAT_GREET_COOLDOWN_MS == null
   : +(process.env.CHAT_GREET_COOLDOWN_MS);
 const CHAT_GREET_TEMPLATE = process.env.CHAT_GREET_TEMPLATE || DEFAULT_GREETING_TEMPLATE;
 const greetedHumans = new Map(); // gamertag minuscolo -> timestamp ultimo saluto
+// Risposta in chat (M5): il bot conferma l'ordine accettato e, alla chiusura del
+// goal, ne comunica l'esito al mittente. Come il saluto, è attiva solo se il
+// canale ordini è aperto; un ordine già confermato una volta non si ripete
+// (dedup in `humanCommandSeen`).
+const CHAT_REPLY = process.env.CHAT_REPLY == null
+  ? (CHAT_CONTROL !== 'off' && CHAT_ALLOWLIST.size > 0)
+  : /^(1|on|true|yes)$/i.test(process.env.CHAT_REPLY);
+const CHAT_REPLY_MAX_LENGTH = +(process.env.CHAT_REPLY_MAX_LENGTH || DEFAULT_REPLY_MAX_LENGTH);
 // Session mode (AI-player roadmap M0->1): con SESSION=on il controller non
 // esce a fine goal ma resta in IDLE e accetta nuovi goal (ordini in chat)
 // senza riconnettersi. Default off = comportamento one-shot storico.
@@ -325,20 +349,51 @@ async function maybeHumanCommand (obs) {
     const entry = chat[i];
     const text = String(entry.message || '').trim();
     if (!text.toLowerCase().startsWith(CHAT_PREFIX)) continue;
+    // Età del messaggio: se l'adapter ha timbrato `at`, un ordine più vecchio
+    // della finestra è storia, non un comando (fail-open se `at` manca).
+    const stampedAt = Number(entry.at);
+    const age = Number.isFinite(stampedAt) && stampedAt > 0 ? Date.now() - stampedAt : 0;
+    if (age > CHAT_MAX_AGE_MS) {
+      if (rememberSeen(ignoredChatSeen, `stale|${entry.at}|${entry.from}|${entry.message}`)) {
+        log('chat_stale', {from: entry.from, xuid: entry.xuid, ageMs: Math.round(age), maxAgeMs: CHAT_MAX_AGE_MS});
+      }
+      continue;
+    }
     if (!isAllowedSender(entry)) {
-      log('chat_ignored', {from: entry.from, xuid: entry.xuid, reason: 'not_allowed'});
+      // La chat resta nell'inbox dell'harness finché non viene sommersa da altri
+      // messaggi: senza dedup il rifiuto verrebbe ri-loggato a ogni poll (osservato
+      // live: 122 eventi identici in 25 s). Si logga una volta per messaggio.
+      if (rememberSeen(ignoredChatSeen, `${entry.at}|${entry.from}|${entry.message}`)) {
+        log('chat_ignored', {from: entry.from, xuid: entry.xuid, reason: 'not_allowed'});
+      }
       continue;
     }
     const message = text.slice(CHAT_PREFIX.length).trim();
     if (!message) continue;
     const seenKey = `${entry.at}|${entry.from}|${message}`;
-    if (humanCommandSeen.has(seenKey)) continue;
-    humanCommandSeen.add(seenKey);
+    if (!rememberSeen(humanCommandSeen, seenKey)) continue;
     log('chat_command', {from: entry.from, xuid: entry.xuid, message});
     const plan = await humanCommandPlan(obs, {...entry, message});
+    // M5: conferma dell'ordine in chat. Best-effort (l'adapter applica rate
+    // limit e lunghezza); l'esito arriva alla chiusura del goal.
+    await replyChat(orderAck({from: entry.from, plan, maxLength: CHAT_REPLY_MAX_LENGTH}), {to: entry.from, context: 'ack'});
     return {plan, entry: {...entry, message}};
   }
   return null;
+}
+
+// Risposta in chat (M5): una riga, indirizzata al mittente, mai scatenante
+// (`@<nome> ...`, non `@bot ...`). Ritorna l'esito del POST /say e non lancia
+// mai: il canale resta best-effort come il saluto.
+async function replyChat (message, {to = null, context = null} = {}) {
+  if (!CHAT_REPLY || !message) return null;
+  if (isSelfTriggering(message, CHAT_PREFIX)) {
+    log('chat_reply_refused', {to, context, message, reason: 'would_trigger_the_bot'});
+    return {ok: false, error: 'would_trigger_the_bot'};
+  }
+  const result = await api('POST', '/say', {message}).catch(error => ({ok: false, error: error.message}));
+  log('chat_reply', {to, context, message, ok: !!result?.ok, error: result?.error ?? null});
+  return result;
 }
 
 // Saluto proattivo: un umano fidato percepito vicino riceve una volta (con
@@ -565,6 +620,9 @@ for (let step = 1; step <= MAX_STEPS; step++) {
     plan = humanCmd.plan;
     await api('POST', '/plan', plan);
     skillRun = null; // il piano umano sostituisce la skill attiva
+    // Un ordine può riorientare un goal nato autonomo: l'esito di *quel* goal
+    // deve tornare a chi ha ordinato (non al planner autonomo).
+    goal.humanOrder = {from: humanCmd.entry.from, message: humanCmd.entry.message, objective: plan.objective, at: Date.now()};
     console.log('HUMAN ORDER', humanCmd.entry.from, '->', plan.objective, plan.follow ? `[follow ${plan.follow}]` : '');
     log('human_order', {from: humanCmd.entry.from, xuid: humanCmd.entry.xuid, plan});
   }
@@ -780,6 +838,7 @@ async function waitForGoal () {
           plan: cmd.plan, parameters: {from: cmd.entry.from, message: cmd.entry.message},
         });
         console.log(`IDLE -> goal ${goal.id} from ${cmd.entry.from}: ${goal.objective}`);
+        log('human_order', {from: cmd.entry.from, xuid: cmd.entry.xuid, plan: cmd.plan, goalId: goal.id, via: 'idle'});
         return goal;
       }
       // Autonomia: nessun ordine umano -> un goal dai bisogni, deterministico.
@@ -871,6 +930,19 @@ async function main () {
     const final = goalManager.get(goal.id);
     console.log(`GOAL ${goal.id} ${final.status.toUpperCase()}${final.reason ? ` (${final.reason})` : ''} after ${outcome.steps ?? '?'} actions`);
     log('goal_end', {goalId: goal.id, status: final.status, reason: final.reason, steps: outcome.steps, totalCost: outcome.totalCost});
+    // M5: l'ordine umano riceve l'esito in chat (goal nato da un ordine, oppure
+    // goal autonomo riorientato da un ordine). Best-effort, mai bloccante.
+    const humanFrom = goal.source === GOAL_SOURCE.CHAT ? (goal.parameters?.from ?? null) : (goal.humanOrder?.from ?? null);
+    if (humanFrom) {
+      await replyChat(orderOutcome({
+        from: humanFrom,
+        status: outcome.status,
+        objective: goal.humanOrder?.objective ?? goal.objective,
+        steps: outcome.steps ?? null,
+        reason: final.reason ?? outcome.reason ?? null,
+        maxLength: CHAT_REPLY_MAX_LENGTH,
+      }), {to: humanFrom, context: 'outcome'});
+    }
     // Chiusura della missione episodica con esito e successo (best-effort).
     if (goal.missionId) {
       const finish = outcome.status === 'success'

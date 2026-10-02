@@ -80,6 +80,9 @@ Use `CONTROLLER=hermes` if you lack an OpenRouter key; it is slower and costlier
 - `CHAT_PREFIX` — prefix that triggers an order (default `@bot`).
 - `CHAT_CONTROL` — `on`/`off` (default `on` when `CHAT_ALLOWLIST` is set).
 - `CHAT_GREET` / `CHAT_GREET_RANGE` / `CHAT_GREET_COOLDOWN_MS` / `CHAT_GREET_TEMPLATE` — proactive greeting: a nearby trusted human is told the order syntax via `POST /say` (default on when the channel is open, range `24`, cooldown `600000` ms).
+- `CHAT_REPLY` — `on`/`off` for the order lifecycle replies (ack + outcome, default on when the channel is open; `CHAT_REPLY_MAX_LENGTH` default `180`).
+- `CHAT_MAX_AGE_MS` — an order older than this (default `300000`) is dropped as stale (`chat_stale`) so a restarted controller does not replay the harness inbox.
+- `CHAT_ECHO_WINDOW_MS` — window (default `15000`) used to recognise the bot's own chat coming back from the server (`chat_echo`); the server rewrites `source_name` with the real gamertag, which differs from `BEDROCK_USERNAME`.
 
 ## Architecture gotchas
 

@@ -1510,3 +1510,63 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   not implemented"), `survival-intelligence.md` (543 test + paragrafo feature),
   `open-questions.md`, `roadmap.md`, `headless-client.md` (percezione:
   `findBlocks` restituisce il blocco, non una copia).
+
+## [2026-10-03] feat | Chat M5: ack dell'ordine e esito (+ fix dell'eco e degli ordini vecchi)
+
+M5 non è più "metà fatto": il bot conferma un ordine ricevuto in chat e comunica
+l'esito quando il goal si chiude. Round live sul BDS reale (CT 108, container
+`hermes-jev-bedrock` su VM 100).
+
+**Implementazione**
+- `human-replies.mjs` (nuovo, puro): `orderAck`, `orderOutcome`, `renderReply`,
+  `clampMessage` (una riga, spazi collassati, troncamento con `…`),
+  `isSelfTriggering`; template di default `@<nome> ok: <obiettivo>` /
+  `@<nome> fatto: <obiettivo> (N azioni)` / `non ce l'ho fatta: <motivo>` /
+  `mi fermo qui: <motivo>`.
+- `controller.mjs`: `replyChat()` (POST `/say`, mai throw, log `chat_reply` /
+  `chat_reply_refused`), ack dopo il piano in `maybeHumanCommand`, esito a fine
+  goal (ramo `humanOrder` o `source === chat`); `human_order` loggato anche nel
+  percorso IDLE (prima solo nel ramo di un goal già attivo); env `CHAT_REPLY`,
+  `CHAT_REPLY_MAX_LENGTH`.
+
+- **Due difetti trovati dal round live**
+- **Eco di sé**: il server rimanda al mittente il proprio messaggio con il
+  gamertag reale, che **non** è `BEDROCK_USERNAME` (nome di autenticazione: dal
+  vivo 10 vs 8 caratteri). Il filtro confrontava i nomi, quindi il bot sentiva se
+  stesso e — con il proprio gamertag in `CHAT_ALLOWLIST` — si ordinava da solo
+  (osservati live i goal g2/g3/g4 nati dai propri messaggi). Fix:
+  `_isOwnChatEcho()` confronta il testo dei messaggi appena inviati entro
+  `CHAT_ECHO_WINDOW_MS` (15000), logga `chat_echo` e impara il nome del server
+  (`selfName`, evento `self_name_learned`); `isSelfName()` protegge anche la
+  chat e la lista umani (`_nearbyHumanPlayers`).
+- **Ordini vecchi rieseguiti**: l'inbox dell'harness conserva gli ultimi 32
+  messaggi, quindi un controller riavviato rieseguiva ordini già evasi (dal vivo
+  lo stesso messaggio ha prodotto tre goal distinti). Fix: `CHAT_MAX_AGE_MS`
+  (default 300000, fail-open se `at` manca) con evento `chat_stale`. Inoltre la
+  telemetria del rifiuto ora è una per messaggio: dal vivo 122 `chat_ignored`
+  identici in 25 s → 1.
+
+- **Evidenza live**
+- Catena: `POST /say {"@bot fermati e resta qui"}` → `chat_command {from, xuid,
+  message}` → `plan_fallback` (Hermes non installato nel container, 6 ms) →
+  `chat_reply {context:ack, ok:true}` (il messaggio ricompare in
+  `GET /observe.chat` come voce nuova: la risposta ha davvero attraversato il
+  server) → `human_order {via:idle}` → `goal_start {source:chat, priority:80}` →
+  `goal_end` → `chat_reply {context:outcome}`.
+- Dopo il fix dell'eco: `POST /say "@bot FERMATI-TEST-ECO"` → log harness
+  `chat_echo: 1`, `[chat]: 0`, `chatInbox` 0, nessun `chat_command`/`chat_reply`.
+- Limiti: `POST /say` ha un rate limit dell'adapter (`CHAT_MIN_INTERVAL_MS`,
+  1000 ms) — gli ack ravvicinati possono uscire `rate_limited`; il mittente
+  **umano** resta da verificare (nessun umano si collega al BDS durante i run
+  autonomi).
+
+**Test**: `tests/human-replies.test.mjs` (9), `tests/controller-chat-ack.test.mjs`
+(3: ack+esito, mittente non in allowlist, ordine stantio), `tests/bedrock-chat.test.mjs`
+(9: eco, apprendimento del gamertag, inbox di un altro giocatore, tipi ignorati,
+finestra scaduta, `isSelfName`, lista umani, guardie di `sendChat`).
+Suite completa: **564 test, 564 pass, 0 fail**.
+
+**Doc**: `human-command.md` (stato, riga tabella, milestone M5 ✅, sezione "Live
+evidence" con i due difetti e i limiti), `verification.md` (riga 18 → 🧪),
+`open-questions.md`, `roadmap.md`, `AGENTS.md` (env `CHAT_REPLY`,
+`CHAT_REPLY_MAX_LENGTH`, `CHAT_MAX_AGE_MS`, `CHAT_ECHO_WINDOW_MS`).

@@ -4,11 +4,13 @@ Topic: let a human player on the same BDS command the bot **live via in-game
 chat**, in natural language, as if talking to Hermes — e.g. *"@bot seguimi,
 andiamo a cercare ferro"* or *"@bot aiutami a liberare la miniera dai mob"*.
 
-Status: **M1–M3 implemented, not verified live**. M4 works indirectly (follow +
-existing `mine_*`). M5 is now half-done: the bot can speak (`POST /say`) and uses
-it to **greet a nearby human proactively**, telling them the exact order syntax
-(the deterministic slice of §6 *Attention System* in the AI-player roadmap).
-This page records both the plan and what has been wired so far.
+Status: **M1–M3 implemented, not verified live with a human sender**. M4 works
+indirectly (follow + existing `mine_*`). M5 is implemented *and live-verified on
+the real BDS*: the bot acks an order it received through the server and sends an
+outcome line when the goal closes (see *Live evidence* below). Since no human
+player is connected to the BDS (open question), the sender used for the live run
+was a real client account (the bot's own, through `POST /say` → server → bot),
+not a human. This page records both the plan and what is wired.
 
 ## Why this fits the existing architecture
 
@@ -37,7 +39,7 @@ human chat message
 | Combat assist ("help me fight mobs") | **Mostly ready** | `_hostiles()` detection, `attack_<type>` options, `_selectWeapon()`, `flee`, health/hunger awareness already exist. The human order only needs to *bias* the objective toward "stay near the human and fight". |
 | Mine iron the bot can see | **Ready** | `mine_iron_ore` / `mine_deepslate_iron_ore` options and the "obtain iron" progression skill already exist. |
 | Autonomous exploration ("go find iron alone") | **Missing / hard** | No real exploration: see [headless-client](headless-client.md#8-render-distance-not-comparable) and [open-questions](open-questions.md). "Follow me and mine the iron you see" is realistic; "go find iron by yourself" is out of reach for now. |
-| Reply/ack in chat | **Implemented (M5, not wired to orders)** | `sendChat()` in `bedrock-adapter.mjs` queues a `text`/`chat` packet (rate-limited, sanitised); exposed as `POST /say`. Used today for the proactive greeting, not yet to ack a specific order. |
+| Reply/ack in chat | **Implemented + live-verified (M5)** | `sendChat()` in `bedrock-adapter.mjs` queues a `text`/`chat` packet (rate-limited, sanitised); exposed as `POST /say`. The controller acks an accepted order (`@<name> ok: <obiettivo>`) and reports the outcome when the goal closes (`@<name> fatto: … (N azioni)` / `non ce l'ho fatta: …` / `mi fermo qui: …`). |
 | Proactive greeting / syntax hint | **Implemented** | `maybeGreetHumans()` in `controller.mjs`: a trusted human within `CHAT_GREET_RANGE` (default 24 blocks) gets one greeting naming the exact syntax `CHAT_PREFIX <ordine>`, with a per-gamertag cooldown. Suppressed when the allowlist is empty (never advertise a closed channel). |
 
 ## Target flow
@@ -78,9 +80,57 @@ human chat message
 - **M4 — assist mining** ◑ works indirectly: *"seguimi e mina il ferro che
   vedi"* = `follow_player` + the existing `mine_iron_ore`/`mine_deepslate_iron_ore`
   options. No dedicated skill yet.
-- **M5 — stretch** ◑ the bot can speak: `sendChat()` (`client.queue('text', …)`)
-  + `POST /say`, used for the proactive greeting. Acking a specific order and the
-  autonomous exploration heuristic are still open.
+- **M5 — stretch** ✅ the bot speaks (`sendChat()` + `POST /say`) and now uses it
+  for the order lifecycle: proactive greeting, **ack of an accepted order**, and
+  the **outcome** when the goal closes (`human-replies.mjs`).
+
+## Live evidence (2026-10-03, BDS 1.26.52 via CT 108, VM 100 container)
+
+Chain observed end to end with `SESSION=1`, `CHAT_ALLOWLIST=<bot account>`:
+
+1. `POST /say {"message":"@bot fermati e resta qui"}` → `{ok:true}`; the message
+   travels to the real server and comes back as a chat packet.
+2. `controller.jsonl`: `chat_command {from, xuid, message:"fermati e resta qui"}`
+   → `plan_fallback` (Hermes is not installed in the container, so the static
+   fallback `follow <sender>` is used; `ms: 6`).
+3. `chat_reply {context:"ack", ok:true}` — the ack `@<name> ok: Follow <name> and
+   obey their last order: "fermati e resta qui" — arrivo da <name>` re-appeared in
+   `GET /observe.chat` as a **new** entry (`at` 1790984628387), i.e. the reply was
+   really delivered to the server and broadcast back.
+4. `human_order {via:"idle"}` → `goal_start {source:"chat", priority:80}` →
+   `goal_end {status:"completed"}` → `chat_reply {context:"outcome", message:
+   "@<name> fatto: … (0 azioni)"}` (that one `rate_limited`: see below).
+
+### Two defects found by the live round
+
+- **Self-echo.** The server sends the sender's own chat back with the *real
+gamertag*, which is **not** `BEDROCK_USERNAME` (that is the authentication name:
+live they differed, 10 vs 8 characters). The old filter compared names, so the
+bot heard itself; with its gamertag in `CHAT_ALLOWLIST` it ordered *itself*
+(observed live: goals `g2`, `g3`, `g4` from its own messages). Fixed in
+`bedrock-adapter.mjs`: `_isOwnChatEcho()` matches the text of the last messages
+sent within `CHAT_ECHO_WINDOW_MS` (default 15000), logs `chat_echo`, and learns
+the server-reported name (`selfName`, event `self_name_learned`) so that
+`isSelfName()` also protects chat and the human-player list. Verified live after
+the fix: `POST /say` → harness log `chat_echo: 1`, `[chat]: 0`, `chatInbox` size
+0, and **no** `chat_command`/`chat_reply` in the controller log.
+- **Stale orders replayed after a restart.** The harness inbox keeps the last 32
+messages, so a restarted controller re-executed orders it had already served
+(observed live: the same message produced three distinct goals). Fixed in
+`controller.mjs` with `CHAT_MAX_AGE_MS` (default 300000, fail-open when `at` is
+missing) and a `chat_stale` event; the rejection telemetry is also emitted once
+per message instead of once per poll (live: 122 identical `chat_ignored` events
+in 25 s → now 1).
+
+### Limits
+
+- `POST /say` is rate-limited by the adapter (`CHAT_MIN_INTERVAL_MS`, default
+  1000): back-to-back orders can produce `chat_reply {ok:false,
+  error:rate_limited}`. The ack/outcome is best-effort and never blocks the goal.
+- A **human** sender is still untested: no human player connects to the BDS
+  during autonomous runs (open question), so the live run used a real client
+  account as sender.
+- Replies are one-line and truncated to `CHAT_REPLY_MAX_LENGTH` (default 180).
 
 ### Implemented wiring (M1–M3)
 
@@ -89,14 +139,21 @@ human chat message
   option and `_followPlayer` action.
 - `controller.mjs`: `CHAT_ALLOWLIST` (gamertag/xuid, comma-separated),
   `CHAT_PREFIX` (default `@bot`), `CHAT_CONTROL` (default `on` when allowlist is
-  set); `maybeHumanCommand`/`humanCommandPlan`/`isAllowedSender`; follow plans are
-  open-ended (`goalMet` returns false when `plan.follow` is set).
+  set), `CHAT_REPLY` (default: on when the channel is open),
+  `CHAT_REPLY_MAX_LENGTH` (180), `CHAT_MAX_AGE_MS` (300000) ;
+  `maybeHumanCommand`/`humanCommandPlan`/`isAllowedSender`/`replyChat`; follow
+  plans are open-ended (`goalMet` returns false when `plan.follow` is set).
+- `human-replies.mjs`: pure rendering of the ack/outcome lines (`orderAck`,
+  `orderOutcome`, `renderReply`, `clampMessage`, `isSelfTriggering`).
+- `bedrock-adapter.mjs`: `sendChat`, `_isOwnChatEcho` / `isSelfName`
+  (`CHAT_ECHO_WINDOW_MS`, default 15000).
 - `controller-decisions.mjs`: `follow_player` ranked at tier 2 (just below drop
   pickup).
 - Tests: `node --test tests/*.test.mjs` green; added a `follow_player` priority
   case in `tests/controller-decisions.test.mjs`.
-- **Live verification pending**: the path is syntax-checked and unit-tested but
-  not yet run on the BDS with a real human player.
+- **Live verification pending**: the inbound path with a **human** sender is not
+yet run on the BDS (no human player connects during autonomous runs); the M5
+reply lifecycle *is* live-verified, see *Live evidence* above.
 
 ## Proactive greeting (§6 Attention System)
 
@@ -127,8 +184,7 @@ Ciao <nome>! Sono Hermes, il bot di casa. Assegnami un task scrivendo in chat:
 - **Env**: `CHAT_GREET` (default: on when `CHAT_CONTROL` is not `off` and the
   allowlist is set), `CHAT_GREET_RANGE` (24), `CHAT_GREET_COOLDOWN_MS`
   (600000; `0` = once per session), `CHAT_GREET_TEMPLATE` (placeholders `{name}`,
-  `{prefix}`).
-- Tests: `tests/human-greeting.test.mjs` — policy (`renderGreeting`,
+  `{prefix}`).- Tests: `tests/human-greeting.test.mjs` — policy (`renderGreeting`,
   allowlist/range/cooldown filters, malformed humans) plus the adapter wire
   (`observe().humans`, the serialised `text` packet, the `sendChat` guards).
 

@@ -318,9 +318,10 @@ Still missing (the rest of the original gap):
   [verification](verification.md) row 42.3 and the bullet below.
 - **Human chat command channel**: natural-language remote control via in-game
   chat (`@bot seguimi`, `@bot aiutami coi mob`). M1–M3 implemented (chat capture,
-  allowlist + trigger, NL → Hermes → `/plan`, `follow_player`); **live
-  verification on the BDS still pending**. M5 is half-done (the bot speaks and
-  greets, see below); autonomous exploration remains open. Roadmap in
+  allowlist + trigger, NL → Hermes → `/plan`, `follow_player`); **M5 is now
+  implemented and live-verified** (ack of the order + outcome line, see below);
+  the inbound path with a **human** sender is still pending (no human connects to
+  the BDS). Autonomous exploration remains open. Roadmap in
   [human-command](human-command.md).
 - **Proactive greeting** (AI-player roadmap §6 *Attention System*, milestone 4
   first slice) — **implemented and unit-tested, live round pending**: perception
@@ -329,14 +330,21 @@ Still missing (the rest of the original gap):
   `human-greeting.mjs` (`planGreetings`: allowlist + range + per-gamertag
   cooldown, **empty allowlist ⇒ no greeting**); speech `sendChat()` →
   `POST /say` (M5, rate-limited, 256-char cap); `maybeGreetHumans()` in both
-  controller loops (goal and `IDLE`), gated on `obs.spawned`. Still open:
-  - **no ack of a specific order** ("ricevuto, arrivo") — the bot only greets;
+  controller loops (goal and `IDLE`), gated on `obs.spawned`. M5 replies are now
+  live-verified (ack + outcome; sender = a real client account, not a human).
+  Still open:
+  - **human sender on the BDS** — the live round used the bot's own account
+    through `POST /say` → server → bot (no human connects during autonomous
+    runs);
   - **greeting channel**: public `chat` vs `type: whisper` (quieter hello);
   - **greeting during `emergency`**: not skipped today (the message is only
     informational, but it fires while the bot is being attacked);
   - **greeted state is in memory only** (`greetedHumans` map in `controller.mjs`):
     a controller restart re-greets the same human immediately (the cooldown does
-    not survive the process; no persistence);
+    not survive the process; no persistence). The same in-memory state means a
+    restarted controller sees the harness inbox again: orders older than
+    `CHAT_MAX_AGE_MS` (5 min) are now dropped as stale (`chat_stale`), which is
+    what keeps a restart from replaying an already-served order.
   - **no live round** with a real human on the BDS (`POST /say` never exercised
     against the deployed container).
   See [human-command](human-command.md#proactive-greeting-6-attention-system).
