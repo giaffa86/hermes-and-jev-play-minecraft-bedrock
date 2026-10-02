@@ -562,3 +562,31 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   (SQLite + WAL). Direct SQL (`json_extract` to find the emerald chest, chunk
   spatial sort) works; schema version 2.
 - `verification.md` row 39 → ✅; `wiki/memory.md` notes the live result.
+
+## [2026-10-02] feat | Persistent session loop + Goal Manager (AI-player M0→1)
+
+- New pure module `goal-manager.mjs`: goal `{id, type, source, priority, status,
+  objective, plan, parameters, parentGoal, attempts, createdAt, startedAt,
+  finishedAt, reason, result}`; sources `EMERGENCY/CHAT/WORLD_EVENT/
+  PLAYER_BEHAVIOR/CURRICULUM/AUTONOMOUS` with default priorities (emergency >
+  chat > curriculum > autonomous); statuses `PENDING → RUNNING → (SUSPENDED) →
+  COMPLETED/FAILED` plus `CANCELLED`; at most one `RUNNING` at a time;
+  `pull()` (priority then FIFO), `preempt()`, `suspend/resume`, `snapshot/
+  restore`, persistence through the memory-repository interface (`kind: 'goal'`).
+- `controller.mjs` refactor: the goal body is now `runGoal(goal)` returning an
+  outcome instead of `process.exit`; a session loop (`main`) does
+  `pull → start → runGoal → complete/fail/cancel → IDLE`. `SESSION=on` keeps the
+  process alive in `IDLE`, polling `/observe` for a new goal (an in-game `@bot`
+  order becomes a `chat` goal) and running it on the same connection;
+  `SESSION=off` (default) preserves the historical one-shot behaviour and exit
+  codes. Queue: `runs/<RUN_ID>/goals/world.json`; a `running` goal left by a
+  previous run is suspended on startup; transitions logged as `session_state`/
+  `goal_start`/`goal_end`. New env vars `SESSION`, `IDLE_POLL_MS`,
+  `IDLE_TIMEOUT_MS`.
+- Tests: `tests/goal-manager.test.mjs` (12, unit) and
+  `tests/controller-session.test.mjs` (3, integration against a fake harness:
+  goal → COMPLETED → IDLE with timeout; an idle `@bot` order becoming a new
+  completed `chat` goal; one-shot default). Suite green (371).
+- Docs: `wiki/ai-player-roadmap.md` (milestone 0→1 implemented + new section),
+  `wiki/roadmap.md` (post-goal lifecycle + next planned work), `wiki/
+  open-questions.md`, `sources.md`, `BEDROCK.md` (env vars + "Agent session").

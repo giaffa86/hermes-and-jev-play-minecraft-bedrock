@@ -18,6 +18,9 @@
 // when the engine cannot decide.
 import {spawn} from 'node:child_process';
 import {appendFileSync, mkdirSync} from 'node:fs';
+import {setTimeout as delay} from 'node:timers/promises';
+import {createGoalManager, GOAL_SOURCE, GOAL_STATUS} from './goal-manager.mjs';
+import {JsonMemoryRepository} from './memory-store.mjs';
 import {
   buildCriteria, buildDecisionInstructions, detectRepeatedAction, filterOptions,
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
@@ -50,6 +53,12 @@ const CHAT_CONTROL = process.env.CHAT_CONTROL || (process.env.CHAT_ALLOWLIST ? '
 const CHAT_ALLOWLIST = new Set((process.env.CHAT_ALLOWLIST || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
 const CHAT_PREFIX = (process.env.CHAT_PREFIX || '@bot').toLowerCase();
 const humanCommandSeen = new Set(); // dedup: un comando già eseguito non si ripete
+// Session mode (AI-player roadmap M0->1): con SESSION=on il controller non
+// esce a fine goal ma resta in IDLE e accetta nuovi goal (ordini in chat)
+// senza riconnettersi. Default off = comportamento one-shot storico.
+const SESSION = /^(1|on|true|yes)$/i.test(process.env.SESSION || '');
+const IDLE_POLL_MS = +(process.env.IDLE_POLL_MS || 2000);
+const IDLE_TIMEOUT_MS = +(process.env.IDLE_TIMEOUT_MS || 0); // 0 = attesa senza scadenza
 
 mkdirSync(`runs/${RUN}`, {recursive: true});
 const SKILLS_LOG = `runs/${RUN}/skills.jsonl`;
@@ -57,6 +66,17 @@ const log = (type, data) => appendFileSync(`runs/${RUN}/controller.jsonl`, JSON.
 const api = async (method, path, body) => {
   const r = await fetch(HARNESS + path, {method, body: body ? JSON.stringify(body) : undefined, headers: {'Content-Type': 'application/json', Connection: 'close'}});
   return r.json();
+};
+
+// ---- Goal Manager (Agent Core, milestone 1) --------------------------------------------------
+// Ogni attività è un goal con fonte, priorità e stato. La coda è persistita
+// nello stesso formato dei repository della world memory (kind: 'goal') in una
+// directory separata da quella dell'harness, così i due processi non competono
+// sullo stesso file.
+const goalStore = new JsonMemoryRepository({dir: `runs/${RUN}/goals`, logger: null}).load();
+const goalManager = createGoalManager({store: goalStore}).hydrate();
+const enterState = (state, extra = {}) => {
+  log('session_state', {state, runningGoal: goalManager.current?.id ?? null, ...extra});
 };
 
 // ---- Survival Intelligence Layer ------------------------------------------------------------
@@ -324,6 +344,11 @@ const goalMet = (obs, plan, skillStatus) => {
   return targets && at;
 };
 
+// Esegue UN goal fino a un esito terminale e restituisce l'esito senza uscire
+// dal processo: la persistenza del goal e le transizioni di stato sono
+// responsabilità del session loop (main).
+async function runGoal (goal) {
+skillRun = null;
 let obs = await api('GET', '/observe');
 
 // ---- Goal Contract (opzionale, Slice A) -----------------------------------------------------
@@ -356,15 +381,15 @@ if (goalContract) {
     if (initialContract.status !== 'success') runExitCode = 2;
     log('goal_contract_stop', {step: 0, status: initialContract.status, reasons: initialContract.reasons, evidence: initialContract.evidence});
     console.log(`GOAL CONTRACT ${initialContract.status.toUpperCase()} before the first action`);
-    process.exit(runExitCode);
+    return {status: initialContract.status === 'success' ? 'success' : 'failed', exitCode: runExitCode, steps: 0};
   }
 }
 
-let initialPlan = await planForStep(obs, 'start');
+let initialPlan = goal.plan || await planForStep(obs, 'start');
 if (initialPlan?.met) {
   console.log('CURRICULUM GOAL already met');
   log('goal_met', {steps: 0, curriculum: CURRICULUM});
-  process.exit(0);
+  return {status: 'success', exitCode: 0, steps: 0, reason: 'curriculum_already_met'};
 }
 let plan = initialPlan;
 await api('POST', '/plan', plan);
@@ -378,8 +403,10 @@ let chosenFingerprint = null;  // fingerprint dell'osservazione al momento della
 let lastSurvivalFingerprint = null;
 let totalCost = 0;
 let goalReached = false;
+let stepsUsed = 0;
 for (let step = 1; step <= MAX_STEPS; step++) {
   obs = await api('GET', '/observe');
+  stepsUsed = step;
   // Goal Contract: SUCCESS/FAILED/BLOCKED interrompono il loop prima delle
   // altre logiche (il contratto è la fonte di verità del run quando presente).
   const contractStatus = evaluateGoalContract(obs, step - 1);
@@ -553,7 +580,89 @@ if (!goalReached && goalContract && lastContractStatus === 'running') {
   }
 }
 if (!goalReached) {
-  log('run_end', {steps: MAX_STEPS, totalCost, curriculum: CURRICULUM, completedMilestones: [...completedMilestones]});
+  log('run_end', {steps: stepsUsed, totalCost, curriculum: CURRICULUM, completedMilestones: [...completedMilestones], goalId: goal.id});
 }
-// Le connessioni keep-alive di fetch tengono vivo il processo: esci esplicitamente.
-process.exit(runExitCode);
+// Non si esce dal processo: l'esito torna al session loop (main), che decide se
+// registrarlo e passare a IDLE o terminare (modalità one-shot).
+return {status: goalReached ? 'success' : (runExitCode ? 'failed' : 'exhausted'), exitCode: runExitCode, steps: stepsUsed, totalCost};
+}
+
+// ---- session loop: IDLE <-> GOAL_RUNNING ----------------------------------------------------
+function seedInitialGoal () {
+  return goalManager.enqueue({
+    type: CURRICULUM ? 'curriculum' : 'autonomous',
+    source: CURRICULUM ? GOAL_SOURCE.CURRICULUM : GOAL_SOURCE.AUTONOMOUS,
+    objective: GOAL,
+    parameters: {curriculum: CURRICULUM, waypoint: WAYPOINT, targets: TARGETS, maxSteps: MAX_STEPS},
+  });
+}
+
+// IDLE: nessun goal attivo. In session mode si resta in attesa di un nuovo
+// goal (per ora solo ordini in chat); senza SESSION si esce.
+async function waitForGoal () {
+  console.log(`IDLE — waiting for a new goal (chat orders accepted${IDLE_TIMEOUT_MS ? `, timeout ${IDLE_TIMEOUT_MS} ms` : ''})`);
+  enterState('IDLE');
+  const startedAt = Date.now();
+  while (true) {
+    const obs = await api('GET', '/observe').catch(() => null);
+    if (obs) {
+      const cmd = await maybeHumanCommand(obs);
+      if (cmd) {
+        const goal = goalManager.enqueue({
+          type: 'chat', source: GOAL_SOURCE.CHAT, objective: cmd.plan.objective,
+          plan: cmd.plan, parameters: {from: cmd.entry.from, message: cmd.entry.message},
+        });
+        console.log(`IDLE -> goal ${goal.id} from ${cmd.entry.from}: ${goal.objective}`);
+        return goal;
+      }
+    }
+    if (IDLE_TIMEOUT_MS && Date.now() - startedAt >= IDLE_TIMEOUT_MS) {
+      console.log(`IDLE timeout (${IDLE_TIMEOUT_MS} ms) with no new goal`);
+      return null;
+    }
+    await delay(IDLE_POLL_MS);
+  }
+}
+
+async function main () {
+  // Un goal rimasto RUNNING in un run precedente non va ripreso d'ufficio in
+  // questa slice: lo si sospende (resume/suspend espliciti sono milestone 2).
+  for (const stale of goalManager.list({status: GOAL_STATUS.RUNNING})) goalManager.suspend(stale.id, 'session restarted');
+  seedInitialGoal();
+  let exitCode = 0;
+  while (true) {
+    let goal = goalManager.pull();
+    if (!goal) {
+      if (!SESSION) break;
+      goal = await waitForGoal();
+      if (!goal) break;
+    }
+    goalManager.start(goal.id);
+    enterState('GOAL_RUNNING', {goalId: goal.id, source: goal.source});
+    console.log(`GOAL ${goal.id} [${goal.source}] ${goal.objective}`);
+    log('goal_start', {goalId: goal.id, source: goal.source, priority: goal.priority, objective: goal.objective, plan: goal.plan ?? null});
+    const outcome = await runGoal(goal);
+    if (outcome.status === 'success') goalManager.complete(goal.id, {steps: outcome.steps, totalCost: outcome.totalCost});
+    else if (outcome.status === 'failed') goalManager.fail(goal.id, outcome.reason ?? 'failed', {steps: outcome.steps, totalCost: outcome.totalCost});
+    else goalManager.cancel(goal.id, outcome.reason ?? 'exhausted');
+    const final = goalManager.get(goal.id);
+    console.log(`GOAL ${goal.id} ${final.status.toUpperCase()}${final.reason ? ` (${final.reason})` : ''} after ${outcome.steps} actions`);
+    log('goal_end', {goalId: goal.id, status: final.status, reason: final.reason, steps: outcome.steps, totalCost: outcome.totalCost});
+    enterState('GOAL_COMPLETED', {goalId: goal.id, status: final.status});
+    if (!SESSION) { exitCode = outcome.exitCode; break; }
+    if (goal.parentGoal) {
+      const parent = goalManager.get(goal.parentGoal);
+      if (parent?.status === GOAL_STATUS.SUSPENDED) goalManager.resume(parent.id);
+    }
+  }
+  goalManager.flush();
+  // Le connessioni keep-alive di fetch tengono vivo il processo: esci esplicitamente.
+  process.exit(exitCode);
+}
+
+// In session mode un SIGTERM/SIGINT deve salvare la coda prima di uscire.
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => { goalManager.flush(); process.exit(0); });
+}
+
+await main();

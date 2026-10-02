@@ -77,6 +77,11 @@ ANTI_LOOP_COOLDOWN=3    # steps the blocked key stays excluded
 CHAT_ALLOWLIST=<gamertag-o-xuid>   # comma-separated; enables @bot control (default prefix)
 CHAT_PREFIX=@bot                   # prefix that triggers an order (default @bot)
 CHAT_CONTROL=on                    # on/off; default on when CHAT_ALLOWLIST is set
+
+# Persistent agent session (optional)
+SESSION=off                        # on = persistent session loop with an IDLE state; off = one-shot (default)
+IDLE_POLL_MS=2000                  # IDLE polling period for new goals
+IDLE_TIMEOUT_MS=0                  # 0 = wait forever; >0 = exit after this idle time
 ```
 
 > Never commit `.env` or the `nmp-cache`.
@@ -103,6 +108,27 @@ service (`world-memory.mjs`) is storage-agnostic.
 
 > The memory is runtime knowledge (coordinates, contents), not source: it is
 > git-ignored and excluded from the image (`memory/`, `*.sqlite*`).
+
+## Agent session (goal queue)
+
+The controller owns a **Goal Manager** (`goal-manager.mjs`): every activity is a
+goal `{id, type, source, priority, status, objective, plan, parameters}` with
+status `pending/running/suspended/completed/failed` (plus `cancelled`) and
+source `emergency/chat/world_event/player_behavior/curriculum/autonomous`.
+With `SESSION=on` the controller stops being a one-shot loop: when a goal ends
+it enters an explicit **IDLE** state, keeps accepting new goals (in-game `@bot`
+orders become `chat` goals) and resumes running them **without reconnecting**.
+The target state machine is `CONNECTED → IDLE → GOAL_RUNNING → GOAL_COMPLETED →
+IDLE` (AI-player roadmap milestone 0→1).
+
+- Queue file: `runs/<RUN_ID>/goals/world.json` (same repository format as the
+  world memory, `kind: 'goal'`), so it survives a restart.
+- State transitions are logged: `session_state`, `goal_start`, `goal_end` in
+  `runs/<RUN_ID>/controller.jsonl`.
+- A goal left `running` by a previous run is suspended on startup (explicit
+  suspend/resume across sessions is a later milestone).
+- Default `SESSION=off` preserves the historical one-shot behaviour and exit
+  codes (`2` on a `failed` Goal Contract).
 
 ---
 

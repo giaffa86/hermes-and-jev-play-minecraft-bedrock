@@ -69,18 +69,52 @@ DISCONNECTED → CONNECTING → CONNECTED → IDLE → GOAL_RUNNING → GOAL_COM
 
 with interruption (`GOAL_SUSPENDED` / `EMERGENCY_GOAL` / `RESUME_PREVIOUS_GOAL`)
 and connection loss (`CONNECTION_LOST → RECONNECTING → RESTORE_STATE → RESUME`)
-as orthogonal transitions. Today only the connection half of this exists (the
-harness reconnect worker); the goal/idle half does not.
+as orthogonal transitions. The connection half exists (the harness reconnect
+worker); the goal/idle half is now implemented (below).
+
+## Milestone 1 — Agent Core + session loop (implemented)
+
+The controller is now a **persistent session loop**. With `SESSION=on` it does
+not call `process.exit(0)` when a goal ends: it records the outcome, enters an
+explicit `IDLE` state and keeps polling `/observe` for a new goal (an in-game
+`@bot` order becomes a `chat` goal), then runs it against the **same harness
+connection**. `SESSION=off` (default) preserves the historical one-shot loop and
+exit codes.
+
+The **Goal Manager** (`goal-manager.mjs`) is the pure Agent Core behind it:
+
+- goal `{id, type, source, priority, status, objective, plan, parameters,
+  parentGoal, attempts, createdAt, startedAt, finishedAt, reason, result}`;
+- sources `EMERGENCY/CHAT/WORLD_EVENT/PLAYER_BEHAVIOR/CURRICULUM/AUTONOMOUS`
+  with default priorities (emergency > chat > curriculum > autonomous);
+- statuses `PENDING → RUNNING → (SUSPENDED) → COMPLETED/FAILED` plus
+  `CANCELLED`; at most one goal `RUNNING` at a time;
+- `pull()` by priority then FIFO; `preempt()` suspends the running goal;
+- `snapshot()/restore()` and persistence through a repository
+  (`kind: 'goal'`, file `runs/<RUN_ID>/goals/world.json`).
+
+The session loop wires it as: `pull → start → runGoal → complete/fail/cancel →
+IDLE`; transitions are logged (`session_state`, `goal_start`, `goal_end`) and a
+goal left `running` by a previous run is suspended on startup. Covered by
+`tests/goal-manager.test.mjs` (unit) and `tests/controller-session.test.mjs`
+(integration against a fake harness: goal → COMPLETED → IDLE, and an idle `@bot`
+order becoming a new completed `chat` goal with no reconnect).
+
+Still missing (later milestones): a **persistent Goal Manager across
+sessions** (explicit resume), autonomous goal generation in `IDLE` (needs-driven
+behaviour, M3), world-event/emergency preemption producers (M2), and a Goal
+Manager API on the harness HTTP surface.
 
 ## Roadmap milestones
 
-The roadmap orders the work in nine milestones. The first (persistence) is the
-audit above; the rest are design sketches, none implemented yet:
+The roadmap orders the work in nine milestones. Milestone 0 is the audit above
+and milestone 1 (Agent Core) is implemented; the rest are design sketches, none
+implemented yet:
 
 | # | Milestone | What it introduces |
 |---|---|---|
-| 0 | Lifecycle persistence | separate goal/connection lifecycle, idle state, new goal without reconnect, reconnect without losing agent state. |
-| 1 | Agent Core | a **Goal Manager**: every activity is a `goal {id, type, source, priority, status, parameters, parentGoal, createdAt}` with status `PENDING/RUNNING/SUSPENDED/COMPLETED/FAILED` and sources `CHAT/AUTONOMOUS/WORLD_EVENT/PLAYER_BEHAVIOR/EMERGENCY`. Chat commands become goals, never raw primitives. |
+| 0 | Lifecycle persistence | separate goal/connection lifecycle, idle state, new goal without reconnect, reconnect without losing agent state. ✅ session loop + `IDLE` (opt-in `SESSION=on`) |
+| 1 | Agent Core | a **Goal Manager**: every activity is a `goal {id, type, source, priority, status, parameters, parentGoal, createdAt}` with status `PENDING/RUNNING/SUSPENDED/COMPLETED/FAILED` and sources `CHAT/AUTONOMOUS/WORLD_EVENT/PLAYER_BEHAVIOR/EMERGENCY`. Chat commands become goals, never raw primitives. ✅ `goal-manager.mjs` (persistence + preempt/suspend/resume; producers still limited to chat/curriculum) |
 | 2 | Emergency system | world events auto-create preempting goals — `PLAYER_DIED → RECOVER_PLAYER_LOOT (CRITICAL)` with loot priorities (netherite/diamond → enchanted → elytra → …) and risk awareness (lava/warden/nether). |
 | 3 | Autonomy | needs-driven idle behaviour (food low → find food; tool missing → craft; inventory full → store; night → shelter; else explore) via state + rules + utility score, **not** an LLM per decision. |
 | 4 | Social behaviour | attention system (crouch/jump/stare/light hit → `PLAYER_REQUESTS_ATTENTION`) and contextual assistance (mining/fighting/building/fleeing/exploring → assist/observe/ignore). |

@@ -34,7 +34,8 @@ never committed.
 | `sqlite-memory.mjs` | SQLite repository (`node:sqlite`, WAL, chunk index) — default memory backend. |
 | `memory-store.mjs` | JSON repository (same interface) — fallback / tests. |
 | `bedrock-lifecycle.mjs` | Disconnect/teardown lifecycle. |
-| `controller.mjs` | The planner/controller loop (incl. the human chat command channel: `CHAT_ALLOWLIST` → Hermes → `/plan`). |
+| `controller.mjs` | The planner/controller loop (incl. the human chat command channel: `CHAT_ALLOWLIST` → Hermes → `/plan`) and the **persistent session loop** (`SESSION=on`): goal → run → IDLE → next goal, no reconnect. |
+| `goal-manager.mjs` | Pure **Goal Manager** (Agent Core, M1): goal model, sources/priorities, `PENDING/RUNNING/SUSPENDED/COMPLETED/FAILED` transitions, preemption, snapshot/restore, persistence via a repository (`kind: 'goal'`). |
 | `controller-decisions.mjs` | Pure decision helpers (ranking, anti-loop, cap, diagnostics). |
 | `survival/` | Survival Intelligence Layer (governor, resolver, verifier, progression, ...). |
 | `knowledge/` | `survival-rules.json`, `progression.json`. |

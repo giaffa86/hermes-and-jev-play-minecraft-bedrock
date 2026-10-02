@@ -136,11 +136,14 @@ Still missing (the rest of the original gap):
 
 ## Planned / in progress
 
-- **Persistent agent lifecycle** (AI-player roadmap milestone 0): the controller
-  is a one-shot loop (`process.exit(0)` on goal met/budget) while the harness
-  keeps the bot connected. Missing: an explicit `IDLE` state and a goal queue so
-  the bot can accept a new goal (or autonomous idle behaviour) without
-  re-running `controller.mjs`. Full analysis in
+- **Persistent agent lifecycle** (AI-player roadmap milestone 0→1) —
+  **implemented** (2026-10-02): `SESSION=on` turns `controller.mjs` into a
+  persistent session loop with an explicit `IDLE` state, and `goal-manager.mjs`
+  holds the goal queue (sources/priorities/statuses, preempt/suspend/resume,
+  persistence in `runs/<RUN_ID>/goals/world.json`). While idle the bot accepts a
+  new `@bot` order as a `chat` goal and runs it without reconnecting. Still
+  missing: goal resume across sessions, autonomous goal generation while idle,
+  and world-event/emergency producers. Full analysis in
   [ai-player-roadmap](ai-player-roadmap.md).
 
 - **Farming** (`.private/FARMING-TASK.md`) — not started: `plant_<seed>`/resow,

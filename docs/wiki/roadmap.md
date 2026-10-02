@@ -126,20 +126,22 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   Implemented + unit-tested; `go_home` verified live, the rest live-pending.
 - A live `CURRICULUM=first_night` round and the real-multiplayer test (Phase 10).
 
-## Post-goal lifecycle (milestone 0 of the AI-player roadmap)
+## Post-goal lifecycle (milestone 0→1 of the AI-player roadmap)
 
-- **The bot stays connected after a goal ends.** Goal lifecycle and connection
-  lifecycle are already separated: `controller.mjs` is a one-shot loop that
-  `break`s on `GOAL MET` and then `process.exit(0)`, while `bedrock-harness.mjs`
-  keeps the `BedrockAdapter` connected and reconnects on drop. There is no HTTP
-  route that disconnects the bot — only `SIGTERM`/`SIGINT` (harness shutdown).
-- **What is missing is persistence around the goal, not the connection**: no
-  explicit `IDLE` state, no goal queue, no suspend/resume. Once the controller
-  exits, new `@bot` orders are captured but no longer acted on (the chat actor
-  lives in the controller). Re-running `controller.mjs` against the same harness
-  works without reconnect, but it is manual.
-- Full analysis and the target `IDLE → GOAL_RUNNING → GOAL_COMPLETED → IDLE`
-  state machine in [ai-player-roadmap](ai-player-roadmap.md).
+- **Implemented (2026-10-02)**: the controller is now a **persistent session
+  loop** with an explicit `IDLE` state (`SESSION=on`) and a **Goal Manager**
+  (`goal-manager.mjs`). When a goal ends it is not `process.exit(0)`-ed: the
+  outcome is recorded, the loop enters `IDLE` and keeps polling `/observe` for a
+  new goal (an in-game `@bot` order becomes a `chat` goal), then runs it on the
+  same harness connection. The queue is persisted in
+  `runs/<RUN_ID>/goals/world.json` and a `running` goal left by a previous run
+  is suspended on startup. `SESSION=off` (default) preserves the one-shot loop.
+  Unit + integration tests: `tests/goal-manager.test.mjs`,
+  `tests/controller-session.test.mjs`.
+- **Still missing**: resume of a suspended goal across sessions, autonomous goal
+  generation while idle (needs-driven behaviour) and world-event/emergency
+  producers. Full analysis and the target `IDLE → GOAL_RUNNING →
+  GOAL_COMPLETED → IDLE` state machine in [ai-player-roadmap](ai-player-roadmap.md).
 
 ## What is not implemented
 
@@ -179,10 +181,11 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 
 ## Next planned work
 
-1. **Lifecycle persistence** (AI-player roadmap milestone 0): turn the one-shot
-   `controller.mjs` loop into a persistent session loop with an explicit `IDLE`
-   state (or a Session Manager in the harness) that keeps polling for new goals
-   instead of `process.exit(0)` — see [ai-player-roadmap](ai-player-roadmap.md).
+1. **Goal Manager producers** (AI-player roadmap milestone 2+): the session
+   loop and the goal queue exist (`goal-manager.mjs`), but only chat and
+   curriculum seed goals. Next: autonomous goals while `IDLE` (needs-driven
+   behaviour) and world-event/emergency goals with preemption — see
+   [ai-player-roadmap](ai-player-roadmap.md).
 2. **Live-verify the farming actions** on the BDS (`plant_<seed>`/`feed_`/
    `attack_<animal>`/`throw_egg`/`breed_*`/`tame_*`/`shear_sheep`), then milk +
    mature-crop detection.
