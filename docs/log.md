@@ -207,3 +207,13 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Fixed stale test count (265 → 285) and added riding-as-transport to the
   implemented-pending-live list (boats/minecarts/mounts).
 - No contradictions found between `roadmap.md`, `open-questions.md` and the code.
+
+## [2026-10-02] lint | Live round blocked: bot dead + respawn stuck on BDS
+
+- Drove the deployed harness on VM 100 (`docker exec hermes-jev-bedrock`,
+  `/observe`): bot `health:0 deaths:1`, inventory `{potato:2, egg:1}`.
+- `/options` → `wait` only ("Dead; respawning automatically"); container logs
+  show `respawn_request` every 2.5 s with **no** `respawn` packet back from the
+  server. Death→respawn (claimed verified earlier) is currently regressed.
+- Root cause TBD (NetherNet session state vs BDS 1.26.52 respawn trigger).
+  Documented in `wiki/open-questions.md` + `wiki/verification.md` (row 12 → ⚠️).

@@ -21,6 +21,20 @@ capability collaudo checklist (done / pending live), see
 - **Advanced shelter** — no wall/shelter building actions.
 - **Nether portal** — not implemented.
 
+## Respawn stuck on live BDS (2026-10-02)
+
+- The deployed `hermes-jev-bedrock` container is **dead** (`health: 0, deaths: 1`)
+  and stuck: `_survivalTick` sends `player_action {action: 'respawn'}` every
+  2.5 s, but the BDS never replies with the `respawn` packet (no
+  `respawn_packet` log). `/options` degrades to `wait` (`Dead; respawning
+  automatically`), so the bot cannot recover on its own.
+- Root cause not yet isolated: either a NetherNet session-state issue for this
+  player or a protocol change in BDS 1.26.52 (the `player_action respawn` trigger
+  may no longer be the correct respawn request). The documented remedy for
+  stale NetherNet state is a BDS restart at zero players.
+- This blocks all further live rounds (the bot must be alive first). Tracked in
+  [verification](verification.md) row 12.
+
 ## Live verification pending
 
 - `eat` and the container actions `read_container`/`take_<item>`/`deposit_<item>`

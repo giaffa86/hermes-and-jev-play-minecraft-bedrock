@@ -10,6 +10,7 @@ Legend:
   confirmation, inventory delta, flag, etc.).
 - 🧪 **Unit-tested only** — packet shape + pure logic tested; no live round yet.
 - ⏳ **Pending live** — implemented, needs a live round (resource/consent needed).
+- ⚠️ **Regressed / broken live** — previously verified, now failing on the live BDS.
 - ❌ **Not implemented**.
 
 ## How to run
@@ -51,7 +52,7 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 9 | Flee | `flee` | ✅ | `/act flee` with a hostile nearby | Real separation measured. |
 | 10 | Sleep | `sleep` | ✅ | `/act sleep` at night near a bed | `resting` flag / night-skip. |
 | 11 | Dig down/up (stairs) | `dig_down`, `dig_up` | ✅ | `/act dig_down` then `dig_up` | `DIG_PROTECTED` guards built blocks. |
-| 12 | Death + respawn + loot | `recover_loot` | ✅ | die in combat, then `/act recover_loot` | `deathSite`, XP orbs, loot recovered. |
+| 12 | Death + respawn + loot | `recover_loot` | ⚠️ | die in combat, then `/act recover_loot` | `deathSite`/`recover_loot` verified earlier; **respawn currently stuck on live BDS 1.26.52** — server never answers `player_action respawn` (see [open-questions](open-questions.md)). |
 | 13 | Eat | `eat` | ⏳ | `/act eat` with hunger < 20 and food in inventory | Unit-tested; needs the right state live. |
 | 14 | Storage read | `read_container` | ✅ | `/act read_container` | 6 chests/barrels read live 03/10. |
 | 15 | Storage take/deposit | `take_<item>`, `deposit_<item>` | ⏳ | `/act take_iron_ingot`, `/act deposit_diamond` | Unit-tested; take/deposit delta live pending. |
