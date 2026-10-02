@@ -628,3 +628,16 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   `autonomous` shelter goal). Suite green (382).
 - Docs: `wiki/ai-player-roadmap.md` (M3 first slice + "Still missing"),
   `wiki/roadmap.md`, `wiki/open-questions.md`, `sources.md`, `BEDROCK.md`.
+
+## [2026-10-02] query | Memory producers verified live
+
+- Deployed the producers; the discovery scan dedup was purely per-chunk, so the
+  first scan (often before the world was loaded) marked the chunk as done and no
+  site was recorded. Moved the bot across chunks and the producers fired:
+  `counts {landmark:1, resource_site:2, entity:3, container:8}`.
+- Recorded live: `resource_site_7_10` / `resource_site_8_10` (`observations:
+  coal_ore/iron_ore/copper_ore/lapis_ore`) and 3 `entity` (2 donkeys + 1 horse,
+  keyed by `uniqueId`).
+- Fix: `_maybeRememberDiscoveries` now re-scans the same chunk after
+  `DISCOVERY_RESCAN_MS` (15 s), not only on chunk change. Test added.
+- `verification.md` row 40 → ✅; `wiki/memory.md` notes the live result.

@@ -107,7 +107,10 @@ there":
 > chest at (105,72,138) with 122 emeralds among the rest), then a container
 > **restart** reloaded all 9 records (`home` + 8 containers) from
 > `runs/memory/world.sqlite` — the bot remembers the chests and their contents
-> across sessions. Direct SQL (`json_extract`, chunk-spatial sort) works.
+> across sessions. Direct SQL (`json_extract`, chunk-spatial sort) works. The
+> discovery producers were also verified live: the deployed bot recorded 2
+> `resource_site` (coal/iron/copper/**lapis**) and 3 `entity` (2 donkeys +
+> 1 horse).
 
 - Landmarks: `rememberLandmark`, `findLandmarks`, `nearestLandmark`, `hasLandmark`.
 - Containers: `rememberContainer`, `findContainers`, `containersWithItem`.

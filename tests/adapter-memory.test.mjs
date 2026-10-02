@@ -66,3 +66,19 @@ test('the adapter records portals, resource sites and notable entities', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('discovery scans run on a new chunk, not on every refresh', () => {
+  const adapter = new BedrockAdapter({ logger: { log () {} }, memory: {} });
+  let scans = 0;
+  adapter._rememberDiscoveries = () => { scans++; };
+  adapter.position = { x: 0, y: 64, z: 0 };
+  adapter._maybeRememberDiscoveries();
+  adapter._maybeRememberDiscoveries(); // stesso chunk, entro il cooldown
+  assert.equal(scans, 1, 'una scansione per chunk (entro il cooldown)');
+  adapter.position = { x: 40, y: 64, z: 0 }; // chunk nuovo
+  adapter._maybeRememberDiscoveries();
+  assert.equal(scans, 2);
+  adapter._lastDiscoveryAt = 0; // stesso chunk, cooldown scaduto
+  adapter._maybeRememberDiscoveries();
+  assert.equal(scans, 3, 'ri-scansiona dopo il cooldown');
+});

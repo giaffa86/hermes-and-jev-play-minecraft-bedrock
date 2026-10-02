@@ -91,6 +91,7 @@ const SMELT_RECIPES = {
 const STORAGE_BLOCKS = ['chest', 'trapped_chest', 'barrel', 'shulker_box'];
 // TTL della cache contenitori: altri giocatori possono cambiare le scorte.
 const CONTAINER_TTL_MS = 5 * 60 * 1000;
+const DISCOVERY_RESCAN_MS = 15000;   // ri-scansione scoperte nella stessa chunk (mondo appena caricato)
 // Slot esposti da un baule/botte singolo (i bauli doppi ne espongono 54).
 const CONTAINER_SLOT_COUNT = 27;
 
@@ -108,6 +109,7 @@ export class BedrockAdapter {
     this.onDisconnect = onDisconnect;
     this.memory = memory;
     this._lastDiscoveryChunk = null;   // dedup: scoperte scansionate una volta per chunk
+    this._lastDiscoveryAt = 0;
     this.client = null;
     this.status = 'disconnected';
     this.position = null;
@@ -686,13 +688,16 @@ export class BedrockAdapter {
   }
 
   // Producer di memoria: registra scoperte dal mondo (portali, siti di risorse,
-  // entità notevoli). Gira al massimo una volta per chunk per non martellare
-  // (la scansione è più costosa della percezione normale).
+  // entità notevoli). Ri-scansiona al cambio di chunk, e comunque non più spesso
+  // di ogni DISCOVERY_RESCAN_MS: la prima scansione di un chunk può girare a
+  // mondo non ancora caricato, quindi il dedup puramente per-chunk non basta.
   _maybeRememberDiscoveries () {
     if (!this.memory || !this.position) return;
     const key = `${Math.floor(this.position.x / 16)},${Math.floor(this.position.z / 16)}`;
-    if (this._lastDiscoveryChunk === key) return;
+    const now = Date.now();
+    if (this._lastDiscoveryChunk === key && now - this._lastDiscoveryAt < DISCOVERY_RESCAN_MS) return;
     this._lastDiscoveryChunk = key;
+    this._lastDiscoveryAt = now;
     this._rememberDiscoveries();
   }
 
