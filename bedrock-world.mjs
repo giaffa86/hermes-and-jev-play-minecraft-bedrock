@@ -197,6 +197,22 @@ export class BedrockWorld {
     return block;
   }
 
+  // Nome del bioma alla posizione (best-effort). In Bedrock il bioma è per
+  // sezione 3D; usiamo la quota y del punto. Il nome è senza prefisso
+  // 'minecraft:' (es. 'cherry_grove').
+  biomeAt (position) {
+    if (!this.registry || !position) return null;
+    const pos = { x: Math.floor(position.x), y: Math.floor(position.y), z: Math.floor(position.z) };
+    const column = this.columns.get(`${Math.floor(pos.x / 16)},${Math.floor(pos.z / 16)}`);
+    if (!column || typeof column.getBiome !== 'function') return null;
+    try {
+      const biome = column.getBiome({ x: pos.x & 15, y: pos.y, z: pos.z & 15 });
+      return biome?.name ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   findBlocks (names, point, radius = 48, count = 8) {
     if (!this.registry || !point) return [];
     const wanted = new Set(Array.isArray(names) ? names : [names]);

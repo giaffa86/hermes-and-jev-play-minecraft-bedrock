@@ -123,6 +123,12 @@ there":
 - **Entities** (`kind: entity`): `rememberEntity`, `findEntities` — notable
   rideable entities (horse/donkey/…), keyed by the entity `uniqueId`, with a
   `state` (`leashed`, ...) and a lower `confidence` (they move).
+- **Explored chunks** (`kind: explored_chunk`): `markChunkVisited` (records the
+  chunk **biome** via `bedrock-world.biomeAt`), `isChunkVisited`, `visitedChunks`,
+  `chunksWithBiome`, and `unexploredFrontier` (chunks adjacent to a visited one
+  but not yet visited — the "next place to explore" for the deterministic
+  planner). Visits are **buffered in RAM** and written in one transaction
+  (`upsertMany`), so the perception loop never does one INSERT per block.
 - The adapter persists chest observations (`_setContainerContents`) and runs the
   discovery producers (`_rememberDiscoveries`, once per chunk: portal, resource
   site, notable entities).
@@ -136,10 +142,9 @@ there":
 - **Structures** (`kind: structure`): villages, Ancient Cities, … — heuristic
   detection (villagers + beds + village blocks) in the exploration spec M5. The
   `kind` already exists in the model.
-- **Chunk memory**: visited chunks / unexplored frontier (batched inserts).
 - **Mission checkpoints**: persisted exploration routes (see [exploration](exploration.md)).
-- **Query helpers**: `findResources({ contains })` exists; add
-  `nearestLandmark({ kind, radius })` variants as needs appear.
+- **Observation memory**: per-block observations (aggregated, batched with
+  `upsertMany`) if a query ever needs them.
 - **Vector index** over structured memory for *semantic* recall ("the iron-rich
   cave near the mountain") — on top of SQLite, never replacing it.
 

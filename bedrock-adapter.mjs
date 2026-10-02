@@ -733,6 +733,15 @@ export class BedrockAdapter {
         if (!isRideableType(entity.type)) continue;
         this.memory.rememberEntity({ id: `entity_${entity.uniqueId}`, type: entity.type, position: entity.position, state: {}, source: 'observed' });
       }
+      // Chunk visitato (con bioma): alimenta la chunk memory e la frontiera.
+      const biome = typeof this.world.biomeAt === 'function' ? this.world.biomeAt(pos) : null;
+      this.memory.markChunkVisited({
+        x: Math.floor(pos.x / 16),
+        z: Math.floor(pos.z / 16),
+        dimension: this.dimension,
+        biome,
+        y: pos.y,
+      });
     } catch (error) {
       this.log('memory_discovery_error', { message: error.message });
     }

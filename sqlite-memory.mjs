@@ -148,6 +148,20 @@ export class SqliteMemoryRepository {
     return this._remove.run(id).changes > 0;
   }
 
+  // Scrittura in blocco in una transazione: per l'alta frequenza (chunk, osservazioni).
+  upsertMany (records) {
+    if (!records?.length) return 0;
+    this.db.exec('BEGIN');
+    try {
+      for (const record of records) this.upsert(record);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return records.length;
+  }
+
   markStaleBefore ({ kind = null, excludeKind = null, before }) {
     const clauses = ['last_seen_at < ?', "status NOT IN ('invalid', 'stale')"];
     const params = [before];

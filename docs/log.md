@@ -665,3 +665,17 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Refreshed the current test count to **383 green unit tests** (2026-10-03) in
   `roadmap.md`, `companions.md`, `survival-intelligence.md`; updated the
   `ai-player-roadmap.md` and `companions.md` one-line summaries in `index.md`.
+
+## [2026-10-02] feat | Chunk memory (visited/frontier, batched) + biome
+
+- `world-memory.mjs`: exploring chunks — `markChunkVisited` (buffered),
+  `flushChunks`, `isChunkVisited`, `visitedChunks`, `chunksWithBiome`,
+  `unexploredFrontier` (chunks adjacent to a visited one but not visited);
+  `flush()`/`close()` flush the buffer; `_kindCounts` accounts for the buffer.
+- Repositories: `upsertMany` (SQLite runs it in a transaction; JSON loops);
+  the JSON repo now derives `chunk` from the position like SQLite.
+- `bedrock-world.mjs`: `biomeAt(pos)` → biome name (e.g. `cherry_grove`).
+- `bedrock-adapter.mjs`: the discovery producer records the visited chunk with
+  its biome once per chunk.
+- Tests both backends + `biomeAt`; suite green (386).
+- `wiki/memory.md` + `open-questions.md` updated.

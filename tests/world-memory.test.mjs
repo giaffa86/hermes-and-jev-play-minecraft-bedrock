@@ -66,7 +66,7 @@ for (const backend of BACKENDS) {
     const view = wm.observeView();
     assert.equal(view.landmarks[0].type, 'sheep_farm');
     assert.equal(view.containers[0].contents.white_wool, 5);
-    assert.deepEqual(wm.summary(), { records: 2, landmarks: 1, containers: 1 });
+    assert.deepEqual(wm.summary(), { records: 2, landmarks: 1, containers: 1, chunks: 0 });
   }));
 
   test(`[${backend}] resource sites, portals and entities are remembered and queried`, () => withMemory(backend, (wm) => {
@@ -94,6 +94,22 @@ for (const backend of BACKENDS) {
     assert.equal(view.counts.entity, 1);
     // I luoghi restano separati da risorse/portali/entità.
     assert.equal(wm.findLandmarks().length, 0);
+  }));
+
+  test(`[${backend}] explored chunks: mark, visited, biome, frontier (batched)`, () => withMemory(backend, (wm) => {
+    wm.markChunkVisited({ x: 0, z: 0, biome: 'plains' });
+    wm.markChunkVisited({ x: 1, z: 0, biome: 'cherry_grove' });
+    wm.markChunkVisited({ x: 0, z: 0 }); // rivisita
+    assert.equal(wm.isChunkVisited({ x: 0, z: 0 }), true);
+    assert.equal(wm.isChunkVisited({ x: 9, z: 9 }), false);
+    const visited = wm.visitedChunks();
+    assert.equal(visited.length, 2);
+    assert.equal(visited.find(r => r.id === 'chunk_overworld_0_0').visits, 2);
+    assert.equal(wm.chunksWithBiome('cherry_grove').length, 1);
+    const frontier = wm.unexploredFrontier();
+    assert.equal(frontier.length, 10, 'frontiera = vicini non visitati');
+    assert.ok(frontier.every(f => !(f.x === 0 && f.z === 0) && !(f.x === 1 && f.z === 0)));
+    assert.ok(frontier.some(f => f.x === 0 && f.z === -1));
   }));
 
   test(`[${backend}] memory persists across a new service instance`, () => {

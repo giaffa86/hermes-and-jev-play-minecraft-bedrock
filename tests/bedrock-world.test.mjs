@@ -94,3 +94,11 @@ test('refresh invalidates cached block data until the requested section arrives'
   assert.deepEqual(requests[0].params.origin, { x: -1, y: -1, z: -1 });
   assert.deepEqual(requests[0].params.requests, [{ x: 0, y: 0, z: 0 }]);
 });
+
+test('biomeAt reads the biome name from the loaded column', () => {
+  const world = new BedrockWorld();
+  world.registry = {};
+  world.columns = new Map([['0,0', { getBiome: () => ({ name: 'cherry_grove' }) }]]);
+  assert.equal(world.biomeAt({ x: 5, y: 64, z: 5 }), 'cherry_grove');
+  assert.equal(world.biomeAt({ x: 100, y: 64, z: 5 }), null, 'colonna non caricata');
+});

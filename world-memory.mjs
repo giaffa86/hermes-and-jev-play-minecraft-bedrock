@@ -38,6 +38,7 @@ export class WorldMemory {
   } = {}) {
     if (!repo) throw new Error('WorldMemory needs a repository');
     this.repo = repo;
+    this._chunkBuffer = new Map();   // chunk visitati in RAM, scritti in blocco
     this.containerStaleMs = containerStaleMs;
     this.landmarkStaleMs = landmarkStaleMs;
   }
@@ -244,6 +245,87 @@ export class WorldMemory {
     return this.repo.find({ kind: 'entity', type, near, includeInvalid, limit });
   }
 
+  // ---- explored chunks (batched) ---------------------------------------------------
+
+  _chunkKey (dimension, x, z) {
+    return `chunk_${dimension}_${x}_${z}`;
+  }
+
+  // Segna un chunk come visitato, con il bioma. Bufferizzato in RAM e scritto in
+  // blocco (`upsertMany`): una INSERT per blocco visto sarebbe un disastro; per
+  // chunk sarebbe tollerabile, ma il batch uniforma l'alta frequenza futura.
+  markChunkVisited ({ x, z, dimension = 'overworld', biome = null, y = 64, at = Date.now() }) {
+    const key = this._chunkKey(dimension, x, z);
+    const existing = this._chunkBuffer.get(key) ?? this.repo.get(key);
+    const record = {
+      id: key,
+      kind: 'explored_chunk',
+      type: 'chunk',
+      dimension,
+      position: { x: x * 16 + 8, y, z: z * 16 + 8 },
+      biome: biome ?? existing?.biome ?? null,
+      visits: (existing?.visits ?? 0) + 1,
+      discoveredAt: existing?.discoveredAt ?? at,
+      lastSeenAt: at,
+      confidence: 1,
+      status: MEMORY_STATUS.KNOWN,
+      tags: [],
+      source: 'travel',
+    };
+    this._chunkBuffer.set(key, record);
+    return record;
+  }
+
+  flushChunks () {
+    if (!this._chunkBuffer.size) return 0;
+    const records = [...this._chunkBuffer.values()];
+    this.repo.upsertMany(records);
+    this._chunkBuffer.clear();
+    return records.length;
+  }
+
+  isChunkVisited ({ x, z, dimension = 'overworld' }) {
+    const key = this._chunkKey(dimension, x, z);
+    return this._chunkBuffer.has(key) || this.repo.get(key) != null;
+  }
+
+  // Le query che devono essere complete flushano prima (le chiama il planner,
+  // non il loop di percezione).
+  visitedChunks ({ dimension = 'overworld', near = null, radius = null, limit = null } = {}) {
+    this.flushChunks();
+    return this.repo.find({ kind: 'explored_chunk', dimension, near, radius, limit });
+  }
+
+  chunksWithBiome (biome, { dimension = 'overworld', limit = null } = {}) {
+    this.flushChunks();
+    return this.repo.find({ kind: 'explored_chunk', dimension, limit }).filter(r => r.biome === biome);
+  }
+
+  // Frontiera: chunk adiacenti a quelli visitati e non ancora visitati — la
+  // "prossima cosa da esplorare" per il planner deterministico.
+  unexploredFrontier ({ dimension = 'overworld', near = null, radius = 512, limit = null } = {}) {
+    this.flushChunks();
+    const visited = this.repo.find({ kind: 'explored_chunk', dimension, near, radius });
+    const seen = new Set(visited.map(r => `${r.chunk?.x},${r.chunk?.z}`));
+    const frontier = new Map();
+    for (const r of visited) {
+      const cx = r.chunk?.x, cz = r.chunk?.z;
+      if (cx == null || cz == null || Number.isNaN(cx) || Number.isNaN(cz)) continue;
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          if (!dx && !dz) continue;
+          const key = `${cx + dx},${cz + dz}`;
+          if (seen.has(key) || frontier.has(key)) continue;
+          frontier.set(key, { x: cx + dx, z: cz + dz, center: { x: (cx + dx) * 16 + 8, y: 64, z: (cz + dz) * 16 + 8 } });
+        }
+      }
+    }
+    let out = [...frontier.values()];
+    if (near) out.sort((a, b) => distance3d(a.center, near) - distance3d(b.center, near));
+    if (limit) out = out.slice(0, limit);
+    return out;
+  }
+
   // ---- status ----------------------------------------------------------------------
 
   // Promuove a STALE ciò che è stato osservato troppo tempo fa. Non invalida
@@ -261,9 +343,11 @@ export class WorldMemory {
   }
 
   summary () {
+    this.flushChunks();
     const total = this.repo.count();
     const containers = this.repo.count({ kind: 'container' });
-    return { records: total, landmarks: total - containers, containers };
+    const chunks = this.repo.count({ kind: 'explored_chunk' });
+    return { records: total, landmarks: total - containers - chunks, containers, chunks };
   }
 
   observeView ({ maxContainers = 20, maxLandmarks = 20 } = {}) {
@@ -287,14 +371,19 @@ export class WorldMemory {
       const n = this.repo.count({ kind });
       if (n) counts[kind] = n;
     }
+    // I chunk sono bufferizzati: conta anche quelli non ancora scritti.
+    const chunks = this.repo.count({ kind: 'explored_chunk' }) + [...this._chunkBuffer.keys()].filter((k) => !this.repo.get(k)).length;
+    if (chunks) counts.explored_chunk = chunks;
     return counts;
   }
 
   flush () {
+    this.flushChunks();
     this.repo.flush();
   }
 
   close () {
+    this.flushChunks();
     this.repo.close();
   }
 }

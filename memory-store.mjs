@@ -51,7 +51,10 @@ export class JsonMemoryRepository {
 
   upsert (record) {
     if (!record?.id) throw new Error('memory record needs an id');
-    this.records.set(record.id, { ...record });
+    const p = record.position || { x: 0, y: 0, z: 0 };
+    // Come lo storage SQLite: deriva il chunk dalla posizione, così entrambi i
+    // repository espongono `chunk` (usato dalla chunk memory / frontiera).
+    this.records.set(record.id, { ...record, chunk: { x: Math.floor(p.x / 16), z: Math.floor(p.z / 16) } });
     this.dirty = true;
     return record.id;
   }
@@ -74,6 +77,11 @@ export class JsonMemoryRepository {
     const removed = this.records.delete(id);
     if (removed) this.dirty = true;
     return removed;
+  }
+
+  upsertMany (records) {
+    for (const record of records || []) this.upsert(record);
+    return records?.length ?? 0;
   }
 
   markStaleBefore ({ kind = null, excludeKind = null, before }) {

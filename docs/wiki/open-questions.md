@@ -92,15 +92,16 @@ default) / `memory-store.mjs` (JSON fallback). It persists **landmarks**
 (`rememberContainer`), **resource sites** (`rememberResourceSite` from nearby
 ores, per chunk), **portals** (`rememberPortal`, the `portal` block +
 nether-side coords) and **entities** (`rememberEntity`, rideables keyed by
-`uniqueId`), with `known/stale/invalid` status and `lastSeenAt` — memory is
-historical, not current truth. The adapter runs the producers once per chunk. See
+`uniqueId`), **explored chunks** (`markChunkVisited` with the chunk **biome**,
+`unexploredFrontier`), with `known/stale/invalid` status and `lastSeenAt` —
+memory is historical, not current truth. The adapter runs the producers once per
+chunk. See
 [memory](memory.md). `/observe.memory` exposes a compact view; `MEMORY_DIR`
 (default `runs/memory`) selects the directory.
 
 Still missing (the rest of the original gap):
 
 - **structures** — villages / Ancient Cities have no heuristic detector yet;
-- **chunk memory** — visited chunks / unexplored frontier (batched inserts);
 - **mission checkpoints** ([exploration](exploration.md) M1);
 - everything else stays ephemeral: `this.containers` (runtime TTL cache, now
   *also* written to memory), `deathSite`, `entities`, `drops`, `_openDoors`, and
