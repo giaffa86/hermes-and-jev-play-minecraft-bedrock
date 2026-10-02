@@ -119,3 +119,16 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   `sheared`; new `_nearbyTameable` census.
 - Tests: `tests/bedrock-farming.test.mjs` extended (18); suite 265 green. Live
   verification on the BDS pending.
+
+## [2026-10-03] ingest | Farming live-verified on the BDS
+
+- Redeployed to VM 100 (`hermes-jev-bedrock`) and drove the harness HTTP API.
+- ✅ `read_container` (6 chests/barrels), `mine_potatoes`/`mine_carrots` →
+  `collect_drop` → `plant_potato` (re-sow, `server_world`), `throw_egg`,
+  `feed_pig` (`inlove`), `breed_pig` (`babies: 1`, `baby:true`).
+- ⚠️ Not tested: `attack_<animal>` (would kill a family animal), `tame_wolf`/
+  `tame_cat` (no wolf/cat nearby), `shear_sheep` + `craft_shears` (no sheep).
+- Note: first `feed_pig` attempt returned `feed_not_confirmed` while the pig
+  wandered; a retry close-up succeeded — the action may need one retry for
+  distant/wandering animals.
+- `BEDROCK.md` action table and `roadmap.md` status updated.
