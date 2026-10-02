@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
 
-const host = process.env.BEDROCK_HOST || '<ip-server-bedrock>';
+const host = process.env.BEDROCK_HOST || '127.0.0.1';
 const port = +(process.env.BEDROCK_PORT || 19132);
 
 (async () => {

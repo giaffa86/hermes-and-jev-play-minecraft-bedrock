@@ -1,7 +1,7 @@
 // Verifica live sul BDS di tracking entità, ora del giorno, letti e opzioni di
 // sopravvivenza. Con --fight / --eat / --sleep esegue anche le azioni relative.
 // Prima di eseguire fermare il container di produzione (stesso account bot):
-//   sudo docker stop hermes-jev-bedrock   (su host Docker)
+//   sudo docker stop hermes-jev-bedrock   (sull'host Docker)
 // Uso: node --env-file=.env test-survival.mjs [--fight] [--eat] [--sleep]
 import { BedrockAdapter } from './bedrock-adapter.mjs';
 import { setTimeout as delay } from 'node:timers/promises';

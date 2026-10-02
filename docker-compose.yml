@@ -1,4 +1,4 @@
-# Docker Compose per l'agente Hermes + Jev Bedrock su host Docker.
+# Docker Compose per l'agente Hermes + Jev Bedrock sull'host Docker.
 # Il container si connette al BDS via NetherNet e comunica con il servizio Hermes
 # esistente sulla rete Docker condivisa `hermes-internal`.
 #
@@ -46,5 +46,5 @@ networks:
     driver: bridge
   hermes-internal:
     external: true
-    # Nome reale della rete Docker di Hermes (verificare su host Docker)
+    # Nome reale della rete Docker di Hermes (verificare sull'host Docker)
     name: hermes-internal

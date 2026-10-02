@@ -19,7 +19,7 @@ L'architettura è la stessa: **Hermes** pianifica, **Jev** sceglie un'azione tra
 | `bedrock-world.mjs` | Registry Bedrock 1.26 e decoder Prismarine v9; richieste `subchunk_request`, gestione di hash sconosciuti e sezioni non ricevute. |
 | `bedrock-lifecycle.mjs` | Disconnessione del gioco prima del teardown SCTP/DTLS e attesa della pulizia asincrona, riutilizzabile dai test. |
 | `Dockerfile` | Immagine Node.js 24 con il progetto e le dipendenze. |
-| `docker-compose.yml` | Avvia il container su host Docker con le reti corrette e la persistenza della cache Xbox. |
+| `docker-compose.yml` | Avvia il container sull'host Docker con le reti corrette e la persistenza della cache Xbox. |
 | `test-ping.mjs` | Ping NetherNet al server Bedrock. |
 | `test-connect.mjs` | Connessione + spawn di test. |
 
@@ -29,7 +29,7 @@ L'architettura è la stessa: **Hermes** pianifica, **Jev** sceglie un'azione tra
 
 - Server Minecraft Bedrock Dedicated Server `1.26.50+` con `transport=nethernet`.
 - Account Microsoft/Xbox del bot aggiunto all'allowlist del server.
-- VM/LXC Linux con Docker (testato su host Docker, `<ip-host>`).
+- VM/LXC Linux con Docker (testato sull'host `<ip-host>`).
 - Cache token Xbox Live in `~/.minecraft/nmp-cache` (popolata al primo login).
 
 ---
@@ -71,7 +71,7 @@ ANTI_LOOP_COOLDOWN=3    # passi in cui la key bloccata resta esclusa
 
 ---
 
-## Deploy su host Docker
+## Deploy sull'host Docker
 
 ### 1. Copia del progetto
 
@@ -158,7 +158,7 @@ sudo docker cp hermes:/opt/data/runs /home/<utente-ssh>/hermes-jev-bedrock/runs-
 
 ---
 
-## Architettura di rete su host Docker
+## Architettura di rete sull'host Docker
 
 ```text
 +----------------+       hermes-internal       +------------------+
@@ -169,7 +169,7 @@ sudo docker cp hermes:/opt/data/runs /home/<utente-ssh>/hermes-jev-bedrock/runs-
                                                        | bridge
                                                        v
                                                <ip-server-bedrock>:19132
-                                               (server Bedrock BDS)
+                                               (BDS)
 ```
 
 - `hermes-internal`: rete Docker di Hermes, usata per la comunicazione tra i container.
@@ -194,8 +194,11 @@ sudo docker cp hermes:/opt/data/runs /home/<utente-ssh>/hermes-jev-bedrock/runs-
 | `sleep` | ✅ Funzionante | Di notte cerca il letto più vicino (blocco `bed` nel mondo caricato), ci cammina accanto e lo clicca (`click_block`). Conferma dal flag `resting` nei metadata oppure, con un solo giocatore, dal salto d'orario dell'alba (`slept: 'night_skipped'`). Verificato live il 02/10 (due notti saltate). `player_bed_position` non è usato come stato (è il letto di respawn); con mostri vicini il server rifiuta e l'azione riporta `sleep_rejected`. |
 | `craft_*` | ✅ Funzionante | Ricette da `crafting_data` (network id), griglia 2×2 nell'inventario e 3×3 al tavolo da lavoro; item_stack_request `craft_recipe` con consumi e output. I tag `stone_tool_materials`/`stone_crafting_materials` sono mappati (cobblestone/cobbled_deepslate/blackstone) e `minecraft:coals` (carbone + carbonella) per le torce; `craft_furnace` usa 8 cobblestone al tavolo. |
 | `smelt_*` | ✅ Funzionante | Fusione con mappa statica input→output (il protocollo 1.26 non manda le `furnace_recipes` nel `crafting_data`; se presenti, hanno priorità) e **stazione adatta**: altoforno (`blast_furnace`) per i minerali, affumicatore (`smoker`) per il cibo, fornace base per tutto il resto, con fallback alla fornace se la stazione preferita non c'è. Apre la stazione (`click_block`), mette 1 materiale nel container ingrediente giusto (`furnace_ingredient`/`blast_furnace_ingredient`/`smoker_ingredient`) e 1 combustibile in `furnace_fuel` (carbone/carbonella, poi assi/tronchi), aspetta l'output dagli aggiornamenti slot del server (con riapertura della stazione come ripiego) e lo ritira in inventario. **Verificato live il 02/10**: `craft_furnace` → `place_furnace` → `smelt_raw_iron` → `iron_ingot` (15,8 s, 1 carbone consumato). |
-| `recover_loot` | ✅ Base | Recupero post-morte: il sito di morte è registrato su `deathSite` (posizione dei piedi); dopo il respawn l'azione ci torna con il pathfinding, raccoglie i drop nel raggio di 12 blocchi e resta un momento sul posto per gli orb EXP. `/observe` espone `deathSite` ed `experience`; il risultato riporta `recovered`, `leftNearby`, `expGained`. Coperto da unit test. |
+| `recover_loot` | ✅ Funzionante | Recupero post-morte: il sito di morte è registrato su `deathSite` (posizione dei piedi); dopo il respawn l'azione ci torna con il pathfinding, raccoglie i drop nel raggio di 12 blocchi e resta un momento sul posto per gli orb EXP. `/observe` espone `deathSite` ed `experience`; il risultato riporta `recovered`, `leftNearby`, `expGained`. **Verificato live il 02/10** (`e2e-minerals5`: loot recuperato dopo la morte in combattimento + `+1 EXP`). |
 | `place_*` | ✅ Base | Piazzamento con transazione `click_block`; usato per tavoli da lavoro e fornaci. Lo swap in hotbar rilegge l'inventario dal server (riconnessione) se lo stack id è stantio. |
+| `read_container` | ⚠️ Da verificare live | Censisce i contenitori di stoccaggio vicini (`chest`/`trapped_chest`/`barrel`/`shulker_box`): si avvicina, apre con `click_block` (window_type Bedrock `container`), parsifica `inventory_content` (slot 0..26, 54 per i bauli doppi) e memorizza in `this.containers` (`Map("<x,y,z>" → { type, readAt, contents })`). Esposto in `/observe.containers` con item e quantità. Coperto da unit test. |
+| `take_<item>` | ⚠️ Da verificare live | Preleva da un contenitore noto e non scaduto l'intera slot dell'item (`item_stack_request` take dal container slot verso il cursore, poi rientro in inventario), verifica i delta (inventario +N, baule −N) e aggiorna la cache. Offerto solo se un contenitore noto ha l'item; la descrizione riporta posizione e quantità. |
+| `deposit_<item>` | ⚠️ Da verificare live | Deposita un item di valore (lingotti, minerali, diamanti, ...) dall'inventario nel contenitore noto/vicino più prossimo (take verso il cursore + place nello slot vuoto o parziale del container), verifica i delta e aggiorna la cache. Mitigazione di `keep-inventory=false`. |
 
 ### Sopravvivenza (aggiornamento 02/10/2026)
 
@@ -203,11 +206,11 @@ sudo docker cp hermes:/opt/data/runs /home/<utente-ssh>/hermes-jev-bedrock/runs-
 - **Ora del giorno**: BDS 1.26 non invia `set_time`; l'ora arriva da `sync_world_clocks` (clock `minecraft:overworld`, `% 24000`) con fallback `set_time`.
 - **Attributi del giocatore**: `update_attributes` usa il campo `current` (non `value`) per vita, fame e livello/esperienza (`minecraft:player.level`, `minecraft:player.experience`).
 - **Morte e respawn**: vita <= 0 → stato `dead`; il client invia `player_action` respawn e completa il flusso rispondendo ai pacchetti `Respawn` del server con `state = 2` (client_ready). La posizione finale si applica allo `state 1`; fallback a 4 s. Verificato live il 02/10 (il bot è morto in combattimento e si è risvegliato al letto).
-- **Recupero post-morte**: alla morte il sito viene registrato (`deathSite`); dopo il respawn `/options` offre `recover_loot`, che torna sul posto, raccoglie i drop nel raggio di 12 blocchi e resta un momento per gli orb EXP. Il sito resta finché non c'è più loot vicino (o finché il percorso fallisce: si ritenta dopo). Coperto da unit test; collaudo live in corso.
+- **Recupero post-morte**: alla morte il sito viene registrato (`deathSite`); dopo il respawn `/options` offre `recover_loot`, che torna sul posto, raccoglie i drop nel raggio di 12 blocchi e resta un momento per gli orb EXP. Il sito resta finché non c'è più loot vicino (o finché il percorso fallisce: si ritenta dopo). **Verificato live il 02/10** (`recover_loot` → loot recuperato + `+1 EXP`).
 - **Limbo post-respawn**: se il fallback chiude il respawn ma la vita resta a 0 (server non pronto, input ignorati), il tick di sopravvivenza riapre il flusso di respawn dopo 5 s (`respawn_limbo_recover`). Recupero osservato live il 02/10 con un riavvio del container (poi automatizzato).
 - **Hash non risolti**: i blocchi `unknown` sono conservativi nella pianificazione (niente percorsi attraverso muri invisibili) e scavabili con rottura grezza (`_mineRawCell`).
-- `/observe` espone `time`, `sleeping`, `dead`, `deaths`, `deathSite`, `experience`, `entities` (con distanza, tipo e vita).
-- `/options` offre `attack_<tipo>`, `flee`, `eat`, `sleep`, `dig_up` e `recover_loot` quando validi; le opzioni `attack_` sono deduplicate per tipo.
+- `/observe` espone `time`, `sleeping`, `dead`, `deaths`, `deathSite`, `experience`, `entities` (con distanza, tipo e vita) e `containers` (censimento dei bauli/botti letti, con posizione, tipo, `readAt` e contenuto per item).
+- `/options` offre `attack_<tipo>`, `flee`, `eat`, `sleep`, `dig_up` e `recover_loot` quando validi; le opzioni `attack_` sono deduplicate per tipo. In più offre `read_container` (contenitori vicini non ancora letti), `take_<item>` (item presenti in un baule noto) e `deposit_<item>` (oggetti di valore con un baule noto/vicino).
 - Verificato live (02/10): tracking entità (cat, maiali, creeper/zombie/skeleton con vita), orologio/notte, fame, letti della base, attacco (colpi a segno), fuga, sonno (due notti saltate), morte+respawn, mining/rottura (anche di celle `unknown`), dig_up dalla buca, recupero post-morte (loot + EXP), carbone e ferro minati e raccolti, fusione `raw_iron → iron_ingot`. `eat` resta coperto da unit test e serializzazione: per il collaudo live servono fame < 20 e cibo in inventario.
 - Diagnostica: rotte `GET /debug/geom` e `POST /debug/mine` (solo con `BEDROCK_DEBUG=1`); log opzionali `BEDROCK_PACKET_LOG=1` e `BEDROCK_META_LOG=1`.
 
@@ -361,5 +364,5 @@ Fermare il container prima di avviare un test sul nodo con lo stesso account. At
 - Repo originale Java: `teknium1/hermes-and-jev-play-minecraft`
 - Fork locale: `giaffa86/hermes-and-jev-play-minecraft-bedrock`
 - Fork bedrockflayer NetherNet: `giaffa86/mineflayer-for-bedrock-nethernet`
-- Wiki server: `<percorso-wiki>/wiki/minecraft-bedrock.md`
-- Wiki Hermes: `<percorso-wiki>/wiki/hermes-agent.md`
+- Wiki locale (privata, non pubblicata): pagina Minecraft Bedrock
+- Wiki locale (privata, non pubblicata): pagina Hermes Agent

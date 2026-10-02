@@ -2,7 +2,7 @@
 
 [Hermes Agent](https://github.com/NousResearch/hermes-agent) plans. [Jev](https://typesafe.ai) (TypeSafe's System-One model) picks one bounded action at a time. A Mineflayer harness decides which actions are valid and executes them. No screenshots, no keypresses, no generated code from any model.
 
-> **Bedrock Edition fork**: questo repository è il porting su Minecraft Bedrock Edition. Per istruzioni specifiche (Docker, NetherNet, deploy su host Docker) vedi [`BEDROCK.md`](BEDROCK.md).  
+> **Bedrock Edition fork**: questo repository è il porting su Minecraft Bedrock Edition. Per istruzioni specifiche (Docker, NetherNet, deploy sull'host Docker) vedi [`BEDROCK.md`](BEDROCK.md).  
 > Vedi anche il framework Mineflayer-like per Bedrock/NetherNet: [`giaffa86/mineflayer-for-bedrock-nethernet`](https://github.com/giaffa86/mineflayer-for-bedrock-nethernet).
 
 The split is the one [rmalde/minecraft-agent](https://github.com/rmalde/minecraft-agent) used to beat the Ender Dragon from a fresh Survival world in 8:43 with GPT-6 Astra + Jev. That repository has no license, so **nothing here is copied from it**; this is an independent, much smaller implementation of the same architecture, built to (1) run the pattern with Hermes as the planner and (2) reproduce the original result.

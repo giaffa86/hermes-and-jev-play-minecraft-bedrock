@@ -11,7 +11,7 @@ const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
 
-const HOST = process.env.BEDROCK_HOST || '<ip-server-bedrock>';
+const HOST = process.env.BEDROCK_HOST || '127.0.0.1';
 const PORT = +(process.env.BEDROCK_PORT || 19132);
 const USERNAME = process.env.BEDROCK_USERNAME || 'hermes-bot';
 const AUTH_TITLE_NAME = process.env.BEDROCK_AUTH_TITLE || 'MinecraftNintendoSwitch';
@@ -75,6 +75,21 @@ const SMELT_RECIPES = {
   cod: 'cooked_cod',
   salmon: 'cooked_salmon',
 };
+// Contenitori di stoccaggio: bauli, bauli-trappola, botti e shulker (opzionale).
+// La window_type Bedrock per baule/botte è 'container'; lo slot nelle richieste
+// stack usa ContainerSlotType 7 ('container') per i bauli e 58 ('barrel') per le botti.
+const STORAGE_BLOCKS = ['chest', 'trapped_chest', 'barrel', 'shulker_box'];
+// TTL della cache contenitori: altri giocatori possono cambiare le scorte.
+const CONTAINER_TTL_MS = 5 * 60 * 1000;
+// Slot esposti da un baule/botte singolo (i bauli doppi ne espongono 54).
+const CONTAINER_SLOT_COUNT = 27;
+
+const STORAGE_CONTAINER_SLOT = {
+  chest: 'container',
+  trapped_chest: 'container',
+  barrel: 'barrel',
+  shulker_box: 'shulker',
+};
 
 export class BedrockAdapter {
   constructor ({ logger = console, onLog, onDisconnect } = {}) {
@@ -120,6 +135,9 @@ export class BedrockAdapter {
     this._furnaceSlots = {};           // ingredient/fuel/output del container fornace aperto
     this._stackRequestId = -861;       // id dispari negativi come il client vanilla
     this._openContainer = null;        // { id, type } del container UI aperto
+    this._openContainerBlock = null;   // { name, position } del blocco storage aperto
+    this._openContainerSlots = [];     // slot grezzi dell'inventory_content del container storage
+    this.containers = new Map();       // "<x,y,z>" -> { type, readAt, contents: { item: count } }
     this._containerWaiters = [];
     this._craftingGrid = new Map();    // gridSlot -> { network_id, count, stack_id }
     this._cursor = null;               // { network_id, count, stack_id }
@@ -234,6 +252,8 @@ export class BedrockAdapter {
 
       client.on('container_open', (packet) => {
         this._openContainer = { id: packet.window_id, type: packet.window_type };
+        this._openContainerBlock = null;
+        this._openContainerSlots = [];
         this.log('container_open', { windowId: packet.window_id, windowType: packet.window_type });
         for (const waiter of this._containerWaiters.splice(0)) {
           if (waiter.predicate(packet)) waiter.resolve(packet);
@@ -424,6 +444,17 @@ export class BedrockAdapter {
                 const item = packet.input[slot];
                 return item?.network_id ? `${this._slotItemName(item)}:${item.count}:${item.stack_id ?? 'none'}` : '-';
               }),
+            });
+          }
+          // Contenitore di stoccaggio (baule/botte/shulker): la window_type è
+          // 'container'; il contenuto è l'elenco completo delle slot 0..26 (54 se doppio).
+          if (this._openContainer.type === 'container' && this._openContainerBlock) {
+            this._openContainerSlots = packet.input;
+            this.log('container_content', {
+              block: this._openContainerBlock.name,
+              containerId: containerId ?? null,
+              slots: packet.input.length,
+              items: packet.input.filter(s => s?.network_id).map(s => `${this._slotItemName(s)}:${s.count}`).join(' ').slice(0, 400),
             });
           }
         }
@@ -634,6 +665,12 @@ export class BedrockAdapter {
         ? { damage: this._itemDamage(heldSlot), max: heldInfo.maxDurability }
         : null,
       drops: this.drops.slice(0, 8),
+      containers: this._cachedContainers().map(c => ({
+        position: c.position,
+        type: c.type,
+        readAt: c.readAt,
+        contents: c.contents,
+      })),
       plan: this.plan,
       nearby: this.nearbyBlocks,
       recent: this.recent.slice(-8),
@@ -781,6 +818,37 @@ export class BedrockAdapter {
         o.push({ key: `smelt_${target.input}`, description: `Smelt 1 ${target.input} into ${target.output} in the nearby ${station.name.replace('_', ' ')} (uses 1 ${fuel.name})` });
       }
     }
+    // Contenitori di stoccaggio: censimento, prelievo e deposito.
+    const storageBlocks = this._findNearbyStorageBlocks();
+    const cached = this._cachedContainers();
+    if (storageBlocks.length) {
+      const freshKeys = new Set(cached.map(c => c.key));
+      const stale = storageBlocks.filter(b => !freshKeys.has(this._containerCacheKey(b.position)));
+      if (stale.length) {
+        const names = [...new Set(storageBlocks.map(b => b.name))].join(', ');
+        o.push({ key: 'read_container', description: `Open and inventory ${storageBlocks.length} nearby storage container(s) (${names})` });
+      }
+    }
+    // Prelievo: solo item presenti in un contenitore noto e non scaduto.
+    let takeOffered = 0;
+    for (const c of cached) {
+      for (const [item, count] of Object.entries(c.contents)) {
+        if (!count) continue;
+        o.push({ key: `take_${item}`, description: `Take ${count} ${item} from the ${c.type} at ${JSON.stringify(c.position)} (container has ${count})` });
+        if (++takeOffered >= 8) break;
+      }
+      if (takeOffered >= 8) break;
+    }
+    // Deposito: oggetti di valore verso il contenitore noto (o vicino) più prossimo.
+    const depositTarget = cached[0] || storageBlocks[0];
+    if (depositTarget) {
+      let depositOffered = 0;
+      for (const item of Object.keys(this.inventory)) {
+        if (!this._isValuable(item) || !(this.inventory[item] > 0)) continue;
+        o.push({ key: `deposit_${item}`, description: `Deposit ${this.inventory[item]} ${item} into the ${depositTarget.type} at ${JSON.stringify(depositTarget.position)}` });
+        if (++depositOffered >= 6) break;
+      }
+    }
     // Fallback
     if (!o.length) o.push({ key: 'wait', description: 'Wait 2 seconds for fresh observations' });
     return o;
@@ -821,6 +889,12 @@ export class BedrockAdapter {
         result = await this._craftItem(key.slice('craft_'.length));
       } else if (key.startsWith('smelt_')) {
         result = await this._smeltItem(key.slice('smelt_'.length));
+      } else if (key === 'read_container') {
+        result = await this._readContainers();
+      } else if (key.startsWith('take_')) {
+        result = await this._takeFromContainer(key.slice('take_'.length));
+      } else if (key.startsWith('deposit_')) {
+        result = await this._depositItem(key.slice('deposit_'.length));
       } else if (key.startsWith('place_')) {
         const itemName = key.slice('place_'.length);
         result = await this._placeBlock(itemName, itemName);
@@ -1108,6 +1182,8 @@ export class BedrockAdapter {
     if (!open || !this.client) return;
     this.client.write('container_close', { window_id: open.id, window_type: 'none', server: false });
     this._openContainer = null;
+    this._openContainerBlock = null;
+    this._openContainerSlots = [];
     // Il server restituisce o fa cadere gli item rimasti nella griglia: lo stato locale non è più valido.
     if (this._craftingGrid.size) this.log('grid_leftovers_discarded', { slots: [...this._craftingGrid.keys()] });
     this._craftingGrid.clear();
@@ -1537,6 +1613,209 @@ export class BedrockAdapter {
       if (!output) return { ok: false, error: 'smelt_timeout', input: inputName };
       const taken = await this._takeFurnaceOutput();
       return { ok: true, station: station.name, smelted: inputName, output: target.output, count: taken?.count || output.count || 1, ms: Date.now() - started };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    } finally {
+      await this._returnCursorToInventory().catch(() => {});
+      await this._closeContainer().catch(() => {});
+      this._refreshInventory();
+    }
+  }
+
+  // ---- bauli / botti / shulker -----------------------------------------------------
+
+  _containerCacheKey (position) {
+    return `${position.x},${position.y},${position.z}`;
+  }
+
+  _storageContainerSlotType (blockName) {
+    return STORAGE_CONTAINER_SLOT[blockName] || 'container';
+  }
+
+  _isValuable (itemName) {
+    return /(_ingot$|diamond$|emerald$|_ore$|^raw_|netherite|golden_|ender_pearl$|^experience)/.test(itemName);
+  }
+
+  _findNearbyStorageBlocks (radius = 32) {
+    if (!this.position || !this.world?.findBlocks) return [];
+    const found = [];
+    for (const name of STORAGE_BLOCKS) {
+      found.push(...this.world.findBlocks(name, this.position, radius, 6));
+    }
+    found.sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity));
+    return found;
+  }
+
+  // Contenitori noti, non scaduti, ordinati per distanza. La cache scade dopo
+  // CONTAINER_TTL_MS perché altri giocatori possono cambiare le scorte.
+  _cachedContainers () {
+    const now = Date.now();
+    const out = [];
+    for (const [key, entry] of this.containers) {
+      if (now - entry.readAt >= CONTAINER_TTL_MS) { this.containers.delete(key); continue; }
+      out.push({ key, ...entry, distance: this._pointDistance(entry.position) });
+    }
+    out.sort((a, b) => a.distance - b.distance);
+    return out;
+  }
+
+  _setContainerContents (entry, contents) {
+    this.containers.set(entry.key, { type: entry.type, position: entry.position, readAt: Date.now(), contents });
+  }
+
+  _storageContentsFromSlots (slots) {
+    const contents = {};
+    for (const slot of slots || []) {
+      if (!slot?.network_id) continue;
+      const name = this._slotItemName(slot);
+      if (!name) continue;
+      contents[name] = (contents[name] || 0) + (slot.count || 0);
+    }
+    return contents;
+  }
+
+  async _ensureStorageOpen (target) {
+    const alreadyOpen = this._openContainer?.type === 'container' && this._openContainerBlock
+      && this._openContainerBlock.position.x === target.position.x
+      && this._openContainerBlock.position.y === target.position.y
+      && this._openContainerBlock.position.z === target.position.z;
+    if (alreadyOpen) return;
+    if (this._openContainer) await this._closeContainer();
+    if ((target.distance ?? this._pointDistance(target.position)) > 3.5) {
+      await this._moveTo({ x: target.position.x + 0.5, y: target.position.y, z: target.position.z + 0.5 }, 3, 30000);
+    }
+    await delay(100);
+    let lastError = null;
+    for (let attempt = 1; attempt <= 3 && this._openContainer?.type !== 'container'; attempt++) {
+      const wait = this._waitForContainerOpen(p => p.window_type === 'container', 2500);
+      const yaw = this._yawTo(this._feet, { x: target.position.x + 0.5, z: target.position.z + 0.5 });
+      const pitch = this._lookAt({ x: target.position.x + 0.5, y: target.position.y + 0.5, z: target.position.z + 0.5 }).pitch;
+      await this._queueAuthInput({ yaw, pitch, transaction: this._blockUseTransaction(target.position) });
+      try {
+        await wait;
+      } catch (error) {
+        lastError = error;
+        if (this._openContainer?.type === 'container') break;
+        await delay(300);
+      }
+    }
+    if (this._openContainer?.type !== 'container') throw lastError || new Error(`${target.name}_not_opened`);
+    this._openContainerBlock = { name: target.name, position: target.position };
+    await delay(200); // lascia arrivare inventory_content con le slot del container
+  }
+
+  async _readContainers () {
+    const blocks = this._findNearbyStorageBlocks();
+    if (!blocks.length) return { ok: false, error: 'container_not_found' };
+    const started = Date.now();
+    const read = [];
+    for (const block of blocks) {
+      try {
+        await this._ensureStorageOpen(block);
+        const contents = this._storageContentsFromSlots(this._openContainerSlots);
+        const key = this._containerCacheKey(block.position);
+        this.containers.set(key, { type: block.name, position: block.position, readAt: Date.now(), contents });
+        read.push({ position: block.position, type: block.name, contents });
+      } catch (error) {
+        this.log('container_read_failed', { block: block.name, position: block.position, error: error.message });
+      } finally {
+        await this._closeContainer().catch(() => {});
+      }
+    }
+    if (!read.length) return { ok: false, error: 'container_read_failed' };
+    return { ok: true, read: read.length, containers: read, ms: Date.now() - started };
+  }
+
+  async _takeFromContainer (itemName) {
+    const entry = this._cachedContainers().find(c => (c.contents[itemName] || 0) > 0);
+    if (!entry) return { ok: false, error: 'item_not_in_container' };
+    const before = this.inventory[itemName] || 0;
+    const started = Date.now();
+    try {
+      await this._ensureStorageOpen(entry);
+      const slots = this._openContainerSlots || [];
+      const slotIndex = slots.findIndex(s => this._slotItemName(s) === itemName && (s.count || 0) > 0);
+      if (slotIndex < 0) {
+        // La cache diceva di averlo ma il contenuto reale è cambiato: riallinea.
+        this._setContainerContents(entry, this._storageContentsFromSlots(slots));
+        return { ok: false, error: 'item_not_in_container' };
+      }
+      const slot = slots[slotIndex];
+      const count = slot.count || 1;
+      const slotType = this._storageContainerSlotType(entry.type);
+      const take = await this._sendStackRequest([{
+        type_id: 'take', legacy_type_id: 0, count,
+        source: this._slotInfo(slotType, slotIndex, slot.stack_id || 0),
+        destination: this._slotInfo('cursor', 0, 0),
+      }]);
+      if (String(take.status) !== 'ok' && take.status !== 0) throw new Error(`take_failed_${take.status}`);
+      this._applyStackResponse(take, { networkId: slot.network_id });
+      const returned = await this._returnCursorToInventory();
+      if (!returned) throw new Error('take_return_failed');
+      const contents = { ...entry.contents };
+      contents[itemName] = (contents[itemName] || 0) - count;
+      if (contents[itemName] <= 0) delete contents[itemName];
+      this._setContainerContents(entry, contents);
+      const after = this.inventory[itemName] || 0;
+      this.log('container_take', { block: entry.type, position: entry.position, item: itemName, count, inventoryDelta: after - before });
+      return { ok: true, item: itemName, count, from: entry.type, position: entry.position, inventoryDelta: after - before, ms: Date.now() - started };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    } finally {
+      await this._returnCursorToInventory().catch(() => {});
+      await this._closeContainer().catch(() => {});
+      this._refreshInventory();
+    }
+  }
+
+  async _depositItem (itemName) {
+    const cached = this._cachedContainers();
+    let target = cached[0];
+    if (!target) {
+      const block = this._findNearbyStorageBlocks()[0];
+      if (!block) return { ok: false, error: 'container_not_found' };
+      target = { key: this._containerCacheKey(block.position), type: block.name, position: block.position, contents: {} };
+    }
+    const index = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && (s.count || 0) > 0);
+    if (index < 0) return { ok: false, error: 'missing_item' };
+    const before = this.inventory[itemName] || 0;
+    const started = Date.now();
+    try {
+      await this._ensureStorageOpen(target);
+      const slots = this._openContainerSlots || [];
+      const slotType = this._storageContainerSlotType(target.type);
+      const stackSize = this._itemStackSize(this.inventorySlots[index].network_id);
+      // Destinazione: uno slot già occupato dallo stesso item (se c'è spazio) oppure il primo vuoto.
+      let destSlot = slots.findIndex(s => this._slotItemName(s) === itemName && (s.count || 0) < stackSize);
+      if (destSlot < 0) destSlot = slots.findIndex(s => !s?.network_id);
+      if (destSlot < 0) throw new Error('container_full');
+      const source = this.inventorySlots[index];
+      const count = Math.min(source.count || 0, stackSize);
+      const info = this._invSlotAsSource(index);
+      const take = await this._sendStackRequest([{
+        type_id: 'take', legacy_type_id: 0, count,
+        source: this._slotInfo(info.container, info.slot, source.stack_id || 0),
+        destination: this._slotInfo('cursor', 0, 0),
+      }]);
+      if (String(take.status) !== 'ok' && take.status !== 0) throw new Error(`take_failed_${take.status}`);
+      this._applyStackResponse(take, { networkId: source.network_id });
+      const cursorStack = this._responseSlotStack(take, 'cursor', 0) ?? 0;
+      const existing = slots[destSlot];
+      const place = await this._sendStackRequest([{
+        type_id: 'place', legacy_type_id: 1, count,
+        source: this._slotInfo('cursor', 0, cursorStack),
+        destination: this._slotInfo(slotType, destSlot, existing?.stack_id || 0),
+      }]);
+      if (String(place.status) !== 'ok' && place.status !== 0) throw new Error(`place_failed_${place.status}`);
+      this._applyStackResponse(place, { networkId: source.network_id });
+      this._cursor = null;
+      // Base sul contenuto reale letto dal server (non sulla cache, che può essere stantia).
+      const contents = this._storageContentsFromSlots(this._openContainerSlots);
+      contents[itemName] = (contents[itemName] || 0) + count;
+      this.containers.set(target.key, { type: target.type, position: target.position, readAt: Date.now(), contents });
+      const after = this.inventory[itemName] || 0;
+      this.log('container_deposit', { block: target.type, position: target.position, item: itemName, count, inventoryDelta: after - before });
+      return { ok: true, item: itemName, count, into: target.type, position: target.position, inventoryDelta: after - before, ms: Date.now() - started };
     } catch (error) {
       return { ok: false, error: error.message };
     } finally {

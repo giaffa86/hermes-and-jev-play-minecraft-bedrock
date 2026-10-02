@@ -1,6 +1,6 @@
 // Connectivity smoke test: entra nel server Bedrock come vero player.
 // Requisiti:
-//   - BEDROCK_USERNAME (gamertag o email Microsoft) deve essere in allowlist.json del server Bedrock.
+//   - BEDROCK_USERNAME (gamertag o email Microsoft) deve essere nell'allowlist del server Bedrock.
 //   - Se BEDROCK_USERNAME non è impostato, usa offline:true (verrà kickato da BDS online-mode=true,
 //     ma utile per verificare che il codice non crashi).
 // Usa bedrock-protocol@3.60.1 in modalità NetherNet con backend jsp-raknet per evitare
@@ -10,7 +10,7 @@ const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
 
-const host = process.env.BEDROCK_HOST || '<ip-server-bedrock>';
+const host = process.env.BEDROCK_HOST || '127.0.0.1';
 const port = +(process.env.BEDROCK_PORT || 19132);
 const username = process.env.BEDROCK_USERNAME || 'hermes-bot-test';
 const authTitleName = process.env.BEDROCK_AUTH_TITLE || 'MinecraftNintendoSwitch';
