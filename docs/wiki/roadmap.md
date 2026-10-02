@@ -100,7 +100,15 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 - Farming core **verified live on 03/10**: `read_container` (6 chests/barrels),
   `mine_<crop>` → `collect_drop` → `plant_potato` (re-sow, `server_world`),
   `throw_egg`, `feed_pig` (`inlove`), `breed_pig` (`babies: 1`).
-- 383 green unit tests (2026-10-03).
+- **Goal/episodic memory layer** (03/10): missions carry `rawPrompt`/`intent`/
+  `outcome`/`success`; goal edges `mission_relation` (separate from the world
+  graph's `memory_relation`); `action_event` history; episodic queries
+  `findPreviousMissions`/`findSuccessfulLocationsFor`. **Wired into the
+  controller**: each goal becomes a mission, plan targets become `seeks` edges,
+  each action is an `action_event`, the goal end closes the mission with
+  outcome/success (best-effort). Unit-tested; live round pending — see
+  [memory](memory.md).
+- 437 green unit tests (2026-10-03).
 
 ## What is implemented but not verified live
 
@@ -229,8 +237,11 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 11. **Memory follow-ups** (see [memory](memory.md)): a **structure detector**
     (villages / Ancient Cities → `structure:*` nodes), an explicit
     **observation log** (`subject/predicate/object` that materializes the
-    current graph), and a **vector index** for semantic recall. The graph,
-    producers, chunk memory and missions are implemented and live-verified.
+    current graph), a **vector index** for semantic recall, and the
+    **episodic → semantic consolidation** (write productivity hints on target
+    nodes after a successful mission, so `findSuccessfulLocationsFor` ranks
+    proven places). The graph, producers, chunk memory, missions and the
+    goal/episodic controller wiring are implemented and unit-tested.
 12. **Travel kit** (spec in
     [exploration](exploration.md#travel-survival-kit-and-adaptation-multi-day-expeditions)):
     `craft_bed`/`place_bed` + `/observe.travel` readiness are implemented and

@@ -172,6 +172,12 @@ Still missing (the rest of the original gap):
   `read_container`); `attack_<animal>`/`tame_<companion>`/`shear_sheep` are
   implemented but live-pending. Remaining gaps: milk and mature-crop detection.
   Consolidated status in [roadmap](roadmap.md).
+- **Goal/episodic memory** (03/10) — the mission layer over the world graph is
+  implemented (`mission` + `mission_relation` goal edges + `action_event` +
+  `findPreviousMissions`/`findSuccessfulLocationsFor`) and **wired into the
+  controller** (goal → mission, `seeks` edges, action events, outcome/success on
+  close). Live round pending; next slice is the **episodic → semantic
+  consolidation** (productivity hints on target nodes). See [memory](memory.md).
 - **Human chat command channel**: natural-language remote control via in-game
   chat (`@bot seguimi`, `@bot aiutami coi mob`). M1–M3 implemented (chat capture,
   allowlist + trigger, NL → Hermes → `/plan`, `follow_player`); **live

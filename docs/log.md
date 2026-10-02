@@ -221,6 +221,13 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   lines. All best-effort (a harness without `/mission` degrades gracefully).
 - Tests: `tests/controller-mission.test.mjs` (2); suite 437 green.
 
+## [2026-10-03] doc | Open tasks consolidated on the wiki
+
+- `roadmap.md`: added the goal/episodic memory layer + controller wiring to
+  "done", refreshed the test count (437), and added the episodic → semantic
+  consolidation to the memory follow-ups.
+- `open-questions.md`: added the goal/episodic memory bullet (done + next slice).
+
 ## [2026-10-03] lint | Roadmap status refresh (test count + riding)
 
 - Verified the consolidated tracker `wiki/roadmap.md` against the code: every
