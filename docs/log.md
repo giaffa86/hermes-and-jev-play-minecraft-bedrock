@@ -226,3 +226,13 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Bot respawned alive (`health:20, spawned:true`, spawn point, empty inventory —
   death dropped the items). Conclusion: the stuck respawn was stale NetherNet
   session state, not a protocol bug. Updated `open-questions.md` + `verification.md`.
+
+## [2026-10-02] query | Live trading attempt: open_trade fails on BDS 1.26.52
+
+- After the respawn unblock, surveyed spawn: 2 `villager_v2` (~1.7 m and ~9 m),
+  cat, 5 pigs, crops (potatoes/carrots/wheat/beetroots), ores (coal/iron/copper),
+  logs (oak/spruce/cherry). No chests in radar.
+- `/options` offered `open_trade`/`level_farmer` → `/act open_trade` failed twice
+  (`trade_not_opened`). The `interact` was sent but the server answered
+  `inventory_content` (`anvil_input`) instead of `update_trade`/`container_open`.
+  Root cause TBD. Documented in `trading.md` + `verification.md` row 16.

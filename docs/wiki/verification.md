@@ -56,7 +56,7 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 13 | Eat | `eat` | ⏳ | `/act eat` with hunger < 20 and food in inventory | Unit-tested; needs the right state live. |
 | 14 | Storage read | `read_container` | ✅ | `/act read_container` | 6 chests/barrels read live 03/10. |
 | 15 | Storage take/deposit | `take_<item>`, `deposit_<item>` | ⏳ | `/act take_iron_ingot`, `/act deposit_diamond` | Unit-tested; take/deposit delta live pending. |
-| 16 | Trading | `open_trade`, `trade_<index>`, `close_trade` | ⏳ | `/act open_trade` on a villager | Final trade transaction + tier-up pending. |
+| 16 | Trading | `open_trade`, `trade_<index>`, `close_trade` | ⏳ | `/act open_trade` on a villager | First live attempt 02/10: `open_trade` failed (`trade_not_opened`, 2×) — after `interact` the server sent `inventory_content` (`anvil_input`) instead of `update_trade`/`container_open(trading)`; root cause TBD. |
 | 17 | Trader levelling | `level_<profession>` | ⏳ | `/act level_farmer` | Cheap-only economy; live tier-up pending. |
 | 18 | Follow human / chat | `follow_player` (+ `@bot` M1–M3) | ⏳ | chat `@bot seguimi` with a human online | Wiring + unit tests; live pending. |
 | 19 | Plant / resow crops | `plant_<seed>` | ✅ | `/act plant_potato` on free farmland | `plant_potato` re-sowed live 03/10. |
