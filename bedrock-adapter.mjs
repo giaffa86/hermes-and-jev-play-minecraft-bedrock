@@ -61,7 +61,6 @@ export class BedrockAdapter {
     this.selectedHotbar = 0;
     this._authInputQueue = [];
     this._tickAnchor = null;
-    this._nextStackRequestId = -1;
     this.drops = [];
     this.nearbyBlocks = {};
     this.dimension = 'overworld';
@@ -269,7 +268,6 @@ export class BedrockAdapter {
         this.inventory = {};
         this.pickups = {};
         this.selectedHotbar = 0;
-        this._nextStackRequestId = -1;
         this.tick = BigInt(packet.current_tick || 0);
         this._tickAnchor = { tick: this.tick, time: Date.now() };
         this._lastSimTick = null;
@@ -1624,7 +1622,7 @@ export class BedrockAdapter {
     // The wire variant is 9, but its compatibility action ID remains 11.
     // Container-only actions 7 and 8 are absent from the variant table.
     const itemStackRequest = this.serverAuthBlockBreaking && tool?.maxDurability && damage > 0 ? {
-      request_id: this._nextStackRequestId--,
+      request_id: this._nextStackRequest(),
       actions: [{ type_id: 'mine_block', legacy_type_id: 11,
         hotbar_slot: this.selectedHotbar, predicted_durability: this._itemDamage(held) + damage,
         network_id: held.stack_id || 0 }],
