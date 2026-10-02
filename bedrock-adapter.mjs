@@ -485,7 +485,7 @@ export class BedrockAdapter {
           const item = packet.item;
           this.drops.push({ id: packet.entity_id_self, runtime_id: packet.runtime_entity_id,
             item: item?.name || this.world.registry?.items[item?.network_id]?.name || 'unknown',
-            count: item?.count || 1, position: p, distance: +dist.toFixed(1) });
+            count: item?.count || 1, position: p, distance: +dist.toFixed(1), spawnedAt: Date.now() });
         }
       });
 
@@ -702,11 +702,18 @@ export class BedrockAdapter {
     }
     const o = [];
     const p = this.pos();
-    if (this.plan?.waypoint && p && Math.hypot(this.plan.waypoint.x - p.x, this.plan.waypoint.z - p.z) > 2) {
+    const waypointUnmet = this.plan?.waypoint && p && Math.hypot(this.plan.waypoint.x - p.x, this.plan.waypoint.z - p.z) > 2;
+    const drop = this._nearestDrop();
+    // Un drop fresco e vicino va raccolto subito: lo si mette prima del waypoint
+    // e lo si segnala nella descrizione.
+    const fresh = drop && drop.spawnedAt && Date.now() - drop.spawnedAt < 15000 && drop.distance <= 8;
+    if (drop && fresh) {
+      o.push({ key: 'collect_drop', description: `Pick up the item just dropped (${drop.item} ×${drop.count || 1}, ${drop.distance.toFixed(1)} blocks away)` });
+    }
+    if (waypointUnmet) {
       o.push({ key: 'goto_waypoint', description: `Pathfind to planner waypoint ${JSON.stringify(this.plan.waypoint)}` });
     }
-    const drop = this._nearestDrop();
-    if (drop) {
+    if (drop && !fresh) {
       o.push({ key: 'collect_drop', description: `Walk onto the nearest dropped item (${drop.distance.toFixed(1)} blocks away)` });
     }
     // Sopravvivenza: mob ostili, cibo e letto. Le descrizioni portano il contesto
@@ -937,7 +944,7 @@ export class BedrockAdapter {
 
   _nearestDrop () {
     return this.drops
-      .filter(drop => !drop.failedAt || Date.now() - drop.failedAt > 30000)
+      .filter(drop => !drop.failedAt || Date.now() - drop.failedAt > 10000)
       .map(drop => ({ ...drop, distance: this._dropDistance(drop) }))
       .sort((a, b) => a.distance - b.distance)[0] || null;
   }
@@ -1001,6 +1008,39 @@ export class BedrockAdapter {
 
   _dropStillThere (drop) {
     return this.drops.some(d => String(d.id) === String(drop.id) || (drop.runtime_id != null && String(d.runtime_id) === String(drop.runtime_id)));
+  }
+
+  // Auto-raccolta dei drop vicini, usata subito dopo mining/scavi: il drop cade
+  // entro il raggio d'azione ma il pickup richiede di camminarci sopra.
+  async _pickupNearby ({ maxDistance = 3.5, limit = 2, budgetMs = 6000 } = {}) {
+    const deadline = Date.now() + Math.max(1500, budgetMs);
+    const picked = [];
+    for (let i = 0; i < limit && Date.now() < deadline; i++) {
+      const drop = this.drops
+        .map(entry => ({ ...entry, distance: this._dropDistance(entry) }))
+        .filter(entry => entry.distance <= maxDistance && (!entry.failedAt || Date.now() - entry.failedAt > 10000))
+        .sort((a, b) => a.distance - b.distance)[0];
+      if (!drop) break;
+      try {
+        await this._moveTo(drop.position, 0.6, Math.min(3000, Math.max(800, deadline - Date.now())));
+      } catch (error) {
+        this.log('pickup_move_failed', { item: drop.item, error: error.message });
+        const entry = this.drops.find(d => String(d.id) === String(drop.id));
+        if (entry) entry.failedAt = Date.now();
+        continue;
+      }
+      // Il pickup può avvenire un tick dopo l'avvicinamento.
+      const waitUntil = Math.min(Date.now() + 1200, deadline);
+      while (Date.now() < waitUntil && this._dropStillThere(drop)) await delay(100);
+      if (!this._dropStillThere(drop)) {
+        picked.push({ item: drop.item, count: drop.count || 1 });
+        this.log('pickup', { item: drop.item, count: drop.count || 1 });
+      } else {
+        const entry = this.drops.find(d => String(d.id) === String(drop.id));
+        if (entry) entry.failedAt = Date.now();
+      }
+    }
+    return picked;
   }
 
   async _collectDrop (timeoutMs = 20000) {
@@ -2376,9 +2416,10 @@ export class BedrockAdapter {
         const remaining = this.world.blockAt(pos);
         if (remaining && remaining.name !== 'unknown' && remaining.name !== block.name) {
           await send({ blockAction: action('stop_break') });
+          const picked = await this._pickupNearby();
           this._refreshNearby();
           return { ok: true, block: block.name, position: pos, confirmedBy: 'server_world',
-            destroyedEvent, tool: this.world.registry?.items[held.network_id]?.name || null, ms: Date.now() - started };
+            destroyedEvent, tool: this.world.registry?.items[held.network_id]?.name || null, ms: Date.now() - started, picked };
         }
         await delay(50);
       }
@@ -3803,10 +3844,11 @@ export class BedrockAdapter {
       const current = this.world.blockAt(position);
       if (!current || current.name !== 'unknown' || current.runtimeId !== runtimeId) {
         await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch, blockAction: action('stop_break') });
+        const picked = await this._pickupNearby();
         this.world.refreshSection(this.client, position);
         this._refreshNearby();
         this.log('raw_mined', { position, ms: Date.now() - started });
-        return { ok: true, block: 'unknown', position, ms: Date.now() - started };
+        return { ok: true, block: 'unknown', position, ms: Date.now() - started, picked };
       }
       await delay(50);
     }
