@@ -140,10 +140,11 @@ In every case the Survival Governor handles hunger/health/hostiles and then
 
 ### Capability gaps for this
 
-- `craft_bed` (3 wool + 3 planks) and `place_bed` — **not implemented** (wool is
-  obtainable via `shear_sheep`).
-- **Travel-kit / loadout** preparation (what to carry before leaving) — **not
-  implemented**.
+- `craft_bed` (3 wool + 3 planks) and `place_bed` — **implemented** (option +
+  `wool` tag), and a **travel-kit readiness** checklist is exposed in
+  `/observe.travel` (`missing: [...]`). Live round pending (no wool available).
+- **Travel-kit / loadout** *action* (auto-prepare before leaving) — still **not
+  implemented** (readiness is informational only).
 - **Inventory-full handling** (drop/consume or abort the trip) — **not
   implemented**.
 - **Pillar-up** action — **not implemented** (the bot has `dig_up`/`dig_down`

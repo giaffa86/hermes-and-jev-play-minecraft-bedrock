@@ -826,6 +826,7 @@ export class BedrockAdapter {
       inventory: this.inventory,
       held: this._slotItemName(heldSlot),
       armor: { ...this.armor, points: this._armorPoints() },
+      travel: this._travelReadiness(),
       memory: this.memory ? this.memory.observeView() : null,
       heldDurability: heldInfo?.maxDurability
         ? { damage: this._itemDamage(heldSlot), max: heldInfo.maxDurability }
@@ -1060,6 +1061,13 @@ export class BedrockAdapter {
           this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
         o.push({ key: 'craft_fishing_rod', description: 'Craft a fishing rod from 3 sticks and 2 string (uses a crafting table)' });
       }
+      // Letto: 3 lana (qualsiasi colore) + 3 assi. Per saltare la notte in viaggio.
+      const woolTotal = Object.keys(this.inventory).filter(n => /_wool$/.test(n)).reduce((s, n) => s + this.inventory[n], 0);
+      const plankTotal = Object.keys(this.inventory).filter(n => /_planks$/.test(n)).reduce((s, n) => s + this.inventory[n], 0);
+      if (this.recipes.has('bed') && woolTotal >= 3 && plankTotal >= 3 &&
+          this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
+        o.push({ key: 'craft_bed', description: 'Craft a bed (3 wool + 3 planks) to skip the night on a trip (uses a crafting table)' });
+      }
     }
     // Piazzamento: solo ciò che serve alla progressione.
     if ((this.inventory.crafting_table || 0) > 0 && !this.world.findBlocks('crafting_table', this.position, 8, 1).length) {
@@ -1071,6 +1079,9 @@ export class BedrockAdapter {
     }
     if ((this.inventory.torch || 0) > 0) {
       o.push({ key: 'place_torch', description: 'Place a torch to light up the area (ward off mobs)' });
+    }
+    if ((this.inventory.bed || 0) > 0 && !this.world.findBlocks('bed', this.position, 8, 1).length) {
+      o.push({ key: 'place_bed', description: 'Place a bed to sleep and set the respawn point' });
     }
     // Fusione: stazione adatta (altoforno per i minerali, affumicatore per il
     // cibo, altrimenti fornace) + materiale + combustibile.
@@ -1672,6 +1683,8 @@ export class BedrockAdapter {
       }
       // Torce e fornaci da carbone: il tag è "coals" (carbone + carbonella).
       if (tag === 'coals' || tag === 'coal') return /^(coal|charcoal)$/.test(name);
+      // Letto: 3 lana (qualsiasi colore) + 3 assi.
+      if (tag === 'wool' || tag === 'wools') return /_wool$/.test(name);
       return true; // tag non mappato: lascia decidere al server
     }
     return false;
@@ -4864,6 +4877,26 @@ export class BedrockAdapter {
 
   _bestFoodItem () {
     return bestFood(this.inventory);
+  }
+
+  // Kit di viaggio: cosa manca per una spedizione multi-giorno (solo informativo:
+  // la scelta resta al planner). `night` è soddisfatto da un letto O dalla lana
+  // per craftarlo; `armor` è opzionale (spesso assente a inizio partita).
+  _travelReadiness () {
+    const inv = this.inventory;
+    const total = (re) => Object.entries(inv).reduce((s, [n, c]) => s + (re.test(n) ? c : 0), 0);
+    const items = {
+      food: !!this._bestFoodItem(),
+      sword: total(/_sword$/) > 0,
+      armor: Object.values(this.armor).some(Boolean),
+      blocks: total(/(cobblestone|dirt|_planks$|_log$|^stone$)/) > 0,
+      light: (inv.torch || 0) > 0 || ((inv.coal || 0) + (inv.charcoal || 0) >= 1 && (inv.stick || 0) >= 1),
+      night: (inv.bed || 0) > 0 || total(/_wool$/) >= 3,
+      craftingTable: (inv.crafting_table || 0) > 0,
+      space: this.inventorySlots.filter(s => !s?.network_id).length > 4,
+    };
+    const missing = Object.entries(items).filter(([, ok]) => !ok).map(([k]) => k);
+    return { ready: missing.length === 0, items, missing };
   }
 
   // Transazione item_use click_air (cibo/pozioni) nella forma attesa da

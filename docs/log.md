@@ -797,3 +797,46 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - **Verified live**: mission created/activated, a sparse checkpoint recorded
   (biome `bamboo_jungle_hills`), completed (`found`); `has_checkpoint`/`targets`
   edges in SQLite. `wiki/memory.md` + `verification.md` row 42 updated.
+
+## [2026-10-02] feat | Travel kit: craft_bed/place_bed + readiness
+
+- `bedrock-adapter.mjs`: `craft_bed` option (3 wool + 3 planks at a table; the
+  `wool` item tag now matches any colour) and `place_bed` (reuses `place_*`).
+  New `_travelReadiness()` exposed in `/observe.travel`: food, sword, armor,
+  blocks, light, night (bed **or** ≥3 wool), crafting table, free inventory +
+  the `missing` list.
+- Tests: `wool` tag matching, `craft_bed`/`place_bed` options, readiness;
+  suite green (402).
+- `BEDROCK.md` action table + `verification.md` (rows 43-44) + `exploration.md`
+  + `open-questions.md` updated.
+- **Live**: `/observe.travel` verified (`missing: [food, armor, light, night,
+  craftingTable]`; `sword/blocks/space` present). `craft_bed`/`place_bed` live
+  round still pending — **no wool** on the server (no chest holds wool; shears
+  need the iron chain).
+
+## [2026-10-02] feat | Emergency producers: PLAYER_DIED → recover_loot (M2 first slice)
+
+- New pure `world-events.mjs`: transition-based `detectEvents(prev, curr)` →
+  `PLAYER_DIED` (dead flag flip **or** a new death site, since a poll can miss
+  the dead frame), `LOW_HEALTH`, `HOSTILE_AMBUSH`; each event carries a
+  `dedupKey` so a persistent condition fires once.
+- New pure `emergency-goals.mjs`: `emergencyGoalFor(event, {parentGoal, attempts,
+  cooldownMs})` maps events to `EMERGENCY` goals — today `PLAYER_DIED →
+  recover_loot` (priority 100, plan `{recover:true}`, loot-priority list,
+  `parentGoal`) — with a cooldown/dedup map. Events without a builder (low
+  health, ambush) stay with the Survival Governor.
+- `controller.mjs`: inside the running goal, `runGoal` compares observations and
+  on a critical event returns `{status:'preempted', emergency}`; `main` calls
+  `goalManager.preempt()` (the running goal → `SUSPENDED`), enqueues the
+  emergency goal, runs it on the next iteration and — via the existing
+  `parentGoal` handling — resumes the parent when it completes. `goalMet` closes
+  a `plan.recover` goal when the harness clears `deathSite`. New env `EMERGENCY`
+  (default on with `SESSION`) and `EMERGENCY_COOLDOWN_MS`.
+- Tests: `tests/world-events.test.mjs` (7), `tests/emergency-goals.test.mjs` (4),
+  and `tests/controller-session.test.mjs` case 6 (death mid-goal → preempt →
+  `recover_loot` → parent resumed and completed). Suite green (414).
+- Docs: new `docs/wiki/emergency.md` (producer taxonomy, action-level vs
+  goal-level emergency, the preemption flow diagram, boundary rule, dedup,
+  status); updated `index.md`, `sources.md`, `wiki/ai-player-roadmap.md`,
+  `wiki/roadmap.md`, `wiki/open-questions.md`, `wiki/verification.md` (row 62),
+  `BEDROCK.md`.

@@ -727,3 +727,35 @@ test('barricade is offered only with a placeable block and a gap', () => {
   adapter.inventory = {};
   assert.ok(!adapter.options().map(o => o.key).includes('barricade'), 'non offerta senza blocco piazzabile');
 });
+
+// ---- travel kit: letto e readiness ----------------------------------------------------
+
+test('craft_bed and place_bed are offered with the right materials', () => {
+  const adapter = spawnedAdapter();
+  adapter.nearbyBlocks = {};
+  adapter.drops = [];
+  adapter.inventory = { white_wool: 3, oak_planks: 3 };
+  adapter.recipes = new Map([['bed', [{ kind: 'shaped', network_id: 1 }]]]);
+  adapter.craftingData = { shaped_recipes: [], shapeless_recipes: [] };
+  adapter.world.findBlocks = (name) => name === 'crafting_table' ? [{ name: 'crafting_table', position: { x: 1, y: 63, z: 1 }, distance: 1 }] : [];
+  assert.ok(adapter.options().map(o => o.key).includes('craft_bed'), 'craft_bed option');
+  adapter.inventory = { bed: 1 };
+  adapter.world.findBlocks = () => [];
+  assert.ok(adapter.options().map(o => o.key).includes('place_bed'), 'place_bed option');
+});
+
+test('_travelReadiness flags what is missing for a trip', () => {
+  const adapter = spawnedAdapter();
+  assert.equal(adapter._travelReadiness().ready, false);
+  assert.ok(adapter._travelReadiness().missing.includes('food'));
+  adapter.inventory = { cooked_beef: 2, wooden_sword: 1, cobblestone: 32, torch: 4, bed: 1, crafting_table: 1 };
+  adapter.armor = { helmet: 'iron_helmet', chestplate: null, leggings: null, boots: null };
+  adapter.inventorySlots = new Array(36).fill(undefined);
+  const ready = adapter._travelReadiness();
+  assert.equal(ready.ready, true);
+  assert.deepEqual(ready.missing, []);
+  // letto assente ma lana a sufficienza → `night` soddisfatto lo stesso
+  adapter.inventory = { cooked_beef: 1, stone_sword: 1, dirt: 8, torch: 1, white_wool: 3, crafting_table: 1 };
+  assert.ok(adapter._travelReadiness().items.night);
+  assert.ok(!adapter._travelReadiness().missing.includes('night'));
+});

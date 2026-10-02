@@ -211,3 +211,10 @@ test('stack responses update the local inventory and clear emptied slots', () =>
   assert.equal(adapter._cursor.count, 2);
   assert.equal(adapter._cursor.stack_id, 92);
 });
+
+test('the wool tag matches any wool colour (bed recipe)', () => {
+  const adapter = craftAdapter();
+  assert.equal(adapter._ingredientMatches(tag('wool'), 'white_wool'), true);
+  assert.equal(adapter._ingredientMatches(tag('wool'), 'red_wool'), true);
+  assert.equal(adapter._ingredientMatches(tag('wool'), 'oak_planks'), false);
+});
