@@ -766,3 +766,17 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   suspended goal parked and seeds a fresh goal). Suite green (399).
 - Docs: `wiki/ai-player-roadmap.md` (M0/M1 rows + "Still missing"), `wiki/roadmap.md`,
   `wiki/open-questions.md`, `sources.md`, `BEDROCK.md` (env var + resume bullet).
+
+## [2026-10-02] verify | Cross-session resume verified live on the BDS
+
+- Pre-seeded a goal left `running` by a "previous session" in
+  `runs/collaudo-resume/goals/world.json` (a `chat` goal with a persisted plan
+  targeting `dirt:1`), then ran the controller (`SESSION=on`, `RESUME` default).
+- Result: `RESUME 1 goal(s) from a previous session: live-g1` → the goal was
+  suspended on startup, re-queued and executed from its persisted plan →
+  `GOAL live-g1 COMPLETED`; **no new initial goal was seeded**; store ended with
+  the single resumed goal `completed`. Logs: `session_resume → session_state
+  GOAL_RUNNING → goal_start → goal_end → GOAL_COMPLETED → IDLE`. Exit 0 after the
+  idle timeout.
+- `verification.md` row 61 added (✅ live). Cleanup of `/tmp/session` and the
+  `collaudo-resume` run.
