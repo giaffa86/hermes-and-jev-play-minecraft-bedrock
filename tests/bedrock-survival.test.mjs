@@ -267,6 +267,16 @@ test('attack options are deduped by mob type', () => {
   assert.deepEqual(attackKeys, ['attack_zombie', 'attack_skeleton']);
 });
 
+test('weapon selection prefers sword, then axe, then pickaxe', async () => {
+  const adapter = spawnedAdapter();
+  adapter.inventorySlots[0] = { network_id: 1, name: 'stone_pickaxe', count: 1, stack_id: 1 };
+  adapter.inventorySlots[1] = { network_id: 2, name: 'iron_axe', count: 1, stack_id: 2 };
+  adapter.client.write = () => {};
+  assert.equal(await adapter._selectWeapon(), 'iron_axe');
+  adapter.inventorySlots[2] = { network_id: 3, name: 'wooden_sword', count: 1, stack_id: 3 };
+  assert.equal(await adapter._selectWeapon(), 'wooden_sword');
+});
+
 test('attack uses an item_use_on_entity transaction with swing animation', () => {
   const adapter = spawnedAdapter();
   const packets = [];

@@ -2696,7 +2696,12 @@ export class BedrockAdapter {
   }
 
   async _selectWeapon () {
-    const best = this._bestInventoryTool('sword');
+    // Il danno a mani nude è minimo: preferisci spada, poi ascia, poi piccone.
+    let best = null;
+    for (const kind of ['sword', 'axe', 'pickaxe']) {
+      const candidate = this._bestInventoryTool(kind);
+      if (candidate) { best = candidate; break; }
+    }
     if (!best) return null;
     const index = this.inventorySlots.findIndex(s => this._slotItemName(s) === best.name && s.count > 0);
     if (index < 0) return null;
