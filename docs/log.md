@@ -1302,3 +1302,55 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   esaurisce su `acquire_crafting_table`); il test reale multiplayer resta
   impossibile in questa sessione (nessun player umano collegato). Suite: 516
   test verdi.
+
+## [2026-10-03] verify | CURRICULUM=first_night chiuso live + fix target del tavolo e lock `busy`
+
+- **P3 chiuso live**. `RUN_ID=p3-first-night-3` (`CURRICULUM=first_night`,
+  `MAX_STEPS=30`, `JEV_MODEL=jev-latest`, container `hermes-jev-bedrock`, BDS
+  1.26.52): `PLAN … [skill obtain_food]` → `SKILL obtain_food SUCCESS
+  {"inventory.food":3}` (6 azioni, 41,7 s, da `mine_potatoes` + `mine_carrots`)
+  → `REPLAN curriculum Survive the first night… [skill first_night]` →
+  `#25 sleep -> {"ok":true,"slept":"night_skipped","bed":{"x":113,"y":73,"z":156}}`
+  → **`SKILL first_night SUCCESS {"sawNight":true,"phase":"day","health":20}`**
+  (19 azioni, 152,7 s) → **`GOAL MET after 25 actions (curriculum first_night)`**,
+  `exit=0`. La missione `mission_curriculum_murjqnba` (`intent: curriculum`) si è
+  chiusa `outcome: found, success: true, result: {steps: 26, totalCost: 0}` e il
+  consolidamento P0 ha scritto l'**hint positivo** su `resource_site_7_9`
+  (`carrots score 1.2 successi 1`, `potatoes score 1.1`, sources
+  `mission_curriculum_murjqnba`) — prima prova live del consolidamento su missione
+  *riuscita* (finora solo il caso `failed`).
+- **Difetto: target del piano vuoto** (trovato dallo stallo live `#7-12` con 5
+  `craft_oak_planks` e nessun tavolo). `optionPriority`
+  (`controller-decisions.mjs:29`) assegna il tier 4 ai soli
+  `mine_/craft_/smelt_<target>` dell'item in `plan.targets`: con `planTargets: {}`
+  `craft_crafting_table` finiva nel tier 5 insieme a `craft_oak_planks`/`craft_stick`.
+  Fix: `skills/gameplay/bootstrap/acquire_crafting_table.json` →
+  `"planTargets": {"crafting_table": 1}` + assertion nel test di scenario. Verificato
+  live (`p3-first-night-1`: `#5 craft_crafting_table -> ok` + `SKILL
+  acquire_crafting_table SUCCESS` + `REPLAN … obtain_food`).
+- **Difetto: lock `busy` bruciava il budget**. Dopo che un controller veniva
+  ucciso a metà azione il harness restava occupato (`bedrock-adapter.mjs:1326`
+  `if (this.busy) return {ok:false, error:'busy'}`) e il run successivo consumava
+  **tutti** i 25 passi in ~2 minuti di risposte `busy` istantanee
+  (`p3-first-night-2`). Diagnosi via `docker logs --timestamps`: l'azione in volo
+  del run ucciso (`attack_chicken`, `ms: 25013`) è finita alle 22:37:54 e da lì
+  `wait` tornava `{"ok":true}` (nessun flag perso; `/observe` non espone `busy`).
+  Fix in `controller.mjs`: retry della stessa chiave ogni `HARNESS_BUSY_POLL_MS`
+  (default 2000) fino a `HARNESS_BUSY_MAX_WAIT_MS` (default 90000), evento
+  `harness_busy {step, key, attempts, waitedMs, ok, error}` e fallimento tipizzato
+  `{error:'busy', timeout:true}` solo alla scadenza — **`busy` non consuma più un
+  passo**. Nuovo `tests/controller-busy.test.mjs` (3 risposte `busy` poi l'azione
+  esegue: un solo evento `harness_busy` con `attempts: 3`, 2 eventi `result`, 5
+  `POST /act`).
+- **Limiti residui osservati live** (documentati in `docs/wiki/open-questions.md`,
+  nessuno blocca il milestone): `attack_chicken -> combat_timeout` con **35
+  fendenti** e nessun danno (item in mano `rabbit_foot`, `weapon: null`) — blocca
+  `attack_<animal>` di P2; due `item_not_collected` su drop di dirt poi recuperati
+  da un `collect_drop` successivo; un `go_home_failed: movement timeout` recuperato
+  al passo successivo. La notte è stata passata **dormendo** nel letto della base,
+  quindi resta non provata live la variante "notte sveglio senza letto".
+- Suite: **517 test verdi** (`tests/controller-curriculum.test.mjs`,
+  `tests/controller-busy.test.mjs` inclusi). Doc: `verification.md` riga 30
+  ✅, `survival-intelligence.md` (status + evidenza live + lock), `control-flow.md`
+  ("One action at a time: the harness `busy` lock"), `roadmap.md`,
+  `open-questions.md` (4 voci nuove), `AGENTS.md` (env var `HARNESS_BUSY_*`).

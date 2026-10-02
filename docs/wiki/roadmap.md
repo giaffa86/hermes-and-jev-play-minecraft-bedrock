@@ -28,7 +28,7 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 | `.private/` artifact | What it is | Status | Where the work landed |
 |---|---|---|---|
 | `ROADMAP.md` | Original port roadmap (division of labour + technical milestones) | ✅ done, superseded (frozen 01/10) | `BEDROCK.md`, `bedrock-adapter.mjs` |
-| `GOAL.md` | Original goal + launch runbook (Phases 1–10, two gameplay milestones) | ◑ Phases 1–9 done; Phase 10 (real multiplayer) open; `first_night` chain offline-verified + live to `acquire_wood` | `BEDROCK.md`, `survival/` |
+| `GOAL.md` | Original goal + launch runbook (Phases 1–10, two gameplay milestones) | ◑ Phases 1–9 done; Phase 10 (real multiplayer) open; `first_night` chain verified live end-to-end (03/10) | `BEDROCK.md`, `survival/` |
 | `JEV-TASK.md` | Jev decision quality + evaluation with new actions | ✅ implemented; live eval scenarios open | `controller-decisions.mjs`, `tests/controller-decisions.test.mjs` |
 | `DEFENSE-TASK.md` | Defense strategies (torch/lighting, weapons, shelter, armor, shield) | ◑ partial — `attack_*`, `flee`, `sleep`, `craft_torch`, `recover_loot`, **`place_torch`, `craft_wooden_sword`/`craft_stone_sword`, `go_home`/`retreat`, `equip_armor`, `close_door`, `barricade`, armor points in `/observe`** (02/10); only the shield (stretch) remains | `bedrock-adapter.mjs` |
 | `FARMING-TASK.md` | Farming (plant/resow crops, passive animals, feed/breed/tame/shear) | ◑ mostly done — `plant_<seed>`, `feed_<animal>`, `attack_<animal>`, `throw_egg`, `breed_<animal>`, `tame_<companion>` (wolf/cat/ocelot/parrot + ride horse/donkey/mule/llama/nautilus), `shear_sheep` + `craft_shears` implemented; `plant`/`feed`/`breed`/`throw_egg` + `read_container` **verified live 03/10**; `attack`/`tame`/`shear` live pending; axolotl in census (not tameable), milk + mature-crop detection still open | `bedrock-adapter.mjs`, `bedrock-survival.mjs` |
@@ -58,7 +58,7 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 | Milestone | Status |
 |---|---|
 | First: wood → wooden pickaxe → stone → stone pickaxe | ✅ live (`runs/e2e-stone6`, `GOAL MET after 33 actions`) |
-| Second: food, coal/iron, smelt, iron tools | ◑ coal + iron + smelt (`iron_ingot`) live; `eat` live pending; `CURRICULUM=first_night` offline-verified end-to-end and live-verified up to `acquire_wood` (03/10) |
+| Second: food, coal/iron, smelt, iron tools | ◑ coal + iron + smelt (`iron_ingot`) live; `eat` live pending; `CURRICULUM=first_night` verified live end-to-end (03/10) |
 
 ### Goal-driven gameplay benchmarks (proposal)
 
@@ -71,7 +71,7 @@ They map onto the existing progression graph but are not run end-to-end:
 | Benchmark | Existing milestone | Status |
 |---|---|---|
 | 16 logs | `wood` (`logs: 8`) | ✅ wood live; target 16 not run |
-| shelter + survive one night | `first_night` + `emergency_shelter` | ◑ skill exists + chain offline-verified (`controller-curriculum.test.mjs`, 4 steps); live run stopped at `acquire_crafting_table` |
+| shelter + survive one night | `first_night` + `emergency_shelter` | ✅ live (03/10): `CURRICULUM=first_night` MET — `obtain_food` then `first_night` (`sawNight:true`, health 20) via the base bed, `GOAL MET after 25 actions` |
 | iron pickaxe | `iron_age` / `iron_tools` | ◑ iron + smelt live; milestone not run |
 | 5 diamonds | `diamonds` (`diamonds: 1`) | ❌ not run |
 | build + cross a Nether portal | `enter_nether` | ❌ not implemented; chain added (`nether_portal`) |
@@ -154,8 +154,8 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   nearly-finished goal) and the `mine_<ore>` option carries tier 4.5. All
   unit-tested; **the controller wiring is not done yet**, so nothing suspends a
   goal on a sighting — see [opportunity](opportunity.md).
-- The rest of the `CURRICULUM=first_night` live round (food + night) and the
-  real-multiplayer test (Phase 10).
+- The real-multiplayer test (Phase 10): the `CURRICULUM=first_night` live round
+  is done (food + night, 03/10).
 
 ## Post-goal lifecycle (milestone 0→1 of the AI-player roadmap)
 
@@ -229,9 +229,10 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    mature-crop detection.
 3. Live verification of the other ⚠️ items (storage, trading, `eat`, chat
    channel).
-4. Defense completions (torch placement, swords, shelter) and the rest of the
-   `CURRICULUM=first_night` live round (food + night; the chain itself is
-   offline-verified and live-verified up to `acquire_wood`, 03/10).
+4. Defense completions (torch placement, swords, shelter); the
+   `CURRICULUM=first_night` live round is complete (food + night survived,
+   03/10) and the chain is offline-verified by
+   `tests/controller-curriculum.test.mjs`.
 5. Live-verify fishing: `craft_fishing_rod` → `cast_rod`/`reel_in` (or a single
    `fish`), bite detection, `food` tag integration — see [fishing](fishing.md).
 6. **Fluids** (spec in [fluids](fluids.md)): start with M0 (fluid awareness,

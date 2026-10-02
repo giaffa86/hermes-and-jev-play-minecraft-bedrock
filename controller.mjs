@@ -58,6 +58,12 @@ const REPLAN_EVERY = +(process.env.REPLAN_EVERY || 8);
 // Diagnostica/anti-loop (0 disabilita il tetto; soglia in azioni consecutive).
 const MAX_OPTIONS = process.env.MAX_OPTIONS == null ? DEFAULT_MAX_OPTIONS : +(process.env.MAX_OPTIONS);
 const ANTI_LOOP_THRESHOLD = +(process.env.ANTI_LOOP_THRESHOLD || DEFAULT_ANTI_LOOP_THRESHOLD);
+// Il harness esegue una sola azione alla volta: se il lock è occupato (tipico
+// dopo che un run è stato ucciso a metà di un'azione lunga) risponde `busy` in
+// pochi ms. Attesa massima e passo di polling del retry, entrambi osservabili
+// nel log `harness_busy`.
+const HARNESS_BUSY_MAX_WAIT_MS = +(process.env.HARNESS_BUSY_MAX_WAIT_MS || 90000);
+const HARNESS_BUSY_POLL_MS = +(process.env.HARNESS_BUSY_POLL_MS || 2000);
 const ANTI_LOOP_COOLDOWN = +(process.env.ANTI_LOOP_COOLDOWN || 3);
 // Comando umano via chat (M1-M3): attivo solo se CHAT_ALLOWLIST è valorizzato
 // (gamertag/xuid separati da virgola). CHAT_PREFIX è il prefisso che scatena l'ordine.
@@ -692,7 +698,24 @@ for (let step = 1; step <= MAX_STEPS; step++) {
   if (typeof decision.cost === 'number') totalCost += decision.cost;
   chosenFingerprint = progressFingerprint(obs, plan);
   const actStarted = Date.now();
-  const result = await api('POST', '/act', {key});
+  let result = await api('POST', '/act', {key});
+  // `busy` non è un verdetto sull'azione: il harness sta ancora eseguendo
+  // l'azione di un altro client. Bruciare il budget con risposte istantanee non
+  // prova nulla, quindi si attende il rilascio del lock (tetto esplicito) e si
+  // riprova la stessa chiave: la validità resta del harness, che risponde con un
+  // errore tipizzato se nel frattempo l'azione non è più possibile.
+  if (result && !result.ok && result.error === 'busy') {
+    const busyFrom = Date.now();
+    let attempts = 0;
+    while (!result.ok && result.error === 'busy' && Date.now() - busyFrom < HARNESS_BUSY_MAX_WAIT_MS) {
+      await delay(HARNESS_BUSY_POLL_MS);
+      attempts += 1;
+      result = await api('POST', '/act', {key});
+    }
+    const waitedMs = Date.now() - busyFrom;
+    log('harness_busy', {step, key, attempts, waitedMs, ok: !!result.ok, error: result.error ?? null});
+    if (!result.ok && result.error === 'busy') result = {ok: false, error: 'busy', timeout: true, waitedMs};
+  }
   if (skillRun) skillRun.actions += 1;
   lastFailedKey = result.ok ? null : key;
   lastKey = key;

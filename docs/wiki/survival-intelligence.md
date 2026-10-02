@@ -75,8 +75,8 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**516 unit tests green (2026-10-03)**; the curriculum chain is covered by a
-scenario test and partially verified live.
+**517 unit tests green (2026-10-03)**; the curriculum chain is verified live
+end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
 
 - **Offline (deterministic, no model)**: `tests/controller-curriculum.test.mjs`
 drives `CURRICULUM=first_night` against a staged fake harness (one valid action
@@ -92,11 +92,27 @@ goal after the *first* prerequisite (in curriculum mode it must only close on th
 final milestone), and `planFromMilestone()` inherited the ambient `WAYPOINT`
 knob, so every milestone was anchored to the demo waypoint (`goto_waypoint →
 target_not_found` at step 1).
-- **Live (BDS 1.26.52, container `hermes-jev-bedrock`)**: a `CURRICULUM=first_night`
-run reached `SKILL acquire_wood SUCCESS {"inventory.logs":8}` after 5 actions
-(39.9 s: mining + `collect_drop`) and the engine replanned to
-`acquire_crafting_table` on its own; an unrelated zombie_villager_v2 preempted
-one step (`flee`) and the milestone survived the periodic replan. The full
-milestone is not closed yet (night handling + food are still unproven live).
+- **Live (BDS 1.26.52, container `hermes-jev-bedrock`)**: `CURRICULUM=first_night`
+reached the milestone and closed it (`runs/p3-first-night-3`, 2026-10-03):
+`SKILL obtain_food SUCCESS {"inventory.food":3}` after 6 actions (41.7 s),
+`SKILL first_night SUCCESS {"sawNight":true,"phase":"day","health":20}` after 19
+more (152.7 s), then `GOAL MET after 25 actions (curriculum first_night)` with the
+mission closed `found/success` and exit 0. The chain before that is also live: a
+previous run reached `SKILL acquire_wood SUCCESS {"inventory.logs":8}` (5 actions,
+39.9 s) and the engine replanned to `acquire_crafting_table` on its own,
+surviving an unrelated zombie_villager_v2 emergency (`flee`) across the periodic
+replan. The final night was survived by **sleeping in the bed**
+(`#25 sleep → {"slept":"night_skipped","bed":{"x":113,"y":73,"z":156}}`), so
+`nightSurvived` came from the `night → day` phase transition rather than from
+staying awake. Residue seen live but non-blocking: `attack_chicken →
+combat_timeout` after 35 swings (animal damage never lands, see
+[open questions](open-questions.md)), two `item_not_collected` on mined dirt
+drops and one `go_home_failed: movement timeout`.
+- **Harness lock handling**: a `busy` answer is a lock, not a verdict. After a run
+was killed mid-action the harness stayed busy and the next run burned its whole
+step budget on instant `busy` replies; `controller.mjs` now retries with
+`HARNESS_BUSY_MAX_WAIT_MS` / `HARNESS_BUSY_POLL_MS` and logs `harness_busy`
+(`tests/controller-busy.test.mjs`: three `busy` replies then the action runs, two
+real steps, `GOAL MET after 2 actions`).
 
 See [open-questions](open-questions.md) and [verification](verification.md).

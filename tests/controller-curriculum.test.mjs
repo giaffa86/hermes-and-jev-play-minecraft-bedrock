@@ -169,6 +169,12 @@ test('CURRICULUM=first_night: the progression engine drives the chain to the mil
       'every plan must come from the progression engine');
     assert.ok(plans.every(e => e.plan.waypoint === null),
       'an ambient WAYPOINT must not be inherited by a milestone plan');
+    // The milestone must say what it is after, otherwise the decision model
+    // picks among the intermediate recipes at random (seen live: five
+    // craft_oak_planks and no crafting table).
+    const tablePlan = plans.find(e => e.plan.milestone === 'crafting_table');
+    assert.deepEqual(tablePlan?.plan.targets, { crafting_table: 1 },
+      'the crafting table milestone must carry its target');
     assert.ok(!events.some(e => e.type === 'curriculum_fallback'),
       'the planner must not be needed: the progression engine resolved every milestone');
     // Skill records carry the milestone they close (provenance for the memory layer).

@@ -136,15 +136,34 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
   the same level, `take_`/`deposit_`/`eat` need a reachable chest/table, fishing
   needs water. Their offline half (unit + packet-serialization tests) is complete.
   [trading](trading.md).
-- `CURRICULUM=first_night` is now covered offline end-to-end
-  (`tests/controller-curriculum.test.mjs`, staged fake harness + stub planner)
-  and **partially verified live** (2026-10-03): a run reached
-  `SKILL acquire_wood SUCCESS {"inventory.logs":8}` after 5 actions and the engine
-  advanced to `acquire_crafting_table` on its own, surviving an emergency
-  (`flee` from a zombie_villager_v2) across the periodic replan. Still open: the
-  final milestone needs food + a real night (the live run exhausted its step
-  budget at `acquire_crafting_table`), and the room is a hostile start (see the
-  P2 bullet above).
+- `CURRICULUM=first_night` is **verified live end-to-end** (2026-10-03,
+  `runs/p3-first-night-3`): `obtain_food` (6 actions) → `first_night` (19 actions)
+  → `GOAL MET after 25 actions (curriculum first_night)`, mission
+  `mission_curriculum_murjqnba` closed `found/success`, exit 0. It is also covered
+  offline (`tests/controller-curriculum.test.mjs`, staged fake harness + stub
+  planner) and the harness `busy` lock had its own test
+  (`tests/controller-busy.test.mjs`). What is still *not* proven live is the
+  hostile-start variant: the run survived the night by sleeping in the base bed,
+  so an awake night (no bed) remains untested, and the room stays a hostile start
+  (see the P2 bullet above).
+- **Animal damage does not land** (2026-10-03, live): `attack_chicken` ends in
+  `combat_timeout` after **35 swings** (`weapon: null`, held item a `rabbit_foot`)
+  while the chicken keeps laying eggs next to the bot, and `mine_*` on the same
+  session reports `tool: "rabbit_foot"` for the held item. A chicken has 4 HP, so
+  the swings are counted but the attack is not applied — the same class of
+  mismatch as the drop pickup (`runtimeId`/handshake) rather than a damage-table
+  problem. Blocks `attack_<animal>` in P2.
+- **Drop pickup residue** (2026-10-03, live): with the reachability primitive in
+  place `collect_drop` is mostly green, but two mined dirt drops in
+  `p3-first-night-3` still answered `item_not_collected` and were only recovered
+  by a later `collect_drop` (the inventory gained the dirt one step later). The
+  drop exists and is reachable, so this is a pickup-window/latency issue, not the
+  original cavity problem.
+- **`go_home` movement timeout** (2026-10-03, live):
+  `#22 go_home → {"ok":false,"error":"go_home_failed: movement timeout"}` on the
+  surface near the base; the run recovered on its own (next step mined an oak
+  log). Worth a targeted look at the `go_home` budget vs. distance, but it has
+  not reproduced as a blocker.
 
 ## Persistent memory (landmarks, chests, chunks)
 

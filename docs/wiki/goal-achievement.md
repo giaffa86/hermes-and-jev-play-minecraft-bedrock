@@ -95,7 +95,7 @@ missing (the controller stops on `GOAL MET`, a step budget, or an LLM judgement)
 | # | Benchmark | Maps to (existing) | Status |
 |---|---|---|---|
 | 1 | obtain 16 logs | `wood` milestone (`logs: 8`) | ✅ wood live; target 16 not run |
-| 2 | build a shelter and survive one night | `first_night` (+ `emergency_shelter`) | ◑ shelter skill exists; full `CURRICULUM=first_night` not run |
+| 2 | build a shelter and survive one night | `first_night` (+ `emergency_shelter`) | ✅ live (03/10): `CURRICULUM=first_night` MET — `obtain_food` → `first_night` (`sawNight: true`, health 20) sleeping in the base bed (`runs/p3-first-night-3`) |
 | 3 | obtain an iron pickaxe | `iron_age` / `iron_tools` | ◑ iron + smelt live; full milestone not run |
 | 4 | obtain 5 diamonds | `diamonds` (`diamonds: 1`) | ❌ not run; target 5 |
 | 5 | build and cross a Nether portal | `enter_nether` | ❌ not implemented |
@@ -208,7 +208,7 @@ RUN_ID=bench1 MAX_STEPS=200 CURRICULUM=first_night \
 | Benchmark | Command (`CURRICULUM=`) | Prerequisite capability | Blocker |
 |---|---|---|---|
 | 16 logs | `wood` | `mine_*`/`collect_drop` | only target count (8 → 16) |
-| shelter + night | `first_night` | shelter building | no wall/shelter actions beyond `barricade`/`dig_down`; `sleep` is not live |
+| shelter + night | `first_night` | shelter building | ✅ run live 03/10 (base bed, night skipped); awake night still untested |
 | iron pickaxe | `iron_age` | smelting + tools | `eat`/long-run durability not live; full run not done |
 | 5 diamonds | `diamonds` | mining | target count (1 → 5); live round |
 | Nether portal | `enter_nether` | portal actions | `enter_nether` not implemented (see [nether](nether.md)) |

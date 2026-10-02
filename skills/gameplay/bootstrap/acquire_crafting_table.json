@@ -9,6 +9,6 @@
     ]
   },
   "intents": ["craft", "build", "collect", "travel"],
-  "planTargets": {},
-  "notes": "Successo anche se il tavolo è già piazzato vicino: il harness non ripropone craft inutilmente."
+  "planTargets": { "crafting_table": 1 },
+  "notes": "Successo anche se il tavolo è già piazzato vicino: il harness non ripropone craft inutilmente. Il target non è decorativo: senza di esso il modello sceglie a caso tra le ricette intermedie (visto live il 03/10: 5× `craft_oak_planks` e nessun tavolo) perché `craft_crafting_table` finisce nello stesso tier di priorità di ogni altra craft."
 }

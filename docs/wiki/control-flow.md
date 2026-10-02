@@ -115,6 +115,19 @@ observation. In an emergency it overrides the objective shown to the decision
 model and restricts `/options` to the allowed intents (removing keys only, never
 adding, never emptying the set).
 
+## One action at a time: the harness `busy` lock
+
+The harness executes a single action at a time and answers `{ok: false, error:
+'busy'}` while another client is still running one (typical after a controller was
+killed mid-action). `busy` is **a lock, not a verdict**: the controller retries the
+same key every `HARNESS_BUSY_POLL_MS` up to `HARNESS_BUSY_MAX_WAIT_MS`, logs one
+`harness_busy {step, key, attempts, waitedMs, ok, error}` event and only then
+records a failure (`{error: 'busy', timeout: true}`). A `busy` answer therefore
+never consumes a step — the validity of the retried action stays with the harness,
+which answers with a typed error if the action is no longer possible. Without this,
+a killed run's leftover action made the next run burn its entire step budget in
+seconds of instant `busy` replies (live, 2026-10-03).
+
 ## What System Two does *not* do
 
 Despite the "planner" name, Hermes does **not** decompose the macro task into

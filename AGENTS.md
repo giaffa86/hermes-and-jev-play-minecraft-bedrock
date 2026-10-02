@@ -71,6 +71,7 @@ Use `CONTROLLER=hermes` if you lack an OpenRouter key; it is slower and costlier
 - `HERMES_TIMEOUT_MS` — planner timeout before falling back to a static plan (default `180000`).
 - `MAX_OPTIONS` — cap on the options passed to Jev (default `12`, `0` disables).
 - `ANTI_LOOP_THRESHOLD` / `ANTI_LOOP_COOLDOWN` — stagnant-action replan threshold and cooldown (default `3` / `3`).
+- `HARNESS_BUSY_MAX_WAIT_MS` / `HARNESS_BUSY_POLL_MS` — how long the controller waits for the harness lock (a `busy` answer) and how often it retries the same action (default `90000` / `2000`); `busy` never consumes a step.
 - `MC_PORT` / `API_PORT` — defaults `25599` / `3077`.
 - `OPENROUTER_API_KEY` — required for `CONTROLLER=jev`.
 - `CURRICULUM` — optional milestone (`first_night`, `enter_nether`): the progression engine picks missing prerequisites itself; Hermes is only a fallback.
