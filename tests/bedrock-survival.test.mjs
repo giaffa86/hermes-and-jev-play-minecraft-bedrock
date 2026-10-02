@@ -345,6 +345,7 @@ test('flee counts a timeout as success when it still gains distance', async () =
   adapter._standableNear = point => ({ x: point.x, y: adapter._feet.y, z: point.z });
   adapter._moveTo = async () => {
     adapter._feet.x += 10;
+    adapter._syncPositionFromFeet();
     throw new Error('movement timeout');
   };
   const result = await adapter._flee(5000);
