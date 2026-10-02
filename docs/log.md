@@ -378,3 +378,14 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   needs a doorway/corridor or an artificial gap.
 - `verification.md` row 37 + `open-questions.md` (design limitation) updated.
   `equip_armor` live round deferred (no armor in inventory).
+
+## [2026-10-02] query | craft_wooden_sword verified live
+
+- Chain: `mine_oak_log` ×2 (auto-pickup) → `craft_oak_planks` ×2 → `craft_stick`
+  → `craft_crafting_table` → `place_crafting_table` (91,72,144) →
+  `craft_wooden_sword`. Result `{ok:true, crafted:"wooden_sword", count:1}`;
+  `/observe.inventory.wooden_sword = 1`. Option was offered with 2 planks + 1
+  stick at the table.
+- Torch chain derailed by the "drop below/on canopy" quirk (a log at y=77 was
+  not picked up → no planks → no pickaxe → no coal), so `place_torch` stays
+  unit-tested. `verification.md` row 32 → ✅.

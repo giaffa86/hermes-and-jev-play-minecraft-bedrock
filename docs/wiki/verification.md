@@ -72,7 +72,7 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 29 | Tool durability (long ore runs) | — | 🧪 | mine many stone/ore blocks, watch `heldDurability` | Only unit-tested. |
 | 30 | `CURRICULUM=first_night` end-to-end | controller + curriculum | ⏳ | run controller with `-e CURRICULUM=first_night` | Full autonomous round not run. |
 | 31 | Real multiplayer (Phase 10) | — | ⏳ | join with a human player online | Both players visible; not run. |
-| 32 | Swords (combat) | `craft_wooden_sword`, `craft_stone_sword` | 🧪 | `/act craft_stone_sword` at a table | Option generation unit-tested; reuse the verified `craft_*` path; live pending. |
+| 32 | Swords (combat) | `craft_wooden_sword`, `craft_stone_sword` | ✅ | `/act craft_wooden_sword` at a table | **`craft_wooden_sword` verified live 02/10**: offered with 2 planks + 1 stick at the placed table → crafted (`wooden_sword: 1`). `craft_stone_sword` uses the same path (unit-tested); combat already verified. |
 | 33 | Torch placement | `place_torch` | 🧪 | `/act place_torch` with a torch | Option generation unit-tested; reuse the verified `place_*` path; live pending. |
 | 34 | Return home | `go_home`, `retreat` | ✅ | `/act go_home` when far from spawn | Home = spawn or `HOME_WAYPOINT`; verified live 02/10 (returned ~1.9 blocks from home). |
 | 35 | Armor equip | `equip_armor` | 🧪 | `/act equip_armor` with armor in inventory | take→cursor→place into `armor` slot; unit-tested; live pending. |
