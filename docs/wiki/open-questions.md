@@ -73,6 +73,10 @@ capability collaudo checklist (done / pending live), see
   does not cover redstone components. The world model *does* expose component
   state via `blockAt().getProperties()` (`redstone_signal`, `powered_bit`,
   `open_bit`, `repeater_delay`, ...). Roadmap in [redstone](redstone.md).
+- **Barricade** (`.private/DEFENSE-TASK.md`): `_barricadeGap` only checks the
+  four cells adjacent to the bot, so the bot must already stand next to the 1×2
+  opening; it does not search ahead or walk to a gap. Fine for a corridor, hard
+  to trigger in the open base (see `verification.md` row 37).
 - **Crafting** only one item at a time; special recipes (smithing, anvil, looms)
   not implemented.
 

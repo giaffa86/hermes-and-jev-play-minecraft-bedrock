@@ -77,7 +77,7 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 34 | Return home | `go_home`, `retreat` | ✅ | `/act go_home` when far from spawn | Home = spawn or `HOME_WAYPOINT`; verified live 02/10 (returned ~1.9 blocks from home). |
 | 35 | Armor equip | `equip_armor` | 🧪 | `/act equip_armor` with armor in inventory | take→cursor→place into `armor` slot; unit-tested; live pending. |
 | 36 | Close doors | `close_door` | 🧪 | `/act close_door` after opening a door | Clicks `_openDoors` doors closed; unit-tested; live pending. |
-| 37 | Barricade a gap | `barricade` | 🧪 | `/act barricade` at a 1×2 opening | Places 2 blocks (feet+head) via top-face clicks; unit-tested; live pending. |
+| 37 | Barricade a gap | `barricade` | 🧪 | `/act barricade` at a 1×2 opening | Places 2 blocks (feet+head) via top-face clicks; unit-tested. Live attempt 02/10: explored the base (open garden; a cliff/hole to the east) — no valid 1×2 gap (solid floor + flanking walls), so it was never offered. Needs a doorway/corridor (or an artificial gap). |
 | 38 | Armor points in `/observe` | `observe().armor` | 🧪 | read `/observe.armor` | Pieces + computed vanilla points; unit-tested; live pending. |
 | 39 | Swim / cross water | `swim_to`, `surface` | ❌ | `POST /act swim_to` … cross a river | Spec M1 in [fluids](fluids.md); `_passable` currently rejects water. Needs water physics + packet capture. |
 | 40 | Drowning / breathing | `/observe.fluids.air`, `dive`, governor `drowning` | ❌ | `dive` underwater and `surface` | Spec M0/M2 in [fluids](fluids.md); air signal vs simulation open. |

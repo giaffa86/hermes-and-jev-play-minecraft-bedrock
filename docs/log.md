@@ -365,3 +365,16 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Status **spec only, not implemented**. Cross-links added from `roadmap.md`,
   `open-questions.md` and `verification.md` (rows 44–48); `index.md` +
   `sources.md` updated. Private handoff: `.private/REDSTONE-TASK.md` (not committed).
+
+## [2026-10-02] query | Barricade collaudo blocked: no valid 1×2 gap at the base
+
+- Deployed the defence slice (incl. `barricade`, `equip_armor`); bot spawned at
+  home. `mine_dirt`/`mine_grass_block` gave dirt (note: a drop 3.6 blocks below
+  the bot is unreachable — the known "drop below" quirk).
+- Enabled `BEDROCK_DEBUG` and used `/debug/geom`: the base is an **open garden**
+  (grass paths, trees, a crafting table) with a cliff/hole to the east (no floor
+  at x≈93-95, z≈144-148). `_barricadeGap` never found a 1×2 opening with a solid
+  floor + flanking walls, so `barricade` was never offered. Live verification
+  needs a doorway/corridor or an artificial gap.
+- `verification.md` row 37 + `open-questions.md` (design limitation) updated.
+  `equip_armor` live round deferred (no armor in inventory).
