@@ -641,3 +641,27 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Fix: `_maybeRememberDiscoveries` now re-scans the same chunk after
   `DISCOVERY_RESCAN_MS` (15 s), not only on chunk change. Test added.
 - `verification.md` row 40 → ✅; `wiki/memory.md` notes the live result.
+
+## [2026-10-03] lint | Wiki-lint tool, git hooks, and status reconciliation
+
+- Added `tools/wiki-lint.mjs`: broken-link check, `raw/` → `sources.md` and
+  `wiki/` → `index.md` coverage, orphan pages, `log.md` entry format,
+  `open-questions.md` "Last lint" vs `log.md`, privacy gate (`.private/`, `.env`,
+  `runs/`, `nmp-cache/`, `auth.json`, `memory/` must not be tracked) and a
+  secret/personal-data scan (this repo is public).
+- Wired the routine: `tools/hooks/pre-commit` (errors block) and
+  `tools/hooks/pre-push` (`--strict`: warnings block, incl. privacy), activated
+  with `git config core.hooksPath tools/hooks`; npm scripts `wiki:lint` /
+  `wiki:lint:strict`. Documented in `docs/llm-wiki.md` and `AGENTS.md`.
+- Reconciled stale status: `open-questions.md` said farming and fishing were
+  "not started" and listed implemented defense actions as missing — aligned with
+  `roadmap.md` (farming core live-verified 03/10, fishing implemented/live
+  pending, defense first slice mostly live, only shield left). Added a
+  "Documentation integrity" section (interleaved `log.md` dates; stale counts in
+  immutable sources).
+- Fixed `verification.md` duplicate row numbers (39/40 reused for fluids):
+  renumbered the fluid/redstone/nether/Goal-Contract rows to 41–58 and updated
+  every internal reference.
+- Refreshed the current test count to **383 green unit tests** (2026-10-03) in
+  `roadmap.md`, `companions.md`, `survival-intelligence.md`; updated the
+  `ai-player-roadmap.md` and `companions.md` one-line summaries in `index.md`.

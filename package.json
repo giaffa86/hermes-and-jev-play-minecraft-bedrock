@@ -9,6 +9,8 @@
     "bedrock-harness": "node bedrock-harness.mjs",
     "play": "node controller.mjs",
     "test": "node --test tests/*.test.mjs",
+    "wiki:lint": "node tools/wiki-lint.mjs",
+    "wiki:lint:strict": "node tools/wiki-lint.mjs --strict",
     "test-ping": "node test-ping.mjs",
     "test-reconnect": "node --env-file=.env test-reconnect.mjs",
     "test-world": "node tests/bedrock-world.test.mjs"

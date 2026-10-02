@@ -67,10 +67,29 @@ relevant `wiki/` pages, then drill into `raw/` only if needed. Good answers
 
 ### Lint
 
-Periodically health-check the wiki: look for contradictions between pages, stale
-claims superseded by newer sources, orphan pages, concepts mentioned but lacking a
-page, missing cross-references. Record findings in `wiki/open-questions.md` and
-append a `lint` entry to `log.md`.
+Mechanical health-check: `npm run wiki:lint` (or `node tools/wiki-lint.mjs`).
+It verifies broken relative links, that every `raw/` source is in `sources.md`,
+every `wiki/` page is in `index.md` and has inbound links, the `log.md` entry
+format, and that `open-questions.md`'s "Last lint" line matches the latest lint
+in `log.md`. It also runs a privacy gate: `.private/`, `.env`, `runs/`,
+`nmp-cache/`, `auth.json` and `memory/` must never be tracked, and it warns about
+possible secrets/personal data (this repo is public).
+
+A routine is wired with git hooks (activate once per clone):
+
+```bash
+git config core.hooksPath tools/hooks
+```
+
+- `tools/hooks/pre-commit` → `tools/wiki-lint.mjs`: **errors block the commit**.
+- `tools/hooks/pre-push` → `tools/wiki-lint.mjs --strict`: also warnings (privacy
+  scan, out-of-order log) **block the push**.
+
+Periodic semantic lint: read the wiki, look for contradictions between pages,
+stale claims superseded by newer sources, orphan pages, concepts mentioned but
+lacking a page, missing cross-references. Record findings in
+`wiki/open-questions.md`, refresh its "Last lint" date, and append a `lint` entry
+to `log.md`.
 
 ## Indexing and logging
 

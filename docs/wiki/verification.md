@@ -81,24 +81,24 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 38 | Armor points in `/observe` | `observe().armor` | 🧪 | read `/observe.armor` | Pieces + computed vanilla points; unit-tested; live pending. |
 | 39 | Persistent world memory | `world-memory.mjs`, `sqlite-memory.mjs` | ✅ | `read_container` → restart the container → `/observe.memory` | **Verified live 02/10**: 8 containers recorded; a container restart reloaded **9 records** (1 `home` landmark + 8 containers) from `runs/memory/world.sqlite` (SQLite+WAL); direct SQL (`json_extract`) + chunk-spatial queries work. |
 | 40 | Memory producers (ores/portals/entities) | `_rememberDiscoveries` | ✅ | move across chunks → `/observe.memory.counts` | **Verified live 02/10**: recorded 2 `resource_site` (coal/iron/copper/**lapis**) and 3 `entity` (2 donkeys + 1 horse) in the deployed container. |
-| 39 | Swim / cross water | `swim_to`, `surface` | ❌ | `POST /act swim_to` … cross a river | Spec M1 in [fluids](fluids.md); `_passable` currently rejects water. Needs water physics + packet capture. |
-| 40 | Drowning / breathing | `/observe.fluids.air`, `dive`, governor `drowning` | ❌ | `dive` underwater and `surface` | Spec M0/M2 in [fluids](fluids.md); air signal vs simulation open. |
-| 41 | Waterfall descent / ascent | `descend_waterfall`, `climb_waterfall`, `use_bubble_column` | ❌ | descend + climb a natural waterfall | Spec M3 in [fluids](fluids.md); needs fall-safe landing. |
-| 42 | Lava avoidance | `avoid_lava`, A* forbid + repulsion | ❌ | path near lava stays clear | Spec M0/M4 in [fluids](fluids.md); lava currently a wall, so never mined into. |
-| 43 | Buckets / boats / potions | `craft_bucket`, `fill_bucket`, `place_water`, `mount_boat`, `brew_*` | ❌ | place water → obsidian; boat across water | Spec M4/M5 in [fluids](fluids.md). |
-| 44 | Redstone sensing | `/observe.redstone`, `findBlocksByState` | ❌ | read nearby components + `redstone_signal` | Spec R0 in [redstone](redstone.md); `blockAt().getProperties()` already exposes state. |
-| 45 | Oriented placement | `place_<component>`, `set_repeater_delay` | ❌ | place a repeater/piston with the expected facing | Spec R1 in [redstone](redstone.md); needs a placement packet capture. |
-| 46 | Trigger components | `use_redstone` | ❌ | `lever → redstone_lamp` toggles | Spec R2 in [redstone](redstone.md); reuses the verified `click_block` path. |
-| 47 | Primitive circuits | `build_circuit_<id>` | ❌ | build `lamp_switch` / `delay_line` | Spec R3 in [redstone](redstone.md); declarative blueprints. |
-| 48 | Teardown / guardrails | `teardown_circuit` | ❌ | build then teardown, materials returned | Spec R4 in [redstone](redstone.md); `DIG_PROTECTED` must cover redstone. |
-| 49 | Nether portal | `goto_portal`, `build_portal`, `light_portal`, `enter_portal` | ❌ | build/light a portal, enter the Nether | Spec N0/N1 in [nether](nether.md); `nether_portal` milestone exists, no action yet. |
-| 50 | Nether survival | fire/lava hazard, hub | ❌ | survive the Nether | Spec N2 in [nether](nether.md); depends on [fluids](fluids.md) M0/M4. |
-| 51 | Ghast dodge | `dodge_projectile` | ❌ | survive a ghast in the open | Spec N3 in [nether](nether.md); no projectile tracking yet. |
-| 52 | Piglin bartering | `barter_piglin` | ❌ | gold barter + collect drops | Spec N4 in [nether](nether.md); reuses `item_use_on_entity`. |
-| 53 | Enderman gaze discipline | gaze sensing / look-away | ❌ | no aggro while collecting pearls | Spec N5 in [nether](nether.md). |
-| 54 | Fortress / blaze rods | `obtain_blaze_rods` | ❌ | 7 blaze rods, return alive | Spec N6 in [nether](nether.md); needs exploration + ranged combat. |
-| 55 | Endgame (stronghold/End/dragon) | `find_stronghold`, `enter_end`, `beat_the_dragon` | ❌ | reach the End; dragon gated | Spec N7 in [nether](nether.md); no `bossDefeated` criterion. |
-| 56 | Goal Contract | `survival/goal-contract.mjs`, `GOAL_CONTRACT`/`MAX_DEATHS`/`PRESERVE_ITEMS` | ✅ | run the controller with a contract | Slice A; 22 unit tests. **Live (2026-10-02)**: pre-loop SUCCESS (`dirt>=1`, exit 0) and FAILED (`deathsAtLeast:0`, exit 2); in-loop RUNNING with real Jev actions; `EXHAUSTED` at budget end (`MAX_STEPS=1` and `0`, exit 2). The natural in-loop SUCCESS transition was not reached because the mined dirt drops were not collected (target/height issue, unrelated), so the threshold was never met — same `evaluateContract` call as the live pre-loop cases. |
+| 41 | Swim / cross water | `swim_to`, `surface` | ❌ | `POST /act swim_to` … cross a river | Spec M1 in [fluids](fluids.md); `_passable` currently rejects water. Needs water physics + packet capture. |
+| 42 | Drowning / breathing | `/observe.fluids.air`, `dive`, governor `drowning` | ❌ | `dive` underwater and `surface` | Spec M0/M2 in [fluids](fluids.md); air signal vs simulation open. |
+| 43 | Waterfall descent / ascent | `descend_waterfall`, `climb_waterfall`, `use_bubble_column` | ❌ | descend + climb a natural waterfall | Spec M3 in [fluids](fluids.md); needs fall-safe landing. |
+| 44 | Lava avoidance | `avoid_lava`, A* forbid + repulsion | ❌ | path near lava stays clear | Spec M0/M4 in [fluids](fluids.md); lava currently a wall, so never mined into. |
+| 45 | Buckets / boats / potions | `craft_bucket`, `fill_bucket`, `place_water`, `mount_boat`, `brew_*` | ❌ | place water → obsidian; boat across water | Spec M4/M5 in [fluids](fluids.md). |
+| 46 | Redstone sensing | `/observe.redstone`, `findBlocksByState` | ❌ | read nearby components + `redstone_signal` | Spec R0 in [redstone](redstone.md); `blockAt().getProperties()` already exposes state. |
+| 47 | Oriented placement | `place_<component>`, `set_repeater_delay` | ❌ | place a repeater/piston with the expected facing | Spec R1 in [redstone](redstone.md); needs a placement packet capture. |
+| 48 | Trigger components | `use_redstone` | ❌ | `lever → redstone_lamp` toggles | Spec R2 in [redstone](redstone.md); reuses the verified `click_block` path. |
+| 49 | Primitive circuits | `build_circuit_<id>` | ❌ | build `lamp_switch` / `delay_line` | Spec R3 in [redstone](redstone.md); declarative blueprints. |
+| 50 | Teardown / guardrails | `teardown_circuit` | ❌ | build then teardown, materials returned | Spec R4 in [redstone](redstone.md); `DIG_PROTECTED` must cover redstone. |
+| 51 | Nether portal | `goto_portal`, `build_portal`, `light_portal`, `enter_portal` | ❌ | build/light a portal, enter the Nether | Spec N0/N1 in [nether](nether.md); `nether_portal` milestone exists, no action yet. |
+| 52 | Nether survival | fire/lava hazard, hub | ❌ | survive the Nether | Spec N2 in [nether](nether.md); depends on [fluids](fluids.md) M0/M4. |
+| 53 | Ghast dodge | `dodge_projectile` | ❌ | survive a ghast in the open | Spec N3 in [nether](nether.md); no projectile tracking yet. |
+| 54 | Piglin bartering | `barter_piglin` | ❌ | gold barter + collect drops | Spec N4 in [nether](nether.md); reuses `item_use_on_entity`. |
+| 55 | Enderman gaze discipline | gaze sensing / look-away | ❌ | no aggro while collecting pearls | Spec N5 in [nether](nether.md). |
+| 56 | Fortress / blaze rods | `obtain_blaze_rods` | ❌ | 7 blaze rods, return alive | Spec N6 in [nether](nether.md); needs exploration + ranged combat. |
+| 57 | Endgame (stronghold/End/dragon) | `find_stronghold`, `enter_end`, `beat_the_dragon` | ❌ | reach the End; dragon gated | Spec N7 in [nether](nether.md); no `bossDefeated` criterion. |
+| 58 | Goal Contract | `survival/goal-contract.mjs`, `GOAL_CONTRACT`/`MAX_DEATHS`/`PRESERVE_ITEMS` | ✅ | run the controller with a contract | Slice A; 22 unit tests. **Live (2026-10-02)**: pre-loop SUCCESS (`dirt>=1`, exit 0) and FAILED (`deathsAtLeast:0`, exit 2); in-loop RUNNING with real Jev actions; `EXHAUSTED` at budget end (`MAX_STEPS=1` and `0`, exit 2). The natural in-loop SUCCESS transition was not reached because the mined dirt drops were not collected (target/height issue, unrelated), so the threshold was never met — same `evaluateContract` call as the live pre-loop cases. |
 
 ## Still not implemented
 
@@ -110,11 +110,11 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 - Human chat channel M5 (ack/reply) and autonomous exploration.
 - **Fluids**: swimming, drowning/breathing, waterfalls (descent/ascent), lava
   avoidance, buckets/boats/bubble columns/potions. Spec in [fluids](fluids.md)
-  (rows 39–43); `_passable()` currently treats `water|lava` as walls.
+  (rows 41–45); `_passable()` currently treats `water|lava` as walls.
 - **Redstone and primitive automation**: sensing, oriented placement, switches,
   delay lines, observers/pistons, hoppers, dispensers, circuit blueprints. Spec
-  in [redstone](redstone.md) (rows 44–48); no redstone support today.
-- **Goal Contract** — thin slice implemented and unit-tested (row 56); the
+  in [redstone](redstone.md) (rows 46–50); no redstone support today.
+- **Goal Contract** — thin slice implemented and unit-tested (row 58); the
   persistent Goal Manager / queue, a `target`-driven `obtain_item` executor and
   the semantic-goal interpreter are still missing.
 - **Goal-driven benchmarks** (proposal in [goal-achievement](goal-achievement.md)):
@@ -124,7 +124,7 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
   (`enter_nether`, not implemented).
 - **Nether / End** — portal locate/build/light/enter, Nether survival (ghast
   dodge, piglin bartering, enderman gaze), fortress/blaze, stronghold and End.
-  Spec in [nether](nether.md) (rows 49–55); the progression chain is in
+  Spec in [nether](nether.md) (rows 51–57); the progression chain is in
   `knowledge/progression.json` but no capability is implemented.
 
 ## Related pages

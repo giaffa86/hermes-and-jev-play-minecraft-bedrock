@@ -26,6 +26,10 @@ A minimal reproduction of the rmalde/minecraft-agent planner/controller split: *
 - `survival/` is the deterministic Survival Intelligence Layer (governor, skill resolver, verifier, progression); `knowledge/*.json` holds rules and the milestone graph; `skills/gameplay/**` holds declarative gameplay skills (distinct from the Hermes `SKILL.md`). See `docs/raw/SURVIVAL-INTELLIGENCE.md`.
 - `docs/` is an **LLM wiki** (English). Read `docs/index.md` first, then the relevant `docs/wiki/*` pages; raw sources live in `docs/raw/` and `BEDROCK.md` at the root. Conventions and workflows in `docs/llm-wiki.md`. Keep all docs in English.
 - Tests: `node --test tests/*.test.mjs` (no server required).
+- Wiki lint: `npm run wiki:lint` (strict: `npm run wiki:lint:strict`). The git
+  hooks are versioned in `tools/hooks/` and activated with
+  `git config core.hooksPath tools/hooks`: `pre-commit` blocks on lint errors,
+  `pre-push` blocks on warnings too (including the public-repo privacy scan).
 
 ## Entry points
 

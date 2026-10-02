@@ -100,7 +100,7 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 - Farming core **verified live on 03/10**: `read_container` (6 chests/barrels),
   `mine_<crop>` → `collect_drop` → `plant_potato` (re-sow, `server_world`),
   `throw_egg`, `feed_pig` (`inlove`), `breed_pig` (`babies: 1`).
-- 285 green unit tests.
+- 383 green unit tests (2026-10-03).
 
 ## What is implemented but not verified live
 

@@ -65,7 +65,7 @@ Riding is now wired (`mount_<vehicle>`, `dismount`, `_rideToward`):
 
 ## Verification status
 
-Implemented and unit-tested (270 green tests). **Live verification pending**:
+Implemented and unit-tested (383 green tests, 2026-10-03). **Live verification pending**:
 on the 03/10 round there were no companions near the bot, so `tame_<companion>`
 was not exercised live; `feed_pig`/`breed_pig` (the closest farming actions)
 were verified instead. The `tamed` vs `owner_eid` (runtime id vs unique id)

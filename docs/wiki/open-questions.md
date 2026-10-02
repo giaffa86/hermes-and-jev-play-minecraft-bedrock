@@ -5,6 +5,8 @@ and `docs/raw/SURVIVAL-INTELLIGENCE.md` (Verification status). For the per-
 capability collaudo checklist (done / pending live), see
 [verification](verification.md).
 
+Last lint: 2026-10-03.
+
 ## NetherNet instability
 
 - The session drops every few seconds in some time slots (`Player disconnected`
@@ -67,8 +69,13 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
 
 ## Live verification pending
 
-- `eat` and the container actions `read_container`/`take_<item>`/`deposit_<item>`
-  are covered by unit tests but not yet verified live.
+- `eat`, `take_<item>` and `deposit_<item>` are covered by unit tests but not yet
+  verified live. `read_container` **was verified live on 03/10** (6 chests/barrels).
+- Farming leftovers: `attack_<animal>` (skipped live, would kill a base animal),
+  `tame_<companion>` (no companion near the bot on 03/10), `shear_sheep` +
+  `craft_shears` (no sheep nearby), milk (bucket + cow), mature-crop detection.
+- Riding as transport (`mount_<vehicle>`/`dismount`/`_rideToward`) is implemented
+  but not yet exercised live. See [companions](companions.md).
 - Trading (`open_trade`/`trade_<index>`/`level_<profession>`) is implemented and
   unit-tested, but the exact client→server transaction that finalises a trade and
   the tier-up detection still need a live round on a real villager. See
@@ -151,22 +158,24 @@ Still missing (the rest of the original gap):
   world-event/emergency producers that preempt a running goal. Full analysis in
   [ai-player-roadmap](ai-player-roadmap.md).
 
-- **Farming** (`.private/FARMING-TASK.md`) — not started: `plant_<seed>`/resow,
-  passive-animal `attack_<animal>`, `feed_*`/`breed_*`/`tame_*`/`shear_*`,
-  `throw_egg`, milk. Next planned work; consolidated status in
-  [roadmap](roadmap.md).
+- **Farming** (`.private/FARMING-TASK.md`) — **done and verified live 03/10** for
+  the core (`plant_<seed>`, `feed_<animal>`, `breed_<animal>`, `throw_egg`,
+  `read_container`); `attack_<animal>`/`tame_<companion>`/`shear_sheep` are
+  implemented but live-pending. Remaining gaps: milk and mature-crop detection.
+  Consolidated status in [roadmap](roadmap.md).
 - **Human chat command channel**: natural-language remote control via in-game
   chat (`@bot seguimi`, `@bot aiutami coi mob`). M1–M3 implemented (chat capture,
   allowlist + trigger, NL → Hermes → `/plan`, `follow_player`); **live
   verification on the BDS still pending**. Ack/reply in chat (M5) and autonomous
   exploration remain open. Roadmap in [human-command](human-command.md).
-- **Defense completions** — still missing: `place_torch`, `craft_*_sword`,
-  `retreat`/`go_home`, `close_door`/`barricade`, armor, shield. See
-  [roadmap](roadmap.md).
-- **Fishing** — not started: string source, `craft_fishing_rod`,
-  `cast_rod`/`reel_in`/`fish`, water/shore detection. The open technical
-  question is **bite detection** on a headless client (bobber metadata vs.
-  timing fallback). Roadmap in [fishing](fishing.md).
+- **Defense completions** — first slice implemented and mostly live-verified
+  (`place_torch`, `craft_*_sword`, `retreat`/`go_home`, `close_door`/`barricade`,
+  `equip_armor`, armor points); only the **shield** (stretch) remains. See
+  [verification](verification.md) rows 32–38 and [roadmap](roadmap.md).
+- **Fishing** — **implemented** (rod crafting, cast/bite/reel, water/shore
+  detection, `fish` composer); no live round yet. The open technical question is
+  **bite detection** on a headless client (bobber metadata vs. timing fallback).
+  Roadmap in [fishing](fishing.md).
 - **Fluids** (swimming, drowning/breathing, waterfalls, lava avoidance, buckets/
   boats/potions) — spec only. Roadmap in [fluids](fluids.md); start at M0 (fluid
   awareness) and M1 (swimming physics + air budget).
@@ -181,6 +190,18 @@ Still missing (the rest of the original gap):
   [redstone](redstone.md); start at R0 (protect redstone, `/observe.redstone`,
   state-aware search) and R1 (oriented placement, needs a placement packet
   capture).
+
+## Documentation integrity (lint 2026-10-03)
+
+- `log.md` dates are interleaved (entries labelled `2026-10-02` and `2026-10-03`
+  alternate): the log is append-ordered but the day labels are inconsistent, so a
+  strict chronological check fails. Do not reorder or rewrite history; use the
+  commit history for exact ordering, and give new entries the real current date.
+- Stale test counts remain in the immutable sources (`BEDROCK.md` minerals section
+  and `docs/raw/SURVIVAL-INTELLIGENCE.md` say 204): they are historical snapshots.
+  The current count lives in [roadmap](roadmap.md) (383 at 2026-10-03).
+- `verification.md` had duplicate row numbers (39/40 reused for the fluids rows);
+  renumbered to 41–58 and all internal references updated.
 
 ## Architecture evolution
 

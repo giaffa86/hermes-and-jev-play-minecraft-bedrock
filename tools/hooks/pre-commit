@@ -1,0 +1,5 @@
+#!/bin/sh
+# LLM-wiki pre-commit gate: structural lint of docs/ (errors block the commit).
+# Activate once per clone:  git config core.hooksPath tools/hooks
+ROOT="$(git rev-parse --show-toplevel)"
+exec node "$ROOT/tools/wiki-lint.mjs"

@@ -75,7 +75,7 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-305 unit tests green; offline smoke (`wood → crafting table → food → first_night`)
+383 unit tests green (2026-10-03); offline smoke (`wood → crafting table → food → first_night`)
 with an emergency interruption passed; live BDS verification of the full milestone
 still pending (food beyond crops, shelter, Nether portal). See
 [open-questions](open-questions.md).

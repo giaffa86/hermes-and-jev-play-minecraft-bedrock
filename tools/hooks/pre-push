@@ -1,0 +1,5 @@
+#!/bin/sh
+# LLM-wiki pre-push gate: strict lint (warnings, incl. the privacy scan, block).
+# Activate once per clone:  git config core.hooksPath tools/hooks
+ROOT="$(git rev-parse --show-toplevel)"
+exec node "$ROOT/tools/wiki-lint.mjs" --strict
