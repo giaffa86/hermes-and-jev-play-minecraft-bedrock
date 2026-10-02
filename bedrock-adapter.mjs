@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BedrockWorld } from './bedrock-world.mjs';
 import { trackNethernetClient, closeBedrockClient } from './bedrock-lifecycle.mjs';
+import { bestFood, isHostileType, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection } from './bedrock-survival.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -89,6 +90,15 @@ export class BedrockAdapter {
     this._containerWaiters = [];
     this._craftingGrid = new Map();    // gridSlot -> { network_id, count, stack_id }
     this._cursor = null;               // { network_id, count, stack_id }
+    // Sopravvivenza: entità note (mob/giocatori), ora del giorno, sonno e morte.
+    this.entities = new Map();         // runtimeId -> { type, kind, position, health, lastAt }
+    this._entitiesByUnique = new Map(); // uniqueId -> runtimeId
+    this._timeBase = null;             // { ticks, at } dell'ultimo set_time
+    this.sleeping = false;
+    this.dead = false;
+    this.deaths = 0;
+    this._respawnAt = 0;
+    this._bedCache = null;             // { at, bed } scansione letti con TTL
     this.world = new BedrockWorld({ version: VERSION, onError: error => this.log('world_error', { message: error.message }) });
   }
 
@@ -162,6 +172,9 @@ export class BedrockAdapter {
       this.status = 'connecting';
       const client = this.client = trackNethernetClient(bedrock.createClient(options));
       attemptClient = client;
+      if (process.env.BEDROCK_PACKET_LOG) {
+        client.on('packet', des => this.log('packet', { name: des.data.name }));
+      }
       const cancel = () => client.close();
       signal.addEventListener('abort', cancel, { once: true });
 
@@ -323,11 +336,13 @@ export class BedrockAdapter {
 
       this.client.on('set_health', (packet) => {
         this.health = packet.health;
+        this._onOwnHealth();
       });
 
       this.client.on('update_attributes', (packet) => {
+        if (packet.runtime_entity_id != null && String(packet.runtime_entity_id) !== String(this.client?.entityId)) return;
         for (const attr of packet.attributes || []) {
-          if (attr.name === 'minecraft:health') this.health = attr.value;
+          if (attr.name === 'minecraft:health') { this.health = attr.value; this._onOwnHealth(); }
           if (attr.name === 'minecraft:player.hunger') this.food = attr.value;
         }
       });
@@ -431,6 +446,19 @@ export class BedrockAdapter {
         this.drops = this.drops.filter(d => d.id !== packet.entity_id_self);
       });
 
+      // --- sopravvivenza: entità, ora del giorno, sonno, morte ---------------------
+      this.client.on('add_entity', (packet) => this._trackEntity(packet, 'mob'));
+      this.client.on('add_player', (packet) => this._trackEntity(packet, 'player'));
+      this.client.on('set_entity_data', (packet) => this._applyEntityMetadata(packet));
+      this.client.on('update_attributes', (packet) => this._applyEntityAttributes(packet));
+      this.client.on('entity_event', (packet) => this._onEntityEvent(packet));
+      this.client.on('set_time', (packet) => this._recordTime(packet.time));
+      this.client.on('sync_world_clocks', (packet) => this._onWorldClocks(packet));
+      this.client.on('respawn', (packet) => this._onRespawnPacket(packet));
+      this.client.on('move_entity', (packet) => this._onEntityMove(packet));
+      this.client.on('move_entity_delta', (packet) => this._onEntityMove(packet));
+      this.client.on('remove_entity', (packet) => this._onEntityRemove(packet));
+
       await new Promise((resolve, reject) => {
         const finish = error => {
           clearTimeout(to);
@@ -483,6 +511,7 @@ export class BedrockAdapter {
     }
     // Bedrock player_position is at eye height (1.62 blocks above the feet).
     this.standingOn = this.world.blockAt({ ...this.position, y: this.position.y - 1.63 })?.name ?? null;
+    this._pruneEntities();
   }
 
   _refreshInventory () {
@@ -561,6 +590,11 @@ export class BedrockAdapter {
       recent: this.recent.slice(-8),
       status: this.status,
       spawned: this.spawned,
+      time: this._timeInfo(),
+      sleeping: this.sleeping,
+      dead: this.dead,
+      deaths: this.deaths,
+      entities: this._nearbyEntities(8),
       world: this.world.summary(),
     };
   }
@@ -571,6 +605,12 @@ export class BedrockAdapter {
     if (!this.spawned || this.status !== 'spawned') {
       return [{ key: 'wait', description: 'Wait for the Bedrock connection to be re-established' }];
     }
+    if (this.dead) {
+      return [{ key: 'wait', description: 'Dead; respawning automatically' }];
+    }
+    if (this.sleeping) {
+      return [{ key: 'wait', description: 'Sleeping in bed until morning' }];
+    }
     const o = [];
     const p = this.pos();
     if (this.plan?.waypoint && p && Math.hypot(this.plan.waypoint.x - p.x, this.plan.waypoint.z - p.z) > 2) {
@@ -579,6 +619,23 @@ export class BedrockAdapter {
     const drop = this._nearestDrop();
     if (drop) {
       o.push({ key: 'collect_drop', description: `Walk onto the nearest dropped item (${drop.distance.toFixed(1)} blocks away)` });
+    }
+    // Sopravvivenza: mob ostili, cibo e letto. Le descrizioni portano il contesto
+    // (distanza, vita, fame) e la scelta resta al controller.
+    const threats = this._hostiles();
+    for (const threat of threats.slice(0, 3)) {
+      o.push({ key: `attack_${threat.type}`, description: `Attack the ${threat.type} (${threat.distance.toFixed(1)} blocks away, ${threat.health != null ? `health ${threat.health}` : 'health unknown'})` });
+    }
+    if (threats.length && threats[0].distance <= 16) {
+      o.push({ key: 'flee', description: `Run away from the nearest ${threats[0].type} (${threats[0].distance.toFixed(1)} blocks away)` });
+    }
+    const food = this._bestFoodItem();
+    if (food && (this.food < 18 || (this.health < 20 && this.food < 20))) {
+      o.push({ key: 'eat', description: `Eat ${food} to restore hunger (hunger ${this.food}/20, health ${this.health}/20)` });
+    }
+    if (this._isNight()) {
+      const bed = this._findBed();
+      if (bed) o.push({ key: 'sleep', description: `Sleep in the bed at ${JSON.stringify(bed.position)} (${bed.distance} blocks away) before the night is dangerous` });
     }
     // Mining: offri un'opzione per ogni tipo di blocco scavabile nelle vicinanze.
     // Se il blocco più vicino è sepolto (nessuna faccia raggiungibile) non va offerto:
@@ -649,6 +706,8 @@ export class BedrockAdapter {
     if (key !== 'wait' && (!this.client || !this.spawned || this.status !== 'spawned')) {
       return { ok: false, error: 'not_connected' };
     }
+    if (this.dead && key !== 'wait') return { ok: false, error: 'dead' };
+    if (this.sleeping && key !== 'wait') return { ok: false, error: 'sleeping' };
     this.busy = true;
     const started = Date.now();
     let result;
@@ -675,6 +734,14 @@ export class BedrockAdapter {
       } else if (key.startsWith('place_')) {
         const itemName = key.slice('place_'.length);
         result = await this._placeBlock(itemName, itemName);
+      } else if (key === 'eat') {
+        result = await this._eat();
+      } else if (key === 'flee') {
+        result = await this._flee();
+      } else if (key === 'sleep') {
+        result = await this._sleepInBed();
+      } else if (key.startsWith('attack_')) {
+        result = await this._combat(key.slice('attack_'.length));
       } else {
         result = { ok: false, error: 'unknown_action', reason: `unknown or invalid action ${key}` };
       }
@@ -1741,6 +1808,7 @@ export class BedrockAdapter {
     } catch (error) {
       this.log('auth_input_error', { message: error.message });
     }
+    this._survivalTick();
   }
 
   _blockUseTransaction (pos) {
@@ -2263,5 +2331,553 @@ export class BedrockAdapter {
       await delay(50);
     }
     throw new Error('movement timeout');
+  }
+
+  // ---- sopravvivenza ------------------------------------------------------------------
+  // Entità, ora del giorno, combattimento, fuga, cibo e letto. Le regole pure
+  // (classificazione ostili, cibo, tempo) stanno in bedrock-survival.mjs.
+
+  // Registra un'entità da add_entity/add_player. Per i mob `position` è ai piedi;
+  // per i giocatori è agli occhi (1,62 sopra i piedi).
+  _trackEntity (packet, kind) {
+    const runtimeId = String(packet.runtime_id ?? packet.runtime_entity_id ?? '');
+    if (!runtimeId) return;
+    const type = normalizeEntityType(packet.entity_type || (kind === 'player' ? 'player' : `unknown_${runtimeId}`));
+    let entity = this.entities.get(runtimeId);
+    if (!entity) {
+      entity = { runtimeId, uniqueId: null, type, kind, position: null, health: null, lastAt: 0 };
+      this.entities.set(runtimeId, entity);
+    }
+    entity.type = type;
+    entity.kind = kind;
+    entity.lastAt = Date.now();
+    if (packet.unique_id != null) {
+      entity.uniqueId = String(packet.unique_id);
+      this._entitiesByUnique.set(entity.uniqueId, runtimeId);
+    }
+    if (packet.position) {
+      const y = kind === 'player' ? packet.position.y - EYE_HEIGHT : packet.position.y;
+      entity.position = { x: packet.position.x, y, z: packet.position.z };
+    }
+    if (Array.isArray(packet.attributes)) {
+      for (const attr of packet.attributes) {
+        if (attr.name === 'minecraft:health') entity.health = attr.current ?? attr.value;
+      }
+    }
+    if (kind === 'player' || isHostileType(type)) {
+      this.log('entity_add', { runtimeId, type, kind, position: entity.position });
+    }
+  }
+
+  _onEntityMove (packet) {
+    const runtimeId = String(packet.runtime_entity_id ?? '');
+    const entity = this.entities.get(runtimeId);
+    if (!entity || !entity.position) return;
+    if (packet.position) {
+      entity.position = { x: packet.position.x, y: packet.position.y, z: packet.position.z };
+    } else if (packet.flags && typeof packet.flags === 'object') {
+      if (packet.flags.has_x && packet.x != null) entity.position.x = packet.x;
+      if (packet.flags.has_y && packet.y != null) entity.position.y = packet.y;
+      if (packet.flags.has_z && packet.z != null) entity.position.z = packet.z;
+    } else if (packet.x != null || packet.y != null || packet.z != null) {
+      // In 1.26 i campi opzionali sono coordinate assolute (non delta).
+      entity.position = {
+        x: packet.x ?? entity.position.x,
+        y: packet.y ?? entity.position.y,
+        z: packet.z ?? entity.position.z,
+      };
+    }
+    entity.lastAt = Date.now();
+  }
+
+  _onEntityRemove (packet) {
+    const id = String(packet.entity_id_self ?? '');
+    const runtimeId = this._entitiesByUnique.get(id) || (this.entities.has(id) ? id : null);
+    if (!runtimeId) return;
+    const entity = this.entities.get(runtimeId);
+    if (entity?.uniqueId) this._entitiesByUnique.delete(entity.uniqueId);
+    this.entities.delete(runtimeId);
+  }
+
+  _applyEntityMetadata (packet) {
+    const runtimeId = String(packet.runtime_entity_id ?? '');
+    const isSelf = this.client && String(this.client.entityId) === runtimeId;
+    const entity = this.entities.get(runtimeId);
+    if (!isSelf && !entity) return;
+    for (const entry of packet.metadata || []) {
+      const key = typeof entry.key === 'string'
+        ? entry.key
+        : (entry.key === 0 ? 'flags' : entry.key === 1 ? 'health' : entry.key === 28 ? 'player_bed_position' : null);
+      if (key === 'health' && entry.value != null && entity) {
+        const value = Number(entry.value);
+        if (Number.isFinite(value)) entity.health = value;
+      }
+      if (key === 'flags' && isSelf) {
+        const resting = this._metadataFlag(entry.value, 'resting');
+        if (resting != null) this._setSleeping(resting);
+      }
+      if (key === 'player_bed_position' && isSelf && entry.value != null) this._setSleeping(true);
+    }
+    if (entity) entity.lastAt = Date.now();
+  }
+
+  _metadataFlag (value, name) {
+    if (value && typeof value === 'object') {
+      if (typeof value[name] === 'boolean') return value[name];
+      if (value[name] != null) return !!value[name];
+      return null;
+    }
+    // Fallback numerico: MetadataFlags1, resting = bit 23.
+    if ((typeof value === 'number' || typeof value === 'bigint') && name === 'resting') {
+      return ((BigInt(value) >> 23n) & 1n) === 1n;
+    }
+    return null;
+  }
+
+  _applyEntityAttributes (packet) {
+    const runtimeId = String(packet.runtime_entity_id ?? '');
+    const entity = this.entities.get(runtimeId);
+    if (!entity) return;
+    for (const attr of packet.attributes || []) {
+      if (attr.name === 'minecraft:health') entity.health = attr.current ?? attr.value;
+    }
+    entity.lastAt = Date.now();
+  }
+
+  _onEntityEvent (packet) {
+    const runtimeId = String(packet.runtime_entity_id ?? '');
+    const entity = this.entities.get(runtimeId);
+    if (!entity) return;
+    if (packet.event_id === 'death_animation' || packet.event_id === 3) {
+      entity.health = 0;
+      entity.deadAt = Date.now();
+      this.log('entity_death', { type: entity.type, runtimeId });
+    }
+  }
+
+  _onOwnHealth () {
+    if (this.health <= 0 && !this.dead) {
+      this.dead = true;
+      this.deaths++;
+      this._respawnAt = Date.now() + 1500;
+      this._motion = null;
+      this._velocity = { x: 0, y: 0, z: 0 };
+      this._setSleeping(false);
+      this.log('death', { deaths: this.deaths, position: this.pos() });
+    } else if (this.health > 0 && this.dead) {
+      this.dead = false;
+      this._respawnAt = 0;
+      this.log('alive_again', { health: this.health });
+    }
+  }
+
+  _onRespawnPacket (packet) {
+    // Il server manda anche respawn "di login" (state di setup): applicali solo
+    // quando il bot è davvero morto, altrimenti azzererebbero la posizione.
+    if (!this.dead) return;
+    if (packet.position && packet.position.x != null) {
+      this.position = { ...packet.position };
+      this._syncFeetFromPosition(this.position);
+    }
+    this.dead = false;
+    this._respawnAt = 0;
+    this._velocity = { x: 0, y: 0, z: 0 };
+    this._motion = null;
+    this.log('respawn', { position: this.pos() });
+    if (this.client && this.position) this.world.requestAround(this.client, this.position);
+  }
+
+  // Chiamata dall'heartbeat: respawn automatico e sveglia di sicurezza all'alba.
+  _survivalTick () {
+    if (!this.client) return;
+    if (this.dead && Date.now() >= this._respawnAt) {
+      this._respawnAt = Date.now() + 2500;
+      try {
+        this.client.write('player_action', {
+          runtime_entity_id: this.client.entityId,
+          action: 'respawn',
+          position: { x: 0, y: 0, z: 0 },
+          result_position: { x: 0, y: 0, z: 0 },
+          face: 0,
+        });
+        this.log('respawn_request', { deaths: this.deaths });
+      } catch (error) {
+        this.log('respawn_error', { message: error.message });
+      }
+    }
+    if (this.sleeping && this._timeBase && !this._isNight()) {
+      this._daySince = this._daySince || Date.now();
+      if (Date.now() - this._daySince > 5000) { this._wake(); this._daySince = null; }
+    } else if (!this.sleeping) {
+      this._daySince = null;
+    }
+  }
+
+  _recordTime (ticks) {
+    if (!Number.isFinite(ticks)) return;
+    this._timeBase = { ticks, at: Date.now() };
+  }
+
+  // BDS 1.26 non manda set_time: l'ora del giorno arriva dal world clock
+  // (initialize_registry all'ingresso, sync_state periodico).
+  _onWorldClocks (packet) {
+    if (packet.payload_type === 'initialize_registry') {
+      const clocks = packet.clocks || [];
+      const chosen = clocks.find(clock => /overworld|daylight|day/i.test(clock.name || '')) || clocks[0];
+      if (chosen) {
+        this._worldClockId = String(chosen.id);
+        this._recordTime(chosen.time);
+        this.log('world_clock', { name: chosen.name, id: String(chosen.id), time: chosen.time, paused: chosen.paused });
+      }
+      return;
+    }
+    if (packet.payload_type === 'sync_state') {
+      const states = packet.sync_states || [];
+      const chosen = this._worldClockId
+        ? states.find(state => String(state.clock_id) === this._worldClockId)
+        : states[0];
+      if (chosen) {
+        if (!this._worldClockId) this._worldClockId = String(chosen.clock_id);
+        this._recordTime(chosen.time);
+      }
+    }
+  }
+
+  _timeInfo () {
+    if (!this._timeBase) return null;
+    const ticks = Math.round(estimatedTimeOfDay(this._timeBase.ticks, this._timeBase.at));
+    return { ticks, phase: timePhase(ticks), night: isNightTime(ticks) };
+  }
+
+  _isNight () {
+    return !!this._timeInfo()?.night;
+  }
+
+  _setSleeping (sleeping) {
+    if (this.sleeping === sleeping) return;
+    this.sleeping = sleeping;
+    this._daySince = null;
+    this.log(sleeping ? 'sleep_start' : 'sleep_end', { position: this.pos() });
+  }
+
+  _wake () {
+    if (!this.sleeping || !this.client) return;
+    const bed = this._bedCache?.bed;
+    this.client.write('player_action', {
+      runtime_entity_id: this.client.entityId,
+      action: 'stop_sleeping',
+      position: bed ? { x: bed.position.x, y: bed.position.y, z: bed.position.z } : { x: 0, y: 0, z: 0 },
+      result_position: { x: 0, y: 0, z: 0 },
+      face: 0,
+    });
+  }
+
+  _entityDistance (entity) {
+    if (!this.position || !entity?.position) return Infinity;
+    const centerY = entity.position.y + entityHeight(entity.type) * 0.5;
+    return Math.hypot(entity.position.x - this.position.x, centerY - this.position.y, entity.position.z - this.position.z);
+  }
+
+  _pointDistance (point) {
+    if (!this.position || !point) return Infinity;
+    return Math.hypot(point.x - this.position.x, point.y + 0.5 - this.position.y, point.z - this.position.z);
+  }
+
+  _pruneEntities () {
+    if (!this.entities.size) return;
+    const now = Date.now();
+    for (const [runtimeId, entity] of this.entities) {
+      const stale = now - entity.lastAt > 60000;
+      const far = entity.position && this.position && this._entityDistance(entity) > 64;
+      if (stale || far) {
+        this.entities.delete(runtimeId);
+        if (entity.uniqueId) this._entitiesByUnique.delete(entity.uniqueId);
+      }
+    }
+  }
+
+  _nearbyEntities (limit = 8) {
+    const rows = [];
+    for (const entity of this.entities.values()) {
+      if (!entity.position) continue;
+      const distance = this._entityDistance(entity);
+      if (distance > 24) continue;
+      rows.push({
+        type: entity.type,
+        kind: entity.kind,
+        hostile: entity.kind === 'mob' && isHostileType(entity.type),
+        distance: +distance.toFixed(1),
+        position: {
+          x: +entity.position.x.toFixed(1),
+          y: +entity.position.y.toFixed(1),
+          z: +entity.position.z.toFixed(1),
+        },
+        health: entity.health ?? null,
+      });
+    }
+    rows.sort((a, b) => a.distance - b.distance);
+    return rows.slice(0, limit);
+  }
+
+  // Ostili vivi entro 32 blocchi, ordinati per distanza.
+  _hostiles () {
+    const rows = [];
+    for (const entity of this.entities.values()) {
+      if (entity.kind !== 'mob' || !entity.position || !isHostileType(entity.type)) continue;
+      if (entity.health != null && entity.health <= 0 && entity.deadAt) continue;
+      const distance = this._entityDistance(entity);
+      if (distance > 32) continue;
+      rows.push({
+        type: entity.type,
+        runtimeId: entity.runtimeId,
+        position: entity.position,
+        health: entity.health ?? null,
+        distance,
+      });
+    }
+    rows.sort((a, b) => a.distance - b.distance);
+    return rows;
+  }
+
+  _hostileOfType (type) {
+    const wanted = normalizeEntityType(type);
+    return this._hostiles().find(entity => entity.type === wanted) || null;
+  }
+
+  async _selectWeapon () {
+    const best = this._bestInventoryTool('sword');
+    if (!best) return null;
+    const index = this.inventorySlots.findIndex(s => this._slotItemName(s) === best.name && s.count > 0);
+    if (index < 0) return null;
+    try {
+      const hotbar = index > 8 ? await this._moveSlotToHotbar(index) : index;
+      if (!this._selectHotbarSlot(hotbar)) return null;
+      return best.name;
+    } catch (error) {
+      this.log('weapon_equip_failed', { weapon: best.name, message: error.message });
+      return null;
+    }
+  }
+
+  _attackEntity (entity) {
+    const held = this.inventorySlots[this.selectedHotbar] || { network_id: 0 };
+    let runtimeId;
+    try { runtimeId = BigInt(entity.runtimeId); } catch { return false; }
+    const centerY = entity.position.y + entityHeight(entity.type) * 0.5;
+    this.client.write('inventory_transaction', {
+      transaction: {
+        legacy: { legacy_request_id: 0 },
+        transaction_type: 'item_use_on_entity',
+        actions: [],
+        transaction_data: {
+          entity_runtime_id: runtimeId,
+          action_type: 'attack',
+          hotbar_slot: this.selectedHotbar,
+          held_item: held,
+          player_pos: { ...this.position },
+          click_pos: { x: entity.position.x, y: centerY, z: entity.position.z },
+        },
+      },
+    });
+    this.client.write('animate', { action_id: 'swing_arm', runtime_entity_id: this.client.entityId, data: 0, has_swing_source: false });
+    this.log('attack', { target: entity.type, runtimeId: entity.runtimeId, distance: +this._entityDistance(entity).toFixed(2) });
+    return true;
+  }
+
+  // Insegue e colpisce il mob più vicino del tipo richiesto finché non muore o
+  // scade il tempo. Un'azione del controller può quindi coprire l'intero scontro.
+  async _combat (type, timeoutMs = 25000) {
+    const deadline = Date.now() + timeoutMs;
+    let hits = 0;
+    let weapon = null;
+    let approachFailures = 0;
+    while (Date.now() < deadline) {
+      if (this.dead) return { ok: false, error: 'died_in_combat', hits };
+      const target = this._hostileOfType(type);
+      if (!target) {
+        return hits > 0 ? { ok: true, killed: true, hits, weapon } : { ok: false, error: 'target_gone', hits };
+      }
+      if (target.health != null && target.health <= 0) return { ok: true, killed: true, hits, weapon };
+      if (target.distance > 3.4) {
+        try {
+          await this._moveTo(target.position, 2.0, Math.min(8000, Math.max(1000, deadline - Date.now())));
+        } catch (error) {
+          approachFailures++;
+          if (!this._hostileOfType(type)) return hits > 0 ? { ok: true, killed: false, hits, detail: 'target_lost' } : { ok: false, error: 'target_lost', hits };
+          if (approachFailures >= 3) return { ok: false, error: `cannot_reach_target: ${error.message}`, hits };
+        }
+        continue;
+      }
+      if (!weapon) weapon = await this._selectWeapon();
+      const aim = this._lookAt({
+        x: target.position.x,
+        y: target.position.y + entityHeight(target.type) * 0.5,
+        z: target.position.z,
+      });
+      await this._queueAuthInput({ yaw: aim.yaw, pitch: aim.pitch });
+      await delay(120);
+      const current = this._hostileOfType(type);
+      if (!current) return hits > 0 ? { ok: true, killed: true, hits, weapon } : { ok: false, error: 'target_lost', hits };
+      this._attackEntity(current);
+      hits++;
+      const waitUntil = Math.min(deadline, Date.now() + 550);
+      while (Date.now() < waitUntil) {
+        const watched = this._hostileOfType(type);
+        if (!watched || (watched.health != null && watched.health <= 0)) return { ok: true, killed: true, hits, weapon };
+        if (watched.distance > 4.5) break;
+        await delay(50);
+      }
+    }
+    return { ok: false, error: 'combat_timeout', hits, weapon };
+  }
+
+  // Punto camminabile più vicino alla cella indicata, cercando in verticale.
+  _standableNear (point) {
+    if (!this._feet) return null;
+    const x = Math.floor(point.x), z = Math.floor(point.z);
+    const baseY = Math.floor(this._feet.y + 1e-3);
+    for (let dy = 2; dy >= -4; dy--) {
+      const y = baseY + dy;
+      if (this._standable(x, y, z)) return { x: x + 0.5, y, z: z + 0.5 };
+    }
+    return null;
+  }
+
+  // Allontana il bot dal mob ostile più vicino provando Direzioni e distanze
+  // diverse (un percorso può essere bloccato in una direzione ma non in un'altra).
+  async _flee (timeoutMs = 15000) {
+    if (!this._feet) return { ok: false, error: 'no_position' };
+    const threats = this._hostiles();
+    if (!threats.length) return { ok: true, fled: false, reason: 'no_threat' };
+    const threat = threats[0];
+    const away = awayDirection(this._feet, threat.position);
+    const deadline = Date.now() + timeoutMs;
+    let lastError = null;
+    for (const offset of [0, 30, -30, 60, -60, 90, -90, 180]) {
+      const dir = rotateDirection(away, offset);
+      for (const distance of [12, 16, 9]) {
+        if (Date.now() >= deadline) break;
+        const candidate = this._standableNear({ x: this._feet.x + dir.x * distance, z: this._feet.z + dir.z * distance });
+        if (!candidate) continue;
+        try {
+          await this._moveTo(candidate, 0.8, Math.min(7000, Math.max(1500, deadline - Date.now())));
+          const nearest = this._hostiles()[0];
+          return {
+            ok: true,
+            from: threat.type,
+            fromDistance: +threat.distance.toFixed(1),
+            position: this.pos(),
+            nearestThreat: nearest ? { type: nearest.type, distance: +nearest.distance.toFixed(1) } : null,
+          };
+        } catch (error) {
+          lastError = error.message;
+        }
+      }
+    }
+    return { ok: false, error: `flee_failed${lastError ? `: ${lastError}` : ''}` };
+  }
+
+  _bestFoodItem () {
+    return bestFood(this.inventory);
+  }
+
+  // Transazione item_use click_air (cibo/pozioni) nella forma attesa da
+  // player_auth_input: lì il campo transaction è sempre un UseItem.
+  _useItemTransaction (held, actionType) {
+    return {
+      legacy: { legacy_request_id: 0 },
+      actions: [],
+      data: {
+        action_type: actionType,
+        trigger_type: 'player_input',
+        block_position: { x: 0, y: 0, z: 0 },
+        face: 255,
+        hotbar_slot: this.selectedHotbar,
+        hand: 'main_hand',
+        held_item: held,
+        player_pos: { ...this.position },
+        click_pos: { x: 0, y: 0, z: 0 },
+        block_runtime_id: 0,
+        client_prediction: 'success',
+        client_cooldown_state: 'off',
+      },
+    };
+  }
+
+  async _eat (timeoutMs = 8000) {
+    const itemName = this._bestFoodItem();
+    if (!itemName) return { ok: false, error: 'no_food' };
+    if (this.food >= 20) return { ok: true, skipped: 'not_hungry' };
+    const index = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && s.count > 0);
+    if (index < 0) return { ok: false, error: 'no_food' };
+    if (this._openContainer) await this._closeContainer();
+    let hotbar = index;
+    if (hotbar > 8) {
+      try { hotbar = await this._moveSlotToHotbar(index); } catch (error) { return { ok: false, error: `food_equip_failed: ${error.message}` }; }
+    }
+    if (!this._selectHotbarSlot(hotbar)) return { ok: false, error: 'food_equip_failed' };
+    const beforeFood = this.food;
+    const beforeCount = this.inventory[itemName] || 0;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const held = this.inventorySlots[this.selectedHotbar] || { network_id: 0 };
+      await this._queueAuthInput({
+        yaw: this._lastYaw,
+        pitch: this._lastPitch,
+        transaction: this._useItemTransaction(held, 'click_air'),
+      });
+      // Attende la conferma: fame salita o item consumato.
+      const waitUntil = Math.min(deadline, Date.now() + 2200);
+      while (Date.now() < waitUntil) {
+        if (this.food > beforeFood || (this.inventory[itemName] || 0) < beforeCount) {
+          return { ok: true, item: itemName, food: this.food, health: this.health };
+        }
+        await delay(100);
+      }
+    }
+    return { ok: false, error: 'eat_not_confirmed', item: itemName };
+  }
+
+  // Letto più vicino nel mondo caricato (scansione con TTL di 30 s).
+  _findBed () {
+    if (!this.position) return null;
+    const now = Date.now();
+    if (this._bedCache && now - this._bedCache.at < 30000) return this._bedCache.bed;
+    let bed = null;
+    const found = this.world.findBlocks('bed', this.position, 48, 4);
+    if (found?.length) {
+      const first = found[0];
+      bed = { name: first.name, position: first.position, distance: +(first.distance ?? 0).toFixed(1) };
+    }
+    this._bedCache = { at: now, bed };
+    return bed;
+  }
+
+  // Si avvicina al letto e ci clicca sopra finché il server non conferma il
+  // sonno (flag resting nei metadata). Fallisce se è giorno o se ci sono mostri.
+  async _sleepInBed ({ approachTimeoutMs = 25000, confirmMs = 3000 } = {}) {
+    if (this.sleeping) return { ok: true, alreadySleeping: true };
+    if (!this._isNight()) return { ok: false, error: 'not_night' };
+    const bed = this._findBed();
+    if (!bed) return { ok: false, error: 'no_bed' };
+    const bedCenter = { x: bed.position.x + 0.5, y: bed.position.y, z: bed.position.z + 0.5 };
+    if (this._pointDistance(bedCenter) > 4.5) {
+      try {
+        await this._moveTo(bedCenter, 1.8, approachTimeoutMs);
+      } catch (error) {
+        this.log('bed_approach_failed', { message: error.message, bed: bed.position });
+      }
+    }
+    if (this._pointDistance(bedCenter) > 5) return { ok: false, error: 'bed_unreachable', bed: bed.position };
+    for (let attempt = 1; attempt <= 3 && !this.sleeping; attempt++) {
+      const look = this._lookAt({ x: bedCenter.x, y: bed.position.y + 0.5, z: bedCenter.z });
+      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+      await delay(120);
+      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch, transaction: this._blockUseTransaction(bed.position) });
+      const waitUntil = Date.now() + confirmMs;
+      while (Date.now() < waitUntil && !this.sleeping) await delay(100);
+    }
+    if (this.sleeping) return { ok: true, bed: bed.position };
+    return { ok: false, error: 'sleep_rejected', bed: bed.position, hint: 'bed occupied, monsters nearby or the server clock says it is not night' };
   }
 }
