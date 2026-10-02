@@ -1,0 +1,15 @@
+{
+  "id": "eat_available_food",
+  "description": "Eat the best available food to restore hunger.",
+  "category": "survival",
+  "preconditions": { "inventoryTagGte": { "food": 1 } },
+  "success": {
+    "anyOf": [
+      { "foodIncreased": true },
+      { "foodAtLeast": 16 }
+    ]
+  },
+  "intents": ["eat", "heal"],
+  "planTargets": {},
+  "notes": "Successo verificato dal confronto fame prima/dopo oppure da fame già alta."
+}

@@ -1,0 +1,14 @@
+{
+  "id": "first_night",
+  "description": "Survive the first night: get shelter or sleep, stay fed, and be alive at dawn.",
+  "category": "survival",
+  "success": {
+    "allOf": [
+      { "nightSurvived": true },
+      { "healthAtLeast": 1 }
+    ]
+  },
+  "intents": ["sleep", "shelter", "escape", "eat", "mine", "build"],
+  "planTargets": {},
+  "notes": "nightSurvived richiede che il controller abbia osservato la notte (context.sawNight) e che ora sia giorno."
+}

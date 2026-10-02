@@ -210,6 +210,87 @@ test('respawn fallback closes the death state when state 1 never arrives', () =>
   assert.equal(adapter.dead, false);
 });
 
+test('limbo after a respawn fallback is re-opened until health returns', () => {
+  const adapter = spawnedAdapter();
+  adapter.client.write = () => {};
+  adapter.health = 0;
+  adapter._onOwnHealth();
+  adapter._onRespawnPacket({ state: 0, position: { x: 83, y: 75, z: 176 } });
+  adapter._pendingRespawn.at = Date.now() - 5000;
+  adapter._survivalTick();
+  assert.equal(adapter.dead, false);
+  // Il server non ha mai riportato la vita: dopo 5 s il flusso riparte.
+  adapter._limboSince = Date.now() - 6000;
+  adapter._survivalTick();
+  assert.equal(adapter.dead, true);
+  assert.ok(adapter._respawnAt > Date.now(), 'riprogramma il respawn');
+  // Quando la vita torna, il limbo si chiude.
+  adapter.health = 20;
+  adapter._survivalTick();
+  assert.equal(adapter._limboSince, null);
+});
+
+test('death records the site and offers loot recovery after respawn', () => {
+  const adapter = spawnedAdapter();
+  adapter.client.write = () => {};
+  adapter._feet = { x: 83.2, y: 74, z: 176.4 };
+  adapter.position = { x: 83.2, y: 75.62, z: 176.4 };
+  adapter.health = 0;
+  adapter._onOwnHealth();
+  assert.deepEqual(adapter.deathSite.position, { x: 83.2, y: 74, z: 176.4 });
+  adapter._onRespawnPacket({ state: 1, position: { x: 70.5, y: 76.62, z: 178.5 } });
+  assert.equal(adapter.dead, false);
+  adapter.nearbyBlocks = {};
+  adapter.drops = [];
+  adapter.world.findBlocks = () => [];
+  const keys = adapter.options().map(o => o.key);
+  assert.ok(keys.includes('recover_loot'), 'offerta di recupero');
+  assert.deepEqual(adapter.observe().deathSite.position, { x: 83.2, y: 74, z: 176.4 });
+});
+
+test('recover_loot walks to the death site, collects drops and clears it', async () => {
+  const adapter = spawnedAdapter();
+  adapter.deathSite = { position: { x: 83, y: 74, z: 176 }, at: Date.now(), attempts: 0 };
+  adapter.drops = [{ id: 1, item: 'stone_pickaxe', count: 1, position: { x: 83.5, y: 74.5, z: 176.5 } }];
+  const moves = [];
+  adapter._moveTo = async (target) => { moves.push(target); return { ok: true, distance: 0.2, pathNodes: 3 }; };
+  let collected = 0;
+  adapter._collectDrop = async () => { collected++; adapter.drops = []; return { ok: true, picked: 1, item: 'stone_pickaxe' }; };
+  const result = await adapter._recoverLoot();
+  assert.equal(result.ok, true);
+  assert.deepEqual(moves[0], { x: 83, y: 74, z: 176 });
+  assert.equal(collected, 1);
+  assert.deepEqual(result.recovered, ['stone_pickaxe']);
+  assert.equal(adapter.deathSite, null, 'sito chiuso quando non resta loot');
+});
+
+test('recover_loot keeps the site when the path fails or loot is left', async () => {
+  const adapter = spawnedAdapter();
+  adapter.deathSite = { position: { x: 83, y: 74, z: 176 }, at: Date.now(), attempts: 0 };
+  adapter._moveTo = async () => { throw new Error('path_failed'); };
+  const failed = await adapter._recoverLoot();
+  assert.equal(failed.ok, false);
+  assert.equal(adapter.deathSite.attempts, 1);
+  // Loot ancora lì: il sito resta per riprovare.
+  adapter._moveTo = async () => ({ ok: true });
+  adapter._feet = { x: 83, y: 74, z: 176 };
+  adapter.drops = [{ id: 2, item: 'raw_iron', count: 1, position: { x: 83.5, y: 74.5, z: 176.5 } }];
+  adapter._collectDrop = async () => ({ ok: false, error: 'item_not_collected' });
+  const left = await adapter._recoverLoot();
+  assert.equal(left.ok, true);
+  assert.equal(left.leftNearby, true);
+  assert.ok(adapter.deathSite, 'sito mantenuto');
+});
+
+test('experience attributes are tracked and exposed', () => {
+  const adapter = spawnedAdapter();
+  adapter._applyOwnAttributes({ runtime_entity_id: 7n, attributes: [
+    { name: 'minecraft:player.level', current: 5 },
+    { name: 'minecraft:player.experience', current: 0.5 },
+  ] });
+  assert.deepEqual(adapter.observe().experience, { level: 5, progress: 0.5 });
+});
+
 test('unsolicited respawn packets do not move the bot', () => {
   const adapter = spawnedAdapter();
   adapter._onRespawnPacket({ position: { x: 0, y: 0, z: 0 } });

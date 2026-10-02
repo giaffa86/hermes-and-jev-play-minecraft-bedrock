@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "comment": "Regole di sopravvivenza deterministiche. Condizioni disponibili (AND): healthMax, healthBelow, foodMax, foodBelow, phase, night, timeKnown, bedAvailable, hasFood, weaponInInventory, pickaxeInInventory, sleeping, dead, lootNearby, hostileWithin, hostileSeverityAtLeast, hostileTypeWithin. Vedi docs/SURVIVAL-INTELLIGENCE.md.",
+  "rules": [
+    {
+      "id": "dead",
+      "priority": 100,
+      "when": { "dead": true },
+      "intents": ["wait"],
+      "objective": "Wait for the automatic respawn, then recover the dropped items.",
+      "preferredSkills": ["recover_loot"]
+    },
+    {
+      "id": "low_health_near_hostile",
+      "priority": 100,
+      "when": { "healthMax": 10, "hostileWithin": 8 },
+      "intents": ["escape", "heal", "eat", "shelter"],
+      "objective": "Escape immediate danger and recover health before resuming progression.",
+      "preferredSkills": ["escape_hostile", "eat_available_food", "emergency_shelter"]
+    },
+    {
+      "id": "critical_health",
+      "priority": 99,
+      "when": { "healthMax": 4 },
+      "intents": ["heal", "eat", "escape", "shelter"],
+      "objective": "Recover health immediately: avoid every fight, eat if food is available and move to safety.",
+      "preferredSkills": ["eat_available_food", "escape_hostile", "emergency_shelter"]
+    },
+    {
+      "id": "creeper_immediate",
+      "priority": 97,
+      "when": { "hostileTypeWithin": { "creeper": 6 } },
+      "intents": ["escape"],
+      "objective": "Move away from the creeper before it explodes: do not fight it in melee.",
+      "preferredSkills": ["escape_hostile"]
+    },
+    {
+      "id": "no_food_available",
+      "priority": 96,
+      "when": { "foodMax": 12, "hasFood": false },
+      "intents": ["eat", "heal"],
+      "objective": "Find or craft something safe to eat before continuing with the objective.",
+      "preferredSkills": ["obtain_food", "eat_available_food"]
+    },
+    {
+      "id": "low_food",
+      "priority": 90,
+      "when": { "foodMax": 6 },
+      "intents": ["eat", "heal"],
+      "objective": "Eat available food to restore hunger before resuming progression.",
+      "preferredSkills": ["eat_available_food"]
+    },
+    {
+      "id": "hostile_close",
+      "priority": 80,
+      "when": { "hostileWithin": 5 },
+      "intents": ["escape", "fight"],
+      "objective": "Deal with the hostile mob that is within melee range.",
+      "preferredSkills": ["escape_hostile"]
+    },
+    {
+      "id": "wounded",
+      "priority": 70,
+      "when": { "healthMax": 14 },
+      "intents": ["heal", "eat"],
+      "objective": "Recover health when convenient: eat if hungry and avoid unnecessary combat.",
+      "preferredSkills": ["eat_available_food"]
+    },
+    {
+      "id": "night_unprepared",
+      "priority": 65,
+      "when": { "night": true, "bedAvailable": false },
+      "intents": ["shelter", "sleep", "escape", "mine", "build"],
+      "objective": "Reach safety before dark: shelter in place, dig in, or get inside walls.",
+      "preferredSkills": ["emergency_shelter", "first_night"]
+    },
+    {
+      "id": "night_with_bed",
+      "priority": 60,
+      "when": { "night": true, "bedAvailable": true },
+      "intents": ["sleep"],
+      "objective": "Sleep in the nearby bed to skip the dangerous night.",
+      "preferredSkills": ["first_night"]
+    },
+    {
+      "id": "hungry",
+      "priority": 40,
+      "when": { "foodMax": 12, "hasFood": true },
+      "intents": ["eat"],
+      "objective": "Eat before hunger starts to hurt.",
+      "preferredSkills": ["eat_available_food"]
+    }
+  ]
+}

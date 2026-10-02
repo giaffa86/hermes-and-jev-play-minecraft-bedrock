@@ -43,6 +43,38 @@ const HARVEST_TOOL_RANK = { 941: 1, 956: 1, 946: 2, 951: 2, 961: 3, 966: 4, 971:
 // Blocchi funzionali o costruiti che dig_down non deve mai scavare per errore
 // (tavoli, contenitori, stazioni): il passo verrebbe rifiutato invece che distruggerli.
 const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|_bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$)/;
+// Fornace: slot del container Bedrock e priorità dei combustibili (fusione).
+const FURNACE_SLOTS = { ingredient: 0, fuel: 1, output: 2 };
+const FURNACE_BY_CONTAINER = {
+  furnace_ingredient: 'ingredient', blast_furnace_ingredient: 'ingredient', smoker_ingredient: 'ingredient',
+  furnace_fuel: 'fuel', furnace_output: 'output',
+};
+// Stazioni di fusione: tipo di blocco → container dell'ingrediente e window_type.
+const SMELT_STATIONS = {
+  furnace: { ingredient: 'furnace_ingredient', window: 'furnace' },
+  blast_furnace: { ingredient: 'blast_furnace_ingredient', window: 'blast_furnace' },
+  smoker: { ingredient: 'smoker_ingredient', window: 'smoker' },
+};
+// Il protocollo 1.26 non manda le furnace_recipes nel crafting_data: la mappa
+// statica copre la progressione (minerali e cibi comuni). Le ricette del
+// pacchetto, se un giorno arrivassero, hanno priorità.
+const SMELT_RECIPES = {
+  raw_iron: 'iron_ingot',
+  raw_copper: 'copper_ingot',
+  raw_gold: 'gold_ingot',
+  iron_ore: 'iron_ingot',
+  copper_ore: 'copper_ingot',
+  gold_ore: 'gold_ingot',
+  sand: 'glass',
+  cobblestone: 'stone',
+  potato: 'baked_potato',
+  beef: 'cooked_beef',
+  chicken: 'cooked_chicken',
+  porkchop: 'cooked_porkchop',
+  mutton: 'cooked_mutton',
+  cod: 'cooked_cod',
+  salmon: 'cooked_salmon',
+};
 
 export class BedrockAdapter {
   constructor ({ logger = console, onLog, onDisconnect } = {}) {
@@ -84,6 +116,8 @@ export class BedrockAdapter {
     this._doorWatchers = new Map();    // key -> runtime id della porta chiusa
     this.recipes = null;               // output -> ricette da crafting_data
     this.craftingData = null;
+    this.furnaceRecipes = null;        // ricette di fusione da crafting_data
+    this._furnaceSlots = {};           // ingredient/fuel/output del container fornace aperto
     this._stackRequestId = -861;       // id dispari negativi come il client vanilla
     this._openContainer = null;        // { id, type } del container UI aperto
     this._containerWaiters = [];
@@ -97,6 +131,10 @@ export class BedrockAdapter {
     this.dead = false;
     this.deaths = 0;
     this._respawnAt = 0;
+    this._limboSince = null;           // health <= 0 senza stato dead (respawn a metà)
+    this.deathSite = null;             // { position, at, attempts } per il recupero post-morte
+    this.experienceLevel = null;       // livello EXP dal server (attributi)
+    this.experienceProgress = null;
     this._bedCache = null;             // { at, bed } scansione letti con TTL
     this.world = new BedrockWorld({ version: VERSION, onError: error => this.log('world_error', { message: error.message }) });
   }
@@ -268,6 +306,7 @@ export class BedrockAdapter {
         this.inventory = {};
         this.pickups = {};
         this.selectedHotbar = 0;
+        this._furnaceSlots = {};
         this.tick = BigInt(packet.current_tick || 0);
         this._tickAnchor = { tick: this.tick, time: Date.now() };
         this._lastSimTick = null;
@@ -366,13 +405,26 @@ export class BedrockAdapter {
         }
         // Il contenuto del container aperto è la verità sulla griglia di crafting.
         if (this._openContainer && packet.window_id === this._openContainer.id && Array.isArray(packet.input)) {
-          const gridSlots = this._openContainer.type === 'workbench'
-            ? [32, 33, 34, 35, 36, 37, 38, 39, 40]
-            : [28, 29, 30, 31];
-          for (const slot of gridSlots) {
-            const item = packet.input[slot];
-            if (item?.network_id) this._craftingGrid.set(slot, { network_id: item.network_id, count: item.count, stack_id: item.stack_id });
-            else this._craftingGrid.delete(slot);
+          if (this._openContainer.type === 'inventory' || this._openContainer.type === 'workbench') {
+            const gridSlots = this._openContainer.type === 'workbench'
+              ? [32, 33, 34, 35, 36, 37, 38, 39, 40]
+              : [28, 29, 30, 31];
+            for (const slot of gridSlots) {
+              const item = packet.input[slot];
+              if (item?.network_id) this._craftingGrid.set(slot, { network_id: item.network_id, count: item.count, stack_id: item.stack_id });
+              else this._craftingGrid.delete(slot);
+            }
+          }
+          // Finestra fornace (base, altoforno o affumicatore): tre slot container.
+          if (SMELT_STATIONS[this._openContainer.type]) {
+            this._trackFurnaceSlots(packet.input);
+            this.log('furnace_content', {
+              station: this._openContainer.type,
+              slots: [FURNACE_SLOTS.ingredient, FURNACE_SLOTS.fuel, FURNACE_SLOTS.output].map(slot => {
+                const item = packet.input[slot];
+                return item?.network_id ? `${this._slotItemName(item)}:${item.count}:${item.stack_id ?? 'none'}` : '-';
+              }),
+            });
           }
         }
       });
@@ -382,6 +434,7 @@ export class BedrockAdapter {
           window_id: packet.window_id, container: containerId ?? null, slot: packet.slot,
           item: packet.item ? `${packet.item.name || this.world.registry?.items[packet.item.network_id]?.name || packet.item.network_id}:${packet.item.count}:${packet.item.stack_id ?? 'none'}` : null,
         });
+        if (this._trackFurnaceSlot(containerId, packet.item)) return; // non è uno slot del giocatore
         const index = this._playerSlotIndex(containerId, packet.window_id, packet.slot);
         if (index == null || index < 0 || index > 35) return;
         this.inventorySlots[index] = packet.item;
@@ -532,7 +585,10 @@ export class BedrockAdapter {
     for (const recipe of packet.shapeless_recipes || []) add('shapeless', recipe);
     this.craftingData = packet;
     this.recipes = byOutput;
-    const counts = { shaped: packet.shaped_recipes?.length || 0, shapeless: packet.shapeless_recipes?.length || 0, multi: packet.multi_recipes?.length || 0 };
+    // Le ricette di fusione arrivano nello stesso pacchetto: input_id (network id)
+    // + output; i nomi si risolvono quando serve, dopo item_registry.
+    this.furnaceRecipes = packet.furnace_recipes || [];
+    const counts = { shaped: packet.shaped_recipes?.length || 0, shapeless: packet.shapeless_recipes?.length || 0, multi: packet.multi_recipes?.length || 0, furnace: this.furnaceRecipes.length };
     this.log('crafting_data', { ...counts, indexedOutputs: byOutput.size });
     // Campione di ricette di progressione: i descrittori live decidono la scelta variante.
     for (const sample of ['wooden_pickaxe', 'stone_pickaxe']) {
@@ -564,6 +620,7 @@ export class BedrockAdapter {
   observe () {
     const heldSlot = this.inventorySlots[this.selectedHotbar];
     const heldInfo = heldSlot?.network_id ? this.world.registry?.items[heldSlot.network_id] : null;
+    const bed = this._findBed();
     return {
       step: this.recent.length,
       position: this.pos(),
@@ -583,9 +640,12 @@ export class BedrockAdapter {
       status: this.status,
       spawned: this.spawned,
       time: this._timeInfo(),
+      bed: bed ? { position: bed.position, distance: bed.distance } : null,
       sleeping: this.sleeping,
       dead: this.dead,
       deaths: this.deaths,
+      deathSite: this.deathSite ? { position: this.deathSite.position, at: this.deathSite.at } : null,
+      experience: this.experienceLevel != null ? { level: this.experienceLevel, progress: this.experienceProgress } : null,
       entities: this._nearbyEntities(8),
       world: this.world.summary(),
     };
@@ -632,6 +692,12 @@ export class BedrockAdapter {
     if (this._isNight()) {
       const bed = this._findBed();
       if (bed) o.push({ key: 'sleep', description: `Sleep in the bed at ${JSON.stringify(bed.position)} (${bed.distance} blocks away) before the night is dangerous` });
+    }
+    // Recupero post-morte: il loot e gli orb EXP sono rimasti dov'è morto.
+    if (this.deathSite && this.position) {
+      const p = this.deathSite.position;
+      const d = Math.hypot(p.x - this.position.x, p.z - this.position.z);
+      o.push({ key: 'recover_loot', description: `Walk back to the death site at ${JSON.stringify(p)} (${d.toFixed(1)} blocks) to recover the dropped items and XP orbs` });
     }
     // Mining: offri un'opzione per ogni tipo di blocco scavabile nelle vicinanze.
     // Se il blocco più vicino è sepolto (nessuna faccia raggiungibile) non va offerto:
@@ -700,6 +766,21 @@ export class BedrockAdapter {
     if ((this.inventory.crafting_table || 0) > 0 && !this.world.findBlocks('crafting_table', this.position, 8, 1).length) {
       o.push({ key: 'place_crafting_table', description: 'Place a crafting table next to the bot' });
     }
+    const furnaceNear = this.world.findBlocks('furnace', this.position, 8, 1).length > 0;
+    if ((this.inventory.furnace || 0) > 0 && !furnaceNear) {
+      o.push({ key: 'place_furnace', description: 'Place a furnace next to the bot' });
+    }
+    // Fusione: stazione adatta (altoforno per i minerali, affumicatore per il
+    // cibo, altrimenti fornace) + materiale + combustibile.
+    {
+      const fuel = this._pickFuel();
+      for (const target of this._smeltTargets()) {
+        if ((this.inventory[target.input] || 0) < 1 || !fuel) continue;
+        const station = this._findSmeltingStation(this._smeltStationFor(target.input));
+        if (!station) continue;
+        o.push({ key: `smelt_${target.input}`, description: `Smelt 1 ${target.input} into ${target.output} in the nearby ${station.name.replace('_', ' ')} (uses 1 ${fuel.name})` });
+      }
+    }
     // Fallback
     if (!o.length) o.push({ key: 'wait', description: 'Wait 2 seconds for fresh observations' });
     return o;
@@ -738,6 +819,8 @@ export class BedrockAdapter {
         result = await this._mineBlock(target);
       } else if (key.startsWith('craft_')) {
         result = await this._craftItem(key.slice('craft_'.length));
+      } else if (key.startsWith('smelt_')) {
+        result = await this._smeltItem(key.slice('smelt_'.length));
       } else if (key.startsWith('place_')) {
         const itemName = key.slice('place_'.length);
         result = await this._placeBlock(itemName, itemName);
@@ -747,6 +830,8 @@ export class BedrockAdapter {
         result = await this._flee();
       } else if (key === 'sleep') {
         result = await this._sleepInBed();
+      } else if (key === 'recover_loot') {
+        result = await this._recoverLoot();
       } else if (key.startsWith('attack_')) {
         result = await this._combat(key.slice('attack_'.length));
       } else {
@@ -781,6 +866,63 @@ export class BedrockAdapter {
       .filter(drop => !drop.failedAt || Date.now() - drop.failedAt > 30000)
       .map(drop => ({ ...drop, distance: this._dropDistance(drop) }))
       .sort((a, b) => a.distance - b.distance)[0] || null;
+  }
+
+  // Drop più vicino a un punto (usato dal recupero del loot al sito di morte).
+  _nearestDropNear (position, radius) {
+    return this.drops
+      .filter(drop => !drop.failedAt || Date.now() - drop.failedAt > 30000)
+      .filter(drop => Math.hypot(drop.position.x - position.x, drop.position.y - position.y, drop.position.z - position.z) <= radius)
+      .map(drop => ({ ...drop, distance: this._dropDistance(drop) }))
+      .sort((a, b) => a.distance - b.distance)[0] || null;
+  }
+
+  // Torna al punto di morte, raccoglie i drop e (camminandoci sopra) gli orb EXP.
+  async _recoverLoot ({ moveTimeoutMs = 60000, collectRounds = 8 } = {}) {
+    if (this.dead) return { ok: false, error: 'dead' };
+    const site = this.deathSite;
+    if (!site) return { ok: false, error: 'no_death_site' };
+    const target = { x: site.position.x, y: site.position.y, z: site.position.z };
+    const levelBefore = this.experienceLevel;
+    const nearSite = () => this._feet &&
+      Math.hypot(this._feet.x - target.x, this._feet.z - target.z) <= 1.6 &&
+      Math.abs(this._feet.y - target.y) <= 3.5;
+    let moved = false;
+    try {
+      if (!nearSite()) {
+        await this._moveTo(target, 1.2, moveTimeoutMs);
+        moved = true;
+      }
+    } catch (error) {
+      site.attempts = (site.attempts || 0) + 1;
+      return { ok: false, error: `recovery_move_failed: ${error.message}`, site: target, attempts: site.attempts };
+    }
+    const recovered = [];
+    // Dopo l'avvicinamento gli item entity possono arrivare con qualche tick di
+    // ritardo (il server li trasmette quando entrano nel raggio): attendi prima
+    // di concludere che non c'è più nulla.
+    let pending = this._nearestDropNear(site.position, 12);
+    for (let i = 0; i < 12 && !pending; i++) {
+      await delay(250);
+      pending = this._nearestDropNear(site.position, 12);
+    }
+    for (let round = 0; round < collectRounds; round++) {
+      const drop = this._nearestDropNear(site.position, 12);
+      if (!drop) break;
+      let result;
+      try { result = await this._collectDrop(15000); } catch (error) { result = { ok: false, error: error.message }; }
+      if (result?.ok && result.item) recovered.push(result.item);
+      if (!result?.ok) break;
+      await delay(150);
+    }
+    // Un momento sul posto: gli orb EXP volano al giocatore da soli.
+    await delay(1200);
+    const left = this._nearestDropNear(site.position, 12);
+    if (!left) this.deathSite = null;
+    this.log('recover_loot', { site: target, moved, recovered, left: !!left });
+    const expGained = this.experienceLevel != null && levelBefore != null
+      ? Math.max(0, this.experienceLevel - levelBefore) : null;
+    return { ok: true, site: target, moved, recovered, leftNearby: !!left, expLevel: this.experienceLevel ?? null, expGained };
   }
 
   _dropStillThere (drop) {
@@ -837,10 +979,20 @@ export class BedrockAdapter {
     return { slot_type: { container_id: container }, slot, stack_id: stack };
   }
 
+  // Destinazione di una mossa verso uno slot giocatore: BDS accetta
+  // 'hotbar_and_inventory' con l'indice assoluto 0..35 (il container 'inventory'
+  // viene rifiutato con status 50 in destinazione).
   _invSlotToSlotInfo (index) {
+    return { container: 'hotbar_and_inventory', slot: index };
+  }
+
+  // Sorgente di un take da uno slot giocatore: la hotbar usa 'hotbar'/0..8,
+  // la main inventory 'hotbar_and_inventory'/indice assoluto (verificato live
+  // il 02/10/2026; 'inventory' come sorgente dà status 49).
+  _invSlotAsSource (index) {
     return index < 9
       ? { container: 'hotbar', slot: index }
-      : { container: 'inventory', slot: index - 9 };
+      : { container: 'hotbar_and_inventory', slot: index };
   }
 
   // Mappa (container, slot) della finestra giocatore verso l'indice 0..35 usato
@@ -1086,7 +1238,7 @@ export class BedrockAdapter {
   async _takeToCursor (slotIndex, count) {
     const item = this.inventorySlots[slotIndex];
     if (!item?.network_id) throw new Error('missing_ingredients');
-    const info = this._invSlotToSlotInfo(slotIndex);
+    const info = this._invSlotAsSource(slotIndex);
     this.log('take_request', { slotIndex, name: this._slotItemName(item), count, stack_id: item.stack_id ?? null, has_stack_id: item.has_stack_id ?? null });
     const response = await this._sendStackRequest([{
       type_id: 'take', legacy_type_id: 0, count,
@@ -1202,6 +1354,196 @@ export class BedrockAdapter {
     }
     if (this._openContainer?.type !== 'workbench') throw lastError || new Error('crafting_table_not_opened');
     await delay(200); // lascia arrivare inventory_content con lo stato della griglia
+  }
+
+  // ---- fusione in fornace ------------------------------------------------------------
+
+  _trackFurnaceSlot (containerId, item) {
+    const key = FURNACE_BY_CONTAINER[containerId];
+    if (!key) return false;
+    this._furnaceSlots[key] = item?.network_id ? item : null;
+    return true;
+  }
+
+  _trackFurnaceSlots (input) {
+    this._furnaceSlots.ingredient = input[FURNACE_SLOTS.ingredient]?.network_id ? input[FURNACE_SLOTS.ingredient] : null;
+    this._furnaceSlots.fuel = input[FURNACE_SLOTS.fuel]?.network_id ? input[FURNACE_SLOTS.fuel] : null;
+    this._furnaceSlots.output = input[FURNACE_SLOTS.output]?.network_id ? input[FURNACE_SLOTS.output] : null;
+  }
+
+  // input -> output: furnace_recipes del server (se presenti) + mappa statica.
+  _smeltTargets () {
+    const targets = [];
+    const seen = new Set();
+    const add = (input, output, count = 1) => {
+      const key = `${input}->${output}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      targets.push({ input, output, count });
+    };
+    for (const recipe of this.furnaceRecipes || []) {
+      if (recipe.block && !SMELT_STATIONS[recipe.block]) continue;
+      const input = this.world.registry?.items?.[recipe.input_id]?.name;
+      const output = recipe.output?.name || this.world.registry?.items?.[recipe.output?.network_id]?.name;
+      if (input && output) add(input, output, recipe.output?.count || 1);
+    }
+    for (const [input, output] of Object.entries(SMELT_RECIPES)) add(input, output);
+    return targets;
+  }
+
+  _pickFuel () {
+    let best = null;
+    for (let i = 0; i < this.inventorySlots.length; i++) {
+      const slot = this.inventorySlots[i];
+      const name = this._slotItemName(slot);
+      if (!name || !(slot?.count > 0)) continue;
+      const priority = /^(coal|charcoal)$/.test(name) ? 3 : (/(_planks|_log|_stem|_hyphae)$/.test(name) ? 2 : 0);
+      if (priority && (!best || priority > best.priority)) best = { name, priority };
+    }
+    return best;
+  }
+
+  // Stazione preferita per una ricetta: minerali → altoforno, cibo → affumicatore,
+  // tutto il resto → fornace base (che può fare qualsiasi cosa).
+  _smeltStationFor (inputName) {
+    if (/^(potato|beef|chicken|porkchop|mutton|cod|salmon|rabbit|kelp)$/.test(inputName)) return 'smoker';
+    if (/^(raw_|.*_ore$)/.test(inputName)) return 'blast_furnace';
+    return 'furnace';
+  }
+
+  // Cerca la stazione preferita; se non c'è, ripiega sulla fornace base.
+  _findSmeltingStation (preferred) {
+    const names = preferred && preferred !== 'furnace' ? [preferred, 'furnace'] : ['furnace'];
+    for (const name of names) {
+      const found = this.world.findBlocks(name, this.position, 32, 1)[0];
+      if (found) return { name, position: found.position, distance: +(found.distance ?? 0).toFixed(1) };
+    }
+    return null;
+  }
+
+  async _ensureFurnaceOpen (station) {
+    const windowType = SMELT_STATIONS[station.name].window;
+    if (this._openContainer?.type === windowType) return;
+    if (this._openContainer) await this._closeContainer();
+    if (station.distance > 3.5) {
+      await this._moveTo({ x: station.position.x + 0.5, y: station.position.y, z: station.position.z + 0.5 }, 3, 30000);
+    }
+    await delay(100);
+    let lastError = null;
+    for (let attempt = 1; attempt <= 3 && this._openContainer?.type !== windowType; attempt++) {
+      const wait = this._waitForContainerOpen(p => p.window_type === windowType, 2500);
+      const yaw = this._yawTo(this._feet, { x: station.position.x + 0.5, z: station.position.z + 0.5 });
+      const pitch = this._lookAt({ x: station.position.x + 0.5, y: station.position.y + 0.5, z: station.position.z + 0.5 }).pitch;
+      await this._queueAuthInput({ yaw, pitch, transaction: this._blockUseTransaction(station.position) });
+      try {
+        await wait;
+      } catch (error) {
+        lastError = error;
+        if (this._openContainer?.type === windowType) break;
+        await delay(300);
+      }
+    }
+    if (this._openContainer?.type !== windowType) throw lastError || new Error(`${station.name}_not_opened`);
+    await delay(200); // lascia arrivare inventory_content della stazione
+  }
+
+  // Prende count item dall'inventario al cursore e li mette nello slot della stazione.
+  async _putInFurnace (slotKey, itemName, count, station) {
+    const index = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && (s.count || 0) >= count);
+    if (index < 0) throw new Error('missing_ingredients');
+    const container = slotKey === 'ingredient'
+      ? SMELT_STATIONS[station?.name || 'furnace'].ingredient
+      : `furnace_${slotKey}`;
+    const item = this.inventorySlots[index];
+    const info = this._invSlotToSlotInfo(index);
+    const take = await this._sendStackRequest([{
+      type_id: 'take', legacy_type_id: 0, count,
+      source: this._slotInfo(info.container, info.slot, item.stack_id || 0),
+      destination: this._slotInfo('cursor', 0, 0),
+    }]);
+    if (String(take.status) !== 'ok' && take.status !== 0) throw new Error(`take_failed_${take.status}`);
+    this._applyStackResponse(take);
+    const cursorStack = this._responseSlotStack(take, 'cursor', 0) ?? 0;
+    const current = this._furnaceSlots?.[slotKey];
+    const place = await this._sendStackRequest([{
+      type_id: 'place', legacy_type_id: 1, count,
+      source: this._slotInfo('cursor', 0, cursorStack),
+      destination: this._slotInfo(container, FURNACE_SLOTS[slotKey], current?.stack_id || 0),
+    }]);
+    if (String(place.status) !== 'ok' && place.status !== 0) throw new Error(`place_failed_${place.status}`);
+    this._applyStackResponse(place, { networkId: item.network_id });
+    this._cursor = null;
+    this._furnaceSlots[slotKey] = {
+      network_id: item.network_id, count,
+      stack_id: this._responseSlotStack(place, container, FURNACE_SLOTS[slotKey]) ?? current?.stack_id ?? 0,
+    };
+    this.log('furnace_put', { station: station?.name || 'furnace', slot: slotKey, container, item: itemName, count, status: place.status });
+  }
+
+  // Ritira l'output pronto (se c'è) e lo mette in inventario.
+  async _takeFurnaceOutput () {
+    const output = this._furnaceSlots?.output;
+    if (!output?.network_id) return null;
+    const count = output.count || 1;
+    const take = await this._sendStackRequest([{
+      type_id: 'take', legacy_type_id: 0, count,
+      source: this._slotInfo('furnace_output', FURNACE_SLOTS.output, output.stack_id || 0),
+      destination: this._slotInfo('cursor', 0, 0),
+    }]);
+    if (String(take.status) !== 'ok' && take.status !== 0) throw new Error(`take_failed_${take.status}`);
+    this._applyStackResponse(take, { networkId: output.network_id });
+    this._cursor = { network_id: output.network_id, count, stack_id: this._responseSlotStack(take, 'cursor', 0) ?? output.stack_id ?? 0 };
+    const returned = await this._returnCursorToInventory();
+    if (!returned) throw new Error('output_return_failed');
+    this._furnaceSlots.output = null;
+    return { ...output, count };
+  }
+
+  async _waitFurnaceOutput (timeoutMs = 15000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (this._furnaceSlots?.output?.network_id) return { ...this._furnaceSlots.output };
+      await delay(250);
+    }
+    return null;
+  }
+
+  async _smeltItem (inputName) {
+    const target = this._smeltTargets().find(t => t.input === inputName);
+    if (!target) return { ok: false, error: 'smelt_recipe_missing' };
+    if (!this._pickFuel()) return { ok: false, error: 'no_fuel' };
+    if (!this.inventorySlots.some(s => this._slotItemName(s) === inputName && (s.count || 0) >= 1)) {
+      return { ok: false, error: 'missing_ingredients' };
+    }
+    const station = this._findSmeltingStation(this._smeltStationFor(inputName));
+    if (!station) return { ok: false, error: 'furnace_not_found' };
+    const started = Date.now();
+    try {
+      await this._ensureFurnaceOpen(station);
+      await this._takeFurnaceOutput(); // residui di fusioni precedenti
+      await this._putInFurnace('ingredient', inputName, 1, station);
+      const fuel = this._pickFuel();
+      if (!fuel) throw new Error('no_fuel');
+      await this._putInFurnace('fuel', fuel.name, 1, station);
+      this.log('smelt_started', { station: station.name, input: inputName, output: target.output, fuel: fuel.name });
+      let output = await this._waitFurnaceOutput();
+      if (!output) {
+        // Se il server non ha spinto l'aggiornamento dello slot, riapri la
+        // stazione per rileggere inventory_content e ricontrolla.
+        await this._closeContainer();
+        await this._ensureFurnaceOpen(station);
+        output = await this._waitFurnaceOutput(3000);
+      }
+      if (!output) return { ok: false, error: 'smelt_timeout', input: inputName };
+      const taken = await this._takeFurnaceOutput();
+      return { ok: true, station: station.name, smelted: inputName, output: target.output, count: taken?.count || output.count || 1, ms: Date.now() - started };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    } finally {
+      await this._returnCursorToInventory().catch(() => {});
+      await this._closeContainer().catch(() => {});
+      this._refreshInventory();
+    }
   }
 
   async _craftItem (itemName) {
@@ -1464,34 +1806,123 @@ export class BedrockAdapter {
     return TOOL_TIER_SPEED[String(name).split('_')[0]] || 1;
   }
 
+  // Valore di permanenza in hotbar: più basso = più sacrificabile. Serve a
+  // liberare uno slot quando la hotbar è piena di materiali.
+  _hotbarKeepScore (name) {
+    if (!name) return -1;
+    if (/^(dirt|sand|gravel|rotten_flesh|egg|.*_seeds|.*_sapling|.*_leaves|clay_ball)$/.test(name)) return 0;
+    if (/(_pickaxe|_axe|_shovel|_hoe|_sword|^torch$|^crafting_table$|^furnace$|^(coal|charcoal|stick)$|_planks$|_log$|_stem$|_hyphae$)/.test(name)) return 100;
+    return 10;
+  }
+
+  _hotbarSlotToEvict () {
+    let best = 8;
+    let bestScore = Infinity;
+    for (let i = 0; i < 9; i++) {
+      const score = this._hotbarKeepScore(this._slotItemName(this.inventorySlots[i]));
+      if (score < bestScore) { bestScore = score; best = i; }
+    }
+    return best;
+  }
+
+  // Sposta un item tra slot del giocatore passando dal cursore (take+place).
+  // I take/place valgono solo con una finestra aperta: senza container il
+  // server risponde 49/50 (gli swap diretti cross-container non sono accettati).
+  async _moveItemViaCursor (srcIndex, dstIndex) {
+    const item = this.inventorySlots[srcIndex];
+    if (!item?.network_id) return { ok: false, error: 'missing_item' };
+    await this._ensureInventoryOpen();
+    const src = this._invSlotAsSource(srcIndex);
+    const dst = this._invSlotToSlotInfo(dstIndex);
+    const count = item.count || 1;
+    let response = await this._sendStackRequest([{
+      type_id: 'take', legacy_type_id: 0, count,
+      source: this._slotInfo(src.container, src.slot, item.stack_id || 0),
+      destination: this._slotInfo('cursor', 0, 0),
+    }]);
+    if (String(response.status) !== 'ok' && response.status !== 0) {
+      this.log('move_take_failed', {
+        status: response.status, srcIndex, dstIndex, count,
+        item: this._slotItemName(item), stack_id: item.stack_id ?? null, has_stack_id: item.has_stack_id ?? null,
+        src, dst, cursor: this._cursor,
+      });
+      return { ok: false, error: `take_failed_${response.status}` };
+    }
+    this._applyStackResponse(response);
+    const cursorStack = this._responseSlotStack(response, 'cursor', 0) ?? 0;
+    response = await this._sendStackRequest([{
+      type_id: 'place', legacy_type_id: 1, count,
+      source: this._slotInfo('cursor', 0, cursorStack),
+      destination: this._slotInfo(dst.container, dst.slot, 0),
+    }]);
+    if (String(response.status) !== 'ok' && response.status !== 0) {
+      this.log('move_place_failed', {
+        status: response.status, srcIndex, dstIndex, count,
+        item: this._slotItemName(item), stack_id: item.stack_id ?? null,
+        cursorStack, src, dst, cursor: this._cursor,
+      });
+      // Il cursore server-side conserva l'item: se resta sporco, ogni take
+      // successivo fallirebbe con 50. Riprova a rimetterlo nella sorgente.
+      await this._sendStackRequest([{
+        type_id: 'place', legacy_type_id: 1, count,
+        source: this._slotInfo('cursor', 0, cursorStack),
+        destination: this._slotInfo('hotbar_and_inventory', srcIndex, 0),
+      }]).catch(() => {});
+      this._cursor = null;
+      return { ok: false, error: `place_failed_${response.status}` };
+    }
+    this._applyStackResponse(response, { networkId: item.network_id });
+    this._cursor = null;
+    if (!response.containers?.length) {
+      this.inventorySlots[dstIndex] = item;
+      this.inventorySlots[srcIndex] = undefined;
+    }
+    return { ok: true };
+  }
+
+  // Sposta l'item meno prezioso della hotbar in un buco dell'inventario e
+  // restituisce lo slot liberato. Con status 49/50 la copia locale è stantia:
+  // resync e ritenta su un buco fresco.
+  async _evictHotbarSlot () {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const evict = this._hotbarSlotToEvict();
+      const item = this.inventorySlots[evict];
+      if (!item?.network_id) return evict; // già vuoto
+      const target = this.inventorySlots.findIndex((s, i) => i > 8 && !s?.network_id);
+      if (target < 0) return -1;
+      const moved = await this._moveItemViaCursor(evict, target);
+      if (moved.ok) {
+        this.log('hotbar_evict', { slot: evict, item: this._slotItemName(item), movedTo: target });
+        return evict;
+      }
+      this.log('hotbar_evict_retry', { slot: evict, item: this._slotItemName(item), error: moved.error });
+      this.log('hotbar_snapshot', {
+        hotbar: this.inventorySlots.slice(0, 9).map(s => s ? `${this._slotItemName(s)}:${s.count}:${s.stack_id ?? 'none'}` : '-'),
+        cursor: this._cursor,
+      });
+      try { await this._resyncByReconnect(); } catch (error) {
+        this.log('inventory_resync_failed', { message: error.message });
+        return -1;
+      }
+    }
+    return -1;
+  }
+
   async _moveSlotToHotbar (slotIndex) {
     const name = this._slotItemName(this.inventorySlots[slotIndex]);
     if (!name) throw new Error('missing_item');
     for (let attempt = 0; attempt < 2; attempt++) {
       if (slotIndex <= 8) return slotIndex;
-      const free = this.inventorySlots.findIndex((s, i) => i < 9 && !s?.network_id);
+      let free = this.inventorySlots.findIndex((s, i) => i < 9 && !s?.network_id);
+      if (free < 0) free = await this._evictHotbarSlot();
       if (free < 0) throw new Error('hotbar_full');
       const item = this.inventorySlots[slotIndex];
-      const src = this._invSlotToSlotInfo(slotIndex);
-      const dst = this._invSlotToSlotInfo(free);
       this.log('swap_request', { name, slot: slotIndex, stack_id: item.stack_id ?? null, free });
-      const response = await this._sendStackRequest([{
-        type_id: 'swap', legacy_type_id: 2,
-        source: this._slotInfo(src.container, src.slot, item.stack_id || 0),
-        destination: this._slotInfo(dst.container, dst.slot, 0),
-      }]);
-      if (String(response.status) === 'ok' || response.status === 0) {
-        this._applyStackResponse(response);
-        // Se la risposta non riporta gli slot, applica lo scambio localmente.
-        if (!response.containers?.length) {
-          this.inventorySlots[free] = this.inventorySlots[slotIndex];
-          this.inventorySlots[slotIndex] = undefined;
-        }
-        return free;
-      }
+      const moved = await this._moveItemViaCursor(slotIndex, free);
+      if (moved.ok) return free;
       // Stack id locale stantio (tipico dopo un pickup): rileggi l'inventario
       // riconnettendosi, il login porta sempre l'inventory_content completo.
-      this.log('swap_retry', { name, slot: slotIndex, stack_id: item.stack_id ?? null, status: response.status });
+      this.log('swap_retry', { name, slot: slotIndex, stack_id: item.stack_id ?? null, error: moved.error });
       try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
       slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === name && s.count > 0);
       if (slotIndex < 0) throw new Error('missing_item');
@@ -1685,6 +2116,18 @@ export class BedrockAdapter {
   _digDirection () {
     // Direzione cardinale della direzione in cui il bot guarda; i gradini
     // consecutivi restano sulla stessa linea e la risalita usa gli stessi nodi.
+    // Se il planner ha fissato un waypoint, la scalinata scava verso di esso:
+    // senza steering la direzione deriva con l'ultimo yaw (e il pozzo manca il
+    // bersaglio).
+    const w = this.plan?.waypoint;
+    if (w && this._feet && Number.isFinite(w.x) && Number.isFinite(w.z)) {
+      const dx = w.x - this._feet.x, dz = w.z - this._feet.z;
+      if (Math.hypot(dx, dz) > 1.5) {
+        return Math.abs(dx) >= Math.abs(dz)
+          ? { dx: Math.sign(dx) || 1, dz: 0 }
+          : { dx: 0, dz: Math.sign(dz) || 1 };
+      }
+    }
     const yaw = Number.isFinite(this._lastYaw) ? this._lastYaw : 0;
     const rad = yaw * Math.PI / 180;
     const dx = -Math.sin(rad), dz = Math.cos(rad);
@@ -2457,6 +2900,8 @@ export class BedrockAdapter {
         this._onOwnHealth();
       }
       if (attr.name === 'minecraft:player.hunger') this.food = value;
+      if (attr.name === 'minecraft:player.level') this.experienceLevel = value;
+      if (attr.name === 'minecraft:player.experience') this.experienceProgress = value;
     }
   }
 
@@ -2489,7 +2934,16 @@ export class BedrockAdapter {
       this._motion = null;
       this._velocity = { x: 0, y: 0, z: 0 };
       this._setSleeping(false);
-      this.log('death', { deaths: this.deaths, position: this.pos() });
+      // Il loot (e gli orb EXP) resta dove si muore: il sito serve al recupero.
+      const feet = this._feet || this.position;
+      if (feet) {
+        this.deathSite = {
+          position: { x: +feet.x.toFixed(2), y: +feet.y.toFixed(2), z: +feet.z.toFixed(2) },
+          at: Date.now(),
+          attempts: 0,
+        };
+      }
+      this.log('death', { deaths: this.deaths, position: this.pos(), site: this.deathSite?.position ?? null });
     } else if (this.health > 0 && this.dead) {
       this.dead = false;
       this._respawnAt = 0;
@@ -2555,6 +3009,20 @@ export class BedrockAdapter {
     // Fallback: se il server ha risposto al respawn ma non ha mandato lo state 1.
     if (this.dead && this._pendingRespawn && Date.now() - this._pendingRespawn.at > 4000) {
       this._finishRespawn(this._pendingRespawn.position);
+    }
+    // Limbo post-respawn: il fallback ha chiuso il respawn lato client ma il
+    // server non ha ancora riportato la vita sopra zero (input ignorati).
+    // Si riapre il flusso di respawn finché la vita non torna.
+    if (!this.dead && this.health <= 0) {
+      this._limboSince = this._limboSince || Date.now();
+      if (Date.now() - this._limboSince > 5000) {
+        this.dead = true;
+        this._respawnAt = Date.now() + 500;
+        this._limboSince = null;
+        this.log('respawn_limbo_recover', { health: this.health, deaths: this.deaths });
+      }
+    } else {
+      this._limboSince = null;
     }
     if (this.sleeping && this._timeBase && !this._isNight()) {
       this._daySince = this._daySince || Date.now();

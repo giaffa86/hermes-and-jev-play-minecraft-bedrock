@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "comment": "Grafo di progressione. `satisfiedWhen` usa il vocabolario dei criteri del verifier; un milestone senza satisfiedWhen è soddisfatto solo se il controller ha già verificato la skill (completed set). Vedi docs/SURVIVAL-INTELLIGENCE.md.",
+  "goals": {
+    "first_night": "first_night",
+    "enter_nether": "enter_nether",
+    "beat_the_dragon": "enter_nether"
+  },
+  "milestones": {
+    "wood": {
+      "requires": [],
+      "skill": "acquire_wood",
+      "description": "Collect logs for planks, sticks and tools.",
+      "satisfiedWhen": { "inventoryTagGte": { "logs": 8 } }
+    },
+    "crafting_table": {
+      "requires": ["wood"],
+      "skill": "acquire_crafting_table",
+      "description": "Craft and place a crafting table.",
+      "satisfiedWhen": {
+        "anyOf": [
+          { "inventoryGte": { "crafting_table": 1 } },
+          { "nearbyBlock": { "name": "crafting_table", "within": 8 } }
+        ]
+      }
+    },
+    "stone_tools": {
+      "requires": ["crafting_table"],
+      "skill": "stone_age",
+      "description": "Mine stone and craft stone tools.",
+      "satisfiedWhen": { "inventoryTagGte": { "stone_tools": 1 } }
+    },
+    "food_and_safety": {
+      "requires": [],
+      "skill": "obtain_food",
+      "description": "Have usable food before the first night.",
+      "satisfiedWhen": { "inventoryTagGte": { "food": 1 } }
+    },
+    "first_night": {
+      "requires": ["wood", "crafting_table", "food_and_safety"],
+      "skill": "first_night",
+      "description": "Survive the first night and be alive at dawn."
+    },
+    "iron_age": {
+      "requires": ["stone_tools"],
+      "skill": "acquire_iron",
+      "description": "Mine and smelt iron and reach iron tools.",
+      "satisfiedWhen": {
+        "anyOf": [
+          { "inventoryTagGte": { "iron_tools": 1 } },
+          { "inventoryTagGte": { "iron_ingots": 3 } }
+        ]
+      }
+    },
+    "diamonds": {
+      "requires": ["iron_age"],
+      "skill": "acquire_diamonds",
+      "description": "Mine diamonds with an iron pickaxe or better.",
+      "satisfiedWhen": { "inventoryTagGte": { "diamonds": 1 } }
+    },
+    "enter_nether": {
+      "requires": ["diamonds"],
+      "skill": "enter_nether",
+      "description": "Build and light a Nether portal and enter it.",
+      "satisfiedWhen": { "dimension": "nether" }
+    }
+  }
+}

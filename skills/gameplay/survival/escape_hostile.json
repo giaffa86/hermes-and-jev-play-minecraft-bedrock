@@ -1,0 +1,14 @@
+{
+  "id": "escape_hostile",
+  "description": "Flee from nearby hostiles until there is distance or none remain.",
+  "category": "survival",
+  "success": {
+    "anyOf": [
+      { "noHostileWithin": 10 },
+      { "threatDistanceIncreasedBy": 6 }
+    ]
+  },
+  "intents": ["escape", "travel"],
+  "planTargets": {},
+  "notes": "Successo = nessun ostile entro 10 blocchi oppure distacco reale di almeno 6 blocchi."
+}

@@ -10,8 +10,12 @@ L'architettura è la stessa: **Hermes** pianifica, **Jev** sceglie un'azione tra
 
 | Path | Ruolo |
 |---|---|
-| `bedrock-harness.mjs` | Entry point del container: connette il bot Bedrock al BDS e espone l'HTTP API (`/observe`, `/options`, `/act`, `/plan`). |
+| `bedrock-harness.mjs` | Entry point del container: connette il bot Bedrock al BDS e espone l'HTTP API (`/observe`, `/options`, `/act`, `/plan`, `/survival`). Applica anche il filtro di emergenza del Survival Governor alle opzioni. |
 | `bedrock-adapter.mjs` | Adattatore che traduce lo stato Bedrock nel formato atteso da `controller.mjs`. |
+| `controller-decisions.mjs` | Funzioni pure del controller (nessun I/O): ranking/tetto delle opzioni (inclusi gli intenti della skill attiva), anti-loop, fingerprint di progresso, diagnostica e istruzioni di decisione. Unit test in `tests/controller-decisions.test.mjs`. |
+| `survival/` | Survival Intelligence Layer deterministico: perception, risk/needs, governor, regole, intenti, tag item, skill dichiarative, resolver, verifier, progressione, esperienza. Unit test dedicati. |
+| `knowledge/` | `survival-rules.json` (quando interrompere la progressione) e `progression.json` (grafo dei milestone con dipendenze). |
+| `skills/gameplay/` | Skill di gioco dichiarative (JSON): precondizioni, criteri di successo, intenti. Concetto diverso dalla skill Hermes `SKILL.md`; nessun codice eseguibile. |
 | `bedrock-world.mjs` | Registry Bedrock 1.26 e decoder Prismarine v9; richieste `subchunk_request`, gestione di hash sconosciuti e sezioni non ricevute. |
 | `bedrock-lifecycle.mjs` | Disconnessione del gioco prima del teardown SCTP/DTLS e attesa della pulizia asincrona, riutilizzabile dai test. |
 | `Dockerfile` | Immagine Node.js 24 con il progetto e le dipendenze. |
@@ -56,6 +60,11 @@ WAYPOINT='{"x":380,"z":16}'
 TARGETS='{"dirt":4}'
 MAX_STEPS=20
 REPLAN_EVERY=8
+
+# Qualità delle decisioni (opzionali)
+MAX_OPTIONS=12          # tetto di opzioni passate a Jev (0 = nessun tetto)
+ANTI_LOOP_THRESHOLD=3   # azioni consecutive senza progresso prima di replan/esclusione
+ANTI_LOOP_COOLDOWN=3    # passi in cui la key bloccata resta esclusa
 ```
 
 > Non committare `.env` o la cache `nmp-cache`.
@@ -111,12 +120,16 @@ sudo docker exec hermes-jev-bedrock ping -c 3 <ip-container-hermes>
 
 ### 5. Avvio controller
 
-`controller.mjs` richiede il CLI `hermes` per la pianificazione. Il container agente non include Hermes CLI, quindi il controller va eseguito **dentro il container Hermes esistente** tramite `docker exec` (nessuna modifica all'immagine).
+`controller.mjs` richiede il CLI `hermes` per la pianificazione. Il container agente non include Hermes CLI, quindi il controller va eseguito **dentro il container Hermes esistente** tramite `docker exec` (nessuna modifica all'immagine). Da questo aggiornamento il controller importa `controller-decisions.mjs`, `survival/`, `knowledge/` e `skills/gameplay/`: copia l'intero progetto (o monta la directory read-only) invece dei due soli file.
 
-Copia il controller nel container Hermes:
+Copia il progetto nel container Hermes:
 
 ```bash
 sudo docker cp /home/<utente-ssh>/hermes-jev-bedrock/controller.mjs hermes:/tmp/controller.mjs
+sudo docker cp /home/<utente-ssh>/hermes-jev-bedrock/controller-decisions.mjs hermes:/tmp/controller-decisions.mjs
+sudo docker cp /home/<utente-ssh>/hermes-jev-bedrock/survival hermes:/tmp/survival
+sudo docker cp /home/<utente-ssh>/hermes-jev-bedrock/knowledge hermes:/tmp/knowledge
+sudo docker cp /home/<utente-ssh>/hermes-jev-bedrock/skills hermes:/tmp/skills
 ```
 
 Esegui il loop (usa `-w /opt/data` per persistere le run sul volume Hermes):
@@ -134,6 +147,8 @@ sudo docker exec \
   -e JEV_MODEL=jev-latest \
   hermes node /tmp/controller.mjs
 ```
+
+Per la milestone automatica (curriculum deterministico) aggiungi `-e CURRICULUM=first_night` e ometti `WAYPOINT`/`TARGETS`.
 
 Le run verranno scritte in `/opt/data/runs` (volume `hermes-data`). Per copiarle nel progetto:
 
@@ -178,18 +193,22 @@ sudo docker cp hermes:/opt/data/runs /home/<utente-ssh>/hermes-jev-bedrock/runs-
 | `eat` | ✅ Base | Equipaggia il cibo preferito disponibile (lista sicura: cotti prima, poi pane/patate/carote/frutta; esclusi quelli con effetti negativi) e invia `item_use` `click_air`; conferma quando la fame sale o l'item cala. Forma pacchetto verificata; il collaudo live richiede cibo in inventario e fame < 20 (finora il bot era pieno o senza cibo). |
 | `sleep` | ✅ Funzionante | Di notte cerca il letto più vicino (blocco `bed` nel mondo caricato), ci cammina accanto e lo clicca (`click_block`). Conferma dal flag `resting` nei metadata oppure, con un solo giocatore, dal salto d'orario dell'alba (`slept: 'night_skipped'`). Verificato live il 02/10 (due notti saltate). `player_bed_position` non è usato come stato (è il letto di respawn); con mostri vicini il server rifiuta e l'azione riporta `sleep_rejected`. |
 | `craft_*` | ✅ Funzionante | Ricette da `crafting_data` (network id), griglia 2×2 nell'inventario e 3×3 al tavolo da lavoro; item_stack_request `craft_recipe` con consumi e output. I tag `stone_tool_materials`/`stone_crafting_materials` sono mappati (cobblestone/cobbled_deepslate/blackstone) e `minecraft:coals` (carbone + carbonella) per le torce; `craft_furnace` usa 8 cobblestone al tavolo. |
-| `place_*` | ✅ Base | Piazzamento con transazione `click_block`; usato per tavoli da lavoro. Lo swap in hotbar rilegge l'inventario dal server (riconnessione) se lo stack id è stantio. |
+| `smelt_*` | ✅ Funzionante | Fusione con mappa statica input→output (il protocollo 1.26 non manda le `furnace_recipes` nel `crafting_data`; se presenti, hanno priorità) e **stazione adatta**: altoforno (`blast_furnace`) per i minerali, affumicatore (`smoker`) per il cibo, fornace base per tutto il resto, con fallback alla fornace se la stazione preferita non c'è. Apre la stazione (`click_block`), mette 1 materiale nel container ingrediente giusto (`furnace_ingredient`/`blast_furnace_ingredient`/`smoker_ingredient`) e 1 combustibile in `furnace_fuel` (carbone/carbonella, poi assi/tronchi), aspetta l'output dagli aggiornamenti slot del server (con riapertura della stazione come ripiego) e lo ritira in inventario. **Verificato live il 02/10**: `craft_furnace` → `place_furnace` → `smelt_raw_iron` → `iron_ingot` (15,8 s, 1 carbone consumato). |
+| `recover_loot` | ✅ Base | Recupero post-morte: il sito di morte è registrato su `deathSite` (posizione dei piedi); dopo il respawn l'azione ci torna con il pathfinding, raccoglie i drop nel raggio di 12 blocchi e resta un momento sul posto per gli orb EXP. `/observe` espone `deathSite` ed `experience`; il risultato riporta `recovered`, `leftNearby`, `expGained`. Coperto da unit test. |
+| `place_*` | ✅ Base | Piazzamento con transazione `click_block`; usato per tavoli da lavoro e fornaci. Lo swap in hotbar rilegge l'inventario dal server (riconnessione) se lo stack id è stantio. |
 
 ### Sopravvivenza (aggiornamento 02/10/2026)
 
 - **Entità**: `add_entity`/`add_player`/`move_entity`/`set_entity_data`/`entity_event` alimentano una mappa di mob e giocatori con posizione, distanza e vita (metadata `health`); una lista di tipi classifica gli ostili (zombie, skeleton, creeper, enderman, ...).
 - **Ora del giorno**: BDS 1.26 non invia `set_time`; l'ora arriva da `sync_world_clocks` (clock `minecraft:overworld`, `% 24000`) con fallback `set_time`.
-- **Attributi del giocatore**: `update_attributes` usa il campo `current` (non `value`) per vita e fame.
+- **Attributi del giocatore**: `update_attributes` usa il campo `current` (non `value`) per vita, fame e livello/esperienza (`minecraft:player.level`, `minecraft:player.experience`).
 - **Morte e respawn**: vita <= 0 → stato `dead`; il client invia `player_action` respawn e completa il flusso rispondendo ai pacchetti `Respawn` del server con `state = 2` (client_ready). La posizione finale si applica allo `state 1`; fallback a 4 s. Verificato live il 02/10 (il bot è morto in combattimento e si è risvegliato al letto).
+- **Recupero post-morte**: alla morte il sito viene registrato (`deathSite`); dopo il respawn `/options` offre `recover_loot`, che torna sul posto, raccoglie i drop nel raggio di 12 blocchi e resta un momento per gli orb EXP. Il sito resta finché non c'è più loot vicino (o finché il percorso fallisce: si ritenta dopo). Coperto da unit test; collaudo live in corso.
+- **Limbo post-respawn**: se il fallback chiude il respawn ma la vita resta a 0 (server non pronto, input ignorati), il tick di sopravvivenza riapre il flusso di respawn dopo 5 s (`respawn_limbo_recover`). Recupero osservato live il 02/10 con un riavvio del container (poi automatizzato).
 - **Hash non risolti**: i blocchi `unknown` sono conservativi nella pianificazione (niente percorsi attraverso muri invisibili) e scavabili con rottura grezza (`_mineRawCell`).
-- `/observe` espone `time`, `sleeping`, `dead`, `deaths`, `entities` (con distanza, tipo e vita).
-- `/options` offre `attack_<tipo>`, `flee`, `eat`, `sleep`, `dig_up` quando validi; le opzioni `attack_` sono deduplicate per tipo.
-- Verificato live (02/10): tracking entità (cat, maiali, creeper/zombie/skeleton con vita), orologio/notte, fame, letti della base, attacco (colpi a segno), fuga, sonno (due notti saltate), morte+respawn, mining/rottura (anche di celle `unknown`), dig_up dalla buca. `eat` resta coperto da unit test e serializzazione: per il collaudo live servono fame < 20 e cibo in inventario.
+- `/observe` espone `time`, `sleeping`, `dead`, `deaths`, `deathSite`, `experience`, `entities` (con distanza, tipo e vita).
+- `/options` offre `attack_<tipo>`, `flee`, `eat`, `sleep`, `dig_up` e `recover_loot` quando validi; le opzioni `attack_` sono deduplicate per tipo.
+- Verificato live (02/10): tracking entità (cat, maiali, creeper/zombie/skeleton con vita), orologio/notte, fame, letti della base, attacco (colpi a segno), fuga, sonno (due notti saltate), morte+respawn, mining/rottura (anche di celle `unknown`), dig_up dalla buca, recupero post-morte (loot + EXP), carbone e ferro minati e raccolti, fusione `raw_iron → iron_ingot`. `eat` resta coperto da unit test e serializzazione: per il collaudo live servono fame < 20 e cibo in inventario.
 - Diagnostica: rotte `GET /debug/geom` e `POST /debug/mine` (solo con `BEDROCK_DEBUG=1`); log opzionali `BEDROCK_PACKET_LOG=1` e `BEDROCK_META_LOG=1`.
 
 ### Fase pietra della milestone (aggiornamento 01/10/2026)
@@ -212,9 +231,14 @@ Dopo la pietra il passo successivo sono i minerali: carbone (qualsiasi piccone) 
 4. **Craft propedeutici**: mappato il tag `minecraft:coals` (carbone + carbonella) per `craft_torch`; `craft_furnace` compare con 8 cobblestone e un tavolo vicino.
 5. **Rilevamento minerali**: `/observe.nearby` include carbone, ferro e rame (anche varianti deepslate).
 
-Evidenza live (host Docker, container `hermes-jev-bedrock`): run `runs/e2e-minerals1/controller.jsonl` — `GOAL MET after 2 actions`, `mine_copper_ore` con `stone_pickaxe`, `collect_drop` → `raw_copper: 1` in inventario; 68 test unitari verdi.
+Evidenza live (host Docker, container `hermes-jev-bedrock`):
 
-Limite: carbone e ferro sono sepolti nell'area di base e il percorso di scavo non ha ancora raggiunto un filone esposto; la finestra NetherNet instabile della serata ha fermato il collaudo. Da riprendere quando il trasporto è stabile.
+- `runs/e2e-minerals1/controller.jsonl` — `GOAL MET after 2 actions`, `mine_copper_ore` con `stone_pickaxe`, `collect_drop` → `raw_copper: 1`.
+- `runs/e2e-minerals5/controller.jsonl` — carbone minato più volte e raccolto (`coal: 6`); morte in combattimento con **recupero del loot e +1 EXP** (`recover_loot` → `recovered: [stone_pickaxe, oak_log, coal, oak_planks, wooden_pickaxe ×2]`).
+- `runs/e2e-iron3/controller.jsonl` — `GOAL MET after 25 actions`: ricraft del piccone di pietra, `mine_iron_ore` confermata e `raw_iron: 1`.
+- `runs/e2e-smelt1/controller.jsonl` — `GOAL MET after 3 actions`: `craft_furnace` → `place_furnace` → `smelt_raw_iron` → **`iron_ingot: 1`** (stazione `furnace`, 1 carbone).
+
+204 test unitari verdi (inclusi `survival/` e `controller-decisions.mjs`). Durante questi collaudi sono stati corretti: steering di `dig_down` verso il waypoint, eviction della hotbar piena (`hotbar_evict`), mappatura container per take/place (`hotbar`/`hotbar_and_inventory`, finestra aperta obbligatoria) e recupero del cursore sporco dopo un place fallito.
 
 ### Controller robusto (aggiornamento 01/10/2026)
 
@@ -223,6 +247,28 @@ Limite: carbone e ferro sono sepolti nell'area di base e il percorso di scavo no
 1. la CLI viene lanciata con `spawn` detached e, a `HERMES_TIMEOUT_MS` (default 180000), l'intero process group viene terminato (`SIGKILL`) — lo shim `hermes` fork-a un processo che altrimenti tiene aperto lo stdout e fa attendere `spawnSync`/`execFileSync` per sempre;
 2. se la CLI non risponde, il controller degrada a un piano statico costruito da `GOAL`/`TARGETS`/`WAYPOINT` (`plan_fallback` nei log) e prosegue con Jev;
 3. l'azione appena fallita viene esclusa dalla scelta successiva, così un `goto_waypoint` senza percorso non consuma tutto il budget.
+
+### Qualità delle decisioni di Jev (aggiornamento 02/10/2026)
+
+La logica pura è in `controller-decisions.mjs` (18 unit test in `tests/controller-decisions.test.mjs`); il harness resta l'unico proprietario della validità e il controller può solo riordinare, limitare o nascondere temporaneamente le key offerte.
+
+1. **Istruzioni di decisione** (`buildDecisionInstructions`): priorità esplicite — sopravvivenza (fuga se vita bassa o lotta persa, sonno se notte e letto raggiungibile, cibo se fame bassa, attacco solo con vita sufficiente), recupero (drop e sito di morte), obiettivo — più la regola "non ripetere un'azione che non ha prodotto progresso".
+2. **Anti-loop**: dopo ogni azione il controller confronta il fingerprint dell'osservazione (posizione arrotondata, inventario, obiettivo del piano) con quello del momento della scelta. `ANTI_LOOP_THRESHOLD` (default 3) azioni consecutive della stessa key senza progresso forzano un replan e mettono la key in cooldown per `ANTI_LOOP_COOLDOWN` passi (default 3). Log: `no_progress`, `anti_loop`, `replan`. Il controller non svuota mai l'insieme: se tutto è escluso, ripristina le opzioni del harness.
+3. **Tetto opzioni**: con più di `MAX_OPTIONS` (default 12; 0 disabilita) opzioni, le più rilevanti sopravvivono (sopravvivenza → recupero loot → drop → azioni che colpiscono i target → craft/piazzamento/fusione → viaggio/scavo → mining generico → `wait`, con distanza come spareggio). `wait` viene nascosto quando esiste un'alternativa; le escluse finiscono nei log (`options.excluded`, `options.droppedByCap`).
+4. **Diagnostica**: ogni decisione logga le key candidate con la probabilità per key (non solo l'indice scelto), `selectedProbability`, `confidence`, `cost`, `ms` e l'obiettivo; `wait_only` registra il motivo (riconnessione, morte, sonno, nessuna opzione utile) quando il harness offre solo `wait`; `result` registra l'esito di ogni azione; `goal_met`/`budget_exhausted` includono il costo totale.
+5. **Smoke test**: con un harness finto in `/tmp` un loop di 3 `goto_waypoint` stagnanti ha prodotto `anti_loop` → replan → esclusione → scelta di `mine_dirt` (log `runs/smoke-decisions/controller.jsonl`).
+
+### Survival Intelligence Layer (aggiornamento 02/10/2026)
+
+Layer deterministico tra l'obiettivo utente e le bounded action, ispirato ai concetti di Voyager (skill library, curriculum, self-verification) **senza** code-generation: nessun modello genera JavaScript per il comportamento Minecraft. Architettura completa e guide di estensione in [`docs/SURVIVAL-INTELLIGENCE.md`](docs/SURVIVAL-INTELLIGENCE.md).
+
+1. **Survival Governor** (`survival/governor.mjs` + `knowledge/survival-rules.json`): valutazione di vita/fame/ostili/notte con regole esplicite e priorità. Output `{mode: normal|caution|emergency, needs, overrideObjective, allowedIntents, preferredSkills, risk}`; con priorità ≥ 95 o rischio `critical` scatta l'emergenza, l'obiettivo mostrato al decision model viene sovrascritto e `/options` viene ristretto agli intenti ammessi (il filtro può solo togliere key già offerte, mai aggiungerne, e non svuota mai il set).
+2. **Stato compatto in `/observe`**: `survival: {mode, risk, level, rule, needs, reasons, overrideObjective}`. `GET /survival` espone governor completo, skill attiva e milestone suggerito.
+3. **Skill gameplay dichiarative** (`skills/gameplay/**`): JSON con precondizioni, criteri di successo/fallimento e intenti; concetto diverso dalla skill Hermes `skills/minecraft-bounded-agent/SKILL.md`. Il loader valida i file all'avvio di harness e controller.
+4. **Skill Resolver** (`survival/resolver.mjs`): la skill attiva è quella preferita dal governor in emergenza, poi il campo opzionale `skill` del piano, poi il milestone della progressione; gli intenti della skill attiva danno un boost di rilevanza nel ranking delle opzioni del controller.
+5. **Verifica deterministica** (`survival/verify.mjs`): `verifySkill(skill, before, after)` controlla lo stato reale (inventario per tag, variazioni fame/vita, distacco dagli ostili, notte sopravvissuta). Ogni esito finisce in `runs/<run>/skills.jsonl` (skill, esito, azioni, durata, motivazione).
+6. **Progression Engine** (`survival/progression.mjs` + `knowledge/progression.json`): grafo con dipendenze; `resolveMilestone` restituisce il primo prerequisito mancante. Con `CURRICULUM=<milestone>` (es. `first_night`, `enter_nether`) il controller costruisce da solo i piani deterministici e usa Hermes solo come fallback.
+7. **Smoke test offline**: harness finto + stub del CLI `hermes` ha eseguito `wood → crafting table → cibo → first_night` con un'interruzione di emergenza (creeper a 4.2 blocchi, vita 4) che ha filtrato le opzioni a `[flee, eat]` e poi è ripresa dallo stesso milestone; `GOAL MET after 7 actions`, 4 record in `runs/smoke-curriculum/skills.jsonl`.
 
 ### Inventario e stack id (aggiornamento 01/10/2026)
 
@@ -235,6 +281,15 @@ L'adapter gestisce il caso in modo auto-riparante:
 3. poi ritenta il craft con gli id freschi.
 
 Lo stesso resync viene usato quando uno swap in hotbar o un piazzamento trova uno stack id stantio.
+
+**Mappatura container per take/place (scoperta live il 02/10/2026)**: le richieste `item_stack_request` valgono solo con una **finestra aperta** (senza container BDS risponde 49/50). Fuori dal crafting valgono queste regole:
+
+1. **sorgenti**: hotbar con `hotbar`/0..8, main inventory con `hotbar_and_inventory`/**indice assoluto** (0..35); `inventory` come sorgente dà status 49;
+2. **destinazioni**: sempre `hotbar_and_inventory`/indice assoluto (0..35); `inventory` in destinazione dà status 50;
+3. gli **swap diretti cross-container** non sono accettati: per spostare un item si usa take→cursore e place→destinazione;
+4. un **place fallito lascia l'item sul cursore lato server**: i take successivi verso il cursore falliscono con 50 finché non lo si rimette in uno slot (l'adapter riprova a rimetterlo nella sorgente).
+
+Questo ha risolto il blocco "hotbar piena": il bot sposta il ciarpame in un buco dell'inventario (eviction) e porta l'utensile in hotbar, tutto via cursore.
 
 ### Crafting e piazzamento (aggiornamento 01/10/2026)
 

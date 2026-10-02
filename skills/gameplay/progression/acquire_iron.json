@@ -1,0 +1,15 @@
+{
+  "id": "acquire_iron",
+  "description": "Mine iron ore, smelt it and craft iron tools.",
+  "category": "progression",
+  "preconditions": { "inventoryTagGte": { "stone_tools": 1 } },
+  "success": {
+    "anyOf": [
+      { "inventoryTagGte": { "iron_tools": 1 } },
+      { "inventoryTagGte": { "iron_ingots": 3 } }
+    ]
+  },
+  "intents": ["mine", "smelt", "craft", "travel", "collect"],
+  "planTargets": {},
+  "notes": "Richiede piccone di pietra o superiore (harness: _blockHarvestable), fornace e combustibile."
+}

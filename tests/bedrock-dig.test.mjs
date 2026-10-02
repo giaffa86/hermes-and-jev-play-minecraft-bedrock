@@ -38,18 +38,21 @@ test('a pickaxe already in the hotbar is selected without a swap', async () => {
   assert.equal(written[0].params.selected_slot, 3);
 });
 
-test('a pickaxe in the main inventory is swapped into a free hotbar slot', async () => {
+test('a pickaxe in the main inventory is moved into a free hotbar slot via cursor', async () => {
   const adapter = new BedrockAdapter({ logger: { log () {} } });
   adapter.inventorySlots[10] = { network_id: 341, name: 'wooden_pickaxe', count: 1, stack_id: 8 };
   adapter.client = { write: () => {} };
-  let sent = null;
-  adapter._sendStackRequest = async actions => { sent = actions; return { status: 'ok', containers: [] }; };
+  adapter._ensureInventoryOpen = async () => {};
+  const sent = [];
+  adapter._sendStackRequest = async actions => { sent.push(actions); return { status: 'ok', containers: [] }; };
   const tool = await adapter._selectToolFor({ name: 'stone', material: 'mineable/pickaxe' });
   assert.equal(tool, 'wooden_pickaxe');
   assert.equal(adapter.selectedHotbar, 0);
-  assert.equal(sent[0].type_id, 'swap');
-  assert.deepEqual(sent[0].source, { slot_type: { container_id: 'inventory' }, slot: 1, stack_id: 8 });
-  assert.deepEqual(sent[0].destination, { slot_type: { container_id: 'hotbar' }, slot: 0, stack_id: 0 });
+  assert.equal(sent.length, 2);
+  assert.equal(sent[0][0].type_id, 'take');
+  assert.deepEqual(sent[0][0].source, { slot_type: { container_id: 'hotbar_and_inventory' }, slot: 10, stack_id: 8 });
+  assert.equal(sent[1][0].type_id, 'place');
+  assert.deepEqual(sent[1][0].destination, { slot_type: { container_id: 'hotbar_and_inventory' }, slot: 0, stack_id: 0 });
 });
 
 test('the best tier pickaxe wins and blocks without a tool need stay untouched', async () => {
@@ -203,10 +206,11 @@ test('dig targets refuse to dig through functional blocks', () => {
   assert.equal(chest.adapter._digTargets().error, 'protected_step');
 });
 
-test('a rejected swap resyncs the inventory and retries with fresh stack ids', async () => {
+test('a rejected move resyncs the inventory and retries with fresh stack ids', async () => {
   const adapter = new BedrockAdapter({ logger: { log () {} } });
   adapter.inventorySlots[10] = { network_id: 341, name: 'wooden_pickaxe', count: 1, stack_id: 8 };
   adapter.client = { write: () => {} };
+  adapter._ensureInventoryOpen = async () => {};
   let attempts = 0;
   const sent = [];
   adapter._sendStackRequest = async actions => {
@@ -219,9 +223,10 @@ test('a rejected swap resyncs the inventory and retries with fresh stack ids', a
   };
   const hotbar = await adapter._moveSlotToHotbar(10);
   assert.equal(hotbar, 0);
-  assert.equal(attempts, 2);
+  assert.equal(attempts, 3, 'take fallito, poi take+place con stack id freschi');
   assert.equal(sent[0][0].source.stack_id, 8);
   assert.equal(sent[1][0].source.stack_id, 99);
+  assert.equal(sent[2][0].type_id, 'place');
 });
 
 test('options avoid redundant stick and table crafts', () => {
@@ -372,4 +377,54 @@ test('options offer craft_stone_pickaxe with materials and a nearby table', () =
   assert.equal(keys.includes('craft_stone_pickaxe'), true);
   adapter.inventory.cobblestone = 2;
   assert.equal(adapter.options().some(o => o.key === 'craft_stone_pickaxe'), false);
+});
+
+test('dig_down steers the staircase toward the plan waypoint', () => {
+  const { adapter } = digAdapter();
+  adapter._lastYaw = 90; // guarderebbe a ovest
+  adapter.plan = { waypoint: { x: 120, z: 148 } };
+  assert.deepEqual(adapter._digDirection(), { dx: 1, dz: 0 }, 'waypoint a est');
+  adapter.plan = { waypoint: { x: 92, z: 160 } };
+  assert.deepEqual(adapter._digDirection(), { dx: 0, dz: 1 }, 'waypoint a sud');
+  adapter.plan = { waypoint: { x: 92.6, z: 148.6 } };
+  assert.deepEqual(adapter._digDirection(), { dx: -1, dz: 0 }, 'waypoint addosso: torna allo yaw');
+});
+
+test('hotbar eviction prefers junk over tools and fuel', () => {
+  const adapter = new BedrockAdapter({ logger: { log () {} } });
+  for (let i = 0; i < 9; i++) adapter.inventorySlots[i] = { network_id: 3, name: 'dirt', count: 64 };
+  adapter.inventorySlots[0] = { network_id: 341, name: 'wooden_pickaxe', count: 1 };
+  adapter.inventorySlots[4] = { network_id: 263, name: 'coal', count: 3 };
+  assert.equal(adapter._hotbarSlotToEvict(), 1, 'prima la terra, non piccone o carbone');
+});
+
+test('a full hotbar frees the least valuable slot to select a tool', async () => {
+  const adapter = new BedrockAdapter({ logger: { log () {} } });
+  adapter.client = { write: () => {} };
+  adapter._ensureInventoryOpen = async () => {};
+  for (let i = 0; i < 9; i++) adapter.inventorySlots[i] = { network_id: 3, name: 'dirt', count: 64, stack_id: 100 + i };
+  adapter.inventorySlots[0] = { network_id: 341, name: 'wooden_pickaxe', count: 1, stack_id: 1 };
+  adapter.inventorySlots[30] = { network_id: 345, name: 'stone_pickaxe', count: 1, stack_id: 2 };
+  const requests = [];
+  adapter._sendStackRequest = async actions => {
+    const a = actions[0];
+    requests.push(a);
+    if (a.type_id === 'take') {
+      return { status: 'ok', containers: [{ slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: a.count, item_stack_id: 900 + requests.length }] }] };
+    }
+    return { status: 'ok', containers: [] };
+  };
+  const tool = await adapter._selectToolFor({ name: 'stone', material: 'mineable/pickaxe' });
+  assert.equal(tool, 'stone_pickaxe');
+  assert.equal(requests.length, 4, 'eviction take+place, poi move take+place');
+  assert.equal(requests[0].source.slot_type.container_id, 'hotbar', 'eviction: dalla hotbar al cursore');
+  assert.deepEqual(requests[1].destination.slot_type, { container_id: 'hotbar_and_inventory' }, 'eviction: dal cursore a un buco');
+  assert.equal(requests[1].destination.slot, 9);
+  assert.equal(requests[2].source.slot_type.container_id, 'hotbar_and_inventory', 'move: dal main al cursore');
+  assert.equal(requests[2].source.slot, 30);
+  assert.equal(requests[3].destination.slot_type.container_id, 'hotbar_and_inventory', 'move: dal cursore alla hotbar');
+  const destSlot = requests[3].destination.slot;
+  assert.equal(adapter.inventorySlots[destSlot].name, 'stone_pickaxe', 'il piccone va in hotbar');
+  assert.equal(adapter.inventorySlots[9].name, 'dirt', 'la terra evitta finisce nel buco');
+  assert.equal(adapter.selectedHotbar, destSlot);
 });

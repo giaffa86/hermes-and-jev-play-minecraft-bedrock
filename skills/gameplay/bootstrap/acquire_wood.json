@@ -1,0 +1,9 @@
+{
+  "id": "acquire_wood",
+  "description": "Acquire enough logs for early-game crafting.",
+  "category": "bootstrap",
+  "success": { "inventoryTagGte": { "logs": 8 } },
+  "intents": ["mine", "collect", "travel"],
+  "planTargets": {},
+  "notes": "8 log sono sufficienti per tavolo, attrezzi di legno e riserva; il tag `logs` copre ogni essenza."
+}

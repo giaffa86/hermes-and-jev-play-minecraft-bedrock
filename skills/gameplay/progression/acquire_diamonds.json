@@ -1,0 +1,10 @@
+{
+  "id": "acquire_diamonds",
+  "description": "Reach diamond depth with an iron pickaxe and mine diamonds.",
+  "category": "progression",
+  "preconditions": { "inventoryTagGte": { "iron_tools": 1 } },
+  "success": { "inventoryTagGte": { "diamonds": 1 } },
+  "intents": ["mine", "travel", "collect", "craft"],
+  "planTargets": {},
+  "notes": "Le opzioni mine_diamond_ore compaiono solo con piccone di ferro o superiore."
+}

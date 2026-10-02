@@ -20,15 +20,18 @@ A minimal reproduction of the rmalde/minecraft-agent planner/controller split: *
 
 ## Project shape
 
-- ESM Node project; no build, no tests, no CI, no formatter config.
-- `package.json` has two convenience scripts: `npm run harness` and `npm run play`.
+- ESM Node project; no build, no CI, no formatter config.
+- `package.json` has convenience scripts: `npm run harness`, `npm run bedrock-harness`, `npm run play`, `npm run test`.
 - `test-ping.mjs` is standalone and unrelated to the main Java loop — it pings a Bedrock server (`<ip-server-bedrock>:19132`, `nethernet` transport).
+- `survival/` is the deterministic Survival Intelligence Layer (governor, skill resolver, verifier, progression); `knowledge/*.json` holds rules and the milestone graph; `skills/gameplay/**` holds declarative gameplay skills (distinct from the Hermes `SKILL.md`). See `docs/SURVIVAL-INTELLIGENCE.md`.
+- Tests: `node --test tests/*.test.mjs` (no server required).
 
 ## Entry points
 
 | File | Role | Run it |
 |---|---|---|
 | `harness.mjs` | Pure-Node Minecraft 1.16.5 server + one Mineflayer bot + bounded-action HTTP API | `RUN_ID=demo node harness.mjs` |
+| `bedrock-harness.mjs` | Bedrock bot + bounded-action HTTP API (the real target) | `RUN_ID=demo node bedrock-harness.mjs` |
 | `controller.mjs` | Planner/controller loop calling the harness | `OPENROUTER_API_KEY=... RUN_ID=demo node controller.mjs` |
 | `skills/minecraft-bounded-agent/SKILL.md` | Hermes skill for driving the harness directly | `hermes skills install https://raw.githubusercontent.com/teknium1/hermes-and-jev-play-minecraft-bedrock/main/skills/minecraft-bounded-agent/SKILL.md` |
 
@@ -61,12 +64,18 @@ Use `CONTROLLER=hermes` if you lack an OpenRouter key; it is slower and costlier
 - `CONTROLLER` — `jev` (default) or `hermes`.
 - `JEV_MODEL` — default `typesafe/jev-1.13`.
 - `HERMES_TIMEOUT_MS` — planner timeout before falling back to a static plan (default `180000`).
+- `MAX_OPTIONS` — cap on the options passed to Jev (default `12`, `0` disables).
+- `ANTI_LOOP_THRESHOLD` / `ANTI_LOOP_COOLDOWN` — stagnant-action replan threshold and cooldown (default `3` / `3`).
 - `MC_PORT` / `API_PORT` — defaults `25599` / `3077`.
 - `OPENROUTER_API_KEY` — required for `CONTROLLER=jev`.
+- `CURRICULUM` — optional milestone (`first_night`, `enter_nether`): the progression engine picks missing prerequisites itself; Hermes is only a fallback.
+- `PROGRESSION_GOAL` — optional harness-side goal for the diagnostic `GET /survival` route.
 
 ## Architecture gotchas
 
 - **Harness owns validity.** The controller chooses only keys returned by `GET /options`. If the controller misbehaves, fix `options()` in `harness.mjs`, not the prompt.
+- **Deterministic survival policy lives in `knowledge/survival-rules.json`**, not in prompts. `/observe.survival` exposes the compact governor verdict; in `emergency` the harness restricts `/options` to the governor's `allowedIntents` (removing keys only, never adding, never emptying the set).
+- **Gameplay skills are data, not code** (`skills/gameplay/**/*.json`): preconditions + success criteria + intents. The verifier checks harness state (`verifySkill`), never the model's opinion; results go to `runs/<run>/skills.jsonl`.
 - `mine_*` options disappear once `plan.targets` are satisfied.
 - `wait` is offered only when nothing else is valid.
 - `collect_drop` is preferred by the controller logic whenever drops exist; drops expire.

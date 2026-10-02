@@ -8,11 +8,23 @@ import { createServer } from 'node:http';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { BedrockAdapter } from './bedrock-adapter.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
+import {
+  evaluateSurvival, summarizeSurvival, loadSurvivalRules,
+  filterOptionsForGovernor, loadGameplaySkills, loadProgression, resolveMilestone, resolveActiveSkill,
+} from './survival/index.mjs';
 
 console.log('BEDROCK HARNESS VERSION 2');
 const API_PORT = +(process.env.API_PORT || 3077);
 const API_HOST = process.env.API_HOST || '127.0.0.1';
 const RUN = process.env.RUN_ID || 'run';
+
+// Survival Intelligence Layer: regole, skill e grafo di progressione caricati
+// una sola volta e validati subito (un file rotto deve fallire all'avvio).
+const survivalRules = await loadSurvivalRules(new URL('./knowledge/survival-rules.json', import.meta.url));
+const gameplaySkills = loadGameplaySkills();
+const progressionGraph = await loadProgression(new URL('./knowledge/progression.json', import.meta.url));
+const PROGRESSION_GOAL = process.env.PROGRESSION_GOAL || null;
+console.log(`survival layer ready: rules=${survivalRules.length} skills=${gameplaySkills.size} milestones=${Object.keys(progressionGraph.milestones).length}`);
 
 mkdirSync(`runs/${RUN}`, { recursive: true });
 const eventLog = (type, data) => appendFileSync(`runs/${RUN}/events.jsonl`, JSON.stringify({ t: Date.now(), type, ...data }) + '\n');
@@ -23,7 +35,7 @@ const shutdownSignal = new AbortController();
 let connectionWorker = null;
 
 const adapter = new BedrockAdapter({
-  // onLog: (entry) => eventLog(entry.type, entry),
+  onLog: process.env.BEDROCK_EVENT_LOG ? (entry) => eventLog(entry.type, entry) : undefined,
   onDisconnect: () => {
     console.warn('[adapter] disconnected; will reconnect');
     startConnectionWorker(10000);
@@ -85,14 +97,57 @@ server = createServer(async (req, res) => {
   const safeJson = (obj) => JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? v.toString() : v);
   let response;
   try {
-    if (req.method === 'GET' && req.url === '/observe') response = [200, adapter.observe()];
-    else if (req.method === 'GET' && req.url === '/options') response = [200, { options: adapter.options() }];
-    else if (process.env.BEDROCK_DEBUG && req.method === 'GET' && req.url === '/debug/geom') response = [200, geometryReport(adapter)];
+    if (req.method === 'GET' && req.url === '/observe') {
+      // La survival compatta viaggia con l'osservazione: chi legge vede subito
+      // se la progressione è stata interrotta (mode != normal).
+      const obs = adapter.observe();
+      obs.survival = summarizeSurvival(evaluateSurvival(obs, { rules: survivalRules }));
+      response = [200, obs];
+    } else if (req.method === 'GET' && req.url === '/options') {
+      // Validity owner resta l'adapter; il governor può solo restringere in
+      // emergenza le opzioni già offerte, mai aggiungerne.
+      const obs = adapter.observe();
+      const survival = evaluateSurvival(obs, { rules: survivalRules });
+      const offered = adapter.options();
+      const restricted = filterOptionsForGovernor(offered, survival);
+      response = [200, {
+        options: restricted.options,
+        survival: summarizeSurvival(survival),
+        filtered: restricted.filtered,
+        removed: restricted.removed,
+        filterReason: restricted.reason,
+      }];
+    } else if (req.method === 'GET' && req.url === '/survival') {
+      // Diagnostica: governor completo + skill attiva + milestone suggerito
+      // (quest'ultimo solo con PROGRESSION_GOAL configurato).
+      const obs = adapter.observe();
+      const survival = evaluateSurvival(obs, { rules: survivalRules });
+      const milestone = PROGRESSION_GOAL
+        ? resolveMilestone(progressionGraph, { goal: PROGRESSION_GOAL, observation: obs, completed: new Set() })
+        : null;
+      const active = resolveActiveSkill({ skills: gameplaySkills, plan: obs.plan, governor: survival, milestone, observation: obs });
+      response = [200, { survival, activeSkill: active.skill?.id ?? null, activeSkillSource: active.source, milestone, progressionGoal: PROGRESSION_GOAL }];
+    } else if (process.env.BEDROCK_DEBUG && req.method === 'GET' && req.url === '/debug/geom') response = [200, geometryReport(adapter)];
     else if (process.env.BEDROCK_DEBUG && req.method === 'POST' && req.url === '/debug/mine') {
       const { x, y, z } = JSON.parse(body);
       const block = adapter.world.blockAt({ x, y, z });
       if (!block) response = [200, { ok: false, error: 'block_not_loaded' }];
       else response = [200, await adapter._mineTarget({ cell: { x, y, z }, block, raw: block.name === 'unknown' })];
+    }
+    else if (process.env.BEDROCK_DEBUG && req.method === 'GET' && req.url === '/debug/inventory') {
+      response = [200, {
+        selectedHotbar: adapter.selectedHotbar,
+        cursor: adapter._cursor ?? null,
+        slots: adapter.inventorySlots
+          .map((s, i) => s ? { i, name: adapter._slotItemName(s), count: s.count, stack_id: s.stack_id ?? null, has_stack_id: s.has_stack_id ?? null } : null)
+          .filter(Boolean),
+      }];
+    }
+    else if (process.env.BEDROCK_DEBUG && req.method === 'POST' && req.url === '/debug/isr') {
+      const { type_id, count, source, destination, randomly, open } = JSON.parse(body);
+      if (open) await adapter._ensureInventoryOpen();
+      const legacy = { take: 0, place: 1, swap: 2, drop: 3, destroy: 4 }[type_id] ?? 0;
+      response = [200, await adapter._sendStackRequest([{ type_id, legacy_type_id: legacy, count, source, destination, randomly }], {})];
     }
     else if (req.method === 'POST' && req.url === '/plan') { adapter.setPlan(JSON.parse(body)); response = [200, { ok: true, plan: adapter.plan }]; }
     else if (req.method === 'POST' && req.url === '/act') { const { key } = JSON.parse(body); response = [200, await adapter.executeAction(key)]; }

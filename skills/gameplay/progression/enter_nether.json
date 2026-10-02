@@ -1,0 +1,10 @@
+{
+  "id": "enter_nether",
+  "description": "Build and light a Nether portal and step through it.",
+  "category": "progression",
+  "preconditions": { "inventoryTagGte": { "diamonds": 1 } },
+  "success": { "dimension": "nether" },
+  "intents": ["mine", "craft", "build", "travel", "collect"],
+  "planTargets": {},
+  "notes": "Milestone finale del grafo attuale; il supporto alle azioni portale è futuro (vedi docs/SURVIVAL-INTELLIGENCE.md, blocker)."
+}

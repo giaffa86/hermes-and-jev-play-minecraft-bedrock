@@ -1,0 +1,14 @@
+{
+  "id": "emergency_shelter",
+  "description": "Dig in or stay out of sight until the night or the nearby threat is over.",
+  "category": "survival",
+  "success": {
+    "anyOf": [
+      { "noHostileWithin": 10 },
+      { "phaseIn": ["day", "dawn"] }
+    ]
+  },
+  "intents": ["shelter", "mine", "build", "travel"],
+  "planTargets": {},
+  "notes": "Successo = notte finita o nessun ostile a ridosso; le azioni restano quelle offerte dal harness (dig_down, place_*, sleep)."
+}

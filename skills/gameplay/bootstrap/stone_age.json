@@ -1,0 +1,9 @@
+{
+  "id": "stone_age",
+  "description": "Reach the stone age: mine stone and craft a stone tool.",
+  "category": "bootstrap",
+  "success": { "inventoryTagGte": { "stone_tools": 1 } },
+  "intents": ["mine", "craft", "collect", "travel"],
+  "planTargets": { "cobblestone": 3 },
+  "notes": "Il piccone di pietra richiede 3 cobblestone e 2 bastoni; dig_down e mine_* espongono la pietra."
+}

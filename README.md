@@ -12,7 +12,13 @@ The split is the one [rmalde/minecraft-agent](https://github.com/rmalde/minecraf
 | Path | What |
 |---|---|
 | `harness.mjs` | Pure-Node Minecraft 1.16.5 server ([flying-squid](https://github.com/PrismarineJS/flying-squid), no Java needed) + one Mineflayer bot + a bounded-action HTTP API: `GET /observe`, `GET /options`, `POST /act`, `POST /plan`. **Validity is decided here**, not by the model. |
-| `controller.mjs` | The loop. Planner = Hermes via `hermes chat -Q --oneshot` at milestones. Controller = Jev via OpenRouter `POST /api/alpha/decisions` (a `choice` question over the harness's options), or Hermes with `CONTROLLER=hermes`. Logs every plan and decision (choice, probabilities, confidence, cost, latency) to `runs/<id>/controller.jsonl`. |
+| `controller.mjs` | The loop. Planner = Hermes via `hermes chat -Q --oneshot` at milestones. Controller = Jev via OpenRouter `POST /api/alpha/decisions` (a `choice` question over the harness's options), or Hermes with `CONTROLLER=hermes`. Logs every plan and decision (choice, candidate keys, per-key probabilities, confidence, cost, latency) to `runs/<id>/controller.jsonl`. Anti-loop: repeated actions with no progress (position, inventory, objective) force a replan and are temporarily excluded. |
+| `controller-decisions.mjs` | Pure decision helpers for the controller: option ranking/cap, anti-loop detection, progress fingerprint, wait diagnostics, decision instructions. Unit tests in `tests/controller-decisions.test.mjs`. |
+| `survival/` | Deterministic Survival Intelligence Layer: perception, risk/needs scoring, Survival Governor, declarative gameplay-skill loader, skill resolver, deterministic verification, progression resolver, JSONL experience. Pure logic with unit tests; no model, no code generation. |
+| `knowledge/survival-rules.json` | When to interrupt progression (low health near a hostile, starving, night unprepared, ...). Explicit condition vocabulary, validated at load. |
+| `knowledge/progression.json` | Declarative milestone graph (wood → crafting table → stone tools → food → first night → iron → diamonds → nether) with dependencies, not a hardcoded sequence. |
+| `skills/gameplay/` | Declarative gameplay skills (JSON): preconditions, success/failure criteria, intents. Different concept from the Hermes Agent `SKILL.md`; they never contain executable code. |
+| `docs/SURVIVAL-INTELLIGENCE.md` | Architecture, contracts and how to add a gameplay skill or a progression milestone. |
 | `skills/minecraft-bounded-agent/SKILL.md` | Hermes skill: how to drive the harness directly from a Hermes session (`hermes chat -t terminal`). |
 | `docs/REPRODUCTION-REPORT.md` | Full report of reproducing the original Ender Dragon result on Linux with the exact models (GPT-6 Astra via Nous Portal, Jev via OpenRouter): **7:45**, 6 bed blasts, 0 deaths, **$0.96** — vs the author's 8:43 and $0.97. |
 
@@ -38,7 +44,19 @@ RUN_ID=demo WAYPOINT='{"x":380,"z":16}' TARGETS='{"dirt":4}' MAX_STEPS=14 node c
 
 Expected output ends with `GOAL MET after N actions {...}`; the full trail is in `runs/demo/controller.jsonl` (plans + every Jev decision with probabilities, confidence, latency, cost) and `runs/demo/events.jsonl` (harness-side actions and results).
 
-Knobs (all env vars): `GOAL` (free text for the planner), `TARGETS` (`{item: minCount}`), `WAYPOINT` (`{x, z}` or unset), `MAX_STEPS`, `REPLAN_EVERY` (default 8), `CONTROLLER=jev|hermes`, `JEV_MODEL` (default `typesafe/jev-1.13`), `MC_PORT`/`API_PORT` if 25599/3077 are taken.
+Knobs (all env vars): `GOAL` (free text for the planner), `TARGETS` (`{item: minCount}`), `WAYPOINT` (`{x, z}` or unset), `MAX_STEPS`, `REPLAN_EVERY` (default 8), `CONTROLLER=jev|hermes`, `JEV_MODEL` (default `typesafe/jev-1.13`), `MAX_OPTIONS` (cap on the options passed to the controller, default 12, 0 disables), `ANTI_LOOP_THRESHOLD`/`ANTI_LOOP_COOLDOWN` (default 3), `CURRICULUM=<milestone>` (e.g. `first_night`, `enter_nether`: the progression engine picks the next missing prerequisite itself), `MC_PORT`/`API_PORT` if 25599/3077 are taken.
+
+### Survival Intelligence Layer
+
+Before the model sees anything, a deterministic layer evaluates the observation and decides whether progression should be interrupted:
+
+- **Survival Governor**: health/food/hostiles/day-night scoring with explicit rules (`knowledge/survival-rules.json`). It returns `{mode: normal|caution|emergency, needs, overrideObjective, allowedIntents, preferredSkills}`; `/observe` exposes a compact version and in an emergency `/options` is restricted to the allowed intents (it can only remove keys the adapter already offered, never invent one).
+- **Gameplay skills**: declarative JSON contracts (`skills/gameplay/**`) with preconditions, deterministic success/failure criteria and intents — the Voyager-inspired skill library, with no runtime code generation.
+- **Skill Resolver**: picks the active skill (governor in an emergency, then the plan's optional `skill` field, then the progression milestone) and boosts its intents when options are ranked for the controller.
+- **Verification**: `verifySkill(skill, before, after)` checks harness state (inventory tags, hunger/health deltas, threat distance, night survived), never the model's opinion. Every run appends to `runs/<run>/skills.jsonl`.
+- **Progression Engine**: `knowledge/progression.json` resolves the next missing prerequisite for a goal; with `CURRICULUM=first_night` the controller drives `wood -> crafting table -> food -> first night` on its own, while Hermes remains the fallback for ambiguous situations.
+
+Full architecture and extension guides: [`docs/SURVIVAL-INTELLIGENCE.md`](docs/SURVIVAL-INTELLIGENCE.md).
 
 ### Let Hermes drive the harness itself
 

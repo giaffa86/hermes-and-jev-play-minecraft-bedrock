@@ -1,0 +1,204 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  buildCriteria, buildDecisionInstructions, capOptions, detectRepeatedAction, filterOptions,
+  optionPriority, parseDistance, progressFingerprint, rankOptions, summarizePlan, waitOnlyReason,
+  DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
+} from '../controller-decisions.mjs';
+
+const opt = (key, description = `${key} description`) => ({ key, description });
+
+test('buildCriteria numbers options and embeds the key in the description', () => {
+  const criteria = buildCriteria([opt('eat', 'Eat cooked_beef'), opt('wait')]);
+  assert.deepEqual(criteria, {
+    a0: '[eat] Eat cooked_beef',
+    a1: '[wait] wait description',
+  });
+});
+
+test('parseDistance reads the distance from option descriptions', () => {
+  assert.equal(parseDistance('Attack the zombie (3.4 blocks away, health 20)'), 3.4);
+  assert.equal(parseDistance('Walk onto the nearest dropped item (12 blocks away)'), 12);
+  assert.equal(parseDistance('Mine stone at {"x":1,"y":2,"z":3}'), null);
+  assert.equal(parseDistance(undefined), null);
+});
+
+test('optionPriority orders survival first, wait last and targets above generic mining', () => {
+  const ctx = { targets: { dirt: 4 } };
+  assert.ok(optionPriority(opt('flee'), ctx) < optionPriority(opt('collect_drop'), ctx));
+  assert.ok(optionPriority(opt('attack_zombie'), ctx) < optionPriority(opt('collect_drop'), ctx));
+  assert.ok(optionPriority(opt('collect_drop'), ctx) < optionPriority(opt('mine_dirt'), ctx));
+  assert.ok(optionPriority(opt('mine_dirt'), ctx) < optionPriority(opt('mine_stone'), ctx));
+  assert.ok(optionPriority(opt('craft_stick'), ctx) < optionPriority(opt('mine_stone'), ctx));
+  assert.ok(optionPriority(opt('goto_waypoint'), ctx) < optionPriority(opt('mine_stone'), ctx));
+  assert.ok(optionPriority(opt('mine_stone'), ctx) < optionPriority(opt('wait'), ctx));
+});
+
+test('optionPriority recognizes targets by name, including partial matches', () => {
+  assert.ok(optionPriority(opt('craft_stone_pickaxe'), { targets: { stone_pickaxe: 1 } }) <
+            optionPriority(opt('craft_stick'), { targets: { stone_pickaxe: 1 } }));
+  assert.ok(optionPriority(opt('mine_coal_ore'), { targets: { coal: 3 } }) <
+            optionPriority(opt('mine_stone'), { targets: { coal: 3 } }));
+});
+
+test('rankOptions is stable and sorts mining by parsed distance inside a tier', () => {
+  const options = [
+    opt('mine_stone', 'Mine stone at far (20 blocks away)'),
+    opt('mine_dirt', 'Mine dirt at near (2 blocks away)'),
+    opt('mine_grass_block', 'Mine grass_block at mid (7 blocks away)'),
+  ];
+  assert.deepEqual(rankOptions(options).map(o => o.key), ['mine_dirt', 'mine_grass_block', 'mine_stone']);
+  const tie = [opt('mine_a', 'no distance'), opt('mine_b', 'no distance')];
+  assert.deepEqual(rankOptions(tie).map(o => o.key), ['mine_a', 'mine_b']);
+});
+
+test('capOptions keeps the most relevant options and preserves their original order', () => {
+  const options = [
+    opt('mine_stone'), opt('mine_dirt'), opt('craft_stick'), opt('flee'), opt('goto_waypoint'),
+  ];
+  const { options: capped, dropped } = capOptions(options, { max: 3 });
+  assert.deepEqual(capped.map(o => o.key), ['craft_stick', 'flee', 'goto_waypoint']);
+  assert.deepEqual(dropped.map(o => o.key), ['mine_stone', 'mine_dirt']);
+  // Con i target, le azioni che li producono salgono di priorità.
+  const targeted = capOptions(options, { max: 2, targets: { dirt: 4 } });
+  assert.deepEqual(targeted.options.map(o => o.key), ['mine_dirt', 'flee']);
+  assert.deepEqual(targeted.dropped.map(o => o.key), ['mine_stone', 'craft_stick', 'goto_waypoint']);
+});
+
+test('capOptions does nothing when under the cap or when disabled', () => {
+  const options = [opt('mine_stone'), opt('wait')];
+  assert.deepEqual(capOptions(options, { max: 12 }).options.map(o => o.key), ['mine_stone', 'wait']);
+  assert.deepEqual(capOptions(options, { max: 0 }).options.map(o => o.key), ['mine_stone', 'wait']);
+  assert.deepEqual(capOptions(options, { max: 0 }).dropped, []);
+  assert.equal(DEFAULT_MAX_OPTIONS, 12);
+});
+
+test('progressFingerprint reacts to position, inventory and objective changes only', () => {
+  const obs = { position: { x: 1.2, y: 64.9, z: -3.1 }, inventory: { dirt: 2, stick: 1 }, health: 20 };
+  const plan = { objective: 'mine dirt' };
+  const base = progressFingerprint(obs, plan);
+  assert.equal(progressFingerprint({ ...obs }, { ...plan }), base);
+  // Vita e drop non sono progresso.
+  assert.equal(progressFingerprint({ ...obs, health: 5, drops: [{ id: 1 }] }, plan), base);
+  assert.notEqual(progressFingerprint({ ...obs, position: { ...obs.position, x: 2.4 } }, plan), base);
+  assert.notEqual(progressFingerprint({ ...obs, inventory: { dirt: 3 } }, plan), base);
+  assert.notEqual(progressFingerprint(obs, { objective: 'craft' }), base);
+});
+
+test('detectRepeatedAction counts only the trailing stagnant streak', () => {
+  const history = [
+    { key: 'goto_waypoint', stagnant: true },
+    { key: 'goto_waypoint', stagnant: true },
+  ];
+  assert.deepEqual(detectRepeatedAction(history, 'goto_waypoint'), { repeated: false, count: 2 });
+  history.push({ key: 'goto_waypoint', stagnant: true });
+  assert.deepEqual(detectRepeatedAction(history, 'goto_waypoint'), { repeated: true, count: 3 });
+  // Un progresso interrompe la serie.
+  history.push({ key: 'goto_waypoint', stagnant: false });
+  assert.deepEqual(detectRepeatedAction(history, 'goto_waypoint'), { repeated: false, count: 0 });
+  // Un'altra azione interrompe la serie.
+  const other = [{ key: 'goto_waypoint', stagnant: true }, { key: 'mine_dirt', stagnant: true }];
+  assert.deepEqual(detectRepeatedAction(other, 'goto_waypoint'), { repeated: false, count: 0 });
+  assert.equal(DEFAULT_ANTI_LOOP_THRESHOLD, 3);
+});
+
+test('filterOptions hides wait when something else is available', () => {
+  const { options, excluded } = filterOptions([opt('wait'), opt('mine_dirt')]);
+  assert.deepEqual(options.map(o => o.key), ['mine_dirt']);
+  assert.deepEqual(excluded, [{ key: 'wait', reason: 'wait_not_useful' }]);
+  // wait è l'unica opzione: resta.
+  const alone = filterOptions([opt('wait')]);
+  assert.deepEqual(alone.options.map(o => o.key), ['wait']);
+  assert.deepEqual(alone.excluded, []);
+});
+
+test('filterOptions excludes stagnant keys but never empties the set', () => {
+  const history = Array.from({ length: 3 }, () => ({ key: 'goto_waypoint', stagnant: true }));
+  const options = [opt('goto_waypoint'), opt('mine_stone'), opt('collect_drop')];
+  const filtered = filterOptions(options, history);
+  assert.deepEqual(filtered.options.map(o => o.key), ['mine_stone', 'collect_drop']);
+  assert.deepEqual(filtered.excluded, [{ key: 'goto_waypoint', reason: 'stagnant_3' }]);
+  // Tutte stagnanti: si tengono comunque, con nota esplicita.
+  const all = filterOptions([opt('goto_waypoint')], history);
+  assert.deepEqual(all.options.map(o => o.key), ['goto_waypoint']);
+  assert.equal(all.note, 'all_stagnant');
+});
+
+test('filterOptions honors explicit exclusions and falls back instead of returning nothing', () => {
+  const options = [opt('goto_waypoint'), opt('wait')];
+  const failed = filterOptions(options, [], { excludeKeys: [{ key: 'goto_waypoint', reason: 'failed' }] });
+  assert.deepEqual(failed.options.map(o => o.key), ['wait']);
+  assert.deepEqual(failed.excluded, [{ key: 'goto_waypoint', reason: 'failed' }]);
+  // Tutto escluso: si ripristinano le opzioni offerte dal harness (mai insieme vuoto).
+  const only = filterOptions([opt('goto_waypoint')], [], { excludeKeys: [{ key: 'goto_waypoint', reason: 'failed' }] });
+  assert.deepEqual(only.options.map(o => o.key), ['goto_waypoint']);
+  assert.equal(only.fallback.reason, 'filters_left_empty_set');
+});
+
+test('filterOptions caps relevance and reports what was dropped', () => {
+  const options = [opt('mine_stone'), opt('mine_dirt'), opt('craft_stick'), opt('flee'), opt('goto_waypoint')];
+  const filtered = filterOptions(options, [], { max: 3 });
+  assert.deepEqual(filtered.options.map(o => o.key), ['craft_stick', 'flee', 'goto_waypoint']);
+  assert.deepEqual(filtered.dropped.map(o => o.key), ['mine_stone', 'mine_dirt']);
+});
+
+test('filterOptions does not mutate its inputs', () => {
+  const options = [opt('wait'), opt('mine_dirt')];
+  const history = [{ key: 'mine_dirt', stagnant: true }];
+  const snapshot = JSON.stringify({ options, history });
+  filterOptions(options, history);
+  assert.equal(JSON.stringify({ options, history }), snapshot);
+});
+
+test('waitOnlyReason explains why wait was the only option', () => {
+  assert.equal(waitOnlyReason({ spawned: true, status: 'spawned', position: {} }), 'no_useful_options');
+  assert.equal(waitOnlyReason({ spawned: false, status: 'connecting' }), 'not_connected');
+  assert.equal(waitOnlyReason({ spawned: true, status: 'spawned', dead: true }), 'dead');
+  assert.equal(waitOnlyReason({ spawned: true, status: 'spawned', sleeping: true }), 'sleeping');
+  assert.equal(waitOnlyReason({ spawned: true, status: 'spawned' }), 'no_position');
+});
+
+test('summarizePlan renders objective, targets, waypoint and notes', () => {
+  const text = summarizePlan({ objective: 'Craft a stone pickaxe', targets: { stone_pickaxe: 1 }, waypoint: { x: 93, z: 146 }, notes: 'mining done' });
+  assert.match(text, /Objective: Craft a stone pickaxe/);
+  assert.match(text, /Targets: \{"stone_pickaxe":1\}/);
+  assert.match(text, /Waypoint: \{"x":93,"z":146\}/);
+  assert.match(text, /Notes: mining done/);
+  assert.equal(summarizePlan({}), 'No plan.');
+});
+
+test('buildDecisionInstructions states survival priorities and the no-progress rule', () => {
+  const text = buildDecisionInstructions({ objective: 'mine dirt', targets: { dirt: 4 } });
+  assert.match(text, /flee/);
+  assert.match(text, /sleep/);
+  assert.match(text, /eat/);
+  assert.match(text, /attack only when health is high enough/i);
+  assert.match(text, /death site/);
+  assert.match(text, /Never repeat an action that just produced no progress/);
+  assert.match(text, /wait only when it is the only option/i);
+});
+
+test('anti-loop scenario: a stagnant goto loop gets excluded and later retried', () => {
+  // Simula il loop del controller: 3 goto senza progresso -> esclusione.
+  const history = [];
+  let options = [opt('goto_waypoint'), opt('mine_stone')];
+  let excludedKeys = [];
+  for (let step = 1; step <= 4; step++) {
+    if (step > 1) {
+      history.push({ key: 'goto_waypoint', stagnant: true });
+      if (detectRepeatedAction(history, 'goto_waypoint').repeated) {
+        excludedKeys = [{ key: 'goto_waypoint', reason: 'anti_loop_until_7' }];
+      }
+    }
+    const filtered = filterOptions(options, history, { excludeKeys: excludedKeys });
+    if (step <= 3) assert.deepEqual(filtered.options.map(o => o.key), ['goto_waypoint', 'mine_stone']);
+    else {
+      assert.deepEqual(filtered.options.map(o => o.key), ['mine_stone']);
+      assert.deepEqual(filtered.excluded, [{ key: 'goto_waypoint', reason: 'anti_loop_until_7' }]);
+    }
+  }
+  // Al rientro del cooldown, con un'altra azione nel mezzo, goto torna proponibile.
+  history.push({ key: 'mine_stone', stagnant: false });
+  const later = filterOptions([opt('goto_waypoint'), opt('mine_stone')], history);
+  assert.deepEqual(later.options.map(o => o.key), ['goto_waypoint', 'mine_stone']);
+});

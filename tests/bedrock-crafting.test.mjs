@@ -116,7 +116,7 @@ test('craft actions consume the tracked grid stacks and validate the destination
   assert.equal(place.source.slot_type.container_id, 'creative_output');
   assert.equal(place.source.slot, 50);
   // Fusione con la pila esistente: lo stack id del destino deve essere quello corrente.
-  assert.deepEqual(place.destination, { slot_type: { container_id: 'hotbar' }, slot: 1, stack_id: 77 });
+  assert.deepEqual(place.destination, { slot_type: { container_id: 'hotbar_and_inventory' }, slot: 1, stack_id: 77 });
 });
 
 test('craft actions pick an empty slot when the output item is not held yet', () => {
@@ -124,7 +124,7 @@ test('craft actions pick an empty slot when the output item is not held yet', ()
   adapter.inventorySlots[0] = { network_id: 17, name: 'oak_log', count: 1, stack_id: 1 };
   const { actions } = adapter._craftActions(recipe(adapter, 1218), new Map());
   const place = actions.at(-1);
-  assert.deepEqual(place.destination, { slot_type: { container_id: 'hotbar' }, slot: 1, stack_id: 0 });
+  assert.deepEqual(place.destination, { slot_type: { container_id: 'hotbar_and_inventory' }, slot: 1, stack_id: 0 });
 });
 
 test('stale slot detection compares aggregate pickups with tracked slots', () => {

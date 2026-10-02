@@ -1,0 +1,10 @@
+{
+  "id": "obtain_food",
+  "description": "Find or craft something safe to eat before hunger becomes a problem.",
+  "category": "survival",
+  "preconditions": { "inventoryTagGte": { "food": 0 } },
+  "success": { "inventoryTagGte": { "food": 1 } },
+  "intents": ["collect", "travel", "craft", "smelt"],
+  "planTargets": {},
+  "notes": "Precondizione volutamente 0: la skill è utile finché non c'è cibo; il resolver preferisce eat_available_food quando c'è già cibo."
+}

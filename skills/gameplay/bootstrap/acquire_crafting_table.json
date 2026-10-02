@@ -1,0 +1,14 @@
+{
+  "id": "acquire_crafting_table",
+  "description": "Craft a crafting table and put it to work.",
+  "category": "bootstrap",
+  "success": {
+    "anyOf": [
+      { "inventoryGte": { "crafting_table": 1 } },
+      { "nearbyBlock": { "name": "crafting_table", "within": 8 } }
+    ]
+  },
+  "intents": ["craft", "build", "collect", "travel"],
+  "planTargets": {},
+  "notes": "Successo anche se il tavolo è già piazzato vicino: il harness non ripropone craft inutilmente."
+}
