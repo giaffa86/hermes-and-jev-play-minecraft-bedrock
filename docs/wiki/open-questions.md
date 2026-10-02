@@ -144,9 +144,11 @@ Still missing (the rest of the original gap):
   persistent session loop with an explicit `IDLE` state, and `goal-manager.mjs`
   holds the goal queue (sources/priorities/statuses, preempt/suspend/resume,
   persistence in `runs/<RUN_ID>/goals/world.json`). While idle the bot accepts a
-  new `@bot` order as a `chat` goal and runs it without reconnecting. Still
-  missing: goal resume across sessions, autonomous goal generation while idle,
-  and world-event/emergency producers. Full analysis in
+  new `@bot` order as a `chat` goal and runs it without reconnecting; with
+  `AUTONOMY=on` it also derives goals from survival needs (`idle-goals.mjs`,
+  milestone 3 first slice). Still missing: goal resume across sessions, the
+  remaining needs-driven goals (inventory-full → store, else explore), and
+  world-event/emergency producers that preempt a running goal. Full analysis in
   [ai-player-roadmap](ai-player-roadmap.md).
 
 - **Farming** (`.private/FARMING-TASK.md`) — not started: `plant_<seed>`/resow,

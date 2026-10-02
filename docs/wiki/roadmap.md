@@ -138,10 +138,11 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   is suspended on startup. `SESSION=off` (default) preserves the one-shot loop.
   Unit + integration tests: `tests/goal-manager.test.mjs`,
   `tests/controller-session.test.mjs`.
-- **Still missing**: resume of a suspended goal across sessions, autonomous goal
-  generation while idle (needs-driven behaviour) and world-event/emergency
-  producers. Full analysis and the target `IDLE → GOAL_RUNNING →
-  GOAL_COMPLETED → IDLE` state machine in [ai-player-roadmap](ai-player-roadmap.md).
+- **Still missing**: resume of a suspended goal across sessions, the remaining
+  needs-driven goals (inventory-full → store, else explore), and world-event/
+  emergency producers that preempt a *running* goal. The first autonomy slice
+  (survival-need goals in `IDLE`, opt-in `AUTONOMY=on`) is implemented — see
+  [ai-player-roadmap](ai-player-roadmap.md).
 
 ## What is not implemented
 
@@ -182,10 +183,10 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 ## Next planned work
 
 1. **Goal Manager producers** (AI-player roadmap milestone 2+): the session
-   loop and the goal queue exist (`goal-manager.mjs`), but only chat and
-   curriculum seed goals. Next: autonomous goals while `IDLE` (needs-driven
-   behaviour) and world-event/emergency goals with preemption — see
-   [ai-player-roadmap](ai-player-roadmap.md).
+   loop, the goal queue and the first autonomy slice (survival-need goals in
+   `IDLE`, `idle-goals.mjs`, opt-in `AUTONOMY=on`) exist. Next: inventory-full →
+   store / else-explore autonomy, and world-event/emergency goals that preempt a
+   running goal — see [ai-player-roadmap](ai-player-roadmap.md).
 2. **Live-verify the farming actions** on the BDS (`plant_<seed>`/`feed_`/
    `attack_<animal>`/`throw_egg`/`breed_*`/`tame_*`/`shear_sheep`), then milk +
    mature-crop detection.

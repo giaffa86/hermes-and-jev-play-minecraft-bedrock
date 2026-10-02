@@ -82,6 +82,9 @@ CHAT_CONTROL=on                    # on/off; default on when CHAT_ALLOWLIST is s
 SESSION=off                        # on = persistent session loop with an IDLE state; off = one-shot (default)
 IDLE_POLL_MS=2000                  # IDLE polling period for new goals
 IDLE_TIMEOUT_MS=0                  # 0 = wait forever; >0 = exit after this idle time
+AUTONOMY=off                       # on = needs-driven autonomous goals while IDLE (requires SESSION=on)
+AUTONOMY_COOLDOWN_MS=120000        # don't retry the same need within this window
+AUTONOMY_MAX_GOALS=25              # cap on autonomous goals generated per session
 ```
 
 > Never commit `.env` or the `nmp-cache`.
@@ -127,6 +130,13 @@ IDLE` (AI-player roadmap milestone 0→1).
   `runs/<RUN_ID>/controller.jsonl`.
 - A goal left `running` by a previous run is suspended on startup (explicit
   suspend/resume across sessions is a later milestone).
+- With `AUTONOMY=on` (and `SESSION=on`) `IDLE` is not passive: the bot derives
+  goals from its **survival needs** (`idle-goals.mjs`) — eat, heal, sleep/
+  shelter, obtain food/weapon/armor, replace tool, escape — picks the highest
+  utility one and rates it `emergency` when the governor is in emergency. A goal
+  succeeds deterministically when the triggering need disappears from harness
+  state (`isNeedResolved`); a per-need cooldown stops retry loops and
+  `AUTONOMY_MAX_GOALS` bounds the session.
 - Default `SESSION=off` preserves the historical one-shot behaviour and exit
   codes (`2` on a `failed` Goal Contract).
 

@@ -21,6 +21,7 @@ import {appendFileSync, mkdirSync} from 'node:fs';
 import {setTimeout as delay} from 'node:timers/promises';
 import {createGoalManager, GOAL_SOURCE, GOAL_STATUS} from './goal-manager.mjs';
 import {JsonMemoryRepository} from './memory-store.mjs';
+import {nextIdleGoal, isNeedResolved, DEFAULT_AUTONOMY_COOLDOWN_MS, DEFAULT_MAX_AUTONOMOUS_GOALS} from './idle-goals.mjs';
 import {
   buildCriteria, buildDecisionInstructions, detectRepeatedAction, filterOptions,
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
@@ -59,6 +60,11 @@ const humanCommandSeen = new Set(); // dedup: un comando già eseguito non si ri
 const SESSION = /^(1|on|true|yes)$/i.test(process.env.SESSION || '');
 const IDLE_POLL_MS = +(process.env.IDLE_POLL_MS || 2000);
 const IDLE_TIMEOUT_MS = +(process.env.IDLE_TIMEOUT_MS || 0); // 0 = attesa senza scadenza
+// Autonomia (milestone 3): in IDLE il bot genera da sé goal dai bisogni
+// (deterministico, non un LLM per decisione). Richiede SESSION=on.
+const AUTONOMY = /^(1|on|true|yes)$/i.test(process.env.AUTONOMY || '');
+const AUTONOMY_COOLDOWN_MS = +(process.env.AUTONOMY_COOLDOWN_MS || DEFAULT_AUTONOMY_COOLDOWN_MS);
+const AUTONOMY_MAX_GOALS = +(process.env.AUTONOMY_MAX_GOALS || DEFAULT_MAX_AUTONOMOUS_GOALS);
 
 mkdirSync(`runs/${RUN}`, {recursive: true});
 const SKILLS_LOG = `runs/${RUN}/skills.jsonl`;
@@ -87,6 +93,8 @@ const progressionGraph = await loadProgression(new URL('./knowledge/progression.
 
 const completedMilestones = new Set();   // verificati davvero in questa sessione
 let skillRun = null;                     // {id, def, milestone, startedAt, startObservation, actions, sawNight}
+let autonomousGoalCount = 0;             // goal autonomi generati in questa sessione (cap)
+const autonomousAttempts = new Map();    // need -> ultimo tentativo (anti-loop in IDLE)
 
 function milestoneForSkill (skillId) {
   for (const [id, node] of Object.entries(progressionGraph.milestones)) {
@@ -329,6 +337,9 @@ const goalMet = (obs, plan, skillStatus) => {
   // I piani "seguimi" sono aperti: terminano solo con un nuovo ordine o a fine
   // budget, mai da soli (non hanno target/waypoint terminali).
   if (plan.follow) return false;
+  // Un goal autonomo è ancorato al bisogno che l'ha generato: il successo è la
+  // scomparsa del bisogno dallo stato del harness, non un target inventato.
+  if (plan.need) return isNeedResolved(plan.need, obs, {rules: survivalRules});
   const targetMap = plan.targets && Object.keys(plan.targets).length ? plan.targets : TARGETS;
   const targets = Object.entries(targetMap).every(([item, n]) => (obs.inventory[item] || 0) >= n);
   const w = plan.waypoint || WAYPOINT;
@@ -497,6 +508,12 @@ for (let step = 1; step <= MAX_STEPS; step++) {
     }
   }
   if (!replanReason && step > 1 && step % REPLAN_EVERY === 1) replanReason = 'periodic';
+  // Un goal autonomo non va sostituito da un nuovo piano: il suo esito lo decide
+  // isNeedResolved. Si salta il replan per non perderne l'ancoraggio al bisogno.
+  if (replanReason && plan.need) {
+    log('replan_skipped', {step, reason: replanReason, need: plan.need});
+    replanReason = null;
+  }
   if (replanReason) {
     const candidatePlan = await planForStep(obs, replanReason);
     if (candidatePlan?.met) { log('curriculum_goal_met', {step, reason: replanReason}); goalReached = true; break; }
@@ -614,6 +631,22 @@ async function waitForGoal () {
         });
         console.log(`IDLE -> goal ${goal.id} from ${cmd.entry.from}: ${goal.objective}`);
         return goal;
+      }
+      // Autonomia: nessun ordine umano -> un goal dai bisogni, deterministico.
+      if (AUTONOMY && autonomousGoalCount < AUTONOMY_MAX_GOALS) {
+        const candidate = nextIdleGoal(obs, {rules: survivalRules, attempts: autonomousAttempts, cooldownMs: AUTONOMY_COOLDOWN_MS});
+        if (candidate) {
+          autonomousAttempts.set(candidate.need, Date.now());
+          autonomousGoalCount += 1;
+          const goal = goalManager.enqueue({
+            type: 'autonomous', source: candidate.source, priority: candidate.priority, objective: candidate.objective,
+            plan: {objective: candidate.objective, targets: {}, waypoint: null, need: candidate.need, priority: 'autonomy', notes: `autonomy:${candidate.need}`},
+            parameters: {need: candidate.need, mode: candidate.mode, reason: candidate.reason},
+          });
+          console.log(`IDLE -> autonomous goal ${goal.id} [${candidate.need}] ${goal.objective}`);
+          log('idle_goal', {goalId: goal.id, need: candidate.need, source: candidate.source, mode: candidate.mode, reason: candidate.reason});
+          return goal;
+        }
       }
     }
     if (IDLE_TIMEOUT_MS && Date.now() - startedAt >= IDLE_TIMEOUT_MS) {

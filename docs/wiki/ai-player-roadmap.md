@@ -101,9 +101,26 @@ goal left `running` by a previous run is suspended on startup. Covered by
 order becoming a new completed `chat` goal with no reconnect).
 
 Still missing (later milestones): a **persistent Goal Manager across
-sessions** (explicit resume), autonomous goal generation in `IDLE` (needs-driven
-behaviour, M3), world-event/emergency preemption producers (M2), and a Goal
-Manager API on the harness HTTP surface.
+sessions** (explicit resume), the rest of the needs-driven menu (inventory-full
+→ store, else explore), world-event/emergency producers that *preempt a running
+goal* (M2), and a Goal Manager API on the harness HTTP surface. The autonomy
+slice below is implemented.
+
+## Milestone 3 — Autonomy, first slice (implemented)
+
+With `AUTONOMY=on` (requires `SESSION=on`) the `IDLE` state derives goals from
+the **survival needs** already produced by the Survival Intelligence Layer
+(`deriveNeeds`/governor): `idle-goals.mjs` maps each actionable need to an
+objective and a utility score and picks the best one, ranking `emergency` needs
+(governor in emergency: survive/escape/heal) first. The goal is enqueued as
+`source: autonomous` (or `emergency`) and its success is the deterministic,
+harness-side predicate `isNeedResolved(need, observation)` — the need
+disappearing from observation — never the model's opinion. A per-need cooldown
+(`AUTONOMY_COOLDOWN_MS`) prevents retry loops and `AUTONOMY_MAX_GOALS` bounds
+the session. Not yet produced: inventory-full → store, and "else explore".
+Tests: `tests/idle-goals.test.mjs` (unit) and the autonomy case in
+`tests/controller-session.test.mjs` (integration: a night-without-bed need
+becomes a completed `autonomous` shelter goal).
 
 ## Roadmap milestones
 
@@ -116,7 +133,7 @@ implemented yet:
 | 0 | Lifecycle persistence | separate goal/connection lifecycle, idle state, new goal without reconnect, reconnect without losing agent state. ✅ session loop + `IDLE` (opt-in `SESSION=on`) |
 | 1 | Agent Core | a **Goal Manager**: every activity is a `goal {id, type, source, priority, status, parameters, parentGoal, createdAt}` with status `PENDING/RUNNING/SUSPENDED/COMPLETED/FAILED` and sources `CHAT/AUTONOMOUS/WORLD_EVENT/PLAYER_BEHAVIOR/EMERGENCY`. Chat commands become goals, never raw primitives. ✅ `goal-manager.mjs` (persistence + preempt/suspend/resume; producers still limited to chat/curriculum) |
 | 2 | Emergency system | world events auto-create preempting goals — `PLAYER_DIED → RECOVER_PLAYER_LOOT (CRITICAL)` with loot priorities (netherite/diamond → enchanted → elytra → …) and risk awareness (lava/warden/nether). |
-| 3 | Autonomy | needs-driven idle behaviour (food low → find food; tool missing → craft; inventory full → store; night → shelter; else explore) via state + rules + utility score, **not** an LLM per decision. |
+| 3 | Autonomy | needs-driven idle behaviour (food low → find food; tool missing → craft; inventory full → store; night → shelter; else explore) via state + rules + utility score, **not** an LLM per decision. ◑ survival needs implemented (`idle-goals.mjs`, opt-in `AUTONOMY=on`); storage/explore still open |
 | 4 | Social behaviour | attention system (crouch/jump/stare/light hit → `PLAYER_REQUESTS_ATTENTION`) and contextual assistance (mining/fighting/building/fleeing/exploring → assist/observe/ignore). |
 | 5 | World awareness | home system (bed/chest/furnace/table/storage/safe area) and world memory (resource spots, caves, villages, danger zones, structures, death locations). |
 | 6 | Advanced navigation | world-modifying pathfinding: bridge, pillar, dig tunnel, safe descent, break obstacle. |

@@ -36,6 +36,7 @@ never committed.
 | `bedrock-lifecycle.mjs` | Disconnect/teardown lifecycle. |
 | `controller.mjs` | The planner/controller loop (incl. the human chat command channel: `CHAT_ALLOWLIST` → Hermes → `/plan`) and the **persistent session loop** (`SESSION=on`): goal → run → IDLE → next goal, no reconnect. |
 | `goal-manager.mjs` | Pure **Goal Manager** (Agent Core, M1): goal model, sources/priorities, `PENDING/RUNNING/SUSPENDED/COMPLETED/FAILED` transitions, preemption, snapshot/restore, persistence via a repository (`kind: 'goal'`). |
+| `idle-goals.mjs` | Pure **idle autonomy** (M3): maps survival needs to ranked candidate goals (+`nextIdleGoal` cooldown) and the deterministic `isNeedResolved` success predicate. |
 | `controller-decisions.mjs` | Pure decision helpers (ranking, anti-loop, cap, diagnostics). |
 | `survival/` | Survival Intelligence Layer (governor, resolver, verifier, progression, ...). |
 | `knowledge/` | `survival-rules.json`, `progression.json`. |

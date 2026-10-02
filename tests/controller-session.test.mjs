@@ -128,6 +128,65 @@ test('idle accepts a chat order as a new goal (no reconnect, no re-run)', async 
   }
 });
 
+function startAutonomyHarness () {
+  return new Promise(resolve => {
+    let acted = false;
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (req.method === 'GET' && req.url === '/observe') {
+        res.end(JSON.stringify({
+          ...OBSERVATION, inventory: {}, food: 20, health: 20,
+          time: { ticks: acted ? 0 : 13000, night: !acted },
+        }));
+      } else if (req.method === 'GET' && req.url === '/options') {
+        res.end(JSON.stringify({ options: [{ key: 'wait', description: 'wait' }] }));
+      } else if (req.method === 'POST' && req.url === '/act') {
+        acted = true;
+        res.end(JSON.stringify({ ok: true, ms: 1 }));
+      } else {
+        res.end('{}');
+      }
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
+  });
+}
+
+test('idle autonomy: a survival need becomes an autonomous goal and completes', async () => {
+  const { server, port } = await startAutonomyHarness();
+  const runId = `test-autonomy-${process.pid}-${Date.now()}`;
+  const dir = join(ROOT, 'runs', runId);
+  const hermes = fakeHermesBin({ objective: 'initial plan', targets: {}, waypoint: null });
+  try {
+    const { code, stdout } = await runController({
+      HARNESS: `http://127.0.0.1:${port}`,
+      RUN_ID: runId,
+      CONTROLLER: 'hermes',
+      MAX_STEPS: '5',
+      TARGETS: '{}',
+      SESSION: 'on',
+      AUTONOMY: 'on',
+      IDLE_POLL_MS: '50',
+      IDLE_TIMEOUT_MS: '1500',
+      OPENROUTER_API_KEY: '',
+      TYPESAFE_API_KEY: '',
+      CHAT_ALLOWLIST: '',
+      PATH: `${hermes.path}:${process.env.PATH}`,
+    });
+    assert.equal(code, 0, `unexpected exit code; stdout:\n${stdout}`);
+    assert.match(stdout, /IDLE -> autonomous goal g\d+ \[shelter\]/);
+    assert.match(stdout, /GOAL MET/);
+    const saved = JSON.parse(readFileSync(join(dir, 'goals', 'world.json'), 'utf8'));
+    const shelter = saved.records.find(r => r.kind === 'goal' && r.goal.parameters?.need === 'shelter');
+    assert.ok(shelter, 'autonomous shelter goal was not persisted');
+    assert.equal(shelter.status, 'completed');
+    assert.equal(shelter.goal.source, 'autonomous');
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(hermes.dir, { recursive: true, force: true });
+  }
+});
+
 test('one-shot mode (default): exits after the goal without idling', async () => {
   const { server, port } = await startFakeHarness();
   const runId = `test-oneshot-${process.pid}-${Date.now()}`;

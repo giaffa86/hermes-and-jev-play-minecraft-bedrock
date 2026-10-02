@@ -605,3 +605,26 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   → entity.
 - Tests for both backends + the adapter producer; suite green (374).
 - `wiki/memory.md` + `open-questions.md` updated.
+
+## [2026-10-02] feat | Idle autonomy: needs-driven goals (AI-player M3 first slice)
+
+- New pure module `idle-goals.mjs`: `deriveIdleGoals(observation, {rules})` maps
+  the governor/`deriveNeeds` output to ranked candidate goals (survive, escape,
+  eat, heal, sleep, shelter, obtain_food/weapon/armor, replace_tool), boosting
+  emergency needs (`source: emergency`) above autonomous ones;
+  `nextIdleGoal(...)` filters needs attempted within `AUTONOMY_COOLDOWN_MS`
+  (anti-loop); `isNeedResolved(need, observation)` is the deterministic,
+  harness-side success predicate (the need disappears from observed state).
+  `continue_progression` is excluded (no resolvable state; handled by CURRICULUM).
+- `controller.mjs`: new `waitForGoal` branch (requires `SESSION=on` and
+  `AUTONOMY=on`): with no human order it enqueues the top-need goal as
+  `autonomous`/`emergency` with a need-anchored plan (`plan.need`). `goalMet`
+  short-circuits on `plan.need` via `isNeedResolved`; such goals skip replanning
+  (`replan_skipped`) so the planner cannot detach them from their need. New env
+  vars `AUTONOMY`, `AUTONOMY_COOLDOWN_MS`, `AUTONOMY_MAX_GOALS`; autonomous goal
+  count is capped per session.
+- Tests: `tests/idle-goals.test.mjs` (7 unit) + an autonomy case in
+  `tests/controller-session.test.mjs` (night-without-bed → completed
+  `autonomous` shelter goal). Suite green (382).
+- Docs: `wiki/ai-player-roadmap.md` (M3 first slice + "Still missing"),
+  `wiki/roadmap.md`, `wiki/open-questions.md`, `sources.md`, `BEDROCK.md`.
