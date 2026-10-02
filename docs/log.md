@@ -550,3 +550,15 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   persistence + chunk-restricted spatial query), `adapter-memory`. Suite green (356).
 - Docs: new `wiki/memory.md`; `open-questions.md`/`exploration.md`/`index.md`/
   `sources.md`/`BEDROCK.md` updated; `memory/`, `*.sqlite*` git/image-ignored.
+
+## [2026-10-02] query | Persistent memory verified live on the BDS
+
+- Deployed the memory slice and drove the container via HTTP: on spawn the memory
+  registered the `home` landmark; `read_container` read **8 chests/barrels** and
+  all were written to the memory (`container_105_72_138` chest had 122 emeralds,
+  ...).
+- **Restart test**: `docker restart` → boot reloaded
+  `{"records":9,"landmarks":1,"containers":8}` from `runs/memory/world.sqlite`
+  (SQLite + WAL). Direct SQL (`json_extract` to find the emerald chest, chunk
+  spatial sort) works; schema version 2.
+- `verification.md` row 39 → ✅; `wiki/memory.md` notes the live result.

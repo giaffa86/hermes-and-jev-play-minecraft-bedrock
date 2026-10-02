@@ -103,6 +103,12 @@ there":
 
 ## What is implemented (first slice)
 
+> **Live-verified on 02/10**: the deployed container read 8 chests/barrels (a
+> chest at (105,72,138) with 122 emeralds among the rest), then a container
+> **restart** reloaded all 9 records (`home` + 8 containers) from
+> `runs/memory/world.sqlite` — the bot remembers the chests and their contents
+> across sessions. Direct SQL (`json_extract`, chunk-spatial sort) works.
+
 - Landmarks: `rememberLandmark`, `findLandmarks`, `nearestLandmark`, `hasLandmark`.
 - Containers: `rememberContainer`, `findContainers`, `containersWithItem`.
 - The adapter persists every chest observation (`_setContainerContents`) into the
