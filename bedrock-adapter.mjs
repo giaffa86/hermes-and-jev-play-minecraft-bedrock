@@ -2933,15 +2933,24 @@ export class BedrockAdapter {
       }
     }
     if (this._pointDistance(bedCenter) > 5) return { ok: false, error: 'bed_unreachable', bed: bed.position };
+    const beforeTicks = this._timeInfo()?.ticks ?? null;
     for (let attempt = 1; attempt <= 3 && !this.sleeping; attempt++) {
       const look = this._lookAt({ x: bedCenter.x, y: bed.position.y + 0.5, z: bedCenter.z });
       await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
       await delay(120);
       await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch, transaction: this._blockUseTransaction(bed.position) });
       const waitUntil = Date.now() + confirmMs;
-      while (Date.now() < waitUntil && !this.sleeping) await delay(100);
+      while (Date.now() < waitUntil && !this.sleeping) {
+        // Con un solo giocatore il server salta la notte quando il sonno è
+        // accettato: un balzo in avanti dell'orologio è una conferma.
+        const ticks = this._timeInfo()?.ticks;
+        if (beforeTicks != null && ticks != null && ticks < beforeTicks && (beforeTicks - ticks) > 3000) {
+          return { ok: true, slept: 'night_skipped', bed: bed.position };
+        }
+        await delay(100);
+      }
     }
-    if (this.sleeping) return { ok: true, bed: bed.position };
+    if (this.sleeping) return { ok: true, slept: 'resting_flag', bed: bed.position };
     return { ok: false, error: 'sleep_rejected', bed: bed.position, hint: 'bed occupied, monsters nearby or the server clock says it is not night' };
   }
 

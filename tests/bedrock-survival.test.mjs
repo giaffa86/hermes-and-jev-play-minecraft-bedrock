@@ -353,6 +353,20 @@ test('flee counts a timeout as success when it still gains distance', async () =
   assert.equal(result.partial, true);
 });
 
+test('sleepInBed reports success when the night is skipped (fast-forward)', async () => {
+  const adapter = spawnedAdapter();
+  adapter._recordTime(18000);
+  adapter.world.findBlocks = name => name === 'bed' ? [{ name: 'bed', position: { x: 0, y: 63, z: 2 }, distance: 2 }] : [];
+  let inputs = 0;
+  adapter._queueAuthInput = async () => {
+    inputs++;
+    if (inputs >= 2) adapter._recordTime(200); // il server salta la notte al click
+  };
+  const result = await adapter._sleepInBed({ confirmMs: 300 });
+  assert.equal(result.ok, true);
+  assert.equal(result.slept, 'night_skipped');
+});
+
 test('sleepInBed clicks the bed and reports the rejection when sleep does not start', async () => {
   const adapter = spawnedAdapter();
   adapter._recordTime(18000);
