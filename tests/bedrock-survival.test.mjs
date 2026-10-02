@@ -179,6 +179,22 @@ test('sync_world_clocks picks the overworld clock and follows sync_state', () =>
   assert.equal(adapter._timeInfo().ticks, 14000);
 });
 
+test('a server respawn packet while dead completes with client_ready and revives', () => {
+  const adapter = spawnedAdapter();
+  const packets = [];
+  adapter.client.write = (name, params) => packets.push({ name, params });
+  adapter.health = 0;
+  adapter._onOwnHealth();
+  assert.equal(adapter.dead, true);
+  adapter._onRespawnPacket({ state: 1, position: { x: 90, y: 74.62, z: 150 } });
+  assert.equal(adapter.dead, false);
+  const reply = packets.find(packet => packet.name === 'respawn');
+  assert.equal(reply.params.state, 2);
+  assert.deepEqual(reply.params.position, { x: 90, y: 74.62, z: 150 });
+  assert.equal(adapter.position.y, 74.62);
+  assert.equal(adapter._feet.y, 74.62 - 1.62);
+});
+
 test('unsolicited respawn packets do not move the bot', () => {
   const adapter = spawnedAdapter();
   adapter._onRespawnPacket({ position: { x: 0, y: 0, z: 0 } });

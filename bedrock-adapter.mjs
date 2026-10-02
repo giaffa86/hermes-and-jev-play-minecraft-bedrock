@@ -2498,9 +2498,22 @@ export class BedrockAdapter {
   }
 
   _onRespawnPacket (packet) {
+    this.log('respawn_packet', { state: packet.state, position: packet.position, dead: this.dead });
     // Il server manda anche respawn "di login" (state di setup): applicali solo
     // quando il bot è davvero morto, altrimenti azzererebbero la posizione.
     if (!this.dead) return;
+    // Flusso Bedrock: il client completa il respawn rispondendo con lo stesso
+    // pacchetto e state = 2 (client_ready_to_spawn).
+    try {
+      this.client.write('respawn', {
+        position: packet.position ?? { x: 0, y: 0, z: 0 },
+        state: 2,
+        runtime_entity_id: this.client.entityId,
+      });
+      this.log('respawn_ready', { state: packet.state });
+    } catch (error) {
+      this.log('respawn_ready_error', { message: error.message });
+    }
     if (packet.position && packet.position.x != null) {
       this.position = { ...packet.position };
       this._syncFeetFromPosition(this.position);
