@@ -87,8 +87,8 @@ server = createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && req.url === '/observe') response = [200, adapter.observe()];
     else if (req.method === 'GET' && req.url === '/options') response = [200, { options: adapter.options() }];
-    else if (req.method === 'GET' && req.url === '/debug/geom') response = [200, geometryReport(adapter)];
-    else if (req.method === 'POST' && req.url === '/debug/mine') {
+    else if (process.env.BEDROCK_DEBUG && req.method === 'GET' && req.url === '/debug/geom') response = [200, geometryReport(adapter)];
+    else if (process.env.BEDROCK_DEBUG && req.method === 'POST' && req.url === '/debug/mine') {
       const { x, y, z } = JSON.parse(body);
       const block = adapter.world.blockAt({ x, y, z });
       if (!block) response = [200, { ok: false, error: 'block_not_loaded' }];
