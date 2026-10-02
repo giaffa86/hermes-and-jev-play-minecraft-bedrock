@@ -656,6 +656,13 @@ export class BedrockAdapter {
         : 'Step down into the opening ahead';
       o.push({ key: 'dig_down', description });
     }
+    // Risalita: apre i due blocchi sopra il gradino davanti e ci sale (serve a
+    // uscire da buche o pozzi scavati in precedenza).
+    const up = this._upTargets();
+    if (!up.error) {
+      const names = [...new Set(up.targets.map(t => t.block.name))].join(', ');
+      o.push({ key: 'dig_up', description: `Dig one step up through ${names} to climb out` });
+    }
     // Crafting: solo le ricette utili alla progressione, con materiali disponibili.
     if (this.recipes && this.craftingData) {
       const logs = Object.keys(this.inventory).filter(name => /(_log|_stem|_hyphae)$/.test(name));
@@ -718,6 +725,8 @@ export class BedrockAdapter {
         result = await this._collectDrop();
       } else if (key === 'dig_down') {
         result = await this._digDown();
+      } else if (key === 'dig_up') {
+        result = await this._digUp();
       } else if (key.startsWith('mine_')) {
         const blockName = key.slice('mine_'.length);
         const target = this._pickMineTarget(this.world.findBlocks(blockName, this.position, 96, 8));
@@ -2896,5 +2905,66 @@ export class BedrockAdapter {
     }
     if (this.sleeping) return { ok: true, bed: bed.position };
     return { ok: false, error: 'sleep_rejected', bed: bed.position, hint: 'bed occupied, monsters nearby or the server clock says it is not night' };
+  }
+
+  // ---- risalita a gradini (uscita da buche/pozzi) ------------------------------------
+
+  // Specchio di _digTargets: il blocco davanti ai piedi è il gradino, le due celle
+  // sopra (piedi e testa) vanno aperte per poterci salire.
+  _upTargets () {
+    if (!this.position || !this._feet) return { error: 'no_position' };
+    const feet = this._feet;
+    const fy = Math.floor(feet.y + 0.1);
+    const fx = Math.floor(feet.x), fz = Math.floor(feet.z);
+    const d = this._digDirection();
+    const front = { x: fx + d.dx, y: fy, z: fz + d.dz };
+    const step = { x: front.x, y: fy + 1, z: front.z };
+    const head = { x: front.x, y: fy + 2, z: front.z };
+    const targets = [];
+    for (const [cell, label] of [[step, 'step'], [head, 'head']]) {
+      const block = this.world.blockAt(cell);
+      if (!block) return { error: 'world_not_loaded' };
+      if (block.name === 'unknown') return { error: 'block_unknown' };
+      if (this._passableForPath(block)) continue;
+      if (/water|lava/.test(block.name)) return { error: `unsafe_block_${label}` };
+      if (!block.diggable || !(block.hardness >= 0)) return { error: `not_diggable_${label}` };
+      targets.push({ cell, block, label });
+    }
+    // Il gradino vero e proprio (davanti ai piedi) deve essere solido.
+    if (!this._solidAt(front.x, front.y, front.z)) return { error: 'no_step_ahead' };
+    if (!targets.length) return { error: 'already_open' };
+    return { direction: d, front, step, head, targets };
+  }
+
+  async _ascendStair (plan, { moveMs = 8000, settleMs = 2000 } = {}) {
+    const startY = this._feet.y;
+    const stepCenter = { x: plan.step.x + 0.5, y: plan.step.y, z: plan.step.z + 0.5 };
+    const beyond = { x: plan.step.x + plan.direction.dx, y: plan.step.y, z: plan.step.z + plan.direction.dz };
+    const path = [this._startNode(), plan.step, beyond];
+    const motion = this._startMotion(path, beyond, stepCenter, 0.4, Date.now() + moveMs);
+    const timedOut = await Promise.race([motion.then(() => false), delay(moveMs).then(() => true)]);
+    if (timedOut) this._finishMotion('timeout');
+    await motion;
+    this._stopMotion();
+    const settleUntil = Date.now() + settleMs;
+    while (Date.now() < settleUntil && this._feet.y < startY + 0.9) await delay(50);
+    return this._feet.y >= startY + 0.9;
+  }
+
+  async _digUp (timeoutMs = 30000) {
+    const plan = this._upTargets();
+    if (plan.error) return { ok: false, error: plan.error };
+    const dug = [];
+    for (const { cell, block, label } of plan.targets) {
+      const result = await this._mineBlock(block, timeoutMs);
+      if (!result.ok) return { ...result, dug };
+      dug.push({ label, block: block.name, position: cell, tool: result.tool ?? null });
+    }
+    try {
+      const moved = await this._ascendStair(plan);
+      return { ok: true, dug, moved, position: this.pos() };
+    } catch (error) {
+      return { ok: false, error: `step_move_failed: ${error.message}`, dug, position: this.pos() };
+    }
   }
 }
