@@ -109,8 +109,17 @@ server = createServer(async (req, res) => {
       for (const yaw of [0, 90, 180, -90]) { a._lastYaw = yaw; const plan = a._upTargets(); upTargets[yaw] = plan.error || plan.targets.map(t => t.label); }
       const bed = a._findBed();
       const bedCenter = bed ? { x: bed.position.x + 0.5, y: bed.position.y, z: bed.position.z + 0.5 } : null;
+      const blocks = [];
+      for (let dy = -1; dy <= 3; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dz = -1; dz <= 1; dz++) {
+            const b = a.world.blockAt({ x: cx + dx, y: cy + dy, z: cz + dz });
+            blocks.push(`${dx >= 0 ? '+' : ''}${dx},${dy >= 0 ? '+' : ''}${dy},${dz >= 0 ? '+' : ''}${dz}=${b ? `${b.name}#${b.runtimeId ?? '?'}${b.diggable ? 'D' : '-'}${b.name === 'air' ? '' : `/${b.hardness ?? '?'}`}` : 'NULL'}`);
+          }
+        }
+      }
       return {
-        feet, position: a.pos(), startNode: a._startNode(), grid, upTargets, bed,
+        feet, position: a.pos(), startNode: a._startNode(), grid, upTargets, bed, blocks,
         bedGoals: bed ? a._findGoalNodes(bedCenter).map(goal => ({ goal, hasPath: !!a._findPath(a._startNode(), goal) })) : null,
         standingOn: a.standingOn,
       };
