@@ -19,6 +19,7 @@ The split is the one [rmalde/minecraft-agent](https://github.com/rmalde/minecraf
 | `knowledge/progression.json` | Declarative milestone graph (wood → crafting table → stone tools → food → first night → iron → diamonds → nether) with dependencies, not a hardcoded sequence. |
 | `skills/gameplay/` | Declarative gameplay skills (JSON): preconditions, success/failure criteria, intents. Different concept from the Hermes Agent `SKILL.md`; they never contain executable code. |
 | `docs/SURVIVAL-INTELLIGENCE.md` | Architecture, contracts and how to add a gameplay skill or a progression milestone. |
+| `docs/HEADLESS-CLIENT.md` | How the bot acts in the server with no graphics: headless client, protocol-level perception and actions, bounded-action loop. |
 | `skills/minecraft-bounded-agent/SKILL.md` | Hermes skill: how to drive the harness directly from a Hermes session (`hermes chat -t terminal`). |
 | `docs/REPRODUCTION-REPORT.md` | Full report of reproducing the original Ender Dragon result on Linux with the exact models (GPT-6 Astra via Nous Portal, Jev via OpenRouter): **7:45**, 6 bed blasts, 0 deaths, **$0.96** — vs the author's 8:43 and $0.97. |
 

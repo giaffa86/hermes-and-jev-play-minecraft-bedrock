@@ -2,7 +2,7 @@
 
 Questo documento descrive il porting del progetto originale da Minecraft Java Edition a Minecraft Bedrock Edition.
 
-L'architettura è la stessa: **Hermes** pianifica, **Jev** sceglie un'azione tra quelle valide, e un **harness Bedrock** esegue l'azione nel mondo reale tramite un bot Bedrock autenticato.
+L'architettura è la stessa: **Hermes** pianifica, **Jev** sceglie un'azione tra quelle valide, e un **harness Bedrock** esegue l'azione nel mondo reale tramite un bot Bedrock autenticato. Il bot è **headless** (nessuna grafica, nessuno screenshot, nessuna pressione di tasti): per come "vede" e "agisce" nel server tramite il solo protocollo di rete, vedi [`docs/HEADLESS-CLIENT.md`](docs/HEADLESS-CLIENT.md).
 
 ---
 
