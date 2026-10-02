@@ -432,3 +432,14 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Cross-links from `roadmap.md`, `open-questions.md`, `verification.md`
   (rows 49–55); `index.md` + `sources.md` updated. Private handoff:
   `.private/NETHER-TASK.md` (not committed).
+
+## [2026-10-02] doc | Exploration spec: travel survival kit + night survival
+
+- Added a "Travel survival kit and adaptation" section to
+  `wiki/exploration.md`: a mission can last several in-game days, so it needs a
+  pre-departure kit (food, blocks, torches, sword/armor, bed or wool+wood,
+  crafting table, free inventory) and night survival in order of preference —
+  bed, provisional hut, pillar-up (unreliable vs flying mobs such as phantoms).
+- Recorded the gaps in `wiki/open-questions.md` ("Exploration travel kit"):
+  `craft_bed`/`place_bed`, travel-kit/loadout, inventory-full handling,
+  pillar-up, provisional-hut skill.

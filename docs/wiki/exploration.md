@@ -95,6 +95,61 @@ After `FOUND` the bot does **not** auto-return. Default is `HOLD_POSITION`: stay
 near the found point, keep the target as anchor, dodge danger and eat when
 needed, and let the Survival Governor temporarily take priority.
 
+## Travel survival kit and adaptation (multi-day expeditions)
+
+> Requirement added on top of the raw spec: a search can take **several in-game
+> days** (a biome may be thousands of blocks away), so a mission is an
+> **expedition**, not a single walk. The bot must be prepared before it leaves
+> and must survive the nights on the road.
+
+### Pre-departure kit (loadout)
+
+Before starting a mission the bot should carry (or craft on the way):
+
+- food for several days;
+- a stack of blocks (bridge / pillar / barricade);
+- torches (lighting);
+- a sword and any armor;
+- **a bed** — or at minimum **wool + wood/planks** to craft one on the road
+  (`craft_bed` = 3 wool + 3 planks, then `place_bed`);
+- a crafting table (for on-the-road crafts);
+- optionally a water bucket;
+- **free inventory space** — a full inventory is a real failure mode on a long
+  trip.
+
+### Night survival, in order of preference
+
+1. **Bed** (carried, or crafted from wool + planks): `sleep` skips the night
+   instantly. Safest, but wool is the scarce input.
+2. **Provisional hut**: seal a small shelter with blocks (`barricade` /
+   `place_*`) and hide inside until dawn. Needs no wool, but the night passes in
+   real time and the shelter must be dark-proof.
+3. **Pillar up** (place a block under the feet, jump, repeat, dig down after):
+   works against **ground** melee mobs but **not against flying mobs** (phantoms,
+   etc.), so it is **not reliable** as a primary strategy.
+
+In every case the Survival Governor handles hunger/health/hostiles and then
+**resumes the mission** with the kit intact.
+
+### Adaptation skills
+
+- water crossing (swim / bridge), climbing, rough terrain;
+- inventory management (consume/drop, avoid a full inventory mid-trip);
+- resume after a Governor interruption without losing the route/checkpoints.
+
+### Capability gaps for this
+
+- `craft_bed` (3 wool + 3 planks) and `place_bed` — **not implemented** (wool is
+  obtainable via `shear_sheep`).
+- **Travel-kit / loadout** preparation (what to carry before leaving) — **not
+  implemented**.
+- **Inventory-full handling** (drop/consume or abort the trip) — **not
+  implemented**.
+- **Pillar-up** action — **not implemented** (the bot has `dig_up`/`dig_down`
+  but no "place a block under the feet and climb").
+- Shelter building uses `barricade`/`place_*` pieces but there is no
+  "build a provisional hut" skill.
+
 ## Exploration Skill API (target)
 
 ```

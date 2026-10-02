@@ -31,6 +31,24 @@ capability collaudo checklist (done / pending live), see
   real player swimming) and whether self metadata exposes `breathing`/air or the
   air budget must be simulated.
 
+## Exploration travel kit (multi-day expeditions)
+
+An exploration mission can last **several in-game days**, so the bot needs an
+expedition kit and night survival (spec addition in [exploration](exploration.md),
+"Travel survival kit and adaptation"). Missing pieces:
+
+- **`craft_bed` / `place_bed`** — a bed (3 wool + 3 planks) to skip the night on
+  the road; `shear_sheep` provides the wool but the craft/place actions do not
+  exist.
+- **Travel-kit / loadout** — no concept of "prepare X before leaving" (food,
+  blocks, torches, sword, armor, bed or wool+wood, crafting table, water bucket),
+  nor of checking inventory space before the trip.
+- **Inventory-full handling** — no drop/consume/abort logic during a long trip.
+- **Pillar-up** — no "place a block under the feet and climb" action (helps vs
+  ground mobs only, unreliable vs flying mobs such as phantoms).
+- **Provisional-hut skill** — `barricade`/`place_*` exist, but there is no
+  "seal a small shelter and hide until dawn" skill for the night.
+
 ## Respawn stuck on live BDS (2026-10-02, resolved)
 
 - The deployed `hermes-jev-bedrock` container was **dead** (`health: 0, deaths: 1`)
