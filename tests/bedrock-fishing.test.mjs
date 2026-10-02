@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { BedrockAdapter } from '../bedrock-adapter.mjs';
 import {
   isWaterBlock, isFishItem, isEdibleFish, fishCount, fishItems,
   shoreCandidates, nextBiteDelay, FISHING_ROD_INGREDIENTS,
-  BITE_MS_MIN, BITE_MS_MAX, CAST_RANGE,
+  BITE_MS_MIN, BITE_MS_MAX,
 } from '../bedrock-fishing.mjs';
 
 test('water block detection ignores the minecraft prefix', () => {
@@ -83,4 +84,82 @@ test('nextBiteDelay stays inside the vanilla 5–30 s window', () => {
   }
   assert.equal(nextBiteDelay(() => 0), BITE_MS_MIN);
   assert.equal(nextBiteDelay(() => 1), BITE_MS_MAX);
+});
+
+// --- Rilevamento del morso a livello di adapter (2026-10-03) ---------------
+// Il morso arriva dal server come evento di protocollo `fish_hook_hook`; il
+// fallback è l'affondo del bobber rispetto alla sua quota di riposo. Il calo
+// del lancio non deve contare come morso.
+
+function fishAdapter ({ ys, logs = [] } = {}) {
+  const adapter = new BedrockAdapter({ logger: { log () {} }, onLog: (entry) => logs.push(entry) });
+  adapter.spawned = true;
+  adapter.status = 'spawned';
+  adapter.position = { x: 0, y: 63, z: 0 };
+  adapter.inventory = { fishing_rod: 1 };
+  adapter.entities.set('9', { runtimeId: '9', type: 'fishing_hook', position: { x: 1, y: ys[0], z: 0 } });
+  let i = 0;
+  adapter._findBobber = () => {
+    const y = ys[Math.min(i++, ys.length - 1)];
+    if (y == null) return null;
+    return { runtimeId: '9', type: 'fishing_hook', position: { x: 1, y, z: 0 } };
+  };
+  adapter._castRod = async () => ({ ok: true, waterAt: { x: 1, y: 63, z: 0 } });
+  adapter._reelIn = async () => ({ ok: true, caught: [], gained: 0, note: 'no_bite' });
+  adapter.logs = logs;
+  return adapter;
+}
+
+test('the cast descent is not reported as a bite (no false positive)', async () => {
+  // Il bobber scende dal lancio (63.00 → 62.80) e poi si posa a ~62.98:
+  // con la vecchia logica la discesa superava subito la soglia di 0.2.
+  const adapter = fishAdapter({ ys: [63.00, 62.80, 62.97, 62.99, 62.98, 62.98, 62.98, 62.98] });
+  const result = await adapter._fish({ biteWindowMs: 250, settleTimeoutMs: 900, settleSamples: 2 });
+  assert.equal(result.biteDetected, false, 'la discesa del lancio non è un morso');
+  assert.equal(result.biteSource, null);
+  assert.equal(result.note, 'no_bite');
+});
+
+test('a fish_hook_hook event marks the bite with its source', async () => {
+  const adapter = fishAdapter({ ys: [62.98, 62.98, 62.98, 62.98, 62.98] });
+  adapter._reelIn = async () => ({ ok: true, caught: ['cod'], gained: 1 });
+  setTimeout(() => adapter._onEntityEvent({ runtime_entity_id: '9', event_id: 'fish_hook_hook' }), 150);
+  const result = await adapter._fish({ biteWindowMs: 1500, settleTimeoutMs: 900, settleSamples: 2 });
+  assert.equal(result.biteDetected, true);
+  assert.equal(result.biteSource, 'event');
+  assert.deepEqual(result.caught, ['cod']);
+  assert.ok(adapter.logs.some(e => e.type === 'fish_bite'), 'evento fish_bite loggato');
+});
+
+test('the numeric event id 13 and the tease id 14 are understood', () => {
+  const adapter = fishAdapter({ ys: [62.98] });
+  adapter._onEntityEvent({ runtime_entity_id: '9', event_id: 13 });
+  adapter._onEntityEvent({ runtime_entity_id: '9', event_id: 'fish_hook_tease' });
+  assert.ok(adapter._fishBiteAt > 0, 'id numerico 13 = fish_hook_hook');
+  assert.ok(adapter._fishTeaseAt > 0, 'fish_hook_tease registrato a parte');
+  adapter._onEntityEvent({ runtime_entity_id: '9', event_id: 'jump' });
+  assert.equal(adapter.logs.filter(e => e.type === 'fish_bite').length, 1);
+});
+
+test('the dip fallback needs two consecutive samples under the resting level', async () => {
+  const adapter = fishAdapter({ ys: [62.98, 62.98, 62.98, 62.70, 62.68, 62.68] });
+  const result = await adapter._fish({ biteWindowMs: 1500, settleTimeoutMs: 900, settleSamples: 2 });
+  assert.equal(result.biteDetected, true);
+  assert.equal(result.biteSource, 'dip');
+  assert.ok(adapter.logs.some(e => e.type === 'fish_bite_detected' && e.source === 'dip'));
+});
+
+test('a single dip sample is not a bite', async () => {
+  const adapter = fishAdapter({ ys: [62.98, 62.98, 62.98, 62.70, 62.98, 62.98, 62.98, 62.98] });
+  const result = await adapter._fish({ biteWindowMs: 250, settleTimeoutMs: 900, settleSamples: 2 });
+  assert.equal(result.biteDetected, false, 'il galleggiamento non è un morso');
+  assert.equal(result.biteSource, null);
+});
+
+test('a bobber that disappears while settling is a typed failure', async () => {
+  const adapter = fishAdapter({ ys: [63.5, null] });
+  const result = await adapter._fish({ biteWindowMs: 300, settleTimeoutMs: 600, settleSamples: 2 });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'bobber_lost');
+  assert.equal(result.biteDetected, false);
 });

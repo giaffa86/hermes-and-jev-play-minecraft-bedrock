@@ -142,7 +142,9 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   `craft_shears` (no sheep nearby).
 - Tool durability over many blocks / long ore runs (unit-tested only).
 - Fishing: `craft_fishing_rod`, `cast_rod`, `reel_in`, `fish` (pure module
-  `bedrock-fishing.mjs` + unit tests; no live round yet) — see
+  `bedrock-fishing.mjs` + 13 tests; bite detection rewritten 03/10: the server's
+  `fish_hook_hook` event first, the dip vs the bobber's settled height as
+  fallback; live round pending) — see
   [fishing](fishing.md).
 - Defense (first slice, 02/10): `place_torch`, `craft_wooden_sword` /
   `craft_stone_sword`, `go_home` / `retreat` (home = spawn or `HOME_WAYPOINT`),
@@ -234,7 +236,10 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    03/10) and the chain is offline-verified by
    `tests/controller-curriculum.test.mjs`.
 5. Live-verify fishing: `craft_fishing_rod` → `cast_rod`/`reel_in` (or a single
-   `fish`), bite detection, `food` tag integration — see [fishing](fishing.md).
+   `fish`), `food` tag integration — see [fishing](fishing.md). Bite detection is
+   offline-verified since 03/10 (`fish_hook_hook` + dip fallback); the live round
+   still has to confirm the bobber entity name and that the server really sends
+   the event.
 6. **Fluids** (spec in [fluids](fluids.md)): start with M0 (fluid awareness,
    `/observe.fluids`, lava forbidden in A*, dig adjacency check), then M1
    (swimming physics + air budget). Requires a packet capture of a real player

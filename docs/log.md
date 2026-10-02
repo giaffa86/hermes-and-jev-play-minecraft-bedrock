@@ -1393,3 +1393,39 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   bersaglio), riga 23 ⏳ → 🧪 con l'esito live; `open-questions.md` (voce "danno agli
   animali" riscritta come risolta con ipotesi e prova); `survival-intelligence.md`
   (residuo aggiornato).
+
+## [2026-10-03] fix | Pesca: morso dall'evento di protocollo + il nome dell'evento non viene più clobberato nei log
+
+- **Difetto (pesca)**: `_fish` prendeva la quota del bobber subito dopo il lancio e
+  dichiarava morso quando scendeva di 0,2 ⇒ la **caduta del lancio** veniva letta
+  come abboccata: il recupero avveniva prima di ogni morso, con `biteDetected:
+  true` e zero pesci (`note: 'no_bite'`). Nessun test copriva `_fish`.
+- **Fix (pesca)**: nuova `_fish({castTimeoutMs, reelTimeoutMs, biteWindowMs,
+  settleTimeoutMs, settleTolerance = 0.05, settleSamples = 3, biteDepth = 0.2})`
+  a tre fasi: (1) attesa che il bobber si posi (3 campioni consecutivi a 100 ms
+  entro 0,05, altrimenti si usa l'ultima quota letta; bobber sparito ⇒
+  `bobber_lost`); (2) attesa del morso entro la finestra, **prima** con l'evento
+  di protocollo `fish_hook_hook` (`entity_event` 13) ⇒ `biteSource: 'event'`,
+  poi in fallback con un affondo di ≥ 0,2 rispetto alla quota di riposo su **due
+  campioni consecutivi** ⇒ `biteSource: 'dip'`; (3) `_reelIn` e merge
+  `{...reel, biteDetected, biteSource}`. `_onEntityEvent` riconosce anche
+  `fish_hook_tease` (14) ⇒ `_fishTeaseAt` + log `fish_tease`.
+- **Scoperta (log)**: `log(type, data)` faceva `{ t, type, ...data }`, quindi un
+  `type` nel payload **rinominava l'evento**: nel log live `entity_add` finiva
+  come `zombie` (385), `skeleton` (238), `creeper` (202), `entity_death` come il
+  nome del mob, `chat`/`chat_out` come il canale. Conseguenza: la diagnosi del
+  combattimento ("0 `entity_death`") va letta come "nessuna morte **nella
+  finestra** dello scontro (22:37:01→22:40:51, 102 fendenti)"; le 10 morti di
+  gallina presenti nel log sono alle 14:43, ~8 h prima, e sotto il nome `chicken`.
+- **Fix (log)**: merge `{ t, ...data, type }` in `bedrock-adapter.mjs`,
+  `bedrock-harness.mjs:35` e `harness.mjs:18`; payload rinominati in `entityType`
+  (`mount`, `entity_add`, `entity_death`, `fish_bite`, `fish_tease`) e `chatType`
+  (`chat`, `chat_out`, `chat_out_error`). Pulizie di lint: `safeJson` con `_k`,
+  try/catch sul caricamento di `flying-squid` in `harness.mjs`.
+- **Test**: 6 nuovi in `tests/bedrock-fishing.test.mjs` (il lancio non è un morso,
+  evento `fish_hook_hook`, id numerici 13/14, il dip richiede due campioni, un
+  solo campione non è un morso, `bobber_lost`) + `the event name survives a
+  payload type` in `tests/bedrock-survival.test.mjs`. Suite: **528 test verdi**.
+- **Doc**: `fishing.md` (stato, tabella azioni, sezione bite detection, verifica),
+  `verification.md` (riga 28 ⏳ → 🧪, riga 8.1 corretta, nuova riga 8.2),
+  `open-questions.md` (pesca e combattimento animale), `roadmap.md`.

@@ -149,14 +149,16 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
 - **Animal combat target churn** (2026-10-03, live → fixed): `attack_chicken` used
   to end in `combat_timeout` after 35 swings (`weapon: null`, held item a
   `rabbit_foot`) because `_combat` re-resolved "the nearest animal of that type"
-  before **every** swing. The live event log proves it: 102 `attack` events spread
-  over ≥15 distinct chicken runtimeIds (679:14, 691:21, 676:11, 694:7 …) with
-  **0 `entity_death`** — the damage landed on single birds (health dropping to 1-3)
-  but the re-resolution smeared it across the flock, so nobody ever died. `_combat`
+  before **every** swing. The live event log proves it: 102 `attack` events in one
+  230 s window (22:37:01→22:40:51) spread over ≥15 distinct chicken runtimeIds
+  (679:14, 691:21, 676:11, 694:7 …) with **no death in that window** — the damage
+  landed on single birds (health dropping to 1-3) but the re-resolution smeared it
+  across the flock, so nobody ever died (the log does hold 10 chicken deaths, but
+  at 14:43, ~8 h before the fight). `_combat`
   now locks one target by `runtimeId` for the whole fight, confirms the kill only
   through `health <= 0` or an entity removal right after a hit, and answers
   `target_lost` / `target_gone` instead of claiming a kill it did not observe
-  (4 unit tests in `tests/bedrock-survival.test.mjs`, 521 green).
+  (4 unit tests in `tests/bedrock-survival.test.mjs`, 528 green).
   Remaining gap: the live round of `attack_<animal>` still needs the user's consent
   (verification row 23) **and** a reachable animal — inside the base room
   `attack_pig` answers `cannot_reach_target` in 24 s even though a pig pen sits just
@@ -331,9 +333,16 @@ Still missing (the rest of the original gap):
   (`place_torch`, `craft_*_sword`, `retreat`/`go_home`, `close_door`/`barricade`,
   `equip_armor`, armor points); only the **shield** (stretch) remains. See
   [verification](verification.md) rows 32–38 and [roadmap](roadmap.md).
-- **Fishing** — **implemented** (rod crafting, cast/bite/reel, water/shore
-  detection, `fish` composer); no live round yet. The open technical question is
-  **bite detection** on a headless client (bobber metadata vs. timing fallback).
+- **Fishing** — **implemented, bite detection rewritten 03/10**: the bite is no
+  longer a local heuristic but the server's `fish_hook_hook` event (numeric id
+  `13`), logged as `fish_bite` (`fish_hook_tease`, id `14`, logs `fish_tease` and
+  is not a bite); the fallback is a dip of ≥ 0.2 **relative to the bobber's
+  settled height** (the cast descent used to be read as a bite, so every cast
+  reeled in early with `biteDetected: true` and zero fish). The settle phase
+  needs 3 samples within 0.05 and a disappearing bobber is a typed `bobber_lost`.
+  6 new adapter tests (13 in `tests/bedrock-fishing.test.mjs`). What is left is
+  live: a reachable shore near the base, the real `fishing_hook` entity name and
+  whether the BDS really sends that event.
   Roadmap in [fishing](fishing.md).
 - **Fluids** (swimming, drowning/breathing, waterfalls, lava avoidance, buckets/
   boats/potions) — spec only. Roadmap in [fluids](fluids.md); start at M0 (fluid

@@ -32,7 +32,9 @@ const PROGRESSION_GOAL = process.env.PROGRESSION_GOAL || null;
 console.log(`survival layer ready: rules=${survivalRules.length} skills=${gameplaySkills.size} milestones=${Object.keys(progressionGraph.milestones).length}`);
 
 mkdirSync(`runs/${RUN}`, { recursive: true });
-const eventLog = (type, data) => appendFileSync(`runs/${RUN}/events.jsonl`, JSON.stringify({ t: Date.now(), type, ...data }) + '\n');
+// Il nome dell'evento resta in `type`: il payload può portare un `type` (tipo
+// dell'entità, canale chat) che altrimenti lo sovrascriverebbe.
+const eventLog = (type, data) => appendFileSync(`runs/${RUN}/events.jsonl`, JSON.stringify({ t: Date.now(), ...data, type }) + '\n');
 
 let server;
 let shuttingDown = false;
@@ -109,7 +111,7 @@ server = createServer(async (req, res) => {
   let body = '';
   for await (const chunk of req) body += chunk;
   console.log('[http]', req.method, req.url, 'body_len', body.length);
-  const safeJson = (obj) => JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? v.toString() : v);
+  const safeJson = (obj) => JSON.stringify(obj, (_k, v) => typeof v === 'bigint' ? v.toString() : v);
   let response;
   try {
     if (req.method === 'GET' && req.url === '/observe') {

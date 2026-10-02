@@ -15,11 +15,19 @@ import flyingSquid from 'flying-squid';
 const {pathfinder, Movements, goals} = pf;
 const VERSION = '1.16.5', MC_PORT = +(process.env.MC_PORT || 25599), API_PORT = +(process.env.API_PORT || 3077), RUN = process.env.RUN_ID || 'run';
 mkdirSync(`runs/${RUN}`, {recursive: true});
-const log = (type, data) => appendFileSync(`runs/${RUN}/events.jsonl`, JSON.stringify({t: Date.now(), type, ...data}) + '\n');
+// Il nome dell'evento resta in `type`: il payload può portare un `type` che
+// altrimenti lo sovrascriverebbe.
+const log = (type, data) => appendFileSync(`runs/${RUN}/events.jsonl`, JSON.stringify({t: Date.now(), ...data, type}) + '\n');
 
 // ---- server -------------------------------------------------------------------------------
 import {readFileSync} from 'node:fs';
-const defaults = JSON.parse(readFileSync(new URL('./node_modules/flying-squid/config/default-settings.json', import.meta.url)));
+let defaults;
+try {
+  defaults = JSON.parse(readFileSync(new URL('./node_modules/flying-squid/config/default-settings.json', import.meta.url)));
+} catch (error) {
+  console.error(`harness: cannot load flying-squid default settings (run npm install first): ${error.message}`);
+  process.exit(1);
+}
 const serv = flyingSquid.createMCServer({
   ...defaults, 'online-mode': false, port: MC_PORT, version: VERSION, gameMode: 0, difficulty: 0, logging: false,
   'view-distance': 6, worldFolder: `runs/${RUN}/world`, generation: {name: 'diamond_square', options: {worldHeight: 80, seed: 424242}},

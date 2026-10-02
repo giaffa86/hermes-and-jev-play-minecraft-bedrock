@@ -147,6 +147,8 @@ export class BedrockAdapter {
     this.drops = [];
     this._reachCache = null;         // componente calpestabile raggiungibile (cache breve)
     this._pathOverrides = null;      // celle trattate come vuote in un BFS (mondo ipotetico)
+    this._fishBiteAt = 0;            // ultimo evento `fish_hook_hook` (morso confermato dal server)
+    this._fishTeaseAt = 0;           // ultimo evento `fish_hook_tease` (pesce che si avvicina ma non morde)
     this.nearbyBlocks = {};
     this.valuableOres = [];        // ore di valore in vista (occasioni, vedi _scanValuableOres)
     this.dimension = 'overworld';
@@ -218,7 +220,10 @@ export class BedrockAdapter {
   }
 
   log (type, data) {
-    const entry = { t: Date.now(), type, ...data };
+    // Il nome dell'evento vince sempre: `data` può portare un campo `type`
+    // (tipo dell'entità, canale della chat) che altrimenti lo sovrascriverebbe,
+    // facendo sparire l'evento dal log (es. `entity_death` → `chicken`).
+    const entry = { t: Date.now(), ...data, type };
     if (this.onLog) this.onLog(entry);
     this.logger.log(`[${type}]`, data);
   }
@@ -506,7 +511,7 @@ export class BedrockAdapter {
             this.log('dismount', { ridden: String(link.ridden_entity_id) });
           } else {
             this.riding = { riddenEntityId: String(link.ridden_entity_id), at: Date.now() };
-            this.log('mount', { ridden: String(link.ridden_entity_id), type: link.type });
+            this.log('mount', { ridden: String(link.ridden_entity_id), entityType: link.type });
           }
         }
       });
@@ -4380,7 +4385,7 @@ export class BedrockAdapter {
     const entry = { from, message, type, xuid: packet.xuid != null ? String(packet.xuid) : null, at: Date.now() };
     this.chatInbox.push(entry);
     if (this.chatInbox.length > 32) this.chatInbox.shift();
-    this.log('chat', { from, type, xuid: entry.xuid, message: message.slice(0, 160) });
+    this.log('chat', { from, chatType: type, xuid: entry.xuid, message: message.slice(0, 160) });
   }
 
   // Il bot scrive in chat (M5). Un pacchetto `text` tipo `chat` è ciò che manda
@@ -4409,10 +4414,10 @@ export class BedrockAdapter {
         has_filtered_message: false,
       });
       this._lastChatAt = now;
-      this.log('chat_out', { type, message: text });
+      this.log('chat_out', { chatType: type, message: text });
       return { ok: true, message: text };
     } catch (error) {
-      this.log('chat_out_error', { type, message: text, error: error.message });
+      this.log('chat_out_error', { chatType: type, message: text, error: error.message });
       return { ok: false, error: error.message };
     }
   }
@@ -4450,7 +4455,7 @@ export class BedrockAdapter {
       }
     }
     if (kind === 'player' || isHostileType(type)) {
-      this.log('entity_add', { runtimeId, type, kind, position: entity.position });
+      this.log('entity_add', { runtimeId, entityType: type, kind, position: entity.position });
     }
   }
 
@@ -4594,7 +4599,21 @@ export class BedrockAdapter {
     if (packet.event_id === 'death_animation' || packet.event_id === 3) {
       entity.health = 0;
       entity.deadAt = Date.now();
-      this.log('entity_death', { type: entity.type, runtimeId });
+      this.log('entity_death', { entityType: entity.type, runtimeId });
+      return;
+    }
+    // Morso della pesca: il server manda `fish_hook_hook` (13) sul bobber quando
+    // un pesce ha abboccato, e `fish_hook_tease` (14) quando si avvicina senza
+    // abboccare. È il segnale esatto: l'affondo del bobber resta un fallback.
+    if (packet.event_id === 'fish_hook_hook' || packet.event_id === 13) {
+      this._fishBiteAt = Date.now();
+      this.log('fish_bite', { runtimeId, entityType: entity.type });
+      return;
+    }
+    if (packet.event_id === 'fish_hook_tease' || packet.event_id === 14) {
+      this._fishTeaseAt = Date.now();
+      this.log('fish_tease', { runtimeId, entityType: entity.type });
+      return;
     }
   }
 
@@ -5914,26 +5933,75 @@ export class BedrockAdapter {
     return { ok: true, caught: [], gained: 0, note: 'no_bite' };
   }
 
-  // Pesca completa: lancia, attende il morso (bobber che affonda o finestra
-  // temporale) e recupera. Un solo ciclo per invocazione.
-  async _fish ({ castTimeoutMs = 8000, reelTimeoutMs = 4000 } = {}) {
+  // Pesca completa: lancia, aspetta che il bobber si posi, attende il morso e
+  // recupera. Un solo ciclo per invocazione.
+  // Il morso è riconosciuto prima dall'evento di protocollo `fish_hook_hook`
+  // (segnale esatto del server) e solo in fallback dall'affondo del bobber
+  // rispetto alla quota di riposo: il calo del lancio non è un morso.
+  async _fish ({
+    castTimeoutMs = 8000, reelTimeoutMs = 4000, biteWindowMs = nextBiteDelay(),
+    settleTimeoutMs = 4000, settleTolerance = 0.05, settleSamples = 3, biteDepth = 0.2,
+  } = {}) {
+    const castAt = Date.now();
     const cast = await this._castRod({ timeoutMs: castTimeoutMs });
     if (!cast.ok) return cast;
-    const bobber = this._findBobber();
-    const startY = bobber?.position?.y ?? null;
-    const deadline = Date.now() + nextBiteDelay();
+    // 1) Attesa che il bobber si posi: la y deve restare stabile per
+    //    `settleSamples` campioni. Senza questo passo la caduta del lancio
+    //    supera subito la soglia e verrebbe letta come morso (falso positivo).
+    let startY = null;
+    let lastY = null;
+    let stable = 0;
+    const settleDeadline = Date.now() + settleTimeoutMs;
+    while (Date.now() < settleDeadline) {
+      const b = this._findBobber();
+      if (!b) break;
+      const y = b.position?.y ?? null;
+      if (y != null) {
+        if (lastY != null && Math.abs(y - lastY) <= settleTolerance) {
+          stable++;
+          if (stable >= settleSamples) { startY = y; break; }
+        } else {
+          stable = 0;
+        }
+        lastY = y;
+      }
+      await delay(100);
+    }
+    if (startY == null) {
+      const bobber = this._findBobber();
+      if (!bobber) return { ok: false, error: 'bobber_lost', biteDetected: false };
+      startY = bobber.position?.y ?? null; // nessuna quota stabile: resta il solo segnale di protocollo
+    }
+    // 2) Attesa del morso entro la finestra vanilla.
+    const deadline = Date.now() + biteWindowMs;
     let biteDetected = false;
+    let biteSource = null;
+    let below = 0;
     while (Date.now() < deadline) {
+      if (this._fishBiteAt >= castAt) {
+        biteDetected = true;
+        biteSource = 'event';
+        break;
+      }
       const b = this._findBobber();
       if (!b) break; // bobber sparito: la lenza è rientrata da sola
-      if (startY != null && b.position?.y != null && startY - b.position.y >= 0.2) {
-        biteDetected = true;
-        break;
+      const y = b.position?.y;
+      if (startY != null && y != null && startY - y >= biteDepth) {
+        // Fallback prudente: servono due campioni consecutivi sotto soglia.
+        below++;
+        if (below >= 2) {
+          biteDetected = true;
+          biteSource = 'dip';
+          this.log('fish_bite_detected', { source: 'dip', startY: +startY.toFixed(2), y: +y.toFixed(2) });
+          break;
+        }
+      } else {
+        below = 0;
       }
       await delay(100);
     }
     const reel = await this._reelIn({ timeoutMs: reelTimeoutMs });
-    return { ...reel, biteDetected };
+    return { ...reel, biteDetected, biteSource };
   }
 
   // Letto più vicino nel mondo caricato (scansione con TTL di 30 s).

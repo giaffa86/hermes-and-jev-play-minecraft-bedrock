@@ -840,3 +840,23 @@ test('_travelReadiness flags what is missing for a trip', () => {
   assert.ok(adapter._travelReadiness().items.night);
   assert.ok(!adapter._travelReadiness().missing.includes('night'));
 });
+
+test('the event name survives a payload `type` (log entries stay greppable)', () => {
+  const entries = [];
+  const adapter = new BedrockAdapter({ logger: { log () {} }, onLog: (entry) => entries.push(entry) });
+  adapter.spawned = true;
+  adapter.status = 'spawned';
+  adapter.client = new EventEmitter();
+  adapter.client.entityId = 7n;
+  adapter.client.write = () => {};
+  adapter.position = { x: 0, y: 64.62, z: 0 };
+  adapter._trackEntity({ runtime_id: 42n, unique_id: 900n, entity_type: 'minecraft:zombie', position: { x: 3, y: 63, z: 0 } }, 'mob');
+  adapter._onEntityEvent({ runtime_entity_id: '42', event_id: 'death_animation' });
+  const added = entries.find(e => e.type === 'entity_add');
+  const died = entries.find(e => e.type === 'entity_death');
+  assert.ok(added, 'entity_add resta entity_add');
+  assert.equal(added.entityType, 'zombie', 'il tipo dell entità va in entityType');
+  assert.ok(died, 'entity_death resta entity_death');
+  assert.equal(died.entityType, 'zombie');
+  assert.equal(entries.some(e => e.type === 'zombie'), false, 'nessuna voce intitolata al tipo di entità');
+});
