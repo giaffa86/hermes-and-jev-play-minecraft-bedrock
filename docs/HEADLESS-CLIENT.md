@@ -47,7 +47,7 @@ bedrock-harness.mjs                 proprietario della VALIDITÀ (API :3077)
 bedrock-adapter.mjs                 client di protocollo Bedrock (~174 KB)
   │  pacchetti di rete su NetherNet
   ▼
-BDS 1.26.x                          il vero server Minecraft Bedrock (server Bedrock)
+BDS 1.26.x                          il vero server Minecraft Bedrock (BDS)
 ```
 
 Il contratto è rigoroso: **la validità appartiene all'harness**. Il controller
@@ -147,7 +147,7 @@ Tutta la traccia finisce in `runs/<run>/controller.jsonl` (piani e decisioni) e
 | File | Cos'è | Uso |
 |---|---|---|
 | `harness.mjs` | Riproduzione "giocattolo" Java Edition: server Minecraft 1.16.5 in puro Node (`flying-squid`) + bot `mineflayer`. Anche questo è headless. | Demo locale, nessun server esterno richiesto |
-| `bedrock-harness.mjs` + `bedrock-adapter.mjs` | Il **target reale**: bot Bedrock autenticato che entra in un vero BDS 1.26.x e agisce nel mondo reale. | Deploy su host Docker, server server Bedrock |
+| `bedrock-harness.mjs` + `bedrock-adapter.mjs` | Il **target reale**: bot Bedrock autenticato che entra in un vero BDS 1.26.x e agisce nel mondo reale. | Deploy su host Docker, server BDS |
 
 L'interfaccia semantica è identica (`observe()`, `options()`, `executeAction()`,
 `connect()`, `disconnect()`): il controller Hermes/Jev non sa — e non deve sapere —
