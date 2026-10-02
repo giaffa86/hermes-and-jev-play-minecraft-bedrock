@@ -590,3 +590,18 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Docs: `wiki/ai-player-roadmap.md` (milestone 0→1 implemented + new section),
   `wiki/roadmap.md` (post-goal lifecycle + next planned work), `wiki/
   open-questions.md`, `sources.md`, `BEDROCK.md` (env vars + "Agent session").
+
+## [2026-10-02] feat | Memory producers: resource sites, portals, entities
+
+- `world-memory.mjs`: added `rememberResourceSite`/`findResources({ contains })`,
+  `rememberPortal`/`findPortals` (nether-side coords, verified flag),
+  `rememberEntity`/`findEntities` (keyed by `uniqueId`, `state`); `observeView`
+  now exposes portals + per-kind counts; `findLandmarks` = landmark/structure/home.
+- Repositories: `data` JSON now carries **all** extra fields (observations,
+  nether, state, ...), not just label/tags/contents; `find` supports `kinds`.
+- `bedrock-adapter.mjs`: `_rememberDiscoveries` producer (once per chunk via
+  `_maybeRememberDiscoveries`): the `portal` block → portal; nearby ores
+  (common from `nearbyBlocks`, rare scanned) → resource site; rideable entities
+  → entity.
+- Tests for both backends + the adapter producer; suite green (374).
+- `wiki/memory.md` + `open-questions.md` updated.

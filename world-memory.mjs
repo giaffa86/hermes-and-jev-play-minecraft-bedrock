@@ -19,7 +19,7 @@ export const MEMORY_STATUS = Object.freeze({
   INVALID: 'invalid', // sappiamo che non è più valido
 });
 
-export const LANDMARK_KINDS = Object.freeze(['landmark', 'structure', 'resource_site', 'portal', 'entity', 'home']);
+export const LANDMARK_KINDS = Object.freeze(['landmark', 'structure', 'home']);
 
 export function distance3d (a, b) {
   if (!a || !b) return Infinity;
@@ -77,8 +77,9 @@ export class WorldMemory {
   }
 
   findLandmarks ({ type = null, kind = null, tag = null, includeInvalid = false, near = null, radius = null, limit = null } = {}) {
-    // I "luoghi" sono tutto tranne i bauli; `kind` può restringere ulteriormente.
-    const scope = kind ? { kind } : { excludeKind: 'container' };
+    // I "luoghi" sono landmark/structure/home; resource_site/portal/entity hanno
+    // i loro finder. `kind` può restringere ulteriormente.
+    const scope = kind ? { kind } : { kinds: LANDMARK_KINDS };
     const records = this.repo.find({ ...scope, type, tag, includeInvalid, near, radius, limit });
     return records;
   }
@@ -145,6 +146,104 @@ export class WorldMemory {
     return this.repo.remove(id);
   }
 
+  // ---- resource sites / portals / entities -----------------------------------------
+
+  _spatialId (prefix, position) {
+    const p = round(position);
+    return `${prefix}_${p.x}_${p.y}_${p.z}`;
+  }
+
+  // Sito di risorse (caverna, vena, pozzo di lava…): `observations` è l'elenco
+  // dei blocchi osservati (ore, lava_pool, ...). L'id è di norma passato dal
+  // chiamante per il dedup (es. per chunk).
+  rememberResourceSite ({ id = null, kind = 'cave', label = null, dimension = 'overworld', position, observations = [], tags = [], source = 'observed' }) {
+    const key = id || this._spatialId('resource_site', position);
+    const existing = this.repo.get(key);
+    const now = Date.now();
+    const record = {
+      id: key,
+      kind: 'resource_site',
+      type: kind,
+      label,
+      dimension,
+      position: round(position),
+      discoveredAt: existing?.discoveredAt ?? now,
+      lastSeenAt: now,
+      confidence: 1,
+      status: MEMORY_STATUS.KNOWN,
+      observations: [...new Set([...(existing?.observations ?? []), ...observations])],
+      tags: [...new Set([...(existing?.tags ?? []), ...tags])],
+      source,
+    };
+    this.repo.upsert(record);
+    return record;
+  }
+
+  findResources ({ type = null, contains = null, near = null, includeInvalid = false, limit = null } = {}) {
+    return this.repo.find({ kind: 'resource_site', type, includeInvalid, near, limit }).filter((r) => {
+      if (!contains) return true;
+      return (r.observations || []).includes(contains) || (r.tags || []).includes(contains);
+    });
+  }
+
+  // Portale (di norma nether): relazione fra due luoghi. I campi `overworld`
+  // (position) e `nether` si completano quando si visita l'altro lato.
+  rememberPortal ({ id = null, position, dimension = 'overworld', portalType = 'nether', nether = null, verified = false, source = 'observed' }) {
+    const key = id || this._spatialId('portal', position);
+    const existing = this.repo.get(key);
+    const now = Date.now();
+    const record = {
+      id: key,
+      kind: 'portal',
+      type: portalType,
+      dimension,
+      position: round(position),
+      nether: nether ?? existing?.nether ?? null,
+      verified: verified || existing?.verified || false,
+      discoveredAt: existing?.discoveredAt ?? now,
+      lastSeenAt: now,
+      confidence: 1,
+      status: MEMORY_STATUS.KNOWN,
+      tags: [],
+      source,
+    };
+    this.repo.upsert(record);
+    return record;
+  }
+
+  findPortals ({ type = null, near = null, includeInvalid = false, limit = null } = {}) {
+    return this.repo.find({ kind: 'portal', type, near, includeInvalid, limit });
+  }
+
+  // Entità persistente/semi-persistente (cavallo legato, animale in recinto…).
+  // `state` è ciò che sappiamo (leashed, owner, ...), `lastSeenAt` quando.
+  rememberEntity ({ id = null, type, dimension = 'overworld', position, state = {}, confidence = 0.75, source = 'observed' }) {
+    if (!type) throw new Error('rememberEntity needs a type');
+    const key = id || this._spatialId(`entity_${type}`, position);
+    const existing = this.repo.get(key);
+    const now = Date.now();
+    const record = {
+      id: key,
+      kind: 'entity',
+      type,
+      dimension,
+      position: round(position),
+      state: { ...(existing?.state ?? {}), ...state },
+      discoveredAt: existing?.discoveredAt ?? now,
+      lastSeenAt: now,
+      confidence,
+      status: MEMORY_STATUS.KNOWN,
+      tags: [],
+      source,
+    };
+    this.repo.upsert(record);
+    return record;
+  }
+
+  findEntities ({ type = null, near = null, includeInvalid = false, limit = null } = {}) {
+    return this.repo.find({ kind: 'entity', type, near, includeInvalid, limit });
+  }
+
   // ---- status ----------------------------------------------------------------------
 
   // Promuove a STALE ciò che è stato osservato troppo tempo fa. Non invalida
@@ -176,7 +275,19 @@ export class WorldMemory {
       id: r.id, type: r.type, position: r.position, contents: r.contents,
       status: r.status, observedAt: r.observedAt ?? r.lastSeenAt,
     }));
-    return { landmarks, containers };
+    const portals = this.findPortals({ limit: maxLandmarks }).map((r) => ({
+      id: r.id, type: r.type, position: r.position, nether: r.nether ?? null, status: r.status,
+    }));
+    return { landmarks, containers, portals, counts: this._kindCounts() };
+  }
+
+  _kindCounts () {
+    const counts = {};
+    for (const kind of ['landmark', 'structure', 'home', 'resource_site', 'portal', 'entity', 'container']) {
+      const n = this.repo.count({ kind });
+      if (n) counts[kind] = n;
+    }
+    return counts;
   }
 
   flush () {

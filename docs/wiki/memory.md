@@ -101,7 +101,7 @@ there":
 `refreshStatuses()` promotes records older than their TTL to `stale` (never
 `invalid`): containers go stale after minutes, landmarks after hours.
 
-## What is implemented (first slice)
+## What is implemented
 
 > **Live-verified on 02/10**: the deployed container read 8 chests/barrels (a
 > chest at (105,72,138) with 122 emeralds among the rest), then a container
@@ -111,20 +111,32 @@ there":
 
 - Landmarks: `rememberLandmark`, `findLandmarks`, `nearestLandmark`, `hasLandmark`.
 - Containers: `rememberContainer`, `findContainers`, `containersWithItem`.
-- The adapter persists every chest observation (`_setContainerContents`) into the
-  memory, in addition to the volatile runtime cache.
+- **Resource sites** (`kind: resource_site`): `rememberResourceSite`,
+  `findResources({ contains })` — ores observed near the bot, deduped per chunk
+  (`observations: ['diamond_ore', 'iron_ore', ...]`).
+- **Portals** (`kind: portal`): `rememberPortal`, `findPortals` — the `portal`
+  block becomes a portal landmark that carries the nether-side coordinates once
+  visited (relation between the two dimensions).
+- **Entities** (`kind: entity`): `rememberEntity`, `findEntities` — notable
+  rideable entities (horse/donkey/…), keyed by the entity `uniqueId`, with a
+  `state` (`leashed`, ...) and a lower `confidence` (they move).
+- The adapter persists chest observations (`_setContainerContents`) and runs the
+  discovery producers (`_rememberDiscoveries`, once per chunk: portal, resource
+  site, notable entities).
 - On spawn, `home` is registered once as a landmark; `/observe.memory` exposes a
-  compact view.
+  compact view (landmarks, containers, portals, kind counts).
 - `MEMORY_DIR` (env, default `runs/memory`) selects the directory; the file is
   `world.sqlite` (or `world.json` with `backend: 'json'`).
 
 ## Next slices
 
-- **Resource sites, portals, entities** (`kind: resource_site/portal/entity`):
-  e.g. "cave with diamonds", "nether portal (overworld+nether link)", "leashed horse".
+- **Structures** (`kind: structure`): villages, Ancient Cities, … — heuristic
+  detection (villagers + beds + village blocks) in the exploration spec M5. The
+  `kind` already exists in the model.
 - **Chunk memory**: visited chunks / unexplored frontier (batched inserts).
 - **Mission checkpoints**: persisted exploration routes (see [exploration](exploration.md)).
-- **Query helpers**: `findResources({ contains })`, `nearestLandmark({ kind, radius })`.
+- **Query helpers**: `findResources({ contains })` exists; add
+  `nearestLandmark({ kind, radius })` variants as needs appear.
 - **Vector index** over structured memory for *semantic* recall ("the iron-rich
   cave near the mountain") — on top of SQLite, never replacing it.
 

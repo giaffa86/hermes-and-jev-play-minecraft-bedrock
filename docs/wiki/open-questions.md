@@ -81,16 +81,19 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
 **First slice implemented (2026-10-02)**: a real repository became the source of
 truth — `world-memory.mjs` (service) over `sqlite-memory.mjs` (SQLite + WAL,
 default) / `memory-store.mjs` (JSON fallback). It persists **landmarks**
-(`rememberLandmark`; `home` registered at spawn) and **container observations**
-(`rememberContainer`, updated on every chest read), with `known/stale/invalid`
-status and `lastSeenAt` — memory is historical, not current truth. See
+(`rememberLandmark`; `home` registered at spawn), **container observations**
+(`rememberContainer`), **resource sites** (`rememberResourceSite` from nearby
+ores, per chunk), **portals** (`rememberPortal`, the `portal` block +
+nether-side coords) and **entities** (`rememberEntity`, rideables keyed by
+`uniqueId`), with `known/stale/invalid` status and `lastSeenAt` — memory is
+historical, not current truth. The adapter runs the producers once per chunk. See
 [memory](memory.md). `/observe.memory` exposes a compact view; `MEMORY_DIR`
 (default `runs/memory`) selects the directory.
 
 Still missing (the rest of the original gap):
 
+- **structures** — villages / Ancient Cities have no heuristic detector yet;
 - **chunk memory** — visited chunks / unexplored frontier (batched inserts);
-- **resource sites / portals / entities** (kinds exist, no producers yet);
 - **mission checkpoints** ([exploration](exploration.md) M1);
 - everything else stays ephemeral: `this.containers` (runtime TTL cache, now
   *also* written to memory), `deathSite`, `entities`, `drops`, `_openDoors`, and

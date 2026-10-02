@@ -34,3 +34,35 @@ test('an adapter without memory still works (no crash)', () => {
   ));
   assert.equal(adapter.containers.get('4,5,6').contents.coal, 1);
 });
+
+test('the adapter records portals, resource sites and notable entities', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'adapter-disc-'));
+  try {
+    const memory = createWorldMemory({ dir, backend: 'json', logger: { warn () {} } });
+    const adapter = new BedrockAdapter({ logger: { log () {} }, memory });
+    adapter.position = { x: 8, y: 40, z: 8 };
+    adapter._feet = { x: 8, y: 39, z: 8 };
+    adapter.nearbyBlocks = { iron_ore: [{ name: 'iron_ore', position: { x: 9, y: 40, z: 8 } }] };
+    adapter.world = {
+      findBlocks: (name) => {
+        if (name === 'portal') return [{ name: 'portal', position: { x: 20, y: 40, z: 20 } }];
+        if (name === 'diamond_ore') return [{ name: 'diamond_ore', position: { x: 10, y: 40, z: 8 } }];
+        return [];
+      },
+      blockAt: () => ({ name: 'stone' }),
+    };
+    adapter.entities = new Map([
+      ['7', { runtimeId: '7', uniqueId: '42', type: 'horse', kind: 'mob', position: { x: 5, y: 40, z: 5 } }],
+      ['8', { runtimeId: '8', uniqueId: '43', type: 'pig', kind: 'mob', position: { x: 6, y: 40, z: 6 } }],
+    ]);
+    adapter._rememberDiscoveries();
+    assert.equal(memory.findPortals().length, 1, 'portale registrato');
+    assert.ok(memory.findResources({ contains: 'diamond_ore' }).length === 1, 'sito con diamante');
+    assert.ok(memory.findResources({ contains: 'iron_ore' })[0].observations.includes('iron_ore'));
+    assert.equal(memory.findEntities().length, 1, 'solo il cavallo, non il maiale');
+    assert.equal(memory.findEntities({ type: 'horse' })[0].id, 'entity_42');
+    memory.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

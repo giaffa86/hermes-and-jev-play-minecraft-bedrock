@@ -75,7 +75,8 @@ export class SqliteMemoryRepository {
   static rowToRecord (row) {
     if (!row) return null;
     const meta = safeJson(row.data);
-    const record = {
+    return {
+      ...meta,
       id: row.id,
       kind: row.kind,
       type: row.type,
@@ -87,11 +88,6 @@ export class SqliteMemoryRepository {
       discoveredAt: row.discovered_at,
       lastSeenAt: row.last_seen_at,
     };
-    if (meta.label != null) record.label = meta.label;
-    if (Array.isArray(meta.tags) && meta.tags.length) record.tags = meta.tags;
-    if (meta.source != null) record.source = meta.source;
-    if (meta.contents) record.contents = meta.contents;
-    return record;
   }
 
   get (id) {
@@ -100,29 +96,31 @@ export class SqliteMemoryRepository {
 
   upsert (record) {
     if (!record?.id) throw new Error('memory record needs an id');
-    const p = record.position || { x: 0, y: 0, z: 0 };
-    const meta = { label: record.label ?? null, tags: record.tags ?? [], source: record.source ?? null };
-    if (record.contents) meta.contents = record.contents;
+    // Campi comuni in colonna; tutto il resto (label, tags, contents,
+    // observations, nether, state, ...) in `data` JSON.
+    const { id, kind, type, dimension, position, status, confidence, discoveredAt, lastSeenAt, ...meta } = record;
+    const p = position || { x: 0, y: 0, z: 0 };
     this._upsert.run(
-      record.id,
-      record.kind ?? 'unknown',
-      record.type ?? 'unknown',
-      record.dimension ?? 'overworld',
+      id,
+      kind ?? 'unknown',
+      type ?? 'unknown',
+      dimension ?? 'overworld',
       p.x, p.y, p.z,
       Math.floor(p.x / CHUNK), Math.floor(p.z / CHUNK),
-      record.status ?? 'known',
-      record.confidence ?? 1,
-      record.discoveredAt ?? Date.now(),
-      record.lastSeenAt ?? Date.now(),
+      status ?? 'known',
+      confidence ?? 1,
+      discoveredAt ?? Date.now(),
+      lastSeenAt ?? Date.now(),
       JSON.stringify(meta),
     );
-    return record.id;
+    return id;
   }
 
-  find ({ kind = null, excludeKind = null, type = null, tag = null, statuses = null, includeInvalid = false, dimension = null, near = null, radius = null, limit = null } = {}) {
+  find ({ kind = null, kinds = null, excludeKind = null, type = null, tag = null, statuses = null, includeInvalid = false, dimension = null, near = null, radius = null, limit = null } = {}) {
     const where = [];
     const params = [];
     if (kind) { where.push('kind = ?'); params.push(kind); }
+    if (Array.isArray(kinds) && kinds.length) { where.push(`kind IN (${kinds.map(() => '?').join(',')})`); params.push(...kinds); }
     if (excludeKind) { where.push('kind != ?'); params.push(excludeKind); }
     if (dimension) { where.push('dimension = ?'); params.push(dimension); }
     if (type) { where.push("(type = ? OR EXISTS (SELECT 1 FROM json_each(world_memory.data, '$.tags') WHERE value = ?))"); params.push(type, type); }

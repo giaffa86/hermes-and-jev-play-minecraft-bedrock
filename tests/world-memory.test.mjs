@@ -69,6 +69,33 @@ for (const backend of BACKENDS) {
     assert.deepEqual(wm.summary(), { records: 2, landmarks: 1, containers: 1 });
   }));
 
+  test(`[${backend}] resource sites, portals and entities are remembered and queried`, () => withMemory(backend, (wm) => {
+    wm.rememberResourceSite({ id: 'resource_site_0_0', kind: 'cave', position: { x: 8, y: 40, z: 8 }, observations: ['diamond_ore', 'iron_ore'] });
+    const diamonds = wm.findResources({ contains: 'diamond_ore' });
+    assert.equal(diamonds.length, 1);
+    assert.equal(diamonds[0].type, 'cave');
+    assert.deepEqual(diamonds[0].observations.sort(), ['diamond_ore', 'iron_ore']);
+    assert.equal(wm.findResources({ contains: 'emerald_ore' }).length, 0);
+
+    wm.rememberPortal({ position: { x: 100, y: 65, z: 100 }, portalType: 'nether' });
+    wm.rememberPortal({ position: { x: 100, y: 65, z: 100 }, portalType: 'nether', nether: { x: 12, y: 70, z: 12 }, verified: true });
+    const portals = wm.findPortals();
+    assert.equal(portals.length, 1, 'stesso portale, aggiornato non duplicato');
+    assert.deepEqual(portals[0].nether, { x: 12, y: 70, z: 12 });
+    assert.equal(portals[0].verified, true);
+
+    wm.rememberEntity({ id: 'entity_42', type: 'horse', position: { x: 5, y: 64, z: 5 }, state: { leashed: true } });
+    assert.deepEqual(wm.findEntities({ type: 'horse' })[0].state, { leashed: true });
+
+    const view = wm.observeView();
+    assert.equal(view.portals.length, 1);
+    assert.equal(view.counts.resource_site, 1);
+    assert.equal(view.counts.portal, 1);
+    assert.equal(view.counts.entity, 1);
+    // I luoghi restano separati da risorse/portali/entità.
+    assert.equal(wm.findLandmarks().length, 0);
+  }));
+
   test(`[${backend}] memory persists across a new service instance`, () => {
     const dir = mkdtempSync(join(tmpdir(), `wm-${backend}-persist-`));
     try {

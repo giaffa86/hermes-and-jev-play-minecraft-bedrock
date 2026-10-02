@@ -56,9 +56,10 @@ export class JsonMemoryRepository {
     return record.id;
   }
 
-  find ({ kind = null, excludeKind = null, type = null, tag = null, statuses = null, includeInvalid = false, dimension = null, limit = null } = {}) {
+  find ({ kind = null, kinds = null, excludeKind = null, type = null, tag = null, statuses = null, includeInvalid = false, dimension = null, limit = null } = {}) {
     let out = [...this.records.values()];
     if (kind) out = out.filter(r => r.kind === kind);
+    if (Array.isArray(kinds) && kinds.length) out = out.filter(r => kinds.includes(r.kind));
     if (excludeKind) out = out.filter(r => r.kind !== excludeKind);
     if (dimension) out = out.filter(r => r.dimension === dimension);
     if (type) out = out.filter(r => r.type === type || (r.tags || []).includes(type));

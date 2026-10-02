@@ -107,6 +107,7 @@ export class BedrockAdapter {
     this.onLog = onLog;
     this.onDisconnect = onDisconnect;
     this.memory = memory;
+    this._lastDiscoveryChunk = null;   // dedup: scoperte scansionate una volta per chunk
     this.client = null;
     this.status = 'disconnected';
     this.position = null;
@@ -681,6 +682,55 @@ export class BedrockAdapter {
     // Bedrock player_position is at eye height (1.62 blocks above the feet).
     this.standingOn = this.world.blockAt({ ...this.position, y: this.position.y - 1.63 })?.name ?? null;
     this._pruneEntities();
+    this._maybeRememberDiscoveries();
+  }
+
+  // Producer di memoria: registra scoperte dal mondo (portali, siti di risorse,
+  // entità notevoli). Gira al massimo una volta per chunk per non martellare
+  // (la scansione è più costosa della percezione normale).
+  _maybeRememberDiscoveries () {
+    if (!this.memory || !this.position) return;
+    const key = `${Math.floor(this.position.x / 16)},${Math.floor(this.position.z / 16)}`;
+    if (this._lastDiscoveryChunk === key) return;
+    this._lastDiscoveryChunk = key;
+    this._rememberDiscoveries();
+  }
+
+  _rememberDiscoveries () {
+    const pos = this.position;
+    try {
+      // Portale Nether (blocco 'portal'): il landmark serve al viaggio fra i due lati.
+      const portal = this.world.findBlocks('portal', pos, 32, 1)[0];
+      if (portal) this.memory.rememberPortal({ position: portal.position, portalType: 'nether', source: 'observed' });
+      // Sito di risorse: ore osservate (le comuni sono già in nearbyBlocks, le
+      // rare le scansioniamo qui), dedup per chunk.
+      const ores = new Set();
+      for (const [name, blocks] of Object.entries(this.nearbyBlocks || {})) {
+        if (/_ore$/.test(name) && blocks.length) ores.add(name.replace(/^deepslate_/, ''));
+      }
+      for (const name of ['diamond_ore', 'deepslate_diamond_ore', 'emerald_ore', 'deepslate_emerald_ore',
+        'gold_ore', 'deepslate_gold_ore', 'redstone_ore', 'deepslate_redstone_ore', 'lapis_ore', 'deepslate_lapis_ore']) {
+        if (this.world.findBlocks(name, pos, 32, 1).length) ores.add(name.replace(/^deepslate_/, ''));
+      }
+      if (ores.size) {
+        const cx = Math.floor(pos.x / 16), cz = Math.floor(pos.z / 16);
+        this.memory.rememberResourceSite({
+          id: `resource_site_${cx}_${cz}`,
+          kind: pos.y < 62 ? 'cave' : 'surface_ores',
+          position: { x: cx * 16 + 8, y: pos.y, z: cz * 16 + 8 },
+          observations: [...ores],
+          source: 'observed',
+        });
+      }
+      // Entità notevoli (cavalcabili: cavallo/asino/mulo/…).
+      for (const entity of this.entities.values()) {
+        if (entity.uniqueId == null || !entity.position) continue;
+        if (!isRideableType(entity.type)) continue;
+        this.memory.rememberEntity({ id: `entity_${entity.uniqueId}`, type: entity.type, position: entity.position, state: {}, source: 'observed' });
+      }
+    } catch (error) {
+      this.log('memory_discovery_error', { message: error.message });
+    }
   }
 
   _refreshInventory () {
