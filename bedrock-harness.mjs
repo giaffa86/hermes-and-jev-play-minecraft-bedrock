@@ -143,6 +143,17 @@ server = createServer(async (req, res) => {
           .filter(Boolean),
       }];
     }
+    else if (process.env.BEDROCK_DEBUG && req.method === 'GET' && req.url === '/debug/containers') {
+      // Censisce i contenitori di stoccaggio nel mondo caricato (non solo i 32 blocchi).
+      const found = [];
+      for (const name of ['chest', 'trapped_chest', 'barrel', 'shulker_box']) {
+        for (const block of adapter.world.findBlocks(name, adapter.position, 200, 64)) {
+          found.push({ name, position: block.position, distance: +(block.distance ?? 0).toFixed(1) });
+        }
+      }
+      found.sort((a, b) => a.distance - b.distance);
+      response = [200, { count: found.length, containers: found, position: adapter.pos() }];
+    }
     else if (process.env.BEDROCK_DEBUG && req.method === 'POST' && req.url === '/debug/isr') {
       const { type_id, count, source, destination, randomly, open } = JSON.parse(body);
       if (open) await adapter._ensureInventoryOpen();
