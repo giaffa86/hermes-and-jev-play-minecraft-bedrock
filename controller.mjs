@@ -539,10 +539,11 @@ for (let step = 1; step <= MAX_STEPS; step++) {
     }
   }
   if (!replanReason && step > 1 && step % REPLAN_EVERY === 1) replanReason = 'periodic';
-  // Un goal autonomo non va sostituito da un nuovo piano: il suo esito lo decide
-  // isNeedResolved. Si salta il replan per non perderne l'ancoraggio al bisogno.
-  if (replanReason && plan.need) {
-    log('replan_skipped', {step, reason: replanReason, need: plan.need});
+  // Un goal autonomo/emergenza è ancorato al suo predicato di successo
+  // (bisogno o recupero loot): non va sostituito da un nuovo piano, o si perde
+  // l'ancoraggio e il goal non si chiude. Si salta il replan.
+  if (replanReason && (plan.need || plan.recover)) {
+    log('replan_skipped', {step, reason: replanReason, need: plan.need ?? null, recover: plan.recover === true});
     replanReason = null;
   }
   if (replanReason) {

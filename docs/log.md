@@ -880,3 +880,26 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - `wiki/open-questions.md`: new "Bot stuck on a built platform" blocker — the
   deployed bot spawned on `oak_planks`, `path_failed` everywhere and `protected_*`
   on dig; remedy = BDS restart at zero players (or move the structure).
+
+## [2026-10-02] verify | Emergency preemption verified live on the BDS
+
+- Started the controller on the live harness with an unsatisfied goal (`g1`,
+  target `diamond:1`) and forced a death via the BDS console (`kill "<bot>"`
+  through `screen -S minecraft -X stuff`, the bot being the only player — a test
+  fixture, not a gameplay shortcut).
+- **Result**: `EMERGENCY PLAYER_DIED: suspend g1 -> run g2` → `g2 [emergency]`
+  ran `recover_loot` → `deathSite` cleared → `GOAL g2 COMPLETED` (success via the
+  deterministic `plan.recover` predicate) → `g1` resumed and re-planned.
+- **Real bug found and fixed**: a periodic replan replaced the emergency goal's
+  plan, dropping `plan.recover`, so `g2` never closed (it kept running until the
+  budget). `controller.mjs` now skips replanning for `plan.need` **and**
+  `plan.recover`; a regression test asserts `replan_skipped {recover:true}` and
+  was confirmed to fail without the fix.
+- **Known blocker (pre-existing)**: both forced deaths re-triggered the
+  respawn-stuck (server ignored `player_action respawn`); each required a BDS
+  restart at zero players (verification row 12). The emergency could only
+  recover after that.
+- Evidence: `runs/collaudo-emergency2/controller.jsonl` (`emergency_preempt`,
+  `replan_skipped {recover:true}`, `goal_end completed`, `g1` re-planned).
+  Cleaned up `/tmp/session` and the collaudo runs. `verification.md` row 62 → ✅,
+  row 12 updated; `wiki/emergency.md` and `wiki/ai-player-roadmap.md` updated.

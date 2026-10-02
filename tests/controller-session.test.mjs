@@ -270,7 +270,10 @@ function startEmergencyHarness () {
       } else if (req.method === 'POST' && req.url === '/act') {
         acts += 1;
         if (acts === 1) deathSite = { position: { x: 0, y: 64, z: 0 }, at: Date.now() };
-        if (deathSite && acts >= 2) { deathSite = null; dirt = 5; } // recover_loot clears the site
+        // recover_loot clears the site only on the 3rd call, so the emergency
+        // goal survives a periodic replan (REPLAN_EVERY=2) without losing
+        // `plan.recover`.
+        if (deathSite && acts >= 4) { deathSite = null; dirt = 5; }
         res.end(JSON.stringify({ ok: true, ms: 1 }));
       } else {
         res.end('{}');
@@ -297,6 +300,8 @@ test('emergency: a death preempts the running goal, recovers loot and resumes it
       SESSION: 'on',
       EMERGENCY: 'on',
       AUTONOMY: 'off',
+      REPLAN_EVERY: '2',
+      ANTI_LOOP_THRESHOLD: '10',
       IDLE_POLL_MS: '50',
       IDLE_TIMEOUT_MS: '800',
       OPENROUTER_API_KEY: '',
@@ -315,6 +320,10 @@ test('emergency: a death preempts the running goal, recovers loot and resumes it
     assert.equal(byId.g2.status, 'completed');
     assert.equal(byId.g2.goal.source, 'emergency');
     assert.equal(byId.g2.goal.parentGoal, 'g1');
+    // The emergency goal must not be re-planned (that would drop plan.recover).
+    const events = readFileSync(join(dir, 'controller.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    assert.ok(events.some(e => e.type === 'replan_skipped' && e.recover === true),
+      'the emergency goal must skip replanning to keep plan.recover');
   } finally {
     server.close();
     rmSync(dir, { recursive: true, force: true });

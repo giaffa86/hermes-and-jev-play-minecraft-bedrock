@@ -111,16 +111,23 @@ but **not** turned into goals: the governor already handles them instantly.
 
 ## Status
 
-- **Implemented**: `world-events.mjs` (`detectEvents`), `emergency-goals.mjs`
-  (`emergencyGoalFor`), controller wiring (preempt in `runGoal`, enqueue + resume
-  in `main`), `plan.recover` success predicate. Unit tests
-  (`tests/world-events.test.mjs`, `tests/emergency-goals.test.mjs`) and an
-  integration test (death → preempt → `recover_loot` → parent resumed and
-  completed).
+- **Implemented and live-verified (BDS, 2026-10-02)**: `world-events.mjs`
+  (`detectEvents`), `emergency-goals.mjs` (`emergencyGoalFor`), controller wiring
+  (preempt in `runGoal`, enqueue + resume in `main`), `plan.recover` success
+  predicate. Unit tests (`tests/world-events.test.mjs`,
+  `tests/emergency-goals.test.mjs`) + an integration test (death → preempt →
+  `recover_loot` → parent resumed and completed). Live: a forced death produced
+  `EMERGENCY PLAYER_DIED: suspend g1 -> run g2`; `g2` ran `recover_loot`,
+  `COMPLETED` via `plan.recover`, and `g1` resumed. The live round exposed a real
+  bug — a periodic replan replaced the emergency plan, dropping `plan.recover` —
+  fixed by skipping replanning for `plan.need`/`plan.recover` (regression test).
 - **Missing**: mapping the detected `LOW_HEALTH`/`HOSTILE_AMBUSH` events (kept at
-  the governor for now); a `obtain_loot`/loot-priority executor; nested
-  preemption (parent chains); world events that need fluid/fire perception
-  ([fluids](fluids.md) M0); live verification on the BDS.
+  the governor for now); a loot-priority executor; nested preemption (parent
+  chains); world events that need fluid/fire perception ([fluids](fluids.md) M0).
+- **Known blocker (not this module)**: on the live BDS both forced deaths left
+  the bot stuck in `dead` (the server ignored `player_action respawn` — see
+  [open-questions](open-questions.md) / verification row 12), so the emergency
+  could only recover after a BDS restart at zero players.
 
 ## Related pages
 
