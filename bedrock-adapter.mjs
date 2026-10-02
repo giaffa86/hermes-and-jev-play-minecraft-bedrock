@@ -137,6 +137,8 @@ export class BedrockAdapter {
     this._authInputQueue = [];
     this._tickAnchor = null;
     this.drops = [];
+    this._reachCache = null;         // componente calpestabile raggiungibile (cache breve)
+    this._pathOverrides = null;      // celle trattate come vuote in un BFS (mondo ipotetico)
     this.nearbyBlocks = {};
     this.valuableOres = [];        // ore di valore in vista (occasioni, vedi _scanValuableOres)
     this.dimension = 'overworld';
@@ -901,7 +903,7 @@ export class BedrockAdapter {
       heldDurability: heldInfo?.maxDurability
         ? { damage: this._itemDamage(heldSlot), max: heldInfo.maxDurability }
         : null,
-      drops: this.drops.slice(0, 8),
+      drops: this.drops.slice(0, 8).map(d => ({ ...d, reachable: this.dropReachable(d.position) })),
       containers: this._cachedContainers().map(c => ({
         position: c.position,
         type: c.type,
@@ -954,7 +956,9 @@ export class BedrockAdapter {
     const o = [];
     const p = this.pos();
     const waypointUnmet = this.plan?.waypoint && p && Math.hypot(this.plan.waypoint.x - p.x, this.plan.waypoint.z - p.z) > 2;
-    const drop = this._nearestDrop();
+    // Solo drop raggiungibili: un item finito in una tasca sotto il pavimento
+    // brucerebbe il budget di movimento senza poter essere raccolto.
+    const drop = this._nearestDrop({ reachableOnly: true });
     // Un drop fresco e vicino va raccolto subito: lo si mette prima del waypoint
     // e lo si segnala nella descrizione.
     const fresh = drop && drop.spawnedAt && Date.now() - drop.spawnedAt < 15000 && drop.distance <= 8;
@@ -966,7 +970,7 @@ export class BedrockAdapter {
     }
     // Comando umano "seguimi": plan.follow = gamertag del giocatore da seguire.
     const follow = this._playerByName(this.plan?.follow);
-    if (follow && follow.position) {
+    if (follow && follow.position && this.entityApproachable(follow, { range: 3, dy: 2 })) {
       const d = this._entityDistance(follow);
       o.push({ key: 'follow_player', description: `Follow ${follow.username || this.plan.follow} (${d.toFixed(1)} blocks away)` });
     }
@@ -979,6 +983,7 @@ export class BedrockAdapter {
     const attackTypes = new Set();
     for (const threat of threats) {
       if (attackTypes.has(threat.type)) continue;
+      if (!this.entityApproachable(threat, { range: 3.5, dy: 2 })) continue;
       attackTypes.add(threat.type);
       o.push({ key: `attack_${threat.type}`, description: `Attack the ${threat.type} (${threat.distance.toFixed(1)} blocks away, ${threat.health != null ? `health ${threat.health}` : 'health unknown'})` });
       if (attackTypes.size >= 3) break;
@@ -1023,7 +1028,7 @@ export class BedrockAdapter {
     // Commercio: apri la finestra su un trader vicino, oppure offri ogni scambio
     // eseguibile con l'inventario corrente. La scelta economica resta a Jev.
     const trader = this._nearestTrader();
-    if (trader && !this._tradeWindowOpen()) {
+    if (trader && !this._tradeWindowOpen() && this.entityApproachable(trader, { range: 3.5, dy: 2 })) {
       const urgency = trader.type === 'wandering_trader' ? ' (wandering trader, despawns soon!)' : '';
       o.push({ key: 'open_trade', description: `Open trade with the ${trader.type}${trader.profession != null ? ` (profession ${trader.profession})` : ''} ${trader.distance} blocks away${urgency}` });
     }
@@ -1038,7 +1043,7 @@ export class BedrockAdapter {
     // vicini non ancora al massimo, più una generica se la professione è ignota.
     // Il loop usa solo scambi economici (mai smeraldi o risorse preziose).
     {
-      const levelable = this._nearbyTraders(12).filter(t => t.type !== 'wandering_trader');
+      const levelable = this._nearbyTraders(12).filter(t => t.type !== 'wandering_trader' && this.entityApproachable(t, { range: 3.5, dy: 2 }));
       const known = new Set();
       for (const t of levelable) {
         const maxTier = t.maxTradeTier ?? 4;
@@ -1066,6 +1071,9 @@ export class BedrockAdapter {
         const tool = kind ? this._bestInventoryTool(kind)?.name : null;
         if (!this._blockHarvestable(probe, tool)) continue;
       }
+      // Il drop atterra nella cella del blocco scavato: se il bot non potrà
+      // raggiungerla (cava sotto un pavimento, cunicolo chiuso) l'item è perso.
+      if (this._reachabilityUsable() && !this.mineDropReachable(target.position)) continue;
       o.push({ key: `mine_${blockName}`, description: `Mine ${blockName} at ${JSON.stringify(target.position)} (${target.distance} blocks away)` });
     }
     // Occasioni: oltre alla lista fissa, le ore di valore osservate entrano come
@@ -1180,12 +1188,17 @@ export class BedrockAdapter {
     // Contenitori di stoccaggio: censimento, prelievo e deposito.
     const storageBlocks = this._findNearbyStorageBlocks();
     const cached = this._cachedContainers();
-    if (storageBlocks.length) {
+    // Un contenitore fuori dal componente calpestabile non è apribile: offrirlo
+    // costa 30 s di pathfinding fallito per ogni blocco.
+    const reachableStorage = this._reachabilityUsable()
+      ? storageBlocks.filter(b => this.approachReachable(b.position))
+      : storageBlocks;
+    if (reachableStorage.length) {
       const freshKeys = new Set(cached.map(c => c.key));
-      const stale = storageBlocks.filter(b => !freshKeys.has(this._containerCacheKey(b.position)));
+      const stale = reachableStorage.filter(b => !freshKeys.has(this._containerCacheKey(b.position)));
       if (stale.length) {
-        const names = [...new Set(storageBlocks.map(b => b.name))].join(', ');
-        o.push({ key: 'read_container', description: `Open and inventory ${storageBlocks.length} nearby storage container(s) (${names})` });
+        const names = [...new Set(reachableStorage.map(b => b.name))].join(', ');
+        o.push({ key: 'read_container', description: `Open and inventory ${reachableStorage.length} nearby storage container(s) (${names})` });
       }
     }
     // Prelievo: solo item presenti in un contenitore noto e non scaduto.
@@ -1199,7 +1212,7 @@ export class BedrockAdapter {
       if (takeOffered >= 8) break;
     }
     // Deposito: oggetti di valore verso il contenitore noto (o vicino) più prossimo.
-    const depositTarget = cached[0] || storageBlocks[0];
+    const depositTarget = cached.find(c => !this._reachabilityUsable() || this.approachReachable(c.position)) || reachableStorage[0];
     if (depositTarget) {
       let depositOffered = 0;
       for (const item of Object.keys(this.inventory)) {
@@ -1223,6 +1236,7 @@ export class BedrockAdapter {
       const offered = new Set();
       for (const animal of farmAnimals) {
         if (offered.has(animal.type)) continue;
+        if (!this.entityApproachable(animal, { range: 3, dy: 2 })) continue;
         offered.add(animal.type);
         o.push({ key: `attack_${animal.type}`, description: `Hunt the ${animal.type} for food (${animal.distance.toFixed(1)} blocks away${animal.baby ? ', baby' : ''})` });
         const feed = animalFeed(animal.type);
@@ -1251,6 +1265,7 @@ export class BedrockAdapter {
       const selfId = String(this.client?.entityId ?? '');
       for (const companion of this._nearbyCompanion(12)) {
         if (this._isCompanionTamed(companion, selfId)) continue;
+        if (!this.entityApproachable(companion, { range: 3, dy: 2 })) continue;
         if (isRideTameableType(companion.type)) {
           o.push({ key: `tame_${companion.type}`, description: `Tame the ${companion.type} by mounting it (${companion.distance.toFixed(1)} blocks away)` });
         } else {
@@ -1261,7 +1276,7 @@ export class BedrockAdapter {
         }
       }
       if ((this.inventory.shears || 0) > 0) {
-        const sheep = allFarm.find(e => e.type === 'sheep' && !e.sheared && !e.baby);
+        const sheep = allFarm.find(e => e.type === 'sheep' && !e.sheared && !e.baby && this.entityApproachable(e, { range: 3, dy: 2 }));
         if (sheep) o.push({ key: 'shear_sheep', description: `Shear the sheep at ${sheep.distance.toFixed(1)} blocks for wool` });
       }
     }
@@ -1274,6 +1289,7 @@ export class BedrockAdapter {
       const seen = new Set();
       for (const r of rideable) {
         if (seen.has(r.type)) continue;
+        if (!this.entityApproachable(r, { range: 3, dy: 2 })) continue;
         seen.add(r.type);
         o.push({ key: `mount_${r.type}`, description: `Mount the ${r.type} (${r.distance.toFixed(1)} blocks away)` });
         if (seen.size >= 4) break;
@@ -1425,9 +1441,11 @@ export class BedrockAdapter {
     return Math.hypot(drop.position.x - this.position.x, drop.position.y - this.position.y, drop.position.z - this.position.z);
   }
 
-  _nearestDrop () {
+  _nearestDrop ({ reachableOnly = false } = {}) {
+    const filterReach = reachableOnly && this._reachabilityUsable();
     return this.drops
       .filter(drop => !drop.failedAt || Date.now() - drop.failedAt > 10000)
+      .filter(drop => !filterReach || this.dropReachable(drop.position))
       .map(drop => ({ ...drop, distance: this._dropDistance(drop) }))
       .sort((a, b) => a.distance - b.distance)[0] || null;
   }
@@ -1527,6 +1545,15 @@ export class BedrockAdapter {
   }
 
   async _collectDrop (timeoutMs = 20000) {
+    const tracked = this._nearestDrop();
+    if (tracked && this._reachabilityUsable() && !this.dropReachable(tracked.position)) {
+      // Drop in una tasca irraggiungibile (sotto il pavimento, dietro un muro):
+      // fallisci subito e marchia il drop, invece di bruciare il budget di move.
+      const entry = this.drops.find(d => String(d.id) === String(tracked.id));
+      if (entry) entry.failedAt = Date.now();
+      this.log('collect_unreachable', { item: tracked.item, position: tracked.position });
+      return { ok: false, error: 'drop_unreachable', item: tracked.item, position: tracked.position, inventory: this.inventory };
+    }
     const deadline = Date.now() + Math.max(4000, timeoutMs);
     const inventoryBefore = { ...this.inventory };
     let moved = false;
@@ -2601,8 +2628,10 @@ export class BedrockAdapter {
   // Il mercante itinerante non ha livelli: viene escluso.
   async _levelTrader ({ profession = null, maxTrades = 30, maxTimeMs = 180000 } = {}) {
     const wanted = profession ? normalizeProfession(profession) : null;
-    const candidates = this._nearbyTraders(12).filter(t => t.type !== 'wandering_trader');
-    if (!candidates.length) return { ok: false, error: 'no_trader_nearby', profession: wanted };
+    const reachableOnly = this._reachabilityUsable();
+    const all = this._nearbyTraders(12).filter(t => t.type !== 'wandering_trader');
+    const candidates = reachableOnly ? all.filter(t => this.entityApproachable(t, { range: 3.5, dy: 2 })) : all;
+    if (!candidates.length) return { ok: false, error: all.length ? 'trader_unreachable' : 'no_trader_nearby', profession: wanted };
     if (wanted) {
       // Ordina: prima i candidati la cui professione (cache o mappa) corrisponde,
       // poi quelli a professione ignota, poi gli altri; a parità, il più vicino.
@@ -2698,6 +2727,11 @@ export class BedrockAdapter {
       && this._openContainerBlock.position.z === target.position.z;
     if (alreadyOpen) return;
     if (this._openContainer) await this._closeContainer();
+    // Un contenitore fuori dal componente calpestabile non si apre: il
+    // pathfinding fallirebbe dopo 30 s. Meglio un errore tipizzato e subito.
+    if (this._reachabilityUsable() && !this.approachReachable(target.position)) {
+      throw new Error('storage_unreachable');
+    }
     if ((target.distance ?? this._pointDistance(target.position)) > 3.5) {
       await this._moveTo({ x: target.position.x + 0.5, y: target.position.y, z: target.position.z + 0.5 }, 3, 30000);
     }
@@ -2722,8 +2756,16 @@ export class BedrockAdapter {
   }
 
   async _readContainers () {
-    const blocks = this._findNearbyStorageBlocks();
-    if (!blocks.length) return { ok: false, error: 'container_not_found' };
+    const all = this._findNearbyStorageBlocks();
+    if (!all.length) return { ok: false, error: 'container_not_found' };
+    // Salta i contenitori che il bot non può raggiungere (fuori dal componente
+    // calpestabile): senza il filtro ogni blocco costa 30 s di move fallito.
+    const usable = this._reachabilityUsable();
+    const blocks = usable ? all.filter(b => this.approachReachable(b.position)) : all;
+    if (!blocks.length) {
+      this.log('container_unreachable', { blocks: all.map(b => ({ name: b.name, position: b.position })) });
+      return { ok: false, error: 'container_unreachable', containers: all.map(b => ({ type: b.name, position: b.position })) };
+    }
     const started = Date.now();
     const read = [];
     for (const block of blocks) {
@@ -3697,10 +3739,17 @@ export class BedrockAdapter {
     return this._passable(block) || this._isDoorBlock(block);
   }
 
+  // Blocco visto dal pathfinding: una cella può essere forzata a vuoto quando si
+  // valuta un mondo ipotetico (es. il blocco che il bot sta per scavare).
+  _blockForPath (x, y, z) {
+    if (this._pathOverrides?.has(`${x},${y},${z}`)) return { name: 'air', boundingBox: 'empty' };
+    return this.world.blockAt({ x, y, z });
+  }
+
   _standable (x, y, z) {
-    if (!this._passableForPath(this.world.blockAt({ x, y, z }))) return false;
-    if (!this._passableForPath(this.world.blockAt({ x, y: y + 1, z }))) return false;
-    const below = this.world.blockAt({ x, y: y - 1, z });
+    if (!this._passableForPath(this._blockForPath(x, y, z))) return false;
+    if (!this._passableForPath(this._blockForPath(x, y + 1, z))) return false;
+    const below = this._blockForPath(x, y - 1, z);
     // Anche un hash non risolto sotto i piedi vale come piano d'appoggio.
     return !!below && (below.boundingBox === 'block' || below.name === 'unknown');
   }
@@ -3926,6 +3975,126 @@ export class BedrockAdapter {
     return { x, y, z };
   }
 
+  // ---- raggiungibilità ---------------------------------------------------------------
+
+  // Un componente di una sola cella significa modello del mondo incompleto (o
+  // bot davvero incastrato): i filtri di raggiungibilità sarebbero ciechi e
+  // bloccherebbero ogni azione, quindi si disattivano (fail-open).
+  _reachabilityUsable () {
+    const reach = this.reachableCells();
+    // Un componente troncato (mondo grande) non è una verità completa: i
+    // filtri vanno spenti anche lì, non solo sul componente degenere.
+    return reach.cells.size > 1 && !reach.truncated;
+  }
+
+  // Celle calpestabili raggiungibili dai piedi con i movimenti consentiti
+  // (`_neighbors`). `overrides` è l'insieme di celle da trattare come vuote:
+  // serve a valutare un mondo ipotetico senza mutare il modello reale. La cache
+  // vale solo per il nodo di partenza corrente e per poco tempo: il bot si
+  // sposta e ogni scavo/piazzamento cambia il mondo.
+  reachableCells ({ limit = 1200, ttlMs = 1000, overrides = null } = {}) {
+    const start = this._startNode();
+    const startKey = `${start.x},${start.y},${start.z}`;
+    if (!overrides) {
+      const cached = this._reachCache;
+      if (cached && cached.startKey === startKey && Date.now() - cached.at < ttlMs) return cached.value;
+    }
+    const cells = new Set([startKey]);
+    const queue = [start];
+    let truncated = false;
+    const previous = this._pathOverrides;
+    this._pathOverrides = overrides || null;
+    try {
+      while (queue.length && !truncated) {
+        const node = queue.shift();
+        for (const next of this._neighbors(node)) {
+          const key = `${next.x},${next.y},${next.z}`;
+          if (cells.has(key)) continue;
+          if (cells.size >= limit) { truncated = true; break; }
+          cells.add(key);
+          queue.push({ x: next.x, y: next.y, z: next.z });
+        }
+      }
+    } finally {
+      this._pathOverrides = previous;
+    }
+    const value = { start, cells, truncated };
+    if (!overrides) this._reachCache = { startKey, at: Date.now(), value };
+    return value;
+  }
+
+  cellReachable (cell) {
+    if (!cell) return false;
+    const key = `${Math.floor(cell.x)},${Math.floor(cell.y)},${Math.floor(cell.z)}`;
+    return this.reachableCells().cells.has(key);
+  }
+
+  // C'è una cella calpestabile raggiungibile abbastanza vicina? `dy` limita il
+  // dislivello: un item due blocchi sotto il pavimento non è raccoglibile anche
+  // se la sua colonna è vicina. Stesso predicato per i contenitori (raggio di
+  // interazione) e per i drop (1.6 blocchi, un solo blocco di dislivello).
+  approachReachable (position, { range = 3.5, dy = 2 } = {}) {
+    if (!position) return false;
+    const baseY = Math.floor(position.y);
+    for (const key of this.reachableCells().cells) {
+      const [x, y, z] = key.split(',').map(Number);
+      if (Math.abs(y - baseY) > dy) continue;
+      if (Math.hypot(x + 0.5 - position.x, z + 0.5 - position.z) <= range) return true;
+    }
+    return false;
+  }
+
+  // Un drop è raccoglibile se il bot può stare nella sua cella o avvicinarsi
+  // abbastanza da prenderlo.
+  dropReachable (position) {
+    if (!position) return false;
+    if (this.cellReachable(position)) return true;
+    return this.approachReachable(position, { range: 1.6, dy: 1 });
+  }
+
+  // Le azioni su entità (caccia, commercio, doma, tosatura, monta, segui)
+  // richiedono di avvicinarsi: se nessuna cella raggiungibile è a tiro,
+  // l'opzione brucerebbe solo il budget in move falliti. Posizione ignota o
+  // mondo non affidabile ⇒ non filtrare (fail-open).
+  entityApproachable (entity, { range = 3, dy = 2 } = {}) {
+    if (!entity?.position) return true;
+    if (!this._reachabilityUsable()) return true;
+    return this.approachReachable(entity.position, { range, dy });
+  }
+
+  // Il drop di un blocco scavato atterra nella cella del blocco, che dopo lo
+  // scavo è vuota: valuta la raggiungibilità con il blocco già rimosso. Lo scavo
+  // può solo aggiungere percorsi, quindi l'override non falsa il verdetto.
+  mineDropReachable (blockPosition) {
+    if (!blockPosition) return false;
+    const key = `${blockPosition.x},${blockPosition.y},${blockPosition.z}`;
+    return this.reachableCells({ overrides: new Set([key]) }).cells.has(key);
+  }
+
+  // Componente raggiungibile attorno al bot, per diagnosi (GET /debug/reach).
+  reachReport ({ limit = 1200, maxCells = 200 } = {}) {
+    const { start, cells, truncated } = this.reachableCells({ limit });
+    const list = [...cells].map(key => {
+      const [x, y, z] = key.split(',').map(Number);
+      return { x, y, z };
+    });
+    list.sort((a, b) => (a.y - b.y) || (a.x - b.x) || (a.z - b.z));
+    const feet = this._feet;
+    return {
+      start,
+      feet: feet ? { x: feet.x, y: feet.y, z: feet.z } : null,
+      count: list.length,
+      truncated,
+      bounds: list.length
+        ? {
+            min: { x: Math.min(...list.map(c => c.x)), y: Math.min(...list.map(c => c.y)), z: Math.min(...list.map(c => c.z)) },
+            max: { x: Math.max(...list.map(c => c.x)), y: Math.max(...list.map(c => c.y)), z: Math.max(...list.map(c => c.z)) },
+          }
+        : null,
+      cells: list.slice(0, maxCells),
+    };
+  }
+
   _findGoalNodes (target) {
     const gx = Math.floor(target.x), gz = Math.floor(target.z);
     // La quota di riferimento è quella del bersaglio: con quella dei piedi un
@@ -3961,10 +4130,10 @@ export class BedrockAdapter {
       if (this._standable(nx, y + 1, nz)) yield { x: nx, y: y + 1, z: nz, cost: 1.4 };
       if (this._standable(nx, y - 1, nz)) yield { x: nx, y: y - 1, z: nz, cost: 1.2 };
       // Caduta oltre un gradino, fino a 4 blocchi.
-      if (y > 1 && this._passable(this.world.blockAt({ x: nx, y, z: nz })) &&
-          this._passable(this.world.blockAt({ x: nx, y: y + 1, z: nz }))) {
+      if (y > 1 && this._passable(this._blockForPath(nx, y, nz)) &&
+          this._passable(this._blockForPath(nx, y + 1, nz))) {
         for (let ny = y - 2; ny >= y - 5; ny--) {
-          if (!this._passable(this.world.blockAt({ x: nx, y: ny + 1, z: nz }))) break;
+          if (!this._passable(this._blockForPath(nx, ny + 1, nz))) break;
           if (this._standable(nx, ny, nz)) { yield { x: nx, y: ny, z: nz, cost: 1 + (y - ny) * 0.5 }; break; }
         }
       }
@@ -4780,6 +4949,9 @@ export class BedrockAdapter {
         if (Date.now() >= deadline) break;
         const candidate = this._standableNear({ x: this._feet.x + dir.x * distance, z: this._feet.z + dir.z * distance });
         if (!candidate) continue;
+        // Allontanarsi conta solo se la destinazione è davvero raggiungibile:
+        // altrimenti si brucia il timeout in path_failed (bot rinchiuso).
+        if (this._reachabilityUsable() && !this.cellReachable(candidate)) continue;
         try {
           await this._moveTo(candidate, 0.8, Math.min(7000, Math.max(1500, deadline - Date.now())));
           const nearest = this._hostiles()[0];

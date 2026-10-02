@@ -142,6 +142,13 @@ server = createServer(async (req, res) => {
       const active = resolveActiveSkill({ skills: gameplaySkills, plan: obs.plan, governor: survival, milestone, observation: obs });
       response = [200, { survival, activeSkill: active.skill?.id ?? null, activeSkillSource: active.source, milestone, progressionGoal: PROGRESSION_GOAL }];
     } else if (process.env.BEDROCK_DEBUG && req.method === 'GET' && req.url === '/debug/geom') response = [200, geometryReport(adapter)];
+    else if (process.env.BEDROCK_DEBUG && req.method === 'GET' && req.url.startsWith('/debug/reach')) {
+      // Componente calpestabile raggiungibile attorno al bot: diagnosi dei
+      // blocchi del pathfinding (drop in una tasca, stanze isolate).
+      const u = new URL(req.url, 'http://x');
+      const limit = Number(u.searchParams.get('limit') || 1200);
+      response = [200, adapter.reachReport({ limit: Number.isFinite(limit) && limit > 0 ? limit : 1200 })];
+    }
     else if (process.env.BEDROCK_DEBUG && req.method === 'POST' && req.url === '/debug/mine') {
       const { x, y, z } = JSON.parse(body);
       const block = adapter.world.blockAt({ x, y, z });
