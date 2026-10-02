@@ -2731,7 +2731,7 @@ export class BedrockAdapter {
       },
     });
     this.client.write('animate', { action_id: 'swing_arm', runtime_entity_id: this.client.entityId, data: 0, has_swing_source: false });
-    this.log('attack', { target: entity.type, runtimeId: entity.runtimeId, distance: +this._entityDistance(entity).toFixed(2) });
+    this.log('attack', { target: entity.type, runtimeId: entity.runtimeId, distance: +this._entityDistance(entity).toFixed(2), targetHealth: entity.health ?? null });
     return true;
   }
 
@@ -2822,6 +2822,19 @@ export class BedrockAdapter {
           };
         } catch (error) {
           lastError = error.message;
+          // Un timeout può comunque aver allontanato il bot: se il distacco è
+          // reale l'azione è riuscita, anche se il percorso non è arrivato a meta.
+          const nearest = this._hostiles().find(h => h.type === threat.type);
+          if (nearest && nearest.distance > threat.distance + 3) {
+            return {
+              ok: true,
+              partial: true,
+              from: threat.type,
+              fromDistance: +threat.distance.toFixed(1),
+              position: this.pos(),
+              nearestThreat: { type: nearest.type, distance: +nearest.distance.toFixed(1) },
+            };
+          }
         }
       }
     }

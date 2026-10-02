@@ -339,6 +339,19 @@ test('flee picks a standable point away from the threat and walks there', async 
   assert.ok(target.x > adapter._feet.x, 'si allontana dal mob a ovest');
 });
 
+test('flee counts a timeout as success when it still gains distance', async () => {
+  const adapter = spawnedAdapter();
+  adapter._trackEntity({ runtime_id: 42n, unique_id: 900n, entity_type: 'zombie', position: { x: -4, y: 63, z: 0 } }, 'mob');
+  adapter._standableNear = point => ({ x: point.x, y: adapter._feet.y, z: point.z });
+  adapter._moveTo = async () => {
+    adapter._feet.x += 10;
+    throw new Error('movement timeout');
+  };
+  const result = await adapter._flee(5000);
+  assert.equal(result.ok, true);
+  assert.equal(result.partial, true);
+});
+
 test('sleepInBed clicks the bed and reports the rejection when sleep does not start', async () => {
   const adapter = spawnedAdapter();
   adapter._recordTime(18000);
