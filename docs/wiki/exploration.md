@@ -224,20 +224,19 @@ a report → stays on the spot → can return later → can escort the player th
 
 ## Current status in the code
 
-❌ **Not implemented.** What exists today is only the movement primitive layer:
-`goto_waypoint` / `_moveTo` (A* pathfinding), `follow_player`, and the bounded
-`/options` + `/act` loop. There is no exploration mission model, no expanding
-spiral planner, no chunk-visit memory, no biome target resolution, and the bot
-has no random walk / strip mining / cave exploration (M6 underground targets —
-caves, mineshafts, Deep Dark, spawners — are spec only). A **persistent world
-memory** now exists (landmarks + container observations, see [memory](memory.md)),
-the infrastructure this spec needs; exploration itself is still not built. The
-bot only "sees" loaded
-blocks near it (see
-[headless-client](headless-client.md#8-render-distance-not-comparable)), so
-"go find X by yourself" is currently out of reach — the chat-channel roadmap
-lists autonomous exploration as M5/out-of-scope in
-[human-command](human-command.md).
+◑ **M1 core implemented.** `exploration.mjs` is the deterministic planner: biome
+target resolution (natural language → `minecraft:<id>`), the expanding-square/
+spiral over **unexplored chunks**, biome detection and the structured report. The
+harness steps it (`POST /explore` creates the mission, `GET /explore` returns one
+`move`/`found`/`hold`/`exhausted` step) and `explore.mjs` is the driver
+(mission → plan → `<act goto_waypoint>` → found). Missions + sparse checkpoints
+are persisted in the [world memory](memory.md) (`kind: mission`).
+
+Still missing: a full autonomous run over long distances depends on the
+perception cap below (the bot only "sees" loaded blocks near it — see
+[headless-client](headless-client.md#8-render-distance-not-comparable)), and
+M2–M5 (route replay, escort, blocks/resources, structures) plus the M6
+underground targets (caves, mineshafts, Deep Dark, spawners) are spec only.
 
 This spec is the missing piece that the persistent-agent vision
 ([ai-player-roadmap](ai-player-roadmap.md), milestone 5/6: world awareness +

@@ -840,3 +840,21 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   status); updated `index.md`, `sources.md`, `wiki/ai-player-roadmap.md`,
   `wiki/roadmap.md`, `wiki/open-questions.md`, `wiki/verification.md` (row 62),
   `BEDROCK.md`.
+
+## [2026-10-02] feat | Exploration M1 core (deterministic planner + driver)
+
+- `exploration.mjs` (pure): `resolveBiomeTarget` (natural language → `minecraft:<id>`,
+  aliases for cherry_grove/pale_garden/badlands/mushroom_fields/deep_dark/meadow),
+  `spiralOffsets`/`nextExplorationWaypoint` (first unexplored spiral point —
+  deterministic sweep), `biomeReached`, `planExplorationStep`
+  (move/found/hold/exhausted), `buildExplorationReport`.
+- `bedrock-harness.mjs`: `POST /explore {target}` (resolve + create/activate the
+  mission) and `GET /explore` (one deterministic step; on `found` it records
+  `targetPosition` + completes the mission).
+- `explore.mjs`: driver — loop planner → `POST /plan` + `POST /act goto_waypoint`.
+- Tests: `tests/exploration.test.mjs` (6); suite green (420).
+- `wiki/exploration.md` + `verification.md` (rows 45-46) + `index.md`/`sources.md`
+  updated.
+- **Verified live**: `POST /explore 'Trova un Cherry Grove'` → `minecraft:cherry_grove`
+  and `GET /explore` → `move` to the first unexplored spiral point; the driver
+  loop runs but the bot was stuck on a built platform (`target_not_found`).

@@ -13,6 +13,7 @@ import {
   evaluateSurvival, summarizeSurvival, loadSurvivalRules,
   filterOptionsForGovernor, loadGameplaySkills, loadProgression, resolveMilestone, resolveActiveSkill,
 } from './survival/index.mjs';
+import { resolveBiomeTarget, planExplorationStep, chunkKey, SUPPORTED_BIOMES } from './exploration.mjs';
 
 console.log('BEDROCK HARNESS VERSION 2');
 const API_PORT = +(process.env.API_PORT || 3077);
@@ -184,6 +185,33 @@ server = createServer(async (req, res) => {
       if (open) await adapter._ensureInventoryOpen();
       const legacy = { take: 0, place: 1, swap: 2, drop: 3, destroy: 4 }[type_id] ?? 0;
       response = [200, await adapter._sendStackRequest([{ type_id, legacy_type_id: legacy, count, source, destination, randomly }], {})];
+    }
+    else if (req.method === 'POST' && req.url === '/explore') {
+      // Risolve il target in un id Minecraft e crea/attiva la missione di esplorazione.
+      const payload = body ? JSON.parse(body) : {};
+      const target = resolveBiomeTarget(payload.target ?? payload.biome ?? '');
+      if (!target) response = [400, { ok: false, error: 'unknown_biome_target', supported: SUPPORTED_BIOMES }];
+      else {
+        const origin = adapter.position ? { x: adapter.position.x, y: adapter.position.y, z: adapter.position.z } : null;
+        const mission = adapter.memory.createMission({ type: 'find_biome', target, origin });
+        adapter.missionId = mission.id;
+        response = [200, { ok: true, mission }];
+      }
+    }
+    else if (req.method === 'GET' && req.url === '/explore') {
+      // Un passo deterministico: move / found / hold / exhausted.
+      const mission = adapter.missionId ? adapter.memory?.getMission(adapter.missionId) : adapter.memory?.missions({ state: 'running', limit: 1 })[0];
+      if (!mission) response = [200, { action: 'hold', reason: 'no_mission' }];
+      else {
+        const visited = (adapter.memory.visitedChunks({ limit: 5000 }) || []).map(c => chunkKey(c.position.x, c.position.z));
+        const currentBiome = typeof adapter.world?.biomeAt === 'function' ? adapter.world.biomeAt(adapter.position) : null;
+        const step = planExplorationStep({ mission, currentPosition: adapter.position, currentBiome, visited });
+        if (step.action === 'found') {
+          adapter.memory.updateMission(mission.id, { targetPosition: adapter.position });
+          adapter.memory.completeMission(mission.id, step.report);
+        }
+        response = [200, step];
+      }
     }
     else if (req.method === 'GET' && req.url === '/mission') {
       // Rotta della missione attiva (missione + checkpoint + distanza); altrimenti le ultime.
