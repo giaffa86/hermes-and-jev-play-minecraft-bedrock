@@ -28,6 +28,7 @@ import {
   buildCriteria, buildDecisionInstructions, detectRepeatedAction, filterOptions,
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
+import {planGreetings, DEFAULT_GREETING_TEMPLATE, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
 import {
   evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
   resolveMilestone, resolveActiveSkill, skillPreferredIntents, verifySkill, buildSkillRecord, appendSkillRecord,
@@ -64,6 +65,19 @@ const CHAT_CONTROL = process.env.CHAT_CONTROL || (process.env.CHAT_ALLOWLIST ? '
 const CHAT_ALLOWLIST = new Set((process.env.CHAT_ALLOWLIST || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
 const CHAT_PREFIX = (process.env.CHAT_PREFIX || '@bot').toLowerCase();
 const humanCommandSeen = new Set(); // dedup: un comando già eseguito non si ripete
+// Saluto proattivo (roadmap AI player §6, Attention System): percepito un umano
+// vicino, il bot si presenta e gli spiega la sintassi per assegnargli un ordine.
+// Attivo solo se il canale ordini è aperto (allowlist presente), altrimenti
+// pubblicizzerebbe un canale che non accetta nulla.
+const CHAT_GREET = process.env.CHAT_GREET == null
+  ? (CHAT_CONTROL !== 'off' && CHAT_ALLOWLIST.size > 0)
+  : /^(1|on|true|yes)$/i.test(process.env.CHAT_GREET);
+const CHAT_GREET_RANGE = +(process.env.CHAT_GREET_RANGE || DEFAULT_GREET_RANGE);
+const CHAT_GREET_COOLDOWN_MS = process.env.CHAT_GREET_COOLDOWN_MS == null
+  ? DEFAULT_GREET_COOLDOWN_MS
+  : +(process.env.CHAT_GREET_COOLDOWN_MS);
+const CHAT_GREET_TEMPLATE = process.env.CHAT_GREET_TEMPLATE || DEFAULT_GREETING_TEMPLATE;
+const greetedHumans = new Map(); // gamertag minuscolo -> timestamp ultimo saluto
 // Session mode (AI-player roadmap M0->1): con SESSION=on il controller non
 // esce a fine goal ma resta in IDLE e accetta nuovi goal (ordini in chat)
 // senza riconnettersi. Default off = comportamento one-shot storico.
@@ -316,6 +330,32 @@ async function maybeHumanCommand (obs) {
   return null;
 }
 
+// Saluto proattivo: un umano fidato percepito vicino riceve una volta (con
+// cooldown) un messaggio che spiega come dare un ordine. Si prova solo a bot
+// spawnato; se `/say` non esiste (harness Java) la chiamata fallisce e resta nei
+// log. Un saluto per umano: dedup per gamertag, non per passo.
+async function maybeGreetHumans (obs) {
+  if (!CHAT_GREET || !obs?.spawned) return;
+  const greetings = planGreetings({
+    humans: obs.humans || [],
+    allowlist: CHAT_ALLOWLIST,
+    prefix: CHAT_PREFIX,
+    greeted: greetedHumans,
+    now: Date.now(),
+    cooldownMs: CHAT_GREET_COOLDOWN_MS,
+    range: CHAT_GREET_RANGE,
+    template: CHAT_GREET_TEMPLATE,
+  });
+  for (const greet of greetings) {
+    // Segna subito il tentativo: su errore si ritenta dopo il cooldown, non a
+    // ogni passo (niente spam verso il server né nei log).
+    greetedHumans.set(greet.username.toLowerCase(), Date.now());
+    const result = await api('POST', '/say', {message: greet.message}).catch(error => ({ok: false, error: error.message}));
+    log('chat_greet', {to: greet.username, distance: greet.distance, message: greet.message, ok: !!result?.ok, error: result?.error ?? null});
+    console.log(`GREET ${greet.username}: ${greet.message}`);
+  }
+}
+
 // ---- controller: Jev via TypeSafe or OpenRouter ---------------------------------------------
 async function jevDecide(observation, options, plan) {
   const typesafeKey = process.env.TYPESAFE_API_KEY;
@@ -468,6 +508,9 @@ let prevObs = null;             // osservazione del passo precedente (eventi del
 for (let step = 1; step <= MAX_STEPS; step++) {
   obs = await api('GET', '/observe');
   stepsUsed = step;
+  // Saluto proattivo: indipendente dal goal, un umano vicino va informato di
+  // come comandare il bot (una volta, con cooldown).
+  await maybeGreetHumans(obs);
   // Goal Contract: SUCCESS/FAILED/BLOCKED interrompono il loop prima delle
   // altre logiche (il contratto è la fonte di verità del run quando presente).
   const contractStatus = evaluateGoalContract(obs, step - 1);
@@ -695,6 +738,7 @@ async function waitForGoal () {
   while (true) {
     const obs = await api('GET', '/observe').catch(() => null);
     if (obs) {
+      await maybeGreetHumans(obs);
       const cmd = await maybeHumanCommand(obs);
       if (cmd) {
         const goal = goalManager.enqueue({

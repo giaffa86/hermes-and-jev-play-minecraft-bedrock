@@ -79,6 +79,10 @@ ANTI_LOOP_COOLDOWN=3    # steps the blocked key stays excluded
 CHAT_ALLOWLIST=<gamertag-o-xuid>   # comma-separated; enables @bot control (default prefix)
 CHAT_PREFIX=@bot                   # prefix that triggers an order (default @bot)
 CHAT_CONTROL=on                    # on/off; default on when CHAT_ALLOWLIST is set
+# Proactive greeting: a trusted human nearby is told the order syntax via POST /say
+CHAT_GREET=on                      # default on when the channel is open
+CHAT_GREET_RANGE=24                # blocks within which a human is "perceived"
+CHAT_GREET_COOLDOWN_MS=600000      # don't greet the same human again before this (0 = once per session)
 
 # Persistent agent session (optional)
 SESSION=off                        # on = persistent session loop with an IDLE state; off = one-shot (default)

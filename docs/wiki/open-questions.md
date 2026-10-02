@@ -235,8 +235,11 @@ Still missing (the rest of the original gap):
 - **Human chat command channel**: natural-language remote control via in-game
   chat (`@bot seguimi`, `@bot aiutami coi mob`). M1–M3 implemented (chat capture,
   allowlist + trigger, NL → Hermes → `/plan`, `follow_player`); **live
-  verification on the BDS still pending**. Ack/reply in chat (M5) and autonomous
-  exploration remain open. Roadmap in [human-command](human-command.md).
+  verification on the BDS still pending**. M5 is half-done: the bot speaks
+  (`POST /say`) and greets a nearby human with the order syntax, but it does not
+  **ack a specific order** yet; autonomous exploration remains open. Open design
+  choices: public chat vs whisper, and skipping the greeting in `emergency`.
+  Roadmap in [human-command](human-command.md).
 - **Defense completions** — first slice implemented and mostly live-verified
   (`place_torch`, `craft_*_sword`, `retreat`/`go_home`, `close_door`/`barricade`,
   `equip_armor`, armor points); only the **shield** (stretch) remains. See

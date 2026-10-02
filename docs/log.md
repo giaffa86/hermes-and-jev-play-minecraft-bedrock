@@ -1092,3 +1092,48 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Docs: new `wiki/opportunity.md`; updated `wiki/emergency.md` (producer table
   and boundary), `wiki/ai-player-roadmap.md` (milestones 1/5/8),
   `wiki/roadmap.md`, `wiki/open-questions.md`, `docs/index.md`, `docs/sources.md`.
+
+## [2026-10-02] feat | Saluto proattivo dell'umano (Attention System §6)
+
+- **Goal** (roadmap §6 *Attention System*, milestone 4 *Social behaviour*):
+  quando il bot percepisce un umano vicino, si presenta e gli spiega la sintassi
+  esatta per assegnargli un ordine (`CHAT_PREFIX`, default `@bot`), invece di
+  restare muto. È il primo pezzo **deterministico** del milestone 4: gli eventi
+  di attenzione (crouch/jump/stare/hit → `PLAYER_REQUESTS_ATTENTION`) restano
+  aperti.
+- **Percezione**: `BedrockAdapter._nearbyHumanPlayers()` → `observe().humans`
+  (giocatori umani entro `HUMAN_RANGE`, default 32 blocchi, bot escluso,
+  ordinati per distanza). Lista **separata** da `entities` perché quella è
+  limitata a 8 righe: con otto mob addosso un umano vicino sparirebbe e non
+  verrebbe mai salutato.
+- **Policy pura**: `human-greeting.mjs` — `planGreetings({humans, allowlist,
+  prefix, greeted, now, cooldownMs, range, template})` restituisce i messaggi da
+  inviare *in questo passo*; `renderGreeting` sostituisce `{name}`/`{prefix}`.
+  Solo gamertag in allowlist; allowlist vuota → nessun saluto (non si pubblicizza
+  un canale che non accetta ordini).
+- **Voce**: `BedrockAdapter.sendChat(message, {type='chat'})` accoda un pacchetto
+  `text`/`chat` (schema 1.26.51: `category: 'authored'`, `has_filtered_message`,
+  `xuid: ''`), usato da `POST /say {message, type?}`. Guardie: richiede
+  `status === 'spawned'`, rimuove i ritorni a capo, rifiuta vuoto / >256 char,
+  intervallo minimo 1 s tra due messaggi del bot (`CHAT_MAX_LENGTH`,
+  `CHAT_MIN_INTERVAL_MS`).
+- **Loop**: `controller.mjs` chiama `maybeGreetHumans(obs)` sia nel loop del goal
+  sia nel loop `IDLE`, prima del check degli ordini; tenta solo se
+  `obs.spawned`, e segna subito il tentativo (su errore si ritenta dopo il
+  cooldown, non a ogni passo). Env: `CHAT_GREET` (default on se canale ordini
+  aperto), `CHAT_GREET_RANGE`, `CHAT_GREET_COOLDOWN_MS`, `CHAT_GREET_TEMPLATE`.
+- **Wire format** verificato offline: `createSerializer('1.26.51')` serializza il
+  pacchetto `text` (59 byte) senza errori; nel test l'adapter lo rilegge con il
+  deserializer e i campi tornano.
+- Tests: nuovo `tests/human-greeting.test.mjs` (8 casi: policy + filtri
+  allowlist/raggio/cooldown/umani malformati + `observe().humans` + pacchetto sul
+  filo + guardie di `sendChat`); suite completa **510 pass / 0 fail** (era 502).
+  `npm run wiki:lint` pulito.
+- **Non wired / aperto**: nessun ack di un ordine specifico; nessun `save` dello
+  stato "già salutato" tra sessioni (il cooldown vive in memoria); nessun round
+  live con un umano reale. Scelta del canale (pubblico vs whisper) e salto del
+  saluto in `emergency` annotati in `wiki/open-questions.md`.
+- Docs: `wiki/human-command.md` (nuova sezione *Proactive greeting*, M5 da ❌ a ◑,
+  tabella capacità, domande aperte), `wiki/ai-player-roadmap.md` (milestone 4),
+  `wiki/verification.md` (riga 18), `docs/index.md`, `docs/sources.md`,
+  `.env.example`.

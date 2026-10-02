@@ -58,7 +58,7 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 15 | Storage take/deposit | `take_<item>`, `deposit_<item>` | ⏳ | `/act take_iron_ingot`, `/act deposit_diamond` | Unit-tested; take/deposit delta live pending. |
 | 16 | Trading | `open_trade`, `trade_<index>`, `close_trade` | ⏳ | `/act open_trade` on a villager | Live 02/10: interact sent 3× at ~1.9 blocks but server sends **no** `update_trade`/`container_open(trading)` (`trade_not_opened`); approach >5 blocks stalls (`stuck`). Needs protocol-level capture. |
 | 17 | Trader levelling | `level_<profession>` | ⏳ | `/act level_farmer` | Cheap-only economy; live tier-up pending. |
-| 18 | Follow human / chat | `follow_player` (+ `@bot` M1–M3) | ⏳ | chat `@bot seguimi` with a human online | Wiring + unit tests; live pending. |
+| 18 | Follow human / chat, speak | `follow_player` (+ `@bot` M1–M3); `POST /say` + proactive greeting (M5) | ⏳ | chat `@bot seguimi` with a human online; stand within ~24 blocks and read the bot's greeting | Wiring + unit tests; live pending. |
 | 19 | Plant / resow crops | `plant_<seed>` | ✅ | `/act plant_potato` on free farmland | `plant_potato` re-sowed live 03/10. |
 | 20 | Feed farm animals | `feed_<animal>` | ✅ | `/act feed_pig` with carrot | `inlove` confirmed live 03/10. |
 | 21 | Breed farm animals | `breed_<animal>` | ✅ | `/act breed_pig` (2 adults + 2 carrots) | Baby pig `baby:true` live 03/10. |

@@ -134,7 +134,8 @@ becomes a completed `autonomous` shelter goal). **Verified live on the BDS
 
 The roadmap orders the work in nine milestones. Milestone 0 is the audit above
 and milestone 1 (Agent Core) is implemented; the rest are design sketches, with
-partial slices where noted (milestone 2 emergency, 3 autonomy, 5/8 curiosity):
+partial slices where noted (milestone 2 emergency, 3 autonomy, 4 greeting,
+5/8 curiosity):
 
 | # | Milestone | What it introduces |
 |---|---|---|
@@ -142,7 +143,7 @@ partial slices where noted (milestone 2 emergency, 3 autonomy, 5/8 curiosity):
 | 1 | Agent Core | a **Goal Manager**: every activity is a `goal {id, type, source, priority, status, parameters, parentGoal, createdAt}` with status `PENDING/RUNNING/SUSPENDED/COMPLETED/FAILED` and sources `CHAT/AUTONOMOUS/WORLD_EVENT/PLAYER_BEHAVIOR/EMERGENCY/OPPORTUNITY`. Chat commands become goals, never raw primitives. ✅ `goal-manager.mjs` (persistence + preempt/suspend/resume + cross-session resume; producers: chat/curriculum/autonomy/opportunity — the last one not yet wired into the loop) |
 | 2 | Emergency system | world events auto-create preempting goals — `PLAYER_DIED → RECOVER_PLAYER_LOOT (CRITICAL)` with loot priorities (netherite/diamond → enchanted → elytra → …) and risk awareness (lava/warden/nether). ◑ `PLAYER_DIED → recover_loot` implemented and **live-verified** (2026-10-02) (`world-events.mjs` + `emergency-goals.mjs`, opt-in default in session); see [emergency](emergency.md). Loot-priority executor, fluid/fire events and nested preemption still open |
 | 3 | Autonomy | needs-driven idle behaviour (food low → find food; tool missing → craft; inventory full → store; night → shelter; else explore) via state + rules + utility score, **not** an LLM per decision. ◑ survival needs implemented (`idle-goals.mjs`, opt-in `AUTONOMY=on`); storage/explore still open |
-| 4 | Social behaviour | attention system (crouch/jump/stare/light hit → `PLAYER_REQUESTS_ATTENTION`) and contextual assistance (mining/fighting/building/fleeing/exploring → assist/observe/ignore). |
+| 4 | Social behaviour | attention system (crouch/jump/stare/light hit → `PLAYER_REQUESTS_ATTENTION`) and contextual assistance (mining/fighting/building/fleeing/exploring → assist/observe/ignore). ◑ deterministic slice implemented: **proactive greeting** — a human perceived nearby is told the exact order syntax (`human-greeting.mjs` + `observe().humans` + `POST /say`, see [human-command](human-command.md)); the attention *events* (crouch/jump/stare/hit) are still open |
 | 5 | World awareness | home system (bed/chest/furnace/table/storage/safe area) and world memory (resource spots, caves, villages, danger zones, structures, death locations). ◑ world memory implemented (`world-memory.mjs` + the mission/episode layer, see [memory](memory.md)); the **opportunity slice** — a valuable vein in sight suspends the goal and the bot takes the detour — is the deterministic curiosity step of this milestone (`ore-value.mjs` + [opportunity-goals.mjs](../../opportunity-goals.mjs), see [opportunity](opportunity.md)): detection + decision + option done, controller wiring pending |
 | 6 | Advanced navigation | world-modifying pathfinding: bridge, pillar, dig tunnel, safe descent, break obstacle. |
 | 7 | Planning | hierarchical goals with prerequisites and subgoals (e.g. `FIND_DIAMONDS → iron pickaxe → iron → smelt → …`), failure recovery. |

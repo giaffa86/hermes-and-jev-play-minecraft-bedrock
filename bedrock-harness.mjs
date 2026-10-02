@@ -3,6 +3,7 @@
 //   GET  /options  -> azioni valide in questo momento
 //   POST /act {key} -> esegue un'azione
 //   POST /plan {objective, waypoint, targets} -> registra il piano corrente
+//   POST /say {message, type?} -> il bot scrive in chat (pacchetto `text`)
 //   GET  /memory/hints?resource=<item>&limit=N -> località provate (episodico → semantico)
 //   POST /memory/consolidate {limit,since} -> backfill idempotente dei consolidamenti
 // Il controller sceglie solo chiavi restituite da /options; la validità è qui.
@@ -248,6 +249,12 @@ server = createServer(async (req, res) => {
       response = [200, worldMemory.consolidatePending({ limit: payload.limit ?? 50, since: payload.since ?? null })];
     }
     else if (req.method === 'POST' && req.url === '/plan') { adapter.setPlan(JSON.parse(body)); response = [200, { ok: true, plan: adapter.plan }]; }
+    else if (req.method === 'POST' && req.url === '/say') {
+      // Il bot scrive in chat (M5): unico modo per rispondere a un umano o
+      // spiegargli la sintassi degli ordini. La validità resta nell'adapter.
+      const payload = body ? JSON.parse(body) : {};
+      response = [200, adapter.sendChat(payload.message, { type: payload.type })];
+    }
     else if (req.method === 'POST' && req.url === '/act') { const { key } = JSON.parse(body); response = [200, await adapter.executeAction(key)]; }
     else response = [404, { error: 'unknown route' }];
 

@@ -78,6 +78,7 @@ Use `CONTROLLER=hermes` if you lack an OpenRouter key; it is slower and costlier
 - `CHAT_ALLOWLIST` — comma-separated gamertags/xuids allowed to order the bot via in-game chat (enables the `@bot` command channel; see `docs/wiki/human-command.md`).
 - `CHAT_PREFIX` — prefix that triggers an order (default `@bot`).
 - `CHAT_CONTROL` — `on`/`off` (default `on` when `CHAT_ALLOWLIST` is set).
+- `CHAT_GREET` / `CHAT_GREET_RANGE` / `CHAT_GREET_COOLDOWN_MS` / `CHAT_GREET_TEMPLATE` — proactive greeting: a nearby trusted human is told the order syntax via `POST /say` (default on when the channel is open, range `24`, cooldown `600000` ms).
 
 ## Architecture gotchas
 

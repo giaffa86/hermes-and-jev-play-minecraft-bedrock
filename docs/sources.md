@@ -25,11 +25,11 @@ never committed.
 
 | Path | What it defines |
 |---|---|
-| `bedrock-adapter.mjs` | The Bedrock protocol client: perception (`_refreshNearby`), actions (`player_auth_input`, `block_action`, `item_stack_request`, `click_block`), tool selection, mining, digging, containers, trading and trader levelling, chat capture (`text` id 9 → `chatInbox`), `follow_player` and the valuable-ore opportunity scan (`observe().ores`, the `mine_<ore>` options outside the fixed mining list). |
+| `bedrock-adapter.mjs` | The Bedrock protocol client: perception (`_refreshNearby`), actions (`player_auth_input`, `block_action`, `item_stack_request`, `click_block`), tool selection, mining, digging, containers, trading and trader levelling, chat capture (`text` id 9 → `chatInbox`) and chat **output** (`sendChat` → `text`/`chat` packet), `follow_player`, human players in range (`observe().humans`, `_nearbyHumanPlayers`) and the valuable-ore opportunity scan (`observe().ores`, the `mine_<ore>` options outside the fixed mining list). |
 | `bedrock-trading.mjs` | Pure trading economy rules: profession mapping, item value classification, cheapest-trade picker for levelling. |
 | `bedrock-fishing.mjs` | Pure fishing rules: fish classification, water-block detection, shore geometry, bite timing. |
 | `bedrock-world.mjs` | Registry + Prismarine v9 decoder, `findBlocks`/`blockAt`, `requestAround` (subchunk requests). |
-| `bedrock-harness.mjs` | HTTP API (`/observe`, `/options`, `/act`, `/plan`, `/survival`) and the Survival Governor filter; owns the `WorldMemory` (load, periodic flush, close). |
+| `bedrock-harness.mjs` | HTTP API (`/observe`, `/options`, `/act`, `/plan`, `/say`, `/survival`) and the Survival Governor filter; owns the `WorldMemory` (load, periodic flush, close). |
 | `world-memory.mjs` | Persistent **world memory** service: landmark/container records, `known/stale/invalid` status, spatial queries; storage-agnostic. |
 | `sqlite-memory.mjs` | SQLite repository (`node:sqlite`, WAL, chunk index) — default memory backend. |
 | `memory-store.mjs` | JSON repository (same interface) — fallback / tests. |
@@ -37,7 +37,8 @@ never committed.
 | `explore.mjs` | Exploration M1 driver: loop planner (`GET /explore`) → `goto_waypoint` until FOUND. |
 | `bedrock-lifecycle.mjs` | Disconnect/teardown lifecycle. |
 | `tools/respawn-capture.mjs` | Diagnostic MITM relay (bedrock-protocol `Relay`) that records a vanilla client's death→respawn packet sequence to `runs/` (git-ignored). |
-| `controller.mjs` | The planner/controller loop (incl. the human chat command channel: `CHAT_ALLOWLIST` → Hermes → `/plan`) and the **persistent session loop** (`SESSION=on`): goal → run → IDLE → next goal, with cross-session resume (`RESUME`), no reconnect. |
+| `controller.mjs` | The planner/controller loop (incl. the human chat command channel: `CHAT_ALLOWLIST` → Hermes → `/plan`, and the proactive greeting `maybeGreetHumans`: a human nearby is told the order syntax) and the **persistent session loop** (`SESSION=on`): goal → run → IDLE → next goal, with cross-session resume (`RESUME`), no reconnect. |
+| `human-greeting.mjs` | Pure **proactive greeting** policy (`planGreetings`, `renderGreeting`): humans in range + allowlist + already-greeted state → the messages to send this step (cooldown per gamertag, zero greetings when the allowlist is empty). |
 | `goal-manager.mjs` | Pure **Goal Manager** (Agent Core, M1): goal model, sources/priorities, `PENDING/RUNNING/SUSPENDED/COMPLETED/FAILED` transitions, preemption, snapshot/restore, cross-session resume, persistence via a repository (`kind: 'goal'`). |
 | `idle-goals.mjs` | Pure **idle autonomy** (M3): maps survival needs to ranked candidate goals (+`nextIdleGoal` cooldown) and the deterministic `isNeedResolved` success predicate. |
 | `world-events.mjs` | Pure **world-event detection** (M2): transition-based `detectEvents(prev, curr)` → `PLAYER_DIED`, `LOW_HEALTH`, `HOSTILE_AMBUSH` and `VALUABLE_ORE_SEEN` (a newly seen ore within 24 blocks), each with a `dedupKey`. |

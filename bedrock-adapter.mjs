@@ -106,6 +106,14 @@ const CHECKPOINT_MIN_DISTANCE = 48;   // checkpoint sparsi: ogni ~48 blocchi di 
 // Slot esposti da un baule/botte singolo (i bauli doppi ne espongono 54).
 const CONTAINER_SLOT_COUNT = 27;
 
+// Chat in uscita (M5): il bot scrive nel canale `chat` con un pacchetto `text`.
+// Tetto di lunghezza e intervallo minimo per non floodare il server.
+const CHAT_MAX_LENGTH = +(process.env.CHAT_MAX_LENGTH || 256);
+const CHAT_MIN_INTERVAL_MS = +(process.env.CHAT_MIN_INTERVAL_MS || 1000);
+// Raggio entro cui un giocatore umano è "percepito" (gli saluta e gli spiega
+// come dare un ordine). Separato dal tracking entità (64 blocchi).
+const HUMAN_RANGE = +(process.env.HUMAN_RANGE || 32);
+
 const STORAGE_CONTAINER_SLOT = {
   chest: 'container',
   trapped_chest: 'container',
@@ -150,6 +158,7 @@ export class BedrockAdapter {
     }
     this.armor = { helmet: null, chestplate: null, leggings: null, boots: null }; // pezzi indossati
     this.chatInbox = [];             // messaggi chat recenti { from, message, type, xuid, at }
+    this._lastChatAt = 0;            // ultimo invio chat (rate limit del bot che parla)
     this._playersByName = new Map(); // gamertag minuscolo -> runtimeId (chat -> entità da seguire)
     this.busy = false;
     this.recent = [];
@@ -925,6 +934,7 @@ export class BedrockAdapter {
       deathSite: this.deathSite ? { position: this.deathSite.position, at: this.deathSite.at } : null,
       experience: this.experienceLevel != null ? { level: this.experienceLevel, progress: this.experienceProgress } : null,
       entities: this._nearbyEntities(8),
+      humans: this._nearbyHumanPlayers(),
       farmAnimals: this._nearbyFarmAnimals(8),
       companions: this._nearbyCompanion(8),
       fishing: this._fishingContext(),
@@ -4314,6 +4324,40 @@ export class BedrockAdapter {
     this.log('chat', { from, type, xuid: entry.xuid, message: message.slice(0, 160) });
   }
 
+  // Il bot scrive in chat (M5). Un pacchetto `text` tipo `chat` è ciò che manda
+  // un client vanilla quando premi invio: il server lo inoltra agli altri
+  // giocatori. Richiede lo spawn, altrimenti il pacchetto viene scartato.
+  // Ritorna { ok, error? } e non lancia mai: il chiamante logga l'esito.
+  sendChat (message, { type = 'chat' } = {}) {
+    if (!this.client || !this.spawned || this.status !== 'spawned') return { ok: false, error: 'not_spawned' };
+    const text = String(message ?? '').replace(/[\r\n]+/g, ' ').trim();
+    if (!text) return { ok: false, error: 'empty_message' };
+    if (text.length > CHAT_MAX_LENGTH) return { ok: false, error: 'message_too_long', max: CHAT_MAX_LENGTH };
+    const now = Date.now();
+    const wait = CHAT_MIN_INTERVAL_MS - (now - this._lastChatAt);
+    if (wait > 0) return { ok: false, error: 'rate_limited', retryInMs: wait };
+    try {
+      // `category`/`has_filtered_message` sono obbligatori dallo schema 1.26.x;
+      // xuid vuoto come nel client vanilla (il server lo riempie).
+      this.client.queue('text', {
+        type,
+        needs_translation: false,
+        category: 'authored',
+        source_name: USERNAME,
+        message: text,
+        xuid: '',
+        platform_chat_id: '',
+        has_filtered_message: false,
+      });
+      this._lastChatAt = now;
+      this.log('chat_out', { type, message: text });
+      return { ok: true, message: text };
+    } catch (error) {
+      this.log('chat_out_error', { type, message: text, error: error.message });
+      return { ok: false, error: error.message };
+    }
+  }
+
   // Registra un'entità da add_entity/add_player. Per i mob `position` è ai piedi;
   // per i giocatori è agli occhi (1,62 sopra i piedi).
   _trackEntity (packet, kind) {
@@ -4727,6 +4771,31 @@ export class BedrockAdapter {
           z: +entity.position.z.toFixed(1),
         },
         health: entity.health ?? null,
+      });
+    }
+    rows.sort((a, b) => a.distance - b.distance);
+    return rows.slice(0, limit);
+  }
+
+  // Giocatori umani percepiti entro `range` blocchi (il bot stesso escluso).
+  // Separato da `_nearbyEntities` perché quello è limitato a 8 righe totali:
+  // con otto mob addosso un umano vicino sparirebbe dalla lista e non verrebbe
+  // mai salutato. Esposto in `observe().humans`.
+  _nearbyHumanPlayers ({ range = HUMAN_RANGE, limit = 8 } = {}) {
+    const rows = [];
+    for (const entity of this.entities.values()) {
+      if (entity.kind !== 'player' || !entity.username || !entity.position) continue;
+      if (USERNAME && entity.username.toLowerCase() === USERNAME.toLowerCase()) continue;
+      const distance = this._entityDistance(entity);
+      if (distance > range) continue;
+      rows.push({
+        username: entity.username,
+        distance: +distance.toFixed(1),
+        position: {
+          x: +entity.position.x.toFixed(1),
+          y: +entity.position.y.toFixed(1),
+          z: +entity.position.z.toFixed(1),
+        },
       });
     }
     rows.sort((a, b) => a.distance - b.distance);

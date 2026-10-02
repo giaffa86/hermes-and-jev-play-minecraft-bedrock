@@ -94,8 +94,9 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   survival priorities, anti-loop, option cap, diagnostics.
 - Survival Intelligence Layer (governor, declarative skills, verifier,
   progression) — see [survival-intelligence](survival-intelligence.md).
-- Human chat command channel M1–M3 (capture/identify/follow/NL orders) —
-  see [human-command](human-command.md).
+- Human chat command channel M1–M3 (capture/identify/follow/NL orders) and the
+  proactive greeting slice of M5 (bot speaks via `/say`, tells a nearby human the
+  order syntax) — see [human-command](human-command.md).
 - Trading + levelling code path (unit-tested) — see [trading](trading.md).
 - Farming core **verified live on 03/10**: `read_container` (6 chests/barrels),
   `mine_<crop>` → `collect_drop` → `plant_potato` (re-sow, `server_world`),
@@ -134,7 +135,8 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 - Trading: `open_trade`, `trade_<index>`, `close_trade`,
   `level_<profession>`/`level_trader` (final trade transaction + tier-up
   detection).
-- `follow_player` and the chat command channel M1–M3 (wiring + unit tests done).
+- `follow_player` and the chat command channel M1–M3 (wiring + unit tests done);
+  greeting + `POST /say` (M5, wiring + unit tests done).
 - Farming still live-pending: `attack_<animal>` (skipped, would kill a family
   animal), `tame_<companion>` (no wolf/cat/parrot/horse nearby), `shear_sheep` +
   `craft_shears` (no sheep nearby).
@@ -181,8 +183,8 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 - Farming leftovers (`.private/FARMING-TASK.md`): milk (bucket + cow) and
   mature-crop growth detection.
 - Defense gaps (remaining): shield (stretch).
-- Human chat command M5 (ack/reply in chat) and autonomous exploration
-  **M2–M6** (M1 core implemented — see [exploration](exploration.md)).
+- Human chat command M5 leftovers (ack of a specific order) and autonomous
+  exploration **M2–M6** (M1 core implemented — see [exploration](exploration.md)).
 - **Fluids** — swimming, drowning/breathing, waterfalls (descent/ascent), lava
   avoidance, buckets/boats/bubble columns/potions. Roadmap (M0–M6) in
   [fluids](fluids.md) / [`raw/FLUIDS_ROADMAP.md`](../raw/FLUIDS_ROADMAP.md);
