@@ -217,3 +217,12 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   server. Death→respawn (claimed verified earlier) is currently regressed.
 - Root cause TBD (NetherNet session state vs BDS 1.26.52 respawn trigger).
   Documented in `wiki/open-questions.md` + `wiki/verification.md` (row 12 → ⚠️).
+
+## [2026-10-02] query | Respawn-stuck resolved: stale NetherNet session
+
+- Live round: stopped the bot container → BDS at 0 players → `systemctl restart
+  minecraft-bedrock` (first attempt raced on the port; auto-restart brought it
+  up, `/v1/join` OK) → started the container.
+- Bot respawned alive (`health:20, spawned:true`, spawn point, empty inventory —
+  death dropped the items). Conclusion: the stuck respawn was stale NetherNet
+  session state, not a protocol bug. Updated `open-questions.md` + `verification.md`.
