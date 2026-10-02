@@ -154,7 +154,7 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   mature-crop growth detection.
 - Defense gaps (remaining): shield (stretch).
 - Human chat command M5 (ack/reply in chat) and autonomous exploration
-  (spec in [exploration](exploration.md)).
+  **M2–M6** (M1 core implemented — see [exploration](exploration.md)).
 - **Fluids** — swimming, drowning/breathing, waterfalls (descent/ascent), lava
   avoidance, buckets/boats/bubble columns/potions. Roadmap (M0–M6) in
   [fluids](fluids.md) / [`raw/FLUIDS_ROADMAP.md`](../raw/FLUIDS_ROADMAP.md);
@@ -219,6 +219,30 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    build a portal, `/observe.portals`, fire/lava + projectile/gaze sensing),
    then N2/N3 (survive the Nether, dodge ghast fireballs), N4/N5 (piglin
    bartering, enderman gaze discipline), N6/N7 (fortress, blaze rods, End).
+10. **Exploration** (spec in [exploration](exploration.md)): M1 core is
+    implemented (`exploration.mjs` target resolution + spiral planner + report,
+    `POST/GET /explore`, driver `explore.mjs`, missions + sparse checkpoints in
+    the [world memory](memory.md)). Next: run M1 end-to-end on the BDS once the
+    bot can travel, then M2 (route replay), M3 (escort), M4 (blocks/resources),
+    M5 (structures), M6 (underground targets: caves, mineshafts, Deep Dark,
+    spawners).
+11. **Memory follow-ups** (see [memory](memory.md)): a **structure detector**
+    (villages / Ancient Cities → `structure:*` nodes), an explicit
+    **observation log** (`subject/predicate/object` that materializes the
+    current graph), and a **vector index** for semantic recall. The graph,
+    producers, chunk memory and missions are implemented and live-verified.
+12. **Travel kit** (spec in
+    [exploration](exploration.md#travel-survival-kit-and-adaptation-multi-day-expeditions)):
+    `craft_bed`/`place_bed` + `/observe.travel` readiness are implemented and
+    unit-tested; still missing the auto-**loadout** action, **pillar-up**,
+    **provisional hut** and **inventory-full** handling. The `craft_bed` live
+    round is gated by wool (no chest holds wool; shears need the iron chain).
+
+> **Blocker (2026-10-02)**: the deployed bot got stuck on a built platform
+> (`standingOn: oak_planks`; `path_failed` everywhere, `dig_up`/`dig_down`
+> `protected_*`). Live movement/exploration rounds need a **BDS restart at zero
+> players** (the bot respawns at the world spawn) or a human to move the
+> structure.
 
 ## Related pages
 

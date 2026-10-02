@@ -16,6 +16,16 @@ Last lint: 2026-10-03.
   BDS restart clears it. One solved cause: mining via `item_stack_request` with
   invalid negative ids (fixed by reusing the crafting id sequence).
 
+## Bot stuck on a built platform (2026-10-02)
+
+- The deployed bot spawned on a built structure (`standingOn: oak_planks`) and
+  could not move: `goto_waypoint`/`_moveTo` returned `path_failed` in every
+  direction, and `dig_up`/`dig_down` returned `protected_head`/`protected_step`
+  (`DIG_PROTECTED` covers planks). This blocked the live movement / exploration
+  rounds of the session (the planner itself was verified via `GET /explore`).
+- Remedy: **restart the BDS at zero players** (the bot respawns at the world
+  spawn), or have the human player move/break the structure.
+
 ## Missing Bedrock capabilities (for the full first-night milestone)
 
 - **Food beyond crops** — requires the furnace/smelting chain (exists, needs live

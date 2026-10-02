@@ -858,3 +858,13 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - **Verified live**: `POST /explore 'Trova un Cherry Grove'` → `minecraft:cherry_grove`
   and `GET /explore` → `move` to the first unexplored spiral point; the driver
   loop runs but the bot was stuck on a built platform (`target_not_found`).
+
+## [2026-10-02] doc | Track next activities + bot-stuck blocker
+
+- `wiki/roadmap.md` "Next planned work" extended with items 10–12: Exploration
+  (M1 core done → end-to-end then M2–M6), Memory follow-ups (structure detector,
+  observation log, vector index), Travel kit (loadout/pillar-up/hut/inventory).
+  "What is not implemented" updated: exploration now says M2–M6 (M1 core done).
+- `wiki/open-questions.md`: new "Bot stuck on a built platform" blocker — the
+  deployed bot spawned on `oak_planks`, `path_failed` everywhere and `protected_*`
+  on dig; remedy = BDS restart at zero players (or move the structure).
