@@ -220,6 +220,10 @@ server = createServer(async (req, res) => {
     }
     else if (req.method === 'POST' && req.url === '/mission') { const payload = body ? JSON.parse(body) : {}; const record = adapter.memory?.createMission(payload); if (record) adapter.missionId = record.id; response = [200, { ok: !!record, mission: record ?? null }]; }
     else if (req.method === 'POST' && req.url === '/mission/complete') { const payload = body ? JSON.parse(body) : {}; const missionId = payload.missionId ?? adapter.missionId; const record = missionId ? adapter.memory?.completeMission(missionId, payload.result ?? null) : null; response = [200, { ok: !!record, mission: record ?? null }]; }
+    // Layer goal/episodico: archi di goal, cronologia azioni e chiusura con esito.
+    else if (req.method === 'POST' && req.url === '/mission/link') { const payload = body ? JSON.parse(body) : {}; const id = adapter.memory?.linkMission(payload.missionId, payload.relationType, payload.targetId, { metadata: payload.metadata ?? {} }); response = [200, { ok: !!id, id: id ?? null }]; }
+    else if (req.method === 'POST' && req.url === '/mission/action') { const payload = body ? JSON.parse(body) : {}; const id = adapter.memory?.recordAction(payload); response = [200, { ok: !!id, id: id ?? null }]; }
+    else if (req.method === 'POST' && req.url === '/mission/finish') { const payload = body ? JSON.parse(body) : {}; const missionId = payload.missionId ?? adapter.missionId; const record = missionId ? adapter.memory?.finishMission(missionId, payload) : null; response = [200, { ok: !!record, mission: record ?? null }]; }
     else if (req.method === 'POST' && req.url === '/plan') { adapter.setPlan(JSON.parse(body)); response = [200, { ok: true, plan: adapter.plan }]; }
     else if (req.method === 'POST' && req.url === '/act') { const { key } = JSON.parse(body); response = [200, await adapter.executeAction(key)]; }
     else response = [404, { error: 'unknown route' }];

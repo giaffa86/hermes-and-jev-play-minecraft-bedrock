@@ -210,6 +210,17 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Tests: `tests/memory-missions.test.mjs` (15, both backends); suite 435 green.
 - `wiki/memory.md` + `verification.md` updated; controller wiring deferred.
 
+## [2026-10-03] ingest | Controller wiring: goal → mission + action events
+
+- `bedrock-harness.mjs`: new routes `POST /mission/link`, `POST /mission/action`,
+  `POST /mission/finish` (goal edges, action history, outcome/success).
+- `controller.mjs`: each goal becomes a mission (`POST /mission` with `rawPrompt`
+  + `intent`), plan targets become `seeks` edges, each executed action is an
+  `action_event` (`POST /mission/action`) and the goal end closes the mission
+  (`POST /mission/finish`); the controller log carries `missionId` on `result`
+  lines. All best-effort (a harness without `/mission` degrades gracefully).
+- Tests: `tests/controller-mission.test.mjs` (2); suite 437 green.
+
 ## [2026-10-03] lint | Roadmap status refresh (test count + riding)
 
 - Verified the consolidated tracker `wiki/roadmap.md` against the code: every

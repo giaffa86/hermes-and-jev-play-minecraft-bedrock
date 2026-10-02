@@ -218,8 +218,12 @@ utente (una *missione*) ai nodi del mondo **senza sporcarli**.
   an active mission (route replay / escort).
 - **Goal/episodic layer**: `linkMission`/`missionRelations`/`recordAction`/
   `missionActions` + `findPreviousMissions`/`findSuccessfulLocationsFor` and
-  `finishMission` (outcome/success) — unit-tested, not yet wired into the
-  controller (the controller writes `mission_id` in its log for a future join).
+  `finishMission` (outcome/success). **Wired into the controller**: each goal
+  becomes a mission (`POST /mission` with `rawPrompt` + `intent`), target items
+  become `seeks` edges (`POST /mission/link`), each action is an `action_event`
+  (`POST /mission/action`) and the goal end closes the mission (`POST
+  /mission/finish` with outcome/success); the controller log carries `missionId`
+  on `result` lines. Degrades gracefully if the harness has no `/mission`.
 - The adapter persists chest observations (`_setContainerContents`) and runs the
   discovery producers (`_rememberDiscoveries`, once per chunk: portal, resource
   site, notable entities).
@@ -230,9 +234,6 @@ utente (una *missione*) ai nodi del mondo **senza sporcarli**.
 
 ## Next slices
 
-- **Controller wiring**: the controller logs each action and `mission_id`; a
-  small writer materializes `action_event` from the log (not a second source of
-  truth), and creates the mission from the user prompt (`rawPrompt` + `intent`).
 - **Episodic → semantic consolidation**: on mission completion, write a
   *productivity hint* on the target node (e.g. `cave_07.data.productivity` =
   `{ iron_ore: { found: 3, success: true, last } }`) so the planner prefers

@@ -419,6 +419,14 @@ if (initialPlan?.met) {
 }
 let plan = initialPlan;
 await api('POST', '/plan', plan);
+// Archi di goal: ogni target dell'obiettivo diventa una risorsa cercata
+// (mission --seeks--> resource:<item>). Best-effort, non blocca il loop.
+if (goal.missionId && plan?.targets) {
+  for (const item of Object.keys(plan.targets)) {
+    if (!item) continue;
+    await api('POST', '/mission/link', {missionId: goal.missionId, relationType: 'seeks', targetId: `resource:${item}`}).catch(() => {});
+  }
+}
 skillRun = startSkillRun(plan, obs);
 console.log('PLAN', plan.objective, plan.waypoint ? JSON.stringify(plan.waypoint) : '', plan.skill ? `[skill ${plan.skill}]` : '');
 let history = [];              // [{key, stagnant}] per l'anti-loop
@@ -603,11 +611,15 @@ for (let step = 1; step <= MAX_STEPS; step++) {
   const key = decision.key;
   if (typeof decision.cost === 'number') totalCost += decision.cost;
   chosenFingerprint = progressFingerprint(obs, plan);
+  const actStarted = Date.now();
   const result = await api('POST', '/act', {key});
   if (skillRun) skillRun.actions += 1;
   lastFailedKey = result.ok ? null : key;
   lastKey = key;
-  log('result', {step, key, ok: !!result.ok, error: result.error ?? null, ms: result.ms ?? null});
+  log('result', {step, key, ok: !!result.ok, error: result.error ?? null, ms: result.ms ?? null, missionId: goal.missionId ?? null});
+  if (goal.missionId) {
+    await api('POST', '/mission/action', {missionId: goal.missionId, actionType: key, outcome: result.ok ? 'ok' : (result.error ?? 'failed'), startedAt: actStarted, completedAt: Date.now()}).catch(() => {});
+  }
   console.log(`#${step} ${key} ->`, JSON.stringify(result));
   if (step === MAX_STEPS) { console.log('step budget exhausted'); log('budget_exhausted', {steps: step, totalCost}); }
 }
@@ -717,6 +729,16 @@ async function main () {
     enterState('GOAL_RUNNING', {goalId: goal.id, source: goal.source});
     console.log(`GOAL ${goal.id} [${goal.source}] ${goal.objective}`);
     log('goal_start', {goalId: goal.id, source: goal.source, priority: goal.priority, objective: goal.objective, plan: goal.plan ?? null});
+    // Wiring memoria episodica: il goal diventa una missione persistente nel
+    // world memory dell'harness (rawPrompt = obiettivo, intent = tipo goal).
+    goal.missionId = null;
+    try {
+      const missionRes = await api('POST', '/mission', {type: goal.type, intent: goal.type, rawPrompt: goal.objective, source: 'controller'});
+      goal.missionId = missionRes.mission?.id ?? null;
+      if (goal.missionId) log('mission_start', {goalId: goal.id, missionId: goal.missionId, type: goal.type, intent: goal.type});
+    } catch (error) {
+      log('mission_create_failed', {goalId: goal.id, error: error.message});
+    }
     const outcome = await runGoal(goal);
     if (outcome.status === 'preempted') {
       // Sospende il goal in corso e accoda l'emergenza (priorità più alta):
@@ -733,6 +755,20 @@ async function main () {
     const final = goalManager.get(goal.id);
     console.log(`GOAL ${goal.id} ${final.status.toUpperCase()}${final.reason ? ` (${final.reason})` : ''} after ${outcome.steps} actions`);
     log('goal_end', {goalId: goal.id, status: final.status, reason: final.reason, steps: outcome.steps, totalCost: outcome.totalCost});
+    // Chiusura della missione episodica con esito e successo (best-effort).
+    if (goal.missionId) {
+      const finish = outcome.status === 'success'
+        ? {outcome: 'found', success: true, state: 'found', result: {steps: outcome.steps, totalCost: outcome.totalCost}}
+        : outcome.status === 'failed'
+          ? {outcome: 'failed', success: false, state: 'failed', failureReason: outcome.reason ?? 'failed'}
+          : {outcome: 'exhausted', success: false, state: 'cancelled', failureReason: 'exhausted'};
+      try {
+        await api('POST', '/mission/finish', {missionId: goal.missionId, ...finish});
+        log('mission_end', {goalId: goal.id, missionId: goal.missionId, ...finish});
+      } catch (error) {
+        log('mission_finish_failed', {goalId: goal.id, missionId: goal.missionId, error: error.message});
+      }
+    }
     enterState('GOAL_COMPLETED', {goalId: goal.id, status: final.status});
     if (!SESSION) { exitCode = outcome.exitCode; break; }
     if (goal.parentGoal) {
