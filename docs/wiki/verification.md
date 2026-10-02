@@ -99,7 +99,8 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 55 | Enderman gaze discipline | gaze sensing / look-away | ❌ | no aggro while collecting pearls | Spec N5 in [nether](nether.md). |
 | 56 | Fortress / blaze rods | `obtain_blaze_rods` | ❌ | 7 blaze rods, return alive | Spec N6 in [nether](nether.md); needs exploration + ranged combat. |
 | 57 | Endgame (stronghold/End/dragon) | `find_stronghold`, `enter_end`, `beat_the_dragon` | ❌ | reach the End; dragon gated | Spec N7 in [nether](nether.md); no `bossDefeated` criterion. |
-| 58 | Goal Contract | `survival/goal-contract.mjs`, `GOAL_CONTRACT`/`MAX_DEATHS`/`PRESERVE_ITEMS` | ✅ | run the controller with a contract | Slice A; 22 unit tests. **Live (2026-10-02)**: pre-loop SUCCESS (`dirt>=1`, exit 0) and FAILED (`deathsAtLeast:0`, exit 2); in-loop RUNNING with real Jev actions; `EXHAUSTED` at budget end (`MAX_STEPS=1` and `0`, exit 2). The natural in-loop SUCCESS transition was not reached because the mined dirt drops were not collected (target/height issue, unrelated), so the threshold was never met — same `evaluateContract` call as the live pre-loop cases. |
+| 58 | Goal Contract | `survival/goal-contract.mjs`, `GOAL_CONTRACT`/`MAX_DEATHS`/`PRESERVE_ITEMS` | ✅ | run the controller with a contract | Slice A; 22 unit tests. **Live (2026-10-02)**: pre-loop SUCCESS (`dirt>=1`, exit 0) and FAILED (`deathsAtLeast:0`, exit 2); in-loop RUNNING with real Jev actions; `EXHAUSTED` at budget end (`MAX_STEPS=1` and `0`, exit 2). The natural in-loop SUCCESS transition was not reached because the mined dirt drops were not collected (target/height issue, unrelated), so the threshold was never met — same `evaluateContract` call as the live pre-loop cases. || 59 | Persistent session loop | `SESSION=on` in `controller.mjs` + `goal-manager.mjs` | ✅ | run a goal, then idle and accept a new one | **Live (2026-10-02)**: goal `g1` completed, `session_state IDLE`, process stays alive until `IDLE_TIMEOUT_MS` then exits 0; queue persisted in `runs/<RUN>/goals/world.json` (`g1 completed`); transitions `goal_start`/`goal_end` logged. Unit + integration tests (`goal-manager`, `controller-session`). |
+| 60 | Idle autonomy (survival needs) | `idle-goals.mjs`, `AUTONOMY=on` | ✅ | let the bot idle at night / near a threat | **Live (2026-10-02)**: in `IDLE` the bot generated `autonomous` goals from real needs — `escape` (a zombie villager at ~9 blocks; `flee` pushed it to ~18 blocks → `isNeedResolved`) and `sleep` (bed reached; `sleep` → `night_skipped`) — each `COMPLETED` and logged (`idle_goal`, `goal_end`). Deterministic success, no LLM in the decision. Unit test `idle-goals` + integration case. |
 
 ## Still not implemented
 
@@ -116,8 +117,9 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
   delay lines, observers/pistons, hoppers, dispensers, circuit blueprints. Spec
   in [redstone](redstone.md) (rows 46–50); no redstone support today.
 - **Goal Contract** — thin slice implemented and unit-tested (row 58); the
-  persistent Goal Manager / queue, a `target`-driven `obtain_item` executor and
-  the semantic-goal interpreter are still missing.
+  persistent **Goal Manager/queue** is now implemented (rows 59–60), while a
+  `target`-driven `obtain_item` executor and the semantic-goal interpreter are
+  still missing. Resume of a suspended goal across sessions is also still open.
 - **Goal-driven benchmarks** (proposal in [goal-achievement](goal-achievement.md)):
   never run end-to-end — 16 logs (wood live, target 16 not run);
   shelter + survive a night (`first_night`, not run); iron pickaxe (iron + smelt

@@ -137,7 +137,10 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   `runs/<RUN_ID>/goals/world.json` and a `running` goal left by a previous run
   is suspended on startup. `SESSION=off` (default) preserves the one-shot loop.
   Unit + integration tests: `tests/goal-manager.test.mjs`,
-  `tests/controller-session.test.mjs`.
+  `tests/controller-session.test.mjs`. **Verified live on the BDS (2026-10-02)**:
+  a completed goal → `IDLE` → persisted queue, and (with `AUTONOMY=on`) idle
+  goals generated from real needs (`escape` resolved by `flee`, `sleep` verified
+  by the harness) and closed deterministically.
 - **Still missing**: resume of a suspended goal across sessions, the remaining
   needs-driven goals (inventory-full → store, else explore), and world-event/
   emergency producers that preempt a *running* goal. The first autonomy slice

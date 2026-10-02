@@ -139,6 +139,9 @@ IDLE` (AI-player roadmap milestone 0→1).
   `AUTONOMY_MAX_GOALS` bounds the session.
 - Default `SESSION=off` preserves the historical one-shot behaviour and exit
   codes (`2` on a `failed` Goal Contract).
+- **Live-verified on the BDS (2026-10-02)**: a completed goal → `IDLE` with the
+  queue persisted, and (with `AUTONOMY=on`) idle goals generated and closed for
+  real needs (`escape` via `flee`, `sleep` via the bed).
 
 ---
 

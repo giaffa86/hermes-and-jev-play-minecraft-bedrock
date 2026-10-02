@@ -725,3 +725,29 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Tests both backends (graph, traverse, per-relation query, derived near);
   suite green (394).
 - `wiki/memory.md` + `verification.md` row 41 updated.
+
+## [2026-10-02] verify | Session loop + idle autonomy verified live on the BDS
+
+- Deployed the committed controller into the `hermes` container (isolated
+  `/tmp/session`, no image rebuild, no restart of `hermes-jev-bedrock`) and ran
+  it against the live harness on VM 100 (bot connected, night).
+- **Session loop** (`SESSION=on`, `AUTONOMY=off`): a Goal Contract satisfied at
+  step 0 → `GOAL g1 COMPLETED`, then `IDLE — waiting for a new goal`, then
+  `IDLE timeout (12000 ms)` and exit 0. Queue persisted in
+  `runs/collaudo-session/goals/world.json` (`g1 completed`); transitions logged
+  (`session_state GOAL_RUNNING → goal_start → goal_end → GOAL_COMPLETED → IDLE`).
+- **Idle autonomy** (`SESSION=on`, `AUTONOMY=on`): after the seeded goal the bot
+  generated, in `IDLE`, goals from real needs and closed them deterministically:
+  - `g2 [escape]` — a zombie villager at ~8.5 blocks; `flee` succeeded and pushed
+    it to ~18.8 blocks → `isNeedResolved('escape')` → `GOAL MET`, `COMPLETED`.
+  - `g3 [sleep]` — a bed nearby; `sleep` → `{slept:'night_skipped'}` →
+    `isNeedResolved('sleep')` → `GOAL MET`, `COMPLETED`.
+  Final queue: `g1/g2/g3 completed` (all `autonomous`); `idle_goal` and
+  `goal_end` logged.
+- **Operational finding**: a *concurrent* session was driving the same harness
+  (`goto_waypoint` for 36 s, `path_failed`), so the first autonomy attempt got
+  `{"ok":false,"error":"busy"}` on every `/act` (adapter `busy` flag, one action
+  at a time). Re-run when the adapter was free → all actions succeeded. Lesson:
+  run controllers strictly one at a time against the shared bot.
+- `verification.md` rows 59–60 added (✅); `wiki/ai-player-roadmap.md`,
+  `wiki/roadmap.md`, `BEDROCK.md` note the live result.

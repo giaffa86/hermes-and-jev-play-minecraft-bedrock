@@ -98,7 +98,10 @@ IDLE`; transitions are logged (`session_state`, `goal_start`, `goal_end`) and a
 goal left `running` by a previous run is suspended on startup. Covered by
 `tests/goal-manager.test.mjs` (unit) and `tests/controller-session.test.mjs`
 (integration against a fake harness: goal → COMPLETED → IDLE, and an idle `@bot`
-order becoming a new completed `chat` goal with no reconnect).
+order becoming a new completed `chat` goal with no reconnect). **Verified live on
+the BDS (2026-10-02)**: a seeded goal completed, the loop entered `IDLE`, the
+queue was persisted (`runs/<RUN>/goals/world.json`) and the process stayed alive
+until `IDLE_TIMEOUT_MS`.
 
 Still missing (later milestones): a **persistent Goal Manager across
 sessions** (explicit resume), the rest of the needs-driven menu (inventory-full
@@ -120,7 +123,11 @@ disappearing from observation — never the model's opinion. A per-need cooldown
 the session. Not yet produced: inventory-full → store, and "else explore".
 Tests: `tests/idle-goals.test.mjs` (unit) and the autonomy case in
 `tests/controller-session.test.mjs` (integration: a night-without-bed need
-becomes a completed `autonomous` shelter goal).
+becomes a completed `autonomous` shelter goal). **Verified live on the BDS
+(2026-10-02)**: in `IDLE` the bot generated `autonomous` goals for real needs —
+`escape` (a hostile at ~9 blocks; `flee` pushed it beyond the danger radius) and
+`sleep` (bed reached; `sleep` → `night_skipped`) — each closed by
+`isNeedResolved` (deterministic, no LLM in the decision).
 
 ## Roadmap milestones
 
