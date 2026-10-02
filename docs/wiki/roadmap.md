@@ -93,14 +93,15 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
   animal), `tame_<companion>` (no wolf/cat/parrot/horse nearby), `shear_sheep` +
   `craft_shears` (no sheep nearby).
 - Tool durability over many blocks / long ore runs (unit-tested only).
+- Fishing: `craft_fishing_rod`, `cast_rod`, `reel_in`, `fish` (pure module
+  `bedrock-fishing.mjs` + unit tests; no live round yet) — see
+  [fishing](fishing.md).
 - A live `CURRICULUM=first_night` round and the real-multiplayer test (Phase 10).
 
 ## What is not implemented
 
 - Farming leftovers (`.private/FARMING-TASK.md`): milk (bucket + cow) and
   mature-crop growth detection.
-- **Fishing**: fishing-rod crafting, cast/bite/reel, water/shore detection —
-  see [fishing](fishing.md).
 - Defense gaps: `place_torch`, `craft_*_sword`, `retreat`/`go_home`,
   `close_door`, `barricade`, armor equip/armor points, shield (stretch).
 - Human chat command M5 (ack/reply in chat) and autonomous exploration.
@@ -121,7 +122,7 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
    channel).
 3. Defense completions (torch placement, swords, shelter) and a full
    `CURRICULUM=first_night` run.
-4. Fishing: string → `craft_fishing_rod` → `cast_rod`/`reel_in` (or a single
+4. Live-verify fishing: `craft_fishing_rod` → `cast_rod`/`reel_in` (or a single
    `fish`), bite detection, `food` tag integration — see [fishing](fishing.md).
 
 ## Related pages

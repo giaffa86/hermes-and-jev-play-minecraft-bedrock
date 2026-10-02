@@ -14,6 +14,22 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Added synthesis pages: `wiki/overview.md`, `wiki/survival-intelligence.md`,
   `wiki/reproduction.md`, `wiki/open-questions.md`.
 
+## [2026-10-03] ingest | Fishing implemented (rod crafting, cast/bite/reel, water detection)
+
+- Added `bedrock-fishing.mjs` (pure, no socket/world access): `isWaterBlock`,
+  `isFishItem`/`isEdibleFish`, `fishCount`/`fishItems`, `shoreCandidates`
+  (ground cells adjacent to water within `CAST_RANGE`), `nextBiteDelay` (vanilla
+  5–30 s window), `FISHING_ROD_INGREDIENTS`. Unit-tested
+  (`tests/bedrock-fishing.test.mjs`, 7 tests).
+- Wired `bedrock-adapter.mjs`: `/observe.fishing` context, `craft_fishing_rod`
+  option (reuses `craft_` → `_craftItem`), `cast_rod`/`reel_in`/`fish` options +
+  actions, and the methods `_findFishingSpot`/`_findBobber`/`_fishingContext`/
+  `_castRod`/`_reelIn`/`_fish`. Bite detection = bobber `y` dip (best-effort) +
+  timing fallback; reel confirmation is the inventory delta.
+- Full suite green (277 tests). Live verification on the BDS pending.
+- Updated `wiki/fishing.md` (status → implemented), `roadmap.md` (moved fishing
+  from not-implemented to live-pending), `index.md`, `sources.md`.
+
 ## [2026-10-03] doc | Fishing roadmap (rod, cast/bite/reel, water detection)
 
 - Added `wiki/fishing.md`: roadmap for fishing — string source (spiders/cobweb),
