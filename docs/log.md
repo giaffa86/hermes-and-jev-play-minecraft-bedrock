@@ -1354,3 +1354,42 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   ✅, `survival-intelligence.md` (status + evidenza live + lock), `control-flow.md`
   ("One action at a time: the harness `busy` lock"), `roadmap.md`,
   `open-questions.md` (4 voci nuove), `AGENTS.md` (env var `HARNESS_BUSY_*`).
+
+## [2026-10-03] fix | Combattimento: lock del bersaglio per runtimeId (chiuso il `combat_timeout` sugli animali)
+
+- **Diagnosi live**: il log eventi del container (`/app/runs/demo/events.jsonl`,
+  scritto dall'adapter quando `BEDROCK_EVENT_LOG` è attivo) con il codice vecchio
+  conteneva **102 eventi `attack` e 0 `entity_death`**, distribuiti su **almeno 15
+  galline diverse** (679:14, 691:21, 676:11, 694:7 …) con `targetHealth` quasi
+  sempre 4 e qualche 1-3. Quindi il danno entrava sui singoli uccelli ma `_combat`
+  ri-risolveva "l'animale più vicino di quel tipo" **prima di ogni fendente**: il
+  danno veniva spalmato sul pollaio, nessuno moriva e l'azione chiudeva sempre
+  `combat_timeout` (33-35 fendenti). Causa = churn di identità, non tabella dei
+  danni.
+- **Fix** (`bedrock-adapter.mjs`): nuovo `_lockedTargetState(runtimeId)`
+  (`gone`/`dead`/`alive`) e `_combat` riscritto per acquisire il bersaglio **una
+  volta** e colpirlo sempre per quella identità. La morte è confermata solo da
+  `health <= 0` (`confirmedBy: 'health'`) o da una rimozione dell'entità subito
+  dopo un fendente (`'entity_removed'`); bersaglio sparito con l'ultimo fendente
+  più vecchio di 2 s ⇒ `target_lost` (prima il codice dichiarava `killed: true`
+  appena il "più vicino" non c'era più); nessun bersaglio tracciato ⇒ `target_gone`;
+  3 approcci falliti ⇒ `cannot_reach_target`. L'inventario viene scandito una sola
+  volta per scontro (`weaponChecked`), perché con il lock una lotta può durare
+  l'intero budget. +78/−18 righe.
+- **Test**: 4 nuovi casi in `tests/bedrock-survival.test.mjs` (lock su una gallina
+  con la vicina che si avvicina, uccisione confermata da rimozione, `target_lost`
+  quando l'entità sparisce tardi, `target_gone` senza bersaglio). Suite: **521
+  test verdi**.
+- **Evidenza live del fix**: deploy con `docker cp` + `docker restart`; l'harness
+  si è riconnesso da solo (`status: spawned`, health 20, food 19). `POST /act
+  {"key":"attack_pig"}` → `{ok:false,error:"cannot_reach_target: movement
+  timeout",hits:0}` in 24,3 s: il maiale è entro 32 blocchi (il recinto è appena
+  fuori dal muro della base) ma fuori dal componente raggiungibile, quindi il nuovo
+  percorso tipizzato risponde e **nessun animale è stato ucciso**. Il round live di
+  `attack_<animal>` resta quindi in attesa del consenso dell'utente (riga 23 di
+  `verification.md`) e di un ambiente con un animale raggiungibile (la stanza della
+  base resta sigillata: `goto_waypoint` → `path_failed`, `containers: 0`).
+- **Doc**: `verification.md` riga 8 aggiornata + nuova riga 8.1 (lock del
+  bersaglio), riga 23 ⏳ → 🧪 con l'esito live; `open-questions.md` (voce "danno agli
+  animali" riscritta come risolta con ipotesi e prova); `survival-intelligence.md`
+  (residuo aggiornato).

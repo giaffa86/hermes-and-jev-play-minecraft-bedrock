@@ -146,13 +146,21 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
   hostile-start variant: the run survived the night by sleeping in the base bed,
   so an awake night (no bed) remains untested, and the room stays a hostile start
   (see the P2 bullet above).
-- **Animal damage does not land** (2026-10-03, live): `attack_chicken` ends in
-  `combat_timeout` after **35 swings** (`weapon: null`, held item a `rabbit_foot`)
-  while the chicken keeps laying eggs next to the bot, and `mine_*` on the same
-  session reports `tool: "rabbit_foot"` for the held item. A chicken has 4 HP, so
-  the swings are counted but the attack is not applied — the same class of
-  mismatch as the drop pickup (`runtimeId`/handshake) rather than a damage-table
-  problem. Blocks `attack_<animal>` in P2.
+- **Animal combat target churn** (2026-10-03, live → fixed): `attack_chicken` used
+  to end in `combat_timeout` after 35 swings (`weapon: null`, held item a
+  `rabbit_foot`) because `_combat` re-resolved "the nearest animal of that type"
+  before **every** swing. The live event log proves it: 102 `attack` events spread
+  over ≥15 distinct chicken runtimeIds (679:14, 691:21, 676:11, 694:7 …) with
+  **0 `entity_death`** — the damage landed on single birds (health dropping to 1-3)
+  but the re-resolution smeared it across the flock, so nobody ever died. `_combat`
+  now locks one target by `runtimeId` for the whole fight, confirms the kill only
+  through `health <= 0` or an entity removal right after a hit, and answers
+  `target_lost` / `target_gone` instead of claiming a kill it did not observe
+  (4 unit tests in `tests/bedrock-survival.test.mjs`, 521 green).
+  Remaining gap: the live round of `attack_<animal>` still needs the user's consent
+  (verification row 23) **and** a reachable animal — inside the base room
+  `attack_pig` answers `cannot_reach_target` in 24 s even though a pig pen sits just
+  outside the wall.
 - **Drop pickup residue** (2026-10-03, live): with the reachability primitive in
   place `collect_drop` is mostly green, but two mined dirt drops in
   `p3-first-night-3` still answered `item_not_collected` and were only recovered

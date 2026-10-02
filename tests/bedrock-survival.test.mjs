@@ -439,6 +439,87 @@ test('combat chases and returns success when the mob dies', async () => {
   assert.equal(hits, 2);
 });
 
+// Evidenza live 03/10: `attack_chicken` -> `combat_timeout` dopo 33-35 fendenti,
+// con i log `attack` che mostravano runtimeId diversi (685 con health 1, poi 679
+// con 3, poi 677 con 4): il bersaglio veniva ri-risolto al più vicino a ogni
+// fendente, quindi i colpi si spalmavano su più galline e nessuna moriva.
+test('combat locks one chicken instead of spreading hits on its neighbours', async () => {
+  const adapter = spawnedAdapter();
+  adapter._queueAuthInput = async () => {};
+  let weaponScans = 0;
+  adapter._selectWeapon = async () => { weaponScans++; return null; };
+  adapter._moveTo = async () => ({ ok: true });
+  adapter._trackEntity({ runtime_id: 679n, unique_id: 901n, entity_type: 'chicken', position: { x: 2, y: 63, z: 0 } }, 'mob');
+  adapter._trackEntity({ runtime_id: 685n, unique_id: 902n, entity_type: 'chicken', position: { x: 2.4, y: 63, z: 0.2 } }, 'mob');
+  const hitIds = [];
+  const neighbourHealth = adapter.entities.get('685').health;
+  adapter._attackEntity = (entity) => {
+    hitIds.push(String(entity.runtimeId));
+    const tracked = adapter.entities.get(String(entity.runtimeId));
+    tracked.health = (tracked.health ?? 4) - 1;
+    // Il vicino si avvicina: senza il lock diventerebbe il bersaglio successivo.
+    adapter.entities.get('679').position = { x: 1.4, y: 63, z: 0 };
+    return true;
+  };
+  const result = await adapter._combat('chicken', 3000);
+  assert.equal(result.ok, true);
+  assert.equal(result.killed, true);
+  assert.equal(result.confirmedBy, 'health');
+  assert.deepEqual([...new Set(hitIds)], ['679'], 'stessa gallina per tutti i fendenti');
+  assert.equal(hitIds.length, 4, 'una gallina da 4 cuori a mani nude');
+  assert.equal(adapter.entities.get('679').health, 0);
+  assert.equal(adapter.entities.get('685').health, neighbourHealth, 'il vicino resta illeso');
+  assert.equal(weaponScans, 1, 'inventario scandito una volta per scontro');
+});
+
+test('combat accepts an entity removal right after a hit as a kill', async () => {
+  const adapter = spawnedAdapter();
+  adapter._queueAuthInput = async () => {};
+  adapter._selectWeapon = async () => null;
+  adapter._moveTo = async () => ({ ok: true });
+  adapter._trackEntity({ runtime_id: 7n, unique_id: 77n, entity_type: 'chicken', position: { x: 2, y: 63, z: 0 } }, 'mob');
+  adapter._attackEntity = () => {
+    adapter.entities.delete('7');
+    return true;
+  };
+  const result = await adapter._combat('chicken', 3000);
+  assert.equal(result.ok, true);
+  assert.equal(result.killed, true);
+  assert.equal(result.confirmedBy, 'entity_removed');
+  assert.equal(result.hits, 1);
+});
+
+test('combat does not claim a kill when the mob disappears long after the last hit', async () => {
+  const adapter = spawnedAdapter();
+  adapter._queueAuthInput = async () => {};
+  adapter._selectWeapon = async () => null;
+  adapter._trackEntity({ runtime_id: 42n, unique_id: 900n, entity_type: 'zombie', position: { x: 2, y: 63, z: 0 } }, 'mob');
+  adapter._attackEntity = (entity) => {
+    // Il mob fugge oltre il raggio di osservazione senza morire.
+    adapter.entities.get(String(entity.runtimeId)).position = { x: 9, y: 63, z: 0 };
+    return true;
+  };
+  let chases = 0;
+  adapter._moveTo = async () => {
+    chases++;
+    if (chases === 3) adapter.entities.delete('42');
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    return { ok: true };
+  };
+  const result = await adapter._combat('zombie', 20000);
+  assert.equal(result.killed, undefined, 'nessuna uccisione dichiarata');
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'target_lost');
+  assert.equal(result.hits, 1);
+  assert.equal(chases, 3);
+});
+
+test('combat reports target_gone when nothing of that type is tracked', async () => {
+  const adapter = spawnedAdapter();
+  const result = await adapter._combat('chicken', 500);
+  assert.deepEqual(result, { ok: false, error: 'target_gone', hits: 0 });
+});
+
 test('eat uses a click_air item use transaction and confirms on hunger rise', async () => {
   const adapter = spawnedAdapter();
   adapter.food = 12;
@@ -708,7 +789,7 @@ test('_barricade places blocks at feet then head', async () => {
   adapter._placeableBlock = () => 'dirt';
   adapter._barricadeGap = () => ({ feet: { x: 1, y: 63, z: 0 }, head: { x: 1, y: 64, z: 0 }, support: { x: 1, y: 62, z: 0 } });
   const calls = [];
-  adapter._placeAtCell = async (item, block, target, support, face) => { calls.push({ target, support, face }); return { ok: true, block }; };
+  adapter._placeAtCell = async (_item, block, target, support, face) => { calls.push({ target, support, face }); return { ok: true, block }; };
   const result = await adapter._barricade();
   assert.equal(result.ok, true);
   assert.equal(calls.length, 2);

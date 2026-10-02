@@ -5009,47 +5009,90 @@ export class BedrockAdapter {
     return true;
   }
 
-  // Insegue e colpisce il mob più vicino del tipo richiesto finché non muore o
-  // scade il tempo. Un'azione del controller può quindi coprire l'intero scontro.
+  // Stato del bersaglio bloccato per identità (runtime id): `dead` solo con un
+  // segnale di morte osservato (health a 0 dall'evento death o dai metadata),
+  // `gone` quando il server lo ha rimosso (o è uscito dal raggio di tracking).
+  _lockedTargetState (runtimeId) {
+    const entity = this.entities.get(String(runtimeId));
+    if (!entity) return { entity: null, state: 'gone' };
+    if (entity.health != null && entity.health <= 0) return { entity, state: 'dead' };
+    return { entity, state: 'alive' };
+  }
+
+  // Insegue e colpisce UN bersaglio (scelto una volta per runtime id) finché non
+  // muore o scade il tempo: un'azione del controller copre l'intero scontro.
+  // Il bersaglio non viene ri-risolto a ogni fendente: con più esemplari vicini
+  // ri-risolvere il più prossimo spalmava i colpi su mob diversi e nessuno
+  // moriva (evidenza live 03/10: `attack_chicken` → 35 fendenti su almeno tre
+  // galline, `targetHealth` che non scendeva mai a 0, `combat_timeout`).
   async _combat (type, timeoutMs = 25000) {
     const deadline = Date.now() + timeoutMs;
     let hits = 0;
     let weapon = null;
     let approachFailures = 0;
+    let lockedId = null;
+    let lastHitAt = 0;
+    let weaponChecked = false;
+    // Nessun successo inventato: `killed` solo con un segnale di morte, oppure
+    // con l'entità rimossa subito dopo un fendente (il vicino che se ne va non
+    // conta come uccisione).
+    const killResult = (confirmedBy) => ({ ok: true, killed: true, hits, weapon, confirmedBy });
+    const lostResult = () => (hits > 0 ? { ok: false, error: 'target_lost', hits, weapon } : { ok: false, error: 'target_gone', hits });
     while (Date.now() < deadline) {
       if (this.dead) return { ok: false, error: 'died_in_combat', hits };
-      const target = this._entityOfType(type);
-      if (!target) {
-        return hits > 0 ? { ok: true, killed: true, hits, weapon } : { ok: false, error: 'target_gone', hits };
+      if (!lockedId) {
+        const acquired = this._entityOfType(type);
+        if (!acquired) return lostResult();
+        lockedId = String(acquired.runtimeId);
       }
-      if (target.health != null && target.health <= 0) return { ok: true, killed: true, hits, weapon };
-      if (target.distance > 3.4) {
+      const { entity, state } = this._lockedTargetState(lockedId);
+      if (state === 'dead') return killResult('health');
+      if (state === 'gone') {
+        if (hits > 0 && Date.now() - lastHitAt <= 2000) return killResult('entity_removed');
+        lockedId = null;
+        continue;
+      }
+      const distance = this._entityDistance(entity);
+      if (distance > 3.4) {
         try {
-          await this._moveTo(target.position, 2.0, Math.min(8000, Math.max(1000, deadline - Date.now())));
+          await this._moveTo(entity.position, 2.0, Math.min(8000, Math.max(1000, deadline - Date.now())));
         } catch (error) {
           approachFailures++;
-          if (!this._entityOfType(type)) return hits > 0 ? { ok: true, killed: false, hits, detail: 'target_lost' } : { ok: false, error: 'target_lost', hits };
+          const now = this._lockedTargetState(lockedId);
+          if (now.state === 'dead') return killResult('health');
+          if (now.state === 'gone') {
+            lockedId = null;
+            if (hits > 0) return lostResult();
+            continue;
+          }
           if (approachFailures >= 3) return { ok: false, error: `cannot_reach_target: ${error.message}`, hits };
         }
         continue;
       }
-      if (!weapon) weapon = await this._selectWeapon();
+      if (!weapon && !weaponChecked) { weapon = await this._selectWeapon(); weaponChecked = true; }
       const aim = this._lookAt({
-        x: target.position.x,
-        y: target.position.y + entityHeight(target.type) * 0.5,
-        z: target.position.z,
+        x: entity.position.x,
+        y: entity.position.y + entityHeight(entity.type) * 0.5,
+        z: entity.position.z,
       });
       await this._queueAuthInput({ yaw: aim.yaw, pitch: aim.pitch });
       await delay(120);
-      const current = this._entityOfType(type);
-      if (!current) return hits > 0 ? { ok: true, killed: true, hits, weapon } : { ok: false, error: 'target_lost', hits };
-      this._attackEntity(current);
+      const pre = this._lockedTargetState(lockedId);
+      if (pre.state === 'dead') return killResult('health');
+      if (pre.state === 'gone') {
+        lockedId = null;
+        if (hits > 0) return lostResult();
+        continue;
+      }
+      this._attackEntity(pre.entity);
       hits++;
+      lastHitAt = Date.now();
       const waitUntil = Math.min(deadline, Date.now() + 550);
       while (Date.now() < waitUntil) {
-        const watched = this._entityOfType(type);
-        if (!watched || (watched.health != null && watched.health <= 0)) return { ok: true, killed: true, hits, weapon };
-        if (watched.distance > 4.5) break;
+        const watched = this._lockedTargetState(lockedId);
+        if (watched.state === 'dead') return killResult('health');
+        if (watched.state === 'gone') return killResult('entity_removed');
+        if (this._entityDistance(watched.entity) > 4.5) break;
         await delay(50);
       }
     }

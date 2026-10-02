@@ -48,7 +48,8 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 5 | Crafting (2×2 / 3×3) | `craft_*` | ✅ | `/act craft_planks` … | `crafting_data` recipes, `item_stack_request`. |
 | 6 | Placement | `place_*` | ✅ | `/act place_crafting_table` | `click_block` + world confirmation. |
 | 7 | Smelting | `smelt_*` | ✅ | `/act smelt_raw_iron` (furnace + coal) | `iron_ingot` obtained live 02/10. |
-| 8 | Combat vs hostiles | `attack_<mob>` | ✅ | `/act attack_zombie` with a mob nearby | Hits land; low damage without a sword. |
+| 8 | Combat vs hostiles | `attack_<mob>` | ✅ | `/act attack_zombie` with a mob nearby | Hits land; low damage without a sword. Since 2026-10-03 `_combat` locks a single target by `runtimeId` for the whole fight (see 8.1). |
+| 8.1 | Multi-mob combat target lock | `_combat` / `_lockedTargetState` (`bedrock-adapter.mjs`) | 🧪 | `/act attack_<type>` with several mobs of that type nearby | **Live diagnosis (03/10, `runs/demo/events.jsonl`)**: 102 `attack` events, **0 `entity_death`**, swings spread over ≥15 distinct chicken runtimeIds (679:14, 691:21, 676:11 …) — damage landed on single birds but the per-swing re-resolution smeared it, so nothing died and the action always ended `combat_timeout`. **Offline (03/10)**: 4 new tests in `tests/bedrock-survival.test.mjs` (identity lock across 4 swings, `entity_removed` kill, `target_lost` when the mob vanishes long after the last hit, `target_gone`); 521 tests green. **Live round still blocked**: needs user consent (row 23) and a reachable animal. |
 | 9 | Flee | `flee` | ✅ | `/act flee` with a hostile nearby | Real separation measured. |
 | 10 | Sleep | `sleep` | ✅ | `/act sleep` at night near a bed | `resting` flag / night-skip. |
 | 11 | Dig down/up (stairs) | `dig_down`, `dig_up` | ✅ | `/act dig_down` then `dig_up` | `DIG_PROTECTED` guards built blocks. |
@@ -63,7 +64,7 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 20 | Feed farm animals | `feed_<animal>` | ✅ | `/act feed_pig` with carrot | `inlove` confirmed live 03/10. |
 | 21 | Breed farm animals | `breed_<animal>` | ✅ | `/act breed_pig` (2 adults + 2 carrots) | Baby pig `baby:true` live 03/10. |
 | 22 | Throw egg | `throw_egg` | ✅ | `/act throw_egg` with an egg | Consumed; `chick: none` live 03/10. |
-| 23 | Hunt farm animals | `attack_<animal>` | ⏳ | `/act attack_pig` | **Needs user consent** (kills a family animal). |
+| 23 | Hunt farm animals | `attack_<animal>` | 🧪 | `/act attack_pig` | **Needs user consent** (kills a family animal). **Offline (03/10)**: the `combat_timeout` root cause is fixed (row 8.1). **Live attempt (03/10)**: `POST /act attack_pig` → `{ok:false,error:"cannot_reach_target: movement timeout",hits:0}` after 24.3 s — a pig is within 32 blocks (a pen right outside the base wall) but outside the walkable component, so no animal was harmed. Live round pending consent + an unblocked environment. |
 | 24 | Tame (food) | `tame_wolf`/`tame_cat`/`tame_ocelot`/`tame_parrot` | ⏳ | `/act tame_wolf` with bone | `tamed`/`trusting`/`owner_eid`; live pending. |
 | 25 | Tame (ride) | `tame_horse`/`tame_donkey`/`tame_mule`/`tame_llama`/`tame_nautilus` | ⏳ | `/act tame_horse` | Mount-until-`tamed`; live pending. |
 | 26 | Shear | `shear_sheep` + `craft_shears` | ⏳ | `/act craft_shears` then `/act shear_sheep` | Needs sheep + 2 iron ingots; live pending. |

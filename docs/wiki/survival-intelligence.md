@@ -104,10 +104,12 @@ surviving an unrelated zombie_villager_v2 emergency (`flee`) across the periodic
 replan. The final night was survived by **sleeping in the bed**
 (`#25 sleep → {"slept":"night_skipped","bed":{"x":113,"y":73,"z":156}}`), so
 `nightSurvived` came from the `night → day` phase transition rather than from
-staying awake. Residue seen live but non-blocking: `attack_chicken →
-combat_timeout` after 35 swings (animal damage never lands, see
-[open questions](open-questions.md)), two `item_not_collected` on mined dirt
-drops and one `go_home_failed: movement timeout`.
+staying awake. Residue seen live but non-blocking: two `item_not_collected` on
+mined dirt drops and one `go_home_failed: movement timeout`. The `attack_chicken →
+combat_timeout` residue was diagnosed (the combat loop re-resolved its target
+before every swing, smearing 102 hits over ≥15 chickens with 0 deaths) and fixed
+by locking a single target by `runtimeId` (see
+[open questions](open-questions.md)).
 - **Harness lock handling**: a `busy` answer is a lock, not a verdict. After a run
 was killed mid-action the harness stayed busy and the next run burned its whole
 step budget on instant `busy` replies; `controller.mjs` now retries with
