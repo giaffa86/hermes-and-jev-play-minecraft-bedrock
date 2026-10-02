@@ -2,8 +2,8 @@
 
 [Hermes Agent](https://github.com/NousResearch/hermes-agent) plans. [Jev](https://typesafe.ai) (TypeSafe's System-One model) picks one bounded action at a time. A Mineflayer harness decides which actions are valid and executes them. No screenshots, no keypresses, no generated code from any model.
 
-> **Bedrock Edition fork**: questo repository è il porting su Minecraft Bedrock Edition. Per istruzioni specifiche (Docker, NetherNet, deploy sull'host Docker) vedi [`BEDROCK.md`](BEDROCK.md).  
-> Vedi anche il framework Mineflayer-like per Bedrock/NetherNet: [`giaffa86/mineflayer-for-bedrock-nethernet`](https://github.com/giaffa86/mineflayer-for-bedrock-nethernet).
+> **Bedrock Edition fork**: this repository is the port to Minecraft Bedrock Edition. For specific instructions (Docker, NetherNet, deploy on the Docker host) see [`BEDROCK.md`](BEDROCK.md).  
+> See also the Mineflayer-like framework for Bedrock/NetherNet: [`giaffa86/mineflayer-for-bedrock-nethernet`](https://github.com/giaffa86/mineflayer-for-bedrock-nethernet).
 
 The split is the one [rmalde/minecraft-agent](https://github.com/rmalde/minecraft-agent) used to beat the Ender Dragon from a fresh Survival world in 8:43 with GPT-6 Astra + Jev. That repository has no license, so **nothing here is copied from it**; this is an independent, much smaller implementation of the same architecture, built to (1) run the pattern with Hermes as the planner and (2) reproduce the original result.
 
@@ -18,10 +18,11 @@ The split is the one [rmalde/minecraft-agent](https://github.com/rmalde/minecraf
 | `knowledge/survival-rules.json` | When to interrupt progression (low health near a hostile, starving, night unprepared, ...). Explicit condition vocabulary, validated at load. |
 | `knowledge/progression.json` | Declarative milestone graph (wood → crafting table → stone tools → food → first night → iron → diamonds → nether) with dependencies, not a hardcoded sequence. |
 | `skills/gameplay/` | Declarative gameplay skills (JSON): preconditions, success/failure criteria, intents. Different concept from the Hermes Agent `SKILL.md`; they never contain executable code. |
-| `docs/SURVIVAL-INTELLIGENCE.md` | Architecture, contracts and how to add a gameplay skill or a progression milestone. |
-| `docs/HEADLESS-CLIENT.md` | How the bot acts in the server with no graphics: headless client, protocol-level perception and actions, bounded-action loop. |
+| `docs/` | An **LLM wiki** (manifest, index, sources, log, raw sources, synthesis pages). Start at [`docs/index.md`](docs/index.md); see [`docs/llm-wiki.md`](docs/llm-wiki.md) for the conventions. |
+| `docs/wiki/survival-intelligence.md` | Synthesis of the deterministic Survival Intelligence Layer (governor, skills, resolver, verification, progression). Full reference in [`docs/raw/SURVIVAL-INTELLIGENCE.md`](docs/raw/SURVIVAL-INTELLIGENCE.md). |
+| `docs/wiki/headless-client.md` | How the bot sees and acts in the world with no graphics: protocol-level perception and actions, the bounded-action loop, short-range x-ray vision, the absence of real exploration, and why its "render distance" is not comparable to a human's. |
 | `skills/minecraft-bounded-agent/SKILL.md` | Hermes skill: how to drive the harness directly from a Hermes session (`hermes chat -t terminal`). |
-| `docs/REPRODUCTION-REPORT.md` | Full report of reproducing the original Ender Dragon result on Linux with the exact models (GPT-6 Astra via Nous Portal, Jev via OpenRouter): **7:45**, 6 bed blasts, 0 deaths, **$0.96** — vs the author's 8:43 and $0.97. |
+| `docs/wiki/reproduction.md` | Summary of reproducing the original Ender Dragon result (7:45, exact models). Full report in [`docs/raw/REPRODUCTION-REPORT.md`](docs/raw/REPRODUCTION-REPORT.md). |
 
 ## Setup with your Hermes install
 
@@ -57,7 +58,7 @@ Before the model sees anything, a deterministic layer evaluates the observation 
 - **Verification**: `verifySkill(skill, before, after)` checks harness state (inventory tags, hunger/health deltas, threat distance, night survived), never the model's opinion. Every run appends to `runs/<run>/skills.jsonl`.
 - **Progression Engine**: `knowledge/progression.json` resolves the next missing prerequisite for a goal; with `CURRICULUM=first_night` the controller drives `wood -> crafting table -> food -> first night` on its own, while Hermes remains the fallback for ambiguous situations.
 
-Full architecture and extension guides: [`docs/SURVIVAL-INTELLIGENCE.md`](docs/SURVIVAL-INTELLIGENCE.md).
+Full architecture and extension guides: [`docs/raw/SURVIVAL-INTELLIGENCE.md`](docs/raw/SURVIVAL-INTELLIGENCE.md) (reference) and [`docs/wiki/survival-intelligence.md`](docs/wiki/survival-intelligence.md) (synthesis).
 
 ### Let Hermes drive the harness itself
 
@@ -94,7 +95,7 @@ Two things surfaced while building it, both fixed in the harness rather than the
 
 ### Reproduction of the original Ender Dragon run
 
-Full write-up: [`docs/REPRODUCTION-REPORT.md`](docs/REPRODUCTION-REPORT.md) (environment, per-stage timeline, verification, cost by lane for every run, what could not be reproduced and why). Summary: the original project was run end to end on Linux (Temurin JDK 17, vanilla 1.16.5 server, the author's seed) with a small relay that routes his exact model calls: `openai/gpt-6-astra` through the Nous Portal OAuth login Hermes already has, `typesafe/jev-1.13` through OpenRouter.
+Full write-up: [`docs/raw/REPRODUCTION-REPORT.md`](docs/raw/REPRODUCTION-REPORT.md) (environment, per-stage timeline, verification, cost by lane for every run, what could not be reproduced and why); summary in [`docs/wiki/reproduction.md`](docs/wiki/reproduction.md). Summary: the original project was run end to end on Linux (Temurin JDK 17, vanilla 1.16.5 server, the author's seed) with a small relay that routes his exact model calls: `openai/gpt-6-astra` through the Nous Portal OAuth login Hermes already has, `typesafe/jev-1.13` through OpenRouter.
 
 | | Original (`nether-final-08`) | Reproduction (`repro-02`, exact models) | Reproduction (`repro-01`, substitute models) |
 |---|---|---|---|

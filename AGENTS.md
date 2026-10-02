@@ -1,4 +1,4 @@
-> **Nota Bedrock (WIP)** — Questo repository e' un fork di `teknium1/hermes-and-jev-play-minecraft` per portare l'agente su Minecraft Bedrock. Il goal completo, i dettagli del server e la checklist di lancio sono nel runbook privato locale `.private/GOAL.md` (escluso da git). Continuare il lavoro solo dopo aver letto quel file.
+> **Bedrock note (WIP)** — This repository is a fork of `teknium1/hermes-and-jev-play-minecraft` to port the agent to Minecraft Bedrock. The full goal, the server details and the launch checklist live in the private local runbook `.private/GOAL.md` (excluded from git). Continue the work only after reading that file.
 
 # Agent notes
 
@@ -9,7 +9,7 @@ Compact guidance for working in this repo.
 This repository is **public**. Before any `git push`:
 
 - Never commit or push personal data: real gamertags or account emails, Microsoft/Xbox credentials or token caches (`nmp-cache/`, `auth.json`), API keys (`.env*`), SSH key paths or key files, xuid/account IDs, allowlists, chat logs.
-- Use placeholders in examples and docs (`<gamertag_o_email>`, `<chiave-ssh>`, `<api-key>`), never real values.
+- Use placeholders in examples and docs (`<gamertag_or_email>`, `<ssh-key>`, `<api-key>`), never real values.
 - `.env`, `.private/`, `runs/`, `nmp-cache/`, `auth.json` are gitignored — never `git add -f` them.
 - Audit before pushing: `git log -p origin/main..HEAD` plus a `git grep` for the patterns above. If a value already sits in unpushed commits, rewrite the history (scrub it) instead of pushing it or adding a "remove secret" commit.
 - If unsure whether something is personal, ask the user before pushing.
@@ -23,7 +23,8 @@ A minimal reproduction of the rmalde/minecraft-agent planner/controller split: *
 - ESM Node project; no build, no CI, no formatter config.
 - `package.json` has convenience scripts: `npm run harness`, `npm run bedrock-harness`, `npm run play`, `npm run test`.
 - `test-ping.mjs` is standalone and unrelated to the main Java loop — it pings a Bedrock server (`<ip-server-bedrock>:19132`, `nethernet` transport).
-- `survival/` is the deterministic Survival Intelligence Layer (governor, skill resolver, verifier, progression); `knowledge/*.json` holds rules and the milestone graph; `skills/gameplay/**` holds declarative gameplay skills (distinct from the Hermes `SKILL.md`). See `docs/SURVIVAL-INTELLIGENCE.md`.
+- `survival/` is the deterministic Survival Intelligence Layer (governor, skill resolver, verifier, progression); `knowledge/*.json` holds rules and the milestone graph; `skills/gameplay/**` holds declarative gameplay skills (distinct from the Hermes `SKILL.md`). See `docs/raw/SURVIVAL-INTELLIGENCE.md`.
+- `docs/` is an **LLM wiki** (English). Read `docs/index.md` first, then the relevant `docs/wiki/*` pages; raw sources live in `docs/raw/` and `BEDROCK.md` at the root. Conventions and workflows in `docs/llm-wiki.md`. Keep all docs in English.
 - Tests: `node --test tests/*.test.mjs` (no server required).
 
 ## Entry points
@@ -89,3 +90,12 @@ Use `CONTROLLER=hermes` if you lack an OpenRouter key; it is slower and costlier
 - Hermes Agent installed and working: `hermes chat -Q --oneshot -q hi` must answer.
 - OpenRouter key for the default Jev controller.
 - No Java is required; the Minecraft server is pure Node (`flying-squid`).
+
+## Operational safety rules (learned in the field)
+
+- **Never `git add -A` in a worktree without reading `git status` first**: working symlinks (e.g. `node_modules`) must never be committed. `.gitignore` uses `node_modules` without a slash precisely to also cover symlinks. If dependencies are needed in a worktree, use a symlink outside the repo or `NODE_PATH`.
+- **Never merge or deploy to `main` while another session has uncommitted changes** or a controller is running: check `git status` and the processes first (`docker exec hermes ps aux | grep controller`).
+- **Never restart or rebuild the production container while a run is active**.
+- **In the base world**: never dig/break chests, tables, stations or built blocks (`DIG_PROTECTED` applies to `dig_down` and `dig_up`); prefer collecting/shearing over killing animals; never touch villagers.
+- **Before claiming a file is saved or a fix is done, verify it** (`ls`, `node --test`, `/observe`): no results announced without a check.
+- **Privacy audit before every push** (`git log -p origin/main..HEAD` + grep for gamertag/xuid/keys/cache).

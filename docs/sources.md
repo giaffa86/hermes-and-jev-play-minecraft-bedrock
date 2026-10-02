@@ -1,0 +1,40 @@
+# Sources
+
+Catalog of the raw sources for this wiki. Sources are immutable; the wiki layer
+(`wiki/`) synthesizes and links them. Private sources (`.private/`) are listed but
+never committed.
+
+## Primary sources
+
+| Source | Location | Role |
+|---|---|---|
+| `README.md` | repo root | Project overview, setup, demo, results, design notes. |
+| `AGENTS.md` | repo root | Agent notes: what this is, entry points, env vars, architecture gotchas. |
+| `BEDROCK.md` | repo root | The operational runbook for the Bedrock port (components, deploy, action status, survival, crafting, movement, known issues). |
+| `docs/raw/SURVIVAL-INTELLIGENCE.md` | `docs/raw/` | Full reference for the Survival Intelligence Layer. |
+| `docs/raw/REPRODUCTION-REPORT.md` | `docs/raw/` | Full report of reproducing the original Ender Dragon run. |
+| `docs/raw/evidence/` | `docs/raw/evidence/` | JSONL evidence from early harness runs. |
+
+## Source code (authoritative for behaviour)
+
+| Path | What it defines |
+|---|---|
+| `bedrock-adapter.mjs` | The Bedrock protocol client: perception (`_refreshNearby`), actions (`player_auth_input`, `block_action`, `item_stack_request`, `click_block`), tool selection, mining, digging, containers. |
+| `bedrock-world.mjs` | Registry + Prismarine v9 decoder, `findBlocks`/`blockAt`, `requestAround` (subchunk requests). |
+| `bedrock-harness.mjs` | HTTP API (`/observe`, `/options`, `/act`, `/plan`, `/survival`) and the Survival Governor filter. |
+| `bedrock-lifecycle.mjs` | Disconnect/teardown lifecycle. |
+| `controller.mjs` | The planner/controller loop. |
+| `controller-decisions.mjs` | Pure decision helpers (ranking, anti-loop, cap, diagnostics). |
+| `survival/` | Survival Intelligence Layer (governor, resolver, verifier, progression, ...). |
+| `knowledge/` | `survival-rules.json`, `progression.json`. |
+| `skills/gameplay/` | Declarative gameplay skills. |
+| `harness.mjs` | The Java Edition "toy" harness (flying-squid + mineflayer). |
+
+## Private sources (not committed)
+
+| Source | Role |
+|---|---|
+| `.private/GOAL.md` | The original goal, server details and launch checklist (excluded from git). |
+| `.private/*.md` | Task notes (defense, farming, mining, storage, trading, Jev) and incident log. |
+
+> Never commit `.private/`, `.env`, `runs/`, `nmp-cache/` or `auth.json`.
