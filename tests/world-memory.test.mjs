@@ -66,7 +66,7 @@ for (const backend of BACKENDS) {
     const view = wm.observeView();
     assert.equal(view.landmarks[0].type, 'sheep_farm');
     assert.equal(view.containers[0].contents.white_wool, 5);
-    assert.deepEqual(wm.summary(), { records: 3, containers: 1, chunks: 0, concepts: 1, relations: 1 });
+    assert.deepEqual(wm.summary(), { records: 3, containers: 1, chunks: 0, concepts: 1, missions: 0, relations: 1, missionRelations: 0, actionEvents: 0 });
   }));
 
   test(`[${backend}] resource sites, portals and entities are remembered and queried`, () => withMemory(backend, (wm) => {
@@ -163,7 +163,7 @@ for (const backend of BACKENDS) {
   test(`[${backend}] missions: checkpoints chain, route and completion`, () => withMemory(backend, (wm) => {
     const mission = wm.createMission({ type: 'find_biome', target: 'biome:cherry_grove', origin: { x: 0, y: 64, z: 0 } });
     assert.equal(wm.getMission(mission.id).state, 'running');
-    assert.equal(wm.relationsFrom(mission.id, { type: 'targets' })[0].to, 'biome:cherry_grove');
+    assert.equal(wm.missionRelations(mission.id, { relationType: 'targets' })[0].targetId, 'biome:cherry_grove');
     wm.addCheckpoint(mission.id, { x: 40, y: 64, z: 0 }, { biome: 'plains' });
     wm.addCheckpoint(mission.id, { x: 90, y: 64, z: 0 }, { biome: 'forest' });
     wm.addCheckpoint(mission.id, { x: 150, y: 64, z: 0 }, { biome: 'cherry_grove' });

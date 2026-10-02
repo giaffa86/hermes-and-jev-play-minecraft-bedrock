@@ -471,7 +471,7 @@ export class WorldMemory {
   // missione (`mission --has_checkpoint--> checkpoint`) e in catena
   // (`checkpoint[n] --next--> checkpoint[n+1]`), così la rotta si ricostruisce.
 
-  createMission ({ id = null, type = 'exploration', target = null, dimension = 'overworld', origin = null, state = 'running', source = 'planner' }) {
+  createMission ({ id = null, type = 'exploration', target = null, dimension = 'overworld', origin = null, state = 'running', source = 'planner', rawPrompt = null, intent = null }) {
     const key = id ?? `mission_${type}_${Date.now().toString(36)}`;
     const now = Date.now();
     const record = {
@@ -479,11 +479,15 @@ export class WorldMemory {
       kind: 'mission',
       type,
       target,
+      intent,
+      rawPrompt,
       dimension,
       position: origin ? round(origin) : null,
       origin: origin ? round(origin) : null,
       currentPosition: origin ? round(origin) : null,
       state,
+      outcome: null,
+      success: null,
       startedAt: now,
       completedAt: null,
       result: null,
@@ -497,7 +501,8 @@ export class WorldMemory {
     };
     this.repo.upsert(record);
     // La missione punta al suo target (nodo concettuale: biome:…/structure:…/resource:…).
-    if (target) this.link(key, target.includes(':') ? target : `biome:${target}`, 'targets');
+    // È un arco DI GOAL: vive in mission_relation, non nel world graph.
+    if (target) this.linkMission(key, 'targets', target.includes(':') ? target : `biome:${target}`);
     return record;
   }
 
@@ -510,11 +515,23 @@ export class WorldMemory {
   }
 
   completeMission (id, result = null) {
-    return this.updateMission(id, { state: 'found', completedAt: Date.now(), result });
+    return this.updateMission(id, { state: 'found', completedAt: Date.now(), result, outcome: 'found', success: true });
   }
 
   failMission (id, failureReason = null) {
-    return this.updateMission(id, { state: 'failed', completedAt: Date.now(), failureReason });
+    return this.updateMission(id, { state: 'failed', completedAt: Date.now(), failureReason, outcome: 'failed', success: false });
+  }
+
+  // Chiusura generica: esito e successo sono campi del livello episodico,
+  // distinti dallo `state` del ciclo di vita della missione.
+  finishMission (id, { outcome = null, success = null, result = null, failureReason = null, state = null } = {}) {
+    const patch = { completedAt: Date.now() };
+    if (outcome != null) patch.outcome = outcome;
+    if (success != null) patch.success = success;
+    if (result != null) patch.result = result;
+    if (failureReason != null) patch.failureReason = failureReason;
+    if (state != null) patch.state = state;
+    return this.updateMission(id, patch);
   }
 
   getMission (id) {
@@ -582,6 +599,82 @@ export class WorldMemory {
     return { mission, checkpoints, distanceTravelled: +distanceTravelled.toFixed(1) };
   }
 
+  // ---- goal/episodico (mission_relation + action_event) ----------------------------
+  //
+  // Gli archi di goal collegano la missione ai nodi del world graph SENZA
+  // sporcarlo: `mission_42 --seeks--> resource:iron_ore` è un intent, non un fatto.
+
+  // Collega la missione a un nodo (target/seeks/destination/origin/via). Il target
+  // viene garantito come nodo esistente, ma l'arco vive in mission_relation.
+  linkMission (missionId, relationType, targetId, { confidence = 1, metadata = {} } = {}) {
+    if (!missionId || !relationType || !targetId) throw new Error('linkMission needs missionId, relationType and targetId');
+    this._ensureNode(targetId);
+    return this.repo.linkMission({ missionId, relationType, targetId, confidence, metadata });
+  }
+
+  unlinkMission (missionId, relationType, targetId) {
+    return this.repo.unlinkMission({ missionId, relationType, targetId });
+  }
+
+  missionRelations (missionId, { relationType = null } = {}) {
+    return this.repo.missionRelations(missionId, { relationType });
+  }
+
+  // Cronologia azioni della missione (goto/mine/deposit/…): proiezione del log
+  // del controller, non una seconda fonte di verità sul mondo.
+  recordAction ({ missionId = null, actionType, targetId = null, outcome = null, startedAt = null, completedAt = null, data = {} }) {
+    return this.repo.recordAction({ missionId, actionType, targetId, outcome, startedAt, completedAt, data });
+  }
+
+  missionActions (missionId) {
+    return this.repo.missionActions(missionId);
+  }
+
+  // Missioni precedenti per intent/target (memoria episodica: "come ho fatto l'ultima
+  // volta che mi hanno chiesto X").
+  findPreviousMissions ({ intent = null, target = null, limit = null } = {}) {
+    let records = this.missions({ limit: null });
+    if (intent) records = records.filter(m => m.intent === intent);
+    if (target) {
+      const plain = String(target).replace(/^[a-z]+:/, '');
+      const byTarget = new Set(this.repo.missionRelationsByTarget(target.includes(':') ? target : `resource:${target}`, {}).map(r => r.missionId));
+      records = records.filter(m => {
+        if (!m.target) return byTarget.has(m.id);
+        return m.target === target || String(m.target).replace(/^[a-z]+:/, '') === plain || byTarget.has(m.id);
+      });
+    }
+    return limit != null ? records.slice(0, limit) : records;
+  }
+
+  // Dove una risorsa è stata trovata con successo in passato: missioni concluse con
+  // successo che cercavano `resource:iron_ore`, unendo il target spaziale (targets).
+  findSuccessfulLocationsFor (resource, { limit = null } = {}) {
+    const resourceId = resource.includes(':') ? resource : `resource:${resource}`;
+    const seeking = this.repo.missionRelationsByTarget(resourceId, { relationType: 'seeks' });
+    const out = [];
+    for (const rel of seeking) {
+      const mission = this.getMission(rel.missionId);
+      if (!mission) continue;
+      if (mission.success !== true && mission.state !== 'found') continue;
+      for (const edge of this.repo.missionRelations(mission.id)) {
+        if (edge.relationType !== 'targets') continue;
+        const node = this.repo.get(edge.targetId);
+        if (!node?.position) continue;
+        out.push({
+          location: node.id,
+          type: node.type,
+          position: node.position,
+          mission: mission.id,
+          intent: mission.intent,
+          completedAt: mission.completedAt,
+          result: mission.result ?? null,
+        });
+      }
+    }
+    out.sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));
+    return limit != null ? out.slice(0, limit) : out;
+  }
+
   // ---- status ----------------------------------------------------------------------
 
   // Promuove a STALE ciò che è stato osservato troppo tempo fa. Non invalida
@@ -608,7 +701,10 @@ export class WorldMemory {
       containers,
       chunks,
       concepts,
+      missions: this.repo.count({ kind: 'mission' }),
       relations: typeof this.repo.relationCount === 'function' ? this.repo.relationCount() : 0,
+      missionRelations: typeof this.repo.missionRelationsCount === 'function' ? this.repo.missionRelationsCount() : 0,
+      actionEvents: typeof this.repo.actionEventCount === 'function' ? this.repo.actionEventCount() : 0,
     };
   }
 
@@ -638,6 +734,10 @@ export class WorldMemory {
     if (chunks) counts.explored_chunk = chunks;
     const relations = typeof this.repo.relationCount === 'function' ? this.repo.relationCount() : 0;
     if (relations) counts.relations = relations;
+    const missionRelations = typeof this.repo.missionRelationsCount === 'function' ? this.repo.missionRelationsCount() : 0;
+    if (missionRelations) counts.missionRelations = missionRelations;
+    const actionEvents = typeof this.repo.actionEventCount === 'function' ? this.repo.actionEventCount() : 0;
+    if (actionEvents) counts.actionEvents = actionEvents;
     return counts;
   }
 

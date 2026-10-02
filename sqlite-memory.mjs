@@ -2,7 +2,11 @@
 //
 // Un piccolo **property graph** sopra SQLite:
 //   world_memory      -> nodi  (spatial | conceptual | dynamic)
-//   memory_relation   -> archi (from_id --type--> to_id)
+//   memory_relation   -> archi (from_id --type--> to_id) — FATTI del mondo
+//
+// Sopra il world graph c'è lo strato **goal/episodico**, separato:
+//   mission_relation  -> archi di goal (mission --seeks/targets/destination--> …)
+//   action_event      -> cronologia delle azioni di una missione
 //
 // WAL, indici su kind/type/category/status/chunk/biome e sui lati degli archi.
 // Le relazioni spaziali derivate (near/withinRadius/nearest) NON si salvano:
@@ -12,7 +16,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-export const SQLITE_SCHEMA_VERSION = 3;
+export const SQLITE_SCHEMA_VERSION = 4;
 const CHUNK = 16;
 
 const NODE_SCHEMA = `
@@ -60,6 +64,41 @@ CREATE INDEX IF NOT EXISTS idx_rel_type ON memory_relation(type, status);
 CREATE INDEX IF NOT EXISTS idx_rel_to_status ON memory_relation(to_id, status);
 `;
 
+// Archi di goal (mission_relation) e cronologia azioni (action_event): separati
+// dal memory_relation così il world graph non mischia "cosa so" e "cosa voglio".
+// Niente FOREIGN KEY: target_id punta a un nodo world_memory (garantito dal
+// service via _ensureNode), mission_id a una missione (kind: mission).
+const MISSION_RELATION_SCHEMA = `
+CREATE TABLE IF NOT EXISTS mission_relation (
+  id TEXT PRIMARY KEY,
+  mission_id TEXT NOT NULL,
+  relation_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'known',
+  first_seen_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_mrel_mission ON mission_relation(mission_id, relation_type);
+CREATE INDEX IF NOT EXISTS idx_mrel_target ON mission_relation(target_id, relation_type);
+`;
+
+const ACTION_EVENT_SCHEMA = `
+CREATE TABLE IF NOT EXISTS action_event (
+  id TEXT PRIMARY KEY,
+  mission_id TEXT,
+  action_type TEXT NOT NULL,
+  target_id TEXT,
+  outcome TEXT,
+  started_at INTEGER NOT NULL,
+  completed_at INTEGER,
+  data TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_aev_mission ON action_event(mission_id);
+CREATE INDEX IF NOT EXISTS idx_aev_action ON action_event(action_type);
+`;
+
 const META_SCHEMA = `CREATE TABLE IF NOT EXISTS world_memory_meta (key TEXT PRIMARY KEY, value TEXT);`;
 
 function safeJson (text) {
@@ -80,6 +119,8 @@ export class SqliteMemoryRepository {
     this._migrate();
     this.db.exec(NODE_SCHEMA);
     this.db.exec(RELATION_SCHEMA);
+    this.db.exec(MISSION_RELATION_SCHEMA);
+    this.db.exec(ACTION_EVENT_SCHEMA);
     this._prepare();
   }
 
@@ -145,6 +186,21 @@ export class SqliteMemoryRepository {
     this._unlink = this.db.prepare('DELETE FROM memory_relation WHERE id = ?');
     this._relFrom = this.db.prepare('SELECT * FROM memory_relation WHERE from_id = ?');
     this._relTo = this.db.prepare('SELECT * FROM memory_relation WHERE to_id = ?');
+    this._linkMission = this.db.prepare(`INSERT INTO mission_relation
+      (id, mission_id, relation_type, target_id, confidence, status, first_seen_at, last_seen_at, metadata_json)
+      VALUES (?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET
+        confidence=excluded.confidence, status=excluded.status,
+        last_seen_at=excluded.last_seen_at, metadata_json=excluded.metadata_json`);
+    this._unlinkMission = this.db.prepare('DELETE FROM mission_relation WHERE id = ?');
+    this._mrelByMission = this.db.prepare('SELECT * FROM mission_relation WHERE mission_id = ?');
+    this._mrelByTarget = this.db.prepare('SELECT * FROM mission_relation WHERE target_id = ?');
+    this._recordAction = this.db.prepare(`INSERT INTO action_event
+      (id, mission_id, action_type, target_id, outcome, started_at, completed_at, data)
+      VALUES (?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET
+        outcome=excluded.outcome, completed_at=excluded.completed_at, data=excluded.data`);
+    this._missionActions = this.db.prepare('SELECT * FROM action_event WHERE mission_id = ?');
   }
 
   static rowToRecord (row) {
@@ -281,6 +337,14 @@ export class SqliteMemoryRepository {
     return this.db.prepare('SELECT COUNT(*) AS n FROM memory_relation').get().n;
   }
 
+  missionRelationsCount () {
+    return this.db.prepare('SELECT COUNT(*) AS n FROM mission_relation').get().n;
+  }
+
+  actionEventCount () {
+    return this.db.prepare('SELECT COUNT(*) AS n FROM action_event').get().n;
+  }
+
   // ---- edges -----------------------------------------------------------------
 
   link ({ id = null, from, to, type, confidence = 1, status = 'known', firstSeenAt = null, lastSeenAt = null, metadata = {} }) {
@@ -318,6 +382,76 @@ export class SqliteMemoryRepository {
     if (Array.isArray(statuses) && statuses.length) rows = rows.filter(r => statuses.includes(r.status));
     else if (!includeInvalid) rows = rows.filter(r => r.status !== 'invalid');
     return rows.map(SqliteMemoryRepository.rowToRelation);
+  }
+
+  // ---- goal/episodico (mission_relation + action_event) ---------------------------
+
+  static rowToMissionRelation (row) {
+    if (!row) return null;
+    return {
+      ...safeJson(row.metadata_json),
+      id: row.id,
+      missionId: row.mission_id,
+      relationType: row.relation_type,
+      targetId: row.target_id,
+      confidence: row.confidence,
+      status: row.status,
+      firstSeenAt: row.first_seen_at,
+      lastSeenAt: row.last_seen_at,
+    };
+  }
+
+  static rowToActionEvent (row) {
+    if (!row) return null;
+    return {
+      ...safeJson(row.data),
+      id: row.id,
+      missionId: row.mission_id,
+      actionType: row.action_type,
+      targetId: row.target_id,
+      outcome: row.outcome,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+    };
+  }
+
+  linkMission ({ id = null, missionId, relationType, targetId, confidence = 1, status = 'known', metadata = {} }) {
+    if (!missionId || !relationType || !targetId) throw new Error('linkMission needs missionId, relationType and targetId');
+    const key = id || `${missionId}|${relationType}|${targetId}`;
+    const now = Date.now();
+    const existing = this.db.prepare('SELECT first_seen_at FROM mission_relation WHERE id = ?').get(key);
+    this._linkMission.run(key, missionId, relationType, targetId, confidence, status, existing?.first_seen_at ?? now, now, JSON.stringify(metadata));
+    return key;
+  }
+
+  unlinkMission ({ id = null, missionId = null, relationType = null, targetId = null }) {
+    if (id) return this._unlinkMission.run(id).changes > 0;
+    if (!missionId || !relationType || !targetId) throw new Error('unlinkMission needs id or (missionId, relationType, targetId)');
+    return this.db.prepare('DELETE FROM mission_relation WHERE mission_id = ? AND relation_type = ? AND target_id = ?').run(missionId, relationType, targetId).changes > 0;
+  }
+
+  missionRelations (missionId, { relationType = null } = {}) {
+    let rows = this._mrelByMission.all(missionId);
+    if (relationType) rows = rows.filter(r => r.relation_type === relationType);
+    return rows.map(SqliteMemoryRepository.rowToMissionRelation);
+  }
+
+  missionRelationsByTarget (targetId, { relationType = null } = {}) {
+    let rows = this._mrelByTarget.all(targetId);
+    if (relationType) rows = rows.filter(r => r.relation_type === relationType);
+    return rows.map(SqliteMemoryRepository.rowToMissionRelation);
+  }
+
+  recordAction ({ id = null, missionId = null, actionType, targetId = null, outcome = null, startedAt = null, completedAt = null, data = {} }) {
+    if (!actionType) throw new Error('recordAction needs actionType');
+    const now = Date.now();
+    const key = id || `${missionId ?? 'none'}|${actionType}|${targetId ?? 'none'}|${startedAt ?? now}`;
+    this._recordAction.run(key, missionId, actionType, targetId, outcome, startedAt ?? now, completedAt ?? null, JSON.stringify(data));
+    return key;
+  }
+
+  missionActions (missionId) {
+    return this._missionActions.all(missionId).map(SqliteMemoryRepository.rowToActionEvent);
   }
 
   flush () {

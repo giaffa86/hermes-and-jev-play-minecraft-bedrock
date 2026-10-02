@@ -8,9 +8,10 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-export const MEMORY_SCHEMA_VERSION = 3;
+export const MEMORY_SCHEMA_VERSION = 4;
 
 const edgeKey = (from, type, to) => `${from}|${type}|${to}`;
+const missionEdgeKey = (missionId, type, targetId) => `${missionId}|${type}|${targetId}`;
 
 export class JsonMemoryRepository {
   constructor ({ dir = null, logger = console, version = MEMORY_SCHEMA_VERSION } = {}) {
@@ -19,6 +20,8 @@ export class JsonMemoryRepository {
     this.version = version;
     this.records = new Map();
     this.relations = new Map();
+    this._missionRelations = new Map();
+    this.actionEvents = new Map();
     this.dirty = false;
   }
 
@@ -44,6 +47,12 @@ export class JsonMemoryRepository {
     }
     for (const relation of Array.isArray(raw?.relations) ? raw.relations : []) {
       if (relation?.id != null) this.relations.set(relation.id, relation);
+    }
+    for (const relation of Array.isArray(raw?.missionRelations) ? raw.missionRelations : []) {
+      if (relation?.id != null) this._missionRelations.set(relation.id, relation);
+    }
+    for (const event of Array.isArray(raw?.actionEvents) ? raw.actionEvents : []) {
+      if (event?.id != null) this.actionEvents.set(event.id, event);
     }
     return this;
   }
@@ -123,6 +132,14 @@ export class JsonMemoryRepository {
     return this.relations.size;
   }
 
+  missionRelationsCount () {
+    return this._missionRelations.size;
+  }
+
+  actionEventCount () {
+    return this.actionEvents.size;
+  }
+
   link ({ id = null, from, to, type, confidence = 1, status = 'known', firstSeenAt = null, lastSeenAt = null, metadata = {} }) {
     if (!from || !to || !type) throw new Error('link needs from, to and type');
     const key = id || edgeKey(from, type, to);
@@ -172,6 +189,61 @@ export class JsonMemoryRepository {
     return this._relations(e => e.to === id, options);
   }
 
+  // ---- goal/episodico (mission_relation + action_event) ---------------------------
+
+  linkMission ({ id = null, missionId, relationType, targetId, confidence = 1, status = 'known', metadata = {} }) {
+    if (!missionId || !relationType || !targetId) throw new Error('linkMission needs missionId, relationType and targetId');
+    const key = id || missionEdgeKey(missionId, relationType, targetId);
+    const existing = this._missionRelations.get(key);
+    const now = Date.now();
+    this._missionRelations.set(key, {
+      ...metadata,
+      id: key, missionId, relationType, targetId, confidence, status,
+      firstSeenAt: existing?.firstSeenAt ?? now,
+      lastSeenAt: now,
+    });
+    this.dirty = true;
+    return key;
+  }
+
+  unlinkMission ({ id = null, missionId = null, relationType = null, targetId = null }) {
+    let removed = false;
+    if (id) removed = this._missionRelations.delete(id);
+    else if (missionId && relationType && targetId) removed = this._missionRelations.delete(missionEdgeKey(missionId, relationType, targetId));
+    else throw new Error('unlinkMission needs id or (missionId, relationType, targetId)');
+    if (removed) this.dirty = true;
+    return removed;
+  }
+
+  missionRelations (missionId, { relationType = null } = {}) {
+    let out = [...this._missionRelations.values()].filter(e => e.missionId === missionId);
+    if (relationType) out = out.filter(e => e.relationType === relationType);
+    return out;
+  }
+
+  missionRelationsByTarget (targetId, { relationType = null } = {}) {
+    let out = [...this._missionRelations.values()].filter(e => e.targetId === targetId);
+    if (relationType) out = out.filter(e => e.relationType === relationType);
+    return out;
+  }
+
+  recordAction ({ id = null, missionId = null, actionType, targetId = null, outcome = null, startedAt = null, completedAt = null, data = {} }) {
+    if (!actionType) throw new Error('recordAction needs actionType');
+    const now = Date.now();
+    const key = id || `${missionId ?? 'none'}|${actionType}|${targetId ?? 'none'}|${startedAt ?? now}`;
+    this.actionEvents.set(key, {
+      ...data,
+      id: key, missionId, actionType, targetId, outcome,
+      startedAt: startedAt ?? now, completedAt: completedAt ?? null,
+    });
+    this.dirty = true;
+    return key;
+  }
+
+  missionActions (missionId) {
+    return [...this.actionEvents.values()].filter(e => e.missionId === missionId);
+  }
+
   flush () {
     if (!this.dirty || !this.dir) { this.dirty = false; return; }
     const file = this.file;
@@ -181,6 +253,8 @@ export class JsonMemoryRepository {
       savedAt: Date.now(),
       records: [...this.records.values()],
       relations: [...this.relations.values()],
+      missionRelations: [...this._missionRelations.values()],
+      actionEvents: [...this.actionEvents.values()],
     }, null, 2)}\n`);
     renameSync(tmp, file);
     this.dirty = false;

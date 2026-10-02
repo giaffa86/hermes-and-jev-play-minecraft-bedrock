@@ -156,6 +156,31 @@ replayed to return to the target, and later guide a player ([exploration](explor
 - HTTP: `GET /mission` (active route), `POST /mission` (create + activate),
   `POST /mission/complete`.
 
+## Goal / episodic layer (mission + mission_relation + action_event)
+
+Sopra il world graph c'è lo strato **goal/episodico**, separato: lega il comando
+utente (una *missione*) ai nodi del mondo **senza sporcarli**.
+
+- **`mission`** (nodo `kind: mission`): `rawPrompt`, `intent`
+  (`explore | collect_resource | go_to | build | trade | …`), `type`, `target`,
+  `state` (running/paused/found/failed/cancelled), `outcome`, `success`,
+  `startedAt`/`completedAt`, `result`/`failureReason`. API: `createMission` /
+  `updateMission` / `completeMission` / `failMission` / `finishMission`.
+- **`mission_relation`** (tabella separata da `memory_relation`): archi **di
+  goal** — `mission_42 --seeks--> resource:iron_ore`, `--targets--> cave_07`,
+  `--destination--> home`, `--origin`/`--via`. `linkMission` garantisce il target
+  come nodo, ma l'arco NON entra nel world graph (`relationsFrom` non lo vede):
+  non si mischia "cosa so" con "cosa voglio".
+- **`action_event`**: cronologia azioni per missione (`goto`/`mine`/`deposit`/…)
+  con `outcome` e timestamp — proiezione del log del controller, non una seconda
+  fonte di verità.
+- **Query episodiche**: `findPreviousMissions({ intent, target })` e
+  `findSuccessfulLocationsFor(resource)` (missioni concluse con successo che
+  cercavano una risorsa → il luogo spaziale dove è stata trovata). È il mattone
+  del "l'ultima volta ho usato cave_07 per il ferro".
+- **Resume**: `missions({ state: 'running' })` elenca le missioni interrotte, da
+  riprendere dopo un riavvio.
+
 ## What is implemented
 
 > **Live-verified on 02/10**: the deployed container read 8 chests/barrels (a
@@ -191,6 +216,10 @@ replayed to return to the target, and later guide a player ([exploration](explor
 - **Missions + checkpoints**: `createMission`/`addCheckpoint`/`missionRoute` +
   `GET /mission`, `POST /mission`; the adapter records sparse checkpoints during
   an active mission (route replay / escort).
+- **Goal/episodic layer**: `linkMission`/`missionRelations`/`recordAction`/
+  `missionActions` + `findPreviousMissions`/`findSuccessfulLocationsFor` and
+  `finishMission` (outcome/success) — unit-tested, not yet wired into the
+  controller (the controller writes `mission_id` in its log for a future join).
 - The adapter persists chest observations (`_setContainerContents`) and runs the
   discovery producers (`_rememberDiscoveries`, once per chunk: portal, resource
   site, notable entities).
@@ -201,6 +230,13 @@ replayed to return to the target, and later guide a player ([exploration](explor
 
 ## Next slices
 
+- **Controller wiring**: the controller logs each action and `mission_id`; a
+  small writer materializes `action_event` from the log (not a second source of
+  truth), and creates the mission from the user prompt (`rawPrompt` + `intent`).
+- **Episodic → semantic consolidation**: on mission completion, write a
+  *productivity hint* on the target node (e.g. `cave_07.data.productivity` =
+  `{ iron_ore: { found: 3, success: true, last } }`) so the planner prefers
+  proven locations without turning the hint into a hard fact.
 - **Structures** (`kind: structure`): villages, Ancient Cities, … — heuristic
   detection (villagers + beds + village blocks) in the exploration spec M5. The
   `kind` already exists in the model.

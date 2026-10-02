@@ -198,6 +198,18 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   how to run unit tests and a live round, and how to trigger each live collaudo.
 - Cross-linked from `index.md`, `roadmap.md`, `open-questions.md`.
 
+## [2026-10-03] ingest | Mission goal/episodic layer over the world graph
+
+- `world-memory.mjs`: mission records carry `rawPrompt`/`intent`/`outcome`/
+  `success`; `finishMission`; goal edges `linkMission`/`unlinkMission`/
+  `missionRelations`; action history `recordAction`/`missionActions`; episodic
+  queries `findPreviousMissions({intent,target})` and
+  `findSuccessfulLocationsFor(resource)`.
+- `sqlite-memory.mjs` v4 + `memory-store.mjs`: new tables `mission_relation`
+  (goal edges, separate from `memory_relation`) and `action_event`.
+- Tests: `tests/memory-missions.test.mjs` (15, both backends); suite 435 green.
+- `wiki/memory.md` + `verification.md` updated; controller wiring deferred.
+
 ## [2026-10-03] lint | Roadmap status refresh (test count + riding)
 
 - Verified the consolidated tracker `wiki/roadmap.md` against the code: every
