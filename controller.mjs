@@ -767,7 +767,17 @@ async function main () {
     } catch (error) {
       log('mission_create_failed', {goalId: goal.id, error: error.message});
     }
-    const outcome = await runGoal(goal);
+    let outcome;
+    try {
+      outcome = await runGoal(goal);
+    } catch (error) {
+      // Errore fatale (provider decisionale non raggiungibile, bug interno): il
+      // processo non deve morire lasciando la missione episodica aperta per
+      // sempre. Si registra l'esito fallito e si chiude il run.
+      console.error(`GOAL ${goal.id} ERROR: ${error.message}`);
+      log('goal_error', {goalId: goal.id, missionId: goal.missionId ?? null, error: error.message});
+      outcome = {status: 'failed', reason: `controller_error: ${error.message}`, exitCode: 1, steps: null, totalCost: null, error: true};
+    }
     if (outcome.status === 'preempted') {
       // Sospende il goal in corso e accoda l'emergenza (priorità più alta):
       // verrà eseguita al prossimo giro e, al termine, il padre riprenderà.
@@ -781,7 +791,7 @@ async function main () {
     else if (outcome.status === 'failed') goalManager.fail(goal.id, outcome.reason ?? 'failed', {steps: outcome.steps, totalCost: outcome.totalCost});
     else goalManager.cancel(goal.id, outcome.reason ?? 'exhausted');
     const final = goalManager.get(goal.id);
-    console.log(`GOAL ${goal.id} ${final.status.toUpperCase()}${final.reason ? ` (${final.reason})` : ''} after ${outcome.steps} actions`);
+    console.log(`GOAL ${goal.id} ${final.status.toUpperCase()}${final.reason ? ` (${final.reason})` : ''} after ${outcome.steps ?? '?'} actions`);
     log('goal_end', {goalId: goal.id, status: final.status, reason: final.reason, steps: outcome.steps, totalCost: outcome.totalCost});
     // Chiusura della missione episodica con esito e successo (best-effort).
     if (goal.missionId) {
@@ -798,6 +808,9 @@ async function main () {
       }
     }
     enterState('GOAL_COMPLETED', {goalId: goal.id, status: final.status});
+    // Un errore fatale chiude il run (dopo aver chiuso la missione): niente
+    // cicli di retry silenziosi in session mode.
+    if (outcome.error) { exitCode = outcome.exitCode ?? 1; break; }
     if (!SESSION) { exitCode = outcome.exitCode; break; }
     if (goal.parentGoal) {
       const parent = goalManager.get(goal.parentGoal);

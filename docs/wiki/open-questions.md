@@ -186,17 +186,36 @@ Still missing (the rest of the original gap):
   `read_container`); `attack_<animal>`/`tame_<companion>`/`shear_sheep` are
   implemented but live-pending. Remaining gaps: milk and mature-crop detection.
   Consolidated status in [roadmap](roadmap.md).
-- **Goal/episodic memory** (03/10) — the mission layer over the world graph is
+- **Goal/episodic memory** (02/10) — the mission layer over the world graph is
   implemented (`mission` + `mission_relation` goal edges + `action_event` +
   `findPreviousMissions`/`findSuccessfulLocationsFor`) and **wired into the
   controller** (goal → mission, `seeks` edges, action events with the action
   position, outcome/success on close). The **episodic → semantic consolidation**
   (productivity hints on the target node, idempotent, with provenance and
-  contradiction handling) is **implemented and unit-tested** (465 tests green);
-  it is exposed via `GET /memory/hints`, `POST /memory/consolidate` and
-  `/observe.memory.hints`, and the controller feeds it to the planner as a
-  preference. Live round still pending; the retention/pruning policy for the
-  episodic layer is open. See [memory](memory.md).
+  contradiction handling) is **implemented, unit-tested and live-verified**: the
+  full chain was observed on the deployed container on 02/10 (`RUN_ID=p1-live-2`),
+  including the `consolidated_into` edge and the hint returned by
+  `GET /memory/hints` / `/observe.memory.hints`, plus `POST /memory/consolidate`
+  answering `already_consolidated` (idempotency) on the second pass. Two live
+  findings from that round: a fatal controller error used to leave the mission
+  `running` forever (**fixed**: close as `failed` with `controller_error: …` and
+  exit non-zero, regression test in `tests/controller-mission.test.mjs`), and the
+  deployed `.env` still carried the stale `JEV_MODEL=typesafe/jev-1.13` value that
+  makes every controller run die with TypeSafe `400 Unknown model` (removed; use
+  `jev-latest` with `TYPESAFE_API_KEY`; the container environment keeps the old
+  value until the next recreate). Still open: retention/pruning policy for the
+  episodic layer; the consolidation write happens on every terminal patch
+  (cheap but unconditional). See [memory](memory.md).
+- **Drop collection regression** (02/10) — live, mining and pickup disagree:
+  `mine_dirt` reports `destroyedEvent: true` and `picked: []`, then the following
+  `collect_drop` fails with `item_not_collected` (4/4 attempts, `inventory: {}`),
+  and the auto-pickup path (`_pickupNearby` + fresh-drop priority) collects
+  nothing. As a consequence every inventory target (`dirt`, wood, food) is
+  unreachable and the goal contract can never flip to SUCCESS in-loop. This
+  contradicts [verification](verification.md) row 4, which was marked ✅ from an
+  earlier session. Tracked as P2 (inventory/interaction front); the hypothesis to
+  test is a `take_item_entity` handshake/entity-runtimeId mismatch between the
+  drop created by the destroy event and the drop list the adapter caches.
 - **Human chat command channel**: natural-language remote control via in-game
   chat (`@bot seguimi`, `@bot aiutami coi mob`). M1–M3 implemented (chat capture,
   allowlist + trigger, NL → Hermes → `/plan`, `follow_player`); **live

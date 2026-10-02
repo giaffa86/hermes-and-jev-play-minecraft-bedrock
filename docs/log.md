@@ -1006,3 +1006,49 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   (settle server vs client-library before filing anything).
 - `docs/wiki/respawn.md` documents the tool and usage; `sources.md` lists it.
 - Verified locally: the relay starts and listens on the configured port.
+
+## [2026-10-02] verify | Goal → mission live collaudo (P1)
+
+- **Deployment realigned** to the container `hermes-jev-bedrock` on VM 100
+  (`docker cp` overlay over the baked image — a `docker restart`, never a
+  recreate, preserves it; the image rebuild is the proper future deploy).
+  Backup of the live DB first (`runs/memory/backup-20261002-232059/`); the
+  schema migrated v3→v4 live with **no data loss** (`world_memory` 51 records
+  kept, `mission_relation`/`action_event` created, `schema_version=4`).
+- **Full chain observed live** (`RUN_ID=p1-live-2`): goal from `GOAL`/`TARGETS`
+  → `POST /mission` (`mission_autonomous_murgzqlh`, `source: controller`,
+  `intent: autonomous`, rawPrompt = objective) → `seeks → resource:dirt` →
+  8 `action_event` rows carrying `data.position`/`dimension` → close
+  `state: cancelled` / `outcome: exhausted` / `success: false`; checkpoints and
+  `GET /mission` served the closed mission. Planning (`PLAN`, static fallback
+  when Hermes is unavailable), options filtering and the survival verdict were
+  logged step by step in `runs/<run>/controller.jsonl`.
+- **P0 consolidation verified live** too: the terminal mission wrote
+  `consolidated_into resource_site_7_9` (`{"resources":["dirt"],"outcome":"failed"}`),
+  the hint is readable from `GET /memory/hints` and `/observe.memory.hints`, and
+  `POST /memory/consolidate {limit:20}` answered `already_consolidated` on the
+  second pass (idempotency).
+- **Two live findings, both closed here.** (1) A fatal controller error left the
+  mission `running` forever: `runGoal` is now wrapped, the error is logged as
+  `goal_error`, the outcome becomes `failed` with `reason: controller_error: …`,
+  the mission closes (`/mission/finish`, `state: failed`) and the run exits
+  non-zero instead of retrying silently. Regression test `a fatal controller
+  error closes the mission instead of leaking it` in
+  `tests/controller-mission.test.mjs`; proven live (`p1-live-4-fatal`).
+  (2) The deployed `.env` still carried the stale `JEV_MODEL=typesafe/jev-1.13`
+  that makes every decision call die with TypeSafe `400 Unknown model` — removed
+  (duplicate key, kept `jev-latest`; `.env` backed up). The container environment
+  keeps the old value until the next recreate, so runs must pass `JEV_MODEL`.
+- **Regression**: `p1-live-5` re-ran the normal path after the fix → expected
+  `CANCELLED (exhausted)`, `exit=0`.
+- **New live blocker found (P2)**: `mine_dirt` succeeds (`destroyedEvent: true`)
+  but returns `picked: []`, and the following `collect_drop` fails with
+  `item_not_collected` ×4 (`inventory: {}`) — the auto-pickup path
+  (`_pickupNearby` + fresh-drop priority) collects nothing either. Mining works,
+  the items stay on the ground, so every inventory goal is unreachable. This
+  contradicts the earlier ✅ on `verification.md` row 4, now ⚠️
+  with the evidence; tracked in `open-questions.md` as the P2
+  inventory/interaction front.
+- Tests: full suite **466 pass / 0 fail**; `npm run wiki:lint` clean. Docs:
+  `wiki/verification.md` (rows 4, 42.1, new 42.2), `wiki/open-questions.md`,
+  `wiki/roadmap.md`, this log.

@@ -106,7 +106,8 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   `findPreviousMissions`/`findSuccessfulLocationsFor`. **Wired into the
   controller**: each goal becomes a mission, plan targets become `seeks` edges,
   each action is an `action_event`, the goal end closes the mission with
-  outcome/success (best-effort). Unit-tested; live round pending — see
+  outcome/success (best-effort). **Live-verified 02/10** (full chain on the
+  deployed container, see [verification](verification.md) row 42.1) — see
   [memory](memory.md).
 - **Episodic → semantic consolidation** (02/10): terminal missions write a
   bounded, idempotent **productivity hint** (`productivity.<resource>` with
@@ -117,9 +118,11 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   `resource_site_<cx>_<cz>` id. Read path: `GET /memory/hints`,
   `POST /memory/consolidate` (backfill), `/observe.memory.hints` and a
   "proven locations … these are hints, not facts" line in the planner prompt.
-  Unit-tested (27 cases × json/sqlite + the adapter read-path test); live round
-  pending — see [memory](memory.md).
-- 465 green unit tests (2026-10-02).
+  Unit-tested (27 cases × json/sqlite + the adapter read-path test) and
+  **live-verified 02/10** (`consolidated_into resource_site_7_9`, hint read back
+  from `GET /memory/hints`, `POST /memory/consolidate` → `already_consolidated`)
+  — see [memory](memory.md).
+- 466 green unit tests (2026-10-02).
 
 ## What is implemented but not verified live
 
