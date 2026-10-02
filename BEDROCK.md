@@ -172,8 +172,24 @@ sudo docker cp hermes:/opt/data/runs /home/<utente-ssh>/hermes-jev-bedrock/runs-
 | `collect_drop` | ✅ Funzionante | Traccia gli item entity (`move_entity`/`move_entity_delta`), cammina fino al drop e verifica il pickup (`take_item_entity`). La ricerca del nodo usa la quota del drop, altrimenti un drop sotto il bot non viene mai raggiunto. |
 | `mine_*` | ✅ Funzionante | Rottura reale con `player_auth_input` + `block_action`, conferma dal server e evento di distruzione. Prima di rompere, l'adapter seleziona l'utensile giusto (piccone/ascia/pala/ zappa, miglior tier) e i tempi di rottura seguono la formula vanilla (pietra col piccone di legno ≈ 1,3 s). Senza piccone le opzioni `mine_stone`/`mine_cobblestone` non vengono offerte (nessun drop). Per i minerali serve anche il rango giusto: `_blockHarvestable` confronta il rango del piccone (legno/oro = 1, pietra/rame = 2, ferro = 3, diamante = 4, netherite = 5) con l'insieme `harvestTools` del blocco; `mine_iron_ore` non è offerto col piccone di legno. |
 | `dig_down` | ✅ Funzionante | Scava un gradino (testa, fronte e cella sotto il fronte), poi avanza e scende; i gradini restano percorribili anche in salita. Rifiuta blocchi protetti (tavoli, contenitori, stazioni, e materiali da costruzione: assi, lastre, scale, lana, vetro, mattoni). Se il gradino è già aperto scende soltanto. |
+| `dig_up` | ✅ Base | Specchio di `dig_down`: apre le due celle sopra il blocco davanti ai piedi e sale. Implementato per uscire da buche/pozzi scavati in precedenza; il collaudo live dipende dal layer di movimento (vedi problemi noti). |
+| `attack_<mob>` | ✅ Base | Insegue e colpisce il mob ostile più vicino del tipo richiesto (fino a 25 s per azione) con transazione `item_use_on_entity` (`action_type: attack`) + `animate swing_arm`; equipaggia la spada migliore in hotbar; si ferma quando il mob sparisce o la sua vita arriva a 0. Forma pacchetto verificata col protocollo 1.26.51. |
+| `flee` | ✅ Base | Si allontana dal mob ostile più vicino provando più direzioni e distanze (9-16 blocchi) con pathfinding. |
+| `eat` | ✅ Base | Equipaggia il cibo preferito disponibile (lista sicura: cotti prima, poi pane/patate/carote/frutta; esclusi quelli con effetti negativi) e invia `item_use` `click_air`; conferma quando la fame sale o l'item cala. Forma pacchetto verificata; il collaudo live richiede cibo in inventario. |
+| `sleep` | ✅ Base | Di notte cerca il letto più vicino (blocco `bed` nel mondo caricato), ci cammina accanto e lo clicca (`click_block`), attendendo il flag `resting` nei metadata come conferma. `player_bed_position` non è usato come stato (è il letto di respawn). Se il server rifiuta restituisce `sleep_rejected`. |
 | `craft_*` | ✅ Funzionante | Ricette da `crafting_data` (network id), griglia 2×2 nell'inventario e 3×3 al tavolo da lavoro; item_stack_request `craft_recipe` con consumi e output. I tag `stone_tool_materials`/`stone_crafting_materials` sono mappati (cobblestone/cobbled_deepslate/blackstone) e `minecraft:coals` (carbone + carbonella) per le torce; `craft_furnace` usa 8 cobblestone al tavolo. |
 | `place_*` | ✅ Base | Piazzamento con transazione `click_block`; usato per tavoli da lavoro. Lo swap in hotbar rilegge l'inventario dal server (riconnessione) se lo stack id è stantio. |
+
+### Sopravvivenza (aggiornamento 02/10/2026)
+
+- **Entità**: `add_entity`/`add_player`/`move_entity`/`set_entity_data`/`entity_event` alimentano una mappa di mob e giocatori con posizione, distanza e vita (metadata `health`); una lista di tipi classifica gli ostili (zombie, skeleton, creeper, enderman, ...).
+- **Ora del giorno**: BDS 1.26 non invia `set_time`; l'ora arriva da `sync_world_clocks` (clock `minecraft:overworld`, `% 24000`) con fallback `set_time`.
+- **Attributi del giocatore**: `update_attributes` usa il campo `current` (non `value`) per vita e fame.
+- **Morte**: vita <= 0 → stato `dead`, respawn automatico con `player_action respawn`; `respawn` di login ignorato.
+- `/observe` espone `time`, `sleeping`, `dead`, `deaths`, `entities` (con distanza, tipo e vita).
+- `/options` offre `attack_<tipo>`, `flee`, `eat`, `sleep`, `dig_up` quando validi.
+- Verificato live (02/10): tracking entità (cat, maiali, creeper, zombie, skeleton con vita), orologio/notte, fame, letti della base, opzioni coerenti, danno ricevuto e sopravvivenza alla notte (13/20). Forma dei pacchetti di `attack`/`eat`/`respawn`/sonno serializzata col protocollo reale nei test.
+- Non ancora verificato live end-to-end: `attack_*`, `flee`, `eat`, `sleep`, perché il bot è rimasto incastrato nella buca dello scavo `dig_down` del 01/10 e non raggiunge né il letto né i mob (vedi problemi noti).
 
 ### Fase pietra della milestone (aggiornamento 01/10/2026)
 
@@ -257,6 +273,8 @@ Hermes → Jev → Bedrock con `GOAL MET` (`oak_log` 9 → 10).
 ---
 
 ## Problemi noti
+
+- **Bot incastrato dopo `dig_down`**: lo scavo a gradini ha lasciato il bot in una tasca di poche celle; `_moveTo` verso il letto (92,73,162) e verso i mob fallisce con `path_failed` dopo 3 tentativi senza progresso, e `dig_up` riporta `already_open` (le celle sopra il gradino sono già aria). Serve un fix del layer di movimento (salita/sblocco su gradini in spazi stretti) o uno scavo orizzontale. Riproduzione: dalla posizione (93.4, 67, 151.7) un `_moveTo` verso il letto a (92.5, 73, 162.5) fallisce; dopo un tentativo il bot sale a y=68 ma resta bloccato.
 
 - **`connecterror:9`**: il teardown corretto ha superato cicli consecutivi, ma il passaggio tra client diversi ha riprodotto il blocco il 01/10. Il solo tempo morto non è una soluzione dimostrata (errore persistente per circa 9 ore). Un riavvio BDS a zero giocatori ripristina il servizio. Il nuovo harness ha un solo worker di connessione; `connect()` condivide il tentativo tra chiamanti concorrenti e ripulisce anche gli errori prima dello spawn. Non considerare questi test una garanzia per client esterni che non attendono il teardown.
 - **Registry**: `start_game.block_properties` non è la palette completa dei runtime ID. Non assegnare agli elementi l'indice dell'array, né forzare `diggable` o `hardness`. `bedrock-world.mjs` usa `prismarine-registry` con `block_network_ids_are_hashes` e la tabella vanilla della versione configurata.
