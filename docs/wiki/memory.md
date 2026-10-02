@@ -101,16 +101,51 @@ there":
 `refreshStatuses()` promotes records older than their TTL to `stale` (never
 `invalid`): containers go stale after minutes, landmarks after hours.
 
+## Graph: nodes and edges
+
+The store is a small **property graph** over SQLite, not a flat list:
+
+```
+world_memory      -> nodes  (category: spatial | conceptual | dynamic)
+memory_relation   -> edges  (from_id --type--> to_id)
+```
+
+- **Nodes**: **spatial** ones have coordinates (`home`, `cave_07`,
+  `portal_overworld_01`, `horse_03`); **conceptual** ones do not
+  (`resource:white_wool`, `biome:cherry_grove`, `structure:ancient_city`). Making
+  resources first-class nodes keeps `from`/`to` always a node id (referential
+  integrity, `FOREIGN KEY` enforced) instead of a polymorphic
+  `'<record id>' | '<entity type>'`.
+- **Edges** live in `memory_relation` (`from_id`, `to_id`, `type`, `confidence`,
+  `status`, `first_seen_at`, `last_seen_at`, `metadata_json`) with indexes on
+  `(from_id,type)`, `(to_id,type)`, `(type,status)`. Examples:
+  `chest_91 --contains--> resource:white_wool`,
+  `portal_ow --linked_to--> portal_nether`, `cave_07 --leads_to--> mineshaft_02`.
+- **API**: `link`/`unlink`/`invalidateRelation`, `relationsFrom`/`relationsTo`,
+  `neighbors`, `traverse(start, { depth })`, and the direct planner query
+  `find({ kind, relation: { type, target }, nearestTo })`. `traverse` shines on
+  chains (`home → portal_ow → portal_nether → fortress`); for most planner
+  questions the direct relation query is better.
+- **Spatial relations are derived, never stored**: `near(a, b, threshold)`,
+  `withinRadius(from, { radius })`, `nearest(from, { kind })`. `near` depends on
+  the distance between A and B (not on where the bot is) and would go stale if
+  persisted.
+- **Observation ≠ relation**: the container/site keeps its raw `observations`,
+  and the `contains` edges are *materialized* from the latest observation
+  (re-reading a chest invalidates the items that are gone). A future slice can
+  make this an explicit observation log feeding the current graph.
+
 ## What is implemented
 
 > **Live-verified on 02/10**: the deployed container read 8 chests/barrels (a
 > chest at (105,72,138) with 122 emeralds among the rest), then a container
-> **restart** reloaded all 9 records (`home` + 8 containers) from
-> `runs/memory/world.sqlite` — the bot remembers the chests and their contents
-> across sessions. Direct SQL (`json_extract`, chunk-spatial sort) works. The
-> discovery producers were also verified live: the deployed bot recorded 2
-> `resource_site` (coal/iron/copper/**lapis**) and 3 `entity` (2 donkeys +
-> 1 horse).
+> **restart** reloaded all records from `runs/memory/world.sqlite` — the bot
+> remembers the chests and their contents across sessions. The discovery
+> producers were also verified live (resource sites, portals, entities), and so
+> was the **graph**: schema migrated v2→v3, concept nodes
+> (`resource:coal_ore`, `resource:iron_ore`, `resource:copper_ore`,
+> `resource:lapis_ore`) and `contains` edges (`resource_site_9_9 --contains-->
+> resource:coal_ore`) materialized in SQLite.
 
 - Landmarks: `rememberLandmark`, `findLandmarks`, `nearestLandmark`, `hasLandmark`.
 - Containers: `rememberContainer`, `findContainers`, `containersWithItem`.
@@ -129,6 +164,9 @@ there":
   but not yet visited — the "next place to explore" for the deterministic
   planner). Visits are **buffered in RAM** and written in one transaction
   (`upsertMany`), so the perception loop never does one INSERT per block.
+- **Knowledge graph**: `link`/`neighbors`/`traverse`/`find({ relation })` +
+  conceptual resource nodes. The producer materializes `contains` edges from
+  containers and resource sites (`chest_91 --contains--> resource:white_wool`).
 - The adapter persists chest observations (`_setContainerContents`) and runs the
   discovery producers (`_rememberDiscoveries`, once per chunk: portal, resource
   site, notable entities).

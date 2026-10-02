@@ -706,3 +706,22 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   `26417f9`, `367f175`, `1a0e3bb`, `d21aaca`, `45822aa`. Removing it from the
   published history needs a rewrite; tracked in
   [open-questions](wiki/open-questions.md).
+
+## [2026-10-02] feat | World knowledge graph (nodes + edges) over SQLite
+
+- `sqlite-memory.mjs` v3: `world_memory` (nodes, `category: spatial|conceptual`,
+  nullable coords, `biome` column + index) and a real `memory_relation` table
+  (`from_id`/`to_id`/`type`/`confidence`/`status`/timestamps + indexes, FK
+  enforced). Migration v2→v3 rebuilds the node table (verified live on 23 rows).
+- Repository edges API: `link`/`unlink`/`invalidateRelation`/`relationsFrom`/
+  `relationsTo`/`relationCount`; `find` supports `category`, `biome` and a
+  `relation: {type,target,direction}` filter. JSON repo has parity.
+- `world-memory.mjs`: conceptual nodes (`rememberConcept`, `resource:*`/`biome:*`),
+  `link` (auto-creates endpoints → referential integrity), `unlink`,
+  `invalidateRelation`, `relationsFrom/To`, `neighbors`, `traverse`, direct
+  `find({ kind, relation, nearestTo })`, and derived (never stored) `near`/
+  `withinRadius`/`nearest`. Containers/sites materialize `contains` edges, and a
+  re-read invalidates the items that are gone (observation ≠ relation).
+- Tests both backends (graph, traverse, per-relation query, derived near);
+  suite green (394).
+- `wiki/memory.md` + `verification.md` row 41 updated.

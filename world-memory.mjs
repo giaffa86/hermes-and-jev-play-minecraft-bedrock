@@ -120,7 +120,19 @@ export class WorldMemory {
       tags: [],
       source,
     });
+    this._materializeContains(id, contents);
     return this.repo.get(id);
+  }
+
+  // Materializza gli archi `contains` dall'ultima osservazione: se un item non
+  // c'è più nell'ultima lettura, l'arco viene invalidato (observation ≠ relation).
+  _materializeContains (id, contents) {
+    for (const e of this.repo.relationsFrom(id, { type: 'contains' })) this.repo.invalidateRelation({ id: e.id });
+    for (const [item, count] of Object.entries(contents || {})) {
+      if (!count) continue;
+      const node = this.rememberConcept({ kind: 'resource', label: item });
+      this.repo.link({ from: id, to: node.id, type: 'contains', metadata: { count } });
+    }
   }
 
   findContainers ({ includeInvalid = false, includeStale = true, near = null, radius = null, limit = null } = {}) {
@@ -177,6 +189,10 @@ export class WorldMemory {
       source,
     };
     this.repo.upsert(record);
+    for (const ore of record.observations) {
+      const node = this.rememberConcept({ kind: 'resource', label: ore });
+      this.repo.link({ from: key, to: node.id, type: 'contains' });
+    }
     return record;
   }
 
@@ -326,6 +342,126 @@ export class WorldMemory {
     return out;
   }
 
+  // ---- grafo: nodi concettuali + archi --------------------------------------------
+
+  // Un nodo concettuale non ha coordinate: `resource:white_wool`,
+  // `biome:cherry_grove`, `structure:ancient_city`. Così `to`/`from` sono sempre
+  // un id di nodo (integrità referenziale), anche per le risorse astratte.
+  conceptId (kind, name) {
+    return `${kind}:${name}`;
+  }
+
+  rememberConcept ({ id = null, kind = 'resource', label = null, tags = [] }) {
+    const key = id ?? (label ? this.conceptId(kind, label) : null);
+    if (!key) throw new Error('rememberConcept needs an id or label');
+    const existing = this.repo.get(key);
+    const now = Date.now();
+    const record = {
+      id: key,
+      kind,
+      type: key.includes(':') ? key.slice(key.indexOf(':') + 1) : key,
+      label: label ?? existing?.label ?? null,
+      category: 'conceptual',
+      position: null,
+      discoveredAt: existing?.discoveredAt ?? now,
+      lastSeenAt: now,
+      confidence: 1,
+      status: MEMORY_STATUS.KNOWN,
+      tags: [...new Set([...(existing?.tags ?? []), ...tags])],
+      source: 'derived',
+    };
+    this.repo.upsert(record);
+    return record;
+  }
+
+  // Archi (relazioni semantiche, persistite): `contains`, `leads_to`, `linked_to`,
+  // `inside`, `unlocks`, `tethered_to`, ...
+  // Garantisce che gli estremi esistano come nodi (integrità referenziale): un id
+  // `kind:name` diventa un nodo concettuale, uno senza prefisso un nodo generico.
+  // Così `to` non è mai un tipo polimorfico.
+  _ensureNode (id) {
+    if (this.repo.get(id)) return;
+    const [kind, ...rest] = id.includes(':') ? id.split(':') : ['node', id];
+    this.rememberConcept({ id, kind, label: rest.join(':') || null });
+  }
+
+  link (from, to, type, { confidence = 1, metadata = {} } = {}) {
+    this._ensureNode(from);
+    this._ensureNode(to);
+    return this.repo.link({ from, to, type, confidence, metadata });
+  }
+
+  unlink (from, to, type) {
+    return this.repo.unlink({ from, to, type });
+  }
+
+  invalidateRelation (from, to, type) {
+    return this.repo.invalidateRelation({ from, to, type });
+  }
+
+  relationsFrom (id, options) {
+    return this.repo.relationsFrom(id, options);
+  }
+
+  relationsTo (id, options) {
+    return this.repo.relationsTo(id, options);
+  }
+
+  neighbors (id, { type = null, direction = 'both' } = {}) {
+    const out = [];
+    if (direction !== 'in') for (const e of this.repo.relationsFrom(id, { type })) out.push({ id: e.to, direction: 'out', relation: e });
+    if (direction !== 'out') for (const e of this.repo.relationsTo(id, { type })) out.push({ id: e.from, direction: 'in', relation: e });
+    return out;
+  }
+
+  // BFS limitato. Utile per catene (home → portal → nether → fortress); per molte
+  // decisioni del planner basta `find({ relation: {...}, nearestTo })`.
+  traverse (startId, { type = null, direction = 'out', depth = 1 } = {}) {
+    const result = [];
+    const visited = new Set([startId]);
+    let frontier = [{ id: startId, path: [startId] }];
+    for (let d = 0; d < depth; d++) {
+      const next = [];
+      for (const { id, path } of frontier) {
+        for (const nb of this.neighbors(id, { type, direction })) {
+          if (visited.has(nb.id)) continue;
+          visited.add(nb.id);
+          result.push({ id: nb.id, node: this.repo.get(nb.id), via: nb.relation, path: [...path, nb.id] });
+          next.push({ id: nb.id, path: [...path, nb.id] });
+        }
+      }
+      frontier = next;
+    }
+    return result;
+  }
+
+  // Query diretta del planner: nodi per kind/type, eventualmente filtrati da una
+  // relazione verso un target, ordinati per distanza da un punto.
+  find ({ kind = null, type = null, relation = null, nearestTo = null, radius = null, includeInvalid = false, limit = null } = {}) {
+    let records = this.repo.find({ kind, type, relation, includeInvalid, near: nearestTo, radius });
+    if (nearestTo) records = records.filter(r => r.position).sort((a, b) => distance3d(a.position, nearestTo) - distance3d(b.position, nearestTo));
+    if (limit != null) records = records.slice(0, limit);
+    return records;
+  }
+
+  // ---- predicati spaziali DERIVATI (mai persistiti) ---------------------------------
+
+  // near dipende solo dalla distanza fra A e B e da una soglia, non dal bot.
+  near (a, b, threshold = 16) {
+    const pa = typeof a === 'string' ? this.repo.get(a)?.position : a;
+    const pb = typeof b === 'string' ? this.repo.get(b)?.position : b;
+    return distance3d(pa, pb) <= threshold;
+  }
+
+  withinRadius (from, { radius = 64, ...filter } = {}) {
+    return this.repo.find({ ...filter, near: from, radius });
+  }
+
+  nearest (from, filter = {}) {
+    const records = this.repo.find({ ...filter, near: from, radius: filter.radius ?? 1024 });
+    return records.filter(r => r.position).sort((a, b) => distance3d(a.position, from) - distance3d(b.position, from))[0] ?? null;
+  }
+
   // ---- status ----------------------------------------------------------------------
 
   // Promuove a STALE ciò che è stato osservato troppo tempo fa. Non invalida
@@ -344,10 +480,16 @@ export class WorldMemory {
 
   summary () {
     this.flushChunks();
-    const total = this.repo.count();
     const containers = this.repo.count({ kind: 'container' });
     const chunks = this.repo.count({ kind: 'explored_chunk' });
-    return { records: total, landmarks: total - containers - chunks, containers, chunks };
+    const concepts = this.repo.count({ kind: 'resource' }) + this.repo.count({ kind: 'biome' }) + this.repo.count({ kind: 'structure' });
+    return {
+      records: this.repo.count(),
+      containers,
+      chunks,
+      concepts,
+      relations: typeof this.repo.relationCount === 'function' ? this.repo.relationCount() : 0,
+    };
   }
 
   observeView ({ maxContainers = 20, maxLandmarks = 20 } = {}) {
@@ -367,13 +509,15 @@ export class WorldMemory {
 
   _kindCounts () {
     const counts = {};
-    for (const kind of ['landmark', 'structure', 'home', 'resource_site', 'portal', 'entity', 'container']) {
+    for (const kind of ['landmark', 'structure', 'home', 'resource_site', 'portal', 'entity', 'container', 'resource', 'biome']) {
       const n = this.repo.count({ kind });
       if (n) counts[kind] = n;
     }
     // I chunk sono bufferizzati: conta anche quelli non ancora scritti.
     const chunks = this.repo.count({ kind: 'explored_chunk' }) + [...this._chunkBuffer.keys()].filter((k) => !this.repo.get(k)).length;
     if (chunks) counts.explored_chunk = chunks;
+    const relations = typeof this.repo.relationCount === 'function' ? this.repo.relationCount() : 0;
+    if (relations) counts.relations = relations;
     return counts;
   }
 

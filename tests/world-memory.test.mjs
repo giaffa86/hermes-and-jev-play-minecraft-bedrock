@@ -66,7 +66,7 @@ for (const backend of BACKENDS) {
     const view = wm.observeView();
     assert.equal(view.landmarks[0].type, 'sheep_farm');
     assert.equal(view.containers[0].contents.white_wool, 5);
-    assert.deepEqual(wm.summary(), { records: 2, landmarks: 1, containers: 1, chunks: 0 });
+    assert.deepEqual(wm.summary(), { records: 3, containers: 1, chunks: 0, concepts: 1, relations: 1 });
   }));
 
   test(`[${backend}] resource sites, portals and entities are remembered and queried`, () => withMemory(backend, (wm) => {
@@ -112,6 +112,54 @@ for (const backend of BACKENDS) {
     assert.ok(frontier.some(f => f.x === 0 && f.z === -1));
   }));
 
+  test(`[${backend}] graph: concept nodes, links, neighbors`, () => withMemory(backend, (wm) => {
+    wm.rememberLandmark({ type: 'home', id: 'home', position: { x: 0, y: 64, z: 0 } });
+    wm.rememberConcept({ kind: 'resource', label: 'white_wool' });
+    assert.equal(wm.conceptId('resource', 'white_wool'), 'resource:white_wool');
+    wm.link('home', 'resource:white_wool', 'needs');
+    assert.equal(wm.relationsFrom('home')[0].to, 'resource:white_wool');
+    assert.equal(wm.relationsTo('resource:white_wool')[0].from, 'home');
+    const nb = wm.neighbors('home', { type: 'needs' });
+    assert.equal(nb.length, 1);
+    assert.equal(nb[0].id, 'resource:white_wool');
+    assert.equal(nb[0].direction, 'out');
+    // integrità referenziale: `link` crea i nodi mancanti
+    wm.link('home', 'structure:village_01', 'near_to');
+    assert.ok(wm.repo.get('structure:village_01'), 'nodo concettuale creato da link');
+  }));
+
+  test(`[${backend}] graph: direct relation query + nearest`, () => withMemory(backend, (wm) => {
+    wm.rememberResourceSite({ id: 'cave_07', kind: 'cave', position: { x: 10, y: 40, z: 10 }, observations: ['diamond_ore'] });
+    wm.rememberResourceSite({ id: 'cave_99', kind: 'cave', position: { x: 900, y: 40, z: 900 }, observations: ['diamond_ore'] });
+    wm.rememberResourceSite({ id: 'cave_iron', kind: 'cave', position: { x: 50, y: 40, z: 50 }, observations: ['iron_ore'] });
+    const found = wm.find({ kind: 'resource_site', relation: { type: 'contains', target: 'resource:diamond_ore' }, nearestTo: { x: 0, y: 40, z: 0 } });
+    assert.deepEqual(found.map(r => r.id), ['cave_07', 'cave_99']);
+    const near = wm.nearest({ x: 0, y: 40, z: 0 }, { kind: 'resource_site', relation: { type: 'contains', target: 'resource:diamond_ore' } });
+    assert.equal(near.id, 'cave_07');
+  }));
+
+  test(`[${backend}] graph: traverse a chain + derived near (never persisted)`, () => withMemory(backend, (wm) => {
+    wm.rememberLandmark({ type: 'portal', id: 'portal_ow', position: { x: 0, y: 64, z: 0 } });
+    wm.rememberLandmark({ type: 'portal', id: 'portal_nether', position: { x: 0, y: 70, z: 0 } });
+    wm.link('portal_ow', 'portal_nether', 'linked_to');
+    wm.link('portal_nether', 'structure:fortress_01', 'leads_to');
+    const chain = wm.traverse('portal_ow', { depth: 2 });
+    assert.deepEqual(chain.map(n => n.id).sort(), ['portal_nether', 'structure:fortress_01']);
+    assert.equal(wm.near('portal_ow', 'portal_nether', 10), true);
+    assert.equal(wm.near('portal_ow', 'portal_nether', 1), false);
+    assert.equal(wm.find({ type: 'near' }).length, 0, 'near non è persistito');
+  }));
+
+  test(`[${backend}] a container materializes contains edges and invalidates removed items`, () => withMemory(backend, (wm) => {
+    wm.rememberContainer({ position: { x: 5, y: 64, z: 5 }, contents: { white_wool: 42, oak_log: 5 } });
+    const cid = 'container_5_64_5';
+    assert.deepEqual(wm.relationsFrom(cid).map(e => e.to).sort(), ['resource:oak_log', 'resource:white_wool']);
+    wm.rememberContainer({ position: { x: 5, y: 64, z: 5 }, contents: { oak_log: 5 } });
+    assert.deepEqual(wm.relationsFrom(cid).map(e => e.to), ['resource:oak_log']);
+    const all = wm.relationsFrom(cid, { includeInvalid: true });
+    assert.ok(all.some(e => e.to === 'resource:white_wool' && e.status === 'invalid'), 'arco invalidato, non perso');
+  }));
+
   test(`[${backend}] memory persists across a new service instance`, () => {
     const dir = mkdtempSync(join(tmpdir(), `wm-${backend}-persist-`));
     try {
@@ -122,6 +170,7 @@ for (const backend of BACKENDS) {
       const b = createWorldMemory({ dir, backend, logger: quiet });
       assert.equal(b.hasLandmark('sheep_farm'), true);
       assert.equal(b.containersWithItem('white_wool')[0].contents.white_wool, 7);
+      assert.equal(b.relationsFrom('container_4_5_6')[0].to, 'resource:white_wool', 'archi persistiti');
       b.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
