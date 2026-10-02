@@ -108,7 +108,18 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   each action is an `action_event`, the goal end closes the mission with
   outcome/success (best-effort). Unit-tested; live round pending — see
   [memory](memory.md).
-- 437 green unit tests (2026-10-03).
+- **Episodic → semantic consolidation** (02/10): terminal missions write a
+  bounded, idempotent **productivity hint** (`productivity.<resource>` with
+  attempts/successes/found/confidence/contradicted/sources) on their spatial
+  node, anchored to the targets node, the last successful action position, the
+  mission `targetPosition`, the last checkpoint or the current position (never
+  the origin); chunk episodes fuse on the discovery producer's
+  `resource_site_<cx>_<cz>` id. Read path: `GET /memory/hints`,
+  `POST /memory/consolidate` (backfill), `/observe.memory.hints` and a
+  "proven locations … these are hints, not facts" line in the planner prompt.
+  Unit-tested (27 cases × json/sqlite + the adapter read-path test); live round
+  pending — see [memory](memory.md).
+- 465 green unit tests (2026-10-02).
 
 ## What is implemented but not verified live
 
@@ -237,11 +248,12 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 11. **Memory follow-ups** (see [memory](memory.md)): a **structure detector**
     (villages / Ancient Cities → `structure:*` nodes), an explicit
     **observation log** (`subject/predicate/object` that materializes the
-    current graph), a **vector index** for semantic recall, and the
-    **episodic → semantic consolidation** (write productivity hints on target
-    nodes after a successful mission, so `findSuccessfulLocationsFor` ranks
-    proven places). The graph, producers, chunk memory, missions and the
-    goal/episodic controller wiring are implemented and unit-tested.
+    current graph), a **vector index** for semantic recall, and a
+    **retention/pruning policy** for the episodic layer (missions, action
+    events and checkpoints only grow today). The graph, producers, chunk
+    memory, missions, the goal/episodic controller wiring and the
+    **episodic → semantic consolidation** (productivity hints on the target
+    node) are implemented and unit-tested.
 12. **Travel kit** (spec in
     [exploration](exploration.md#travel-survival-kit-and-adaptation-multi-day-expeditions)):
     `craft_bed`/`place_bed` + `/observe.travel` readiness are implemented and

@@ -981,7 +981,8 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   the adapter read-path test; full suite 465 pass / 0 fail. `npm run wiki:lint`
   clean.
 - Docs: `wiki/memory.md` (new section + next slices), `wiki/open-questions.md`,
-  this log.
+  `wiki/roadmap.md` (done list + next planned work), `wiki/survival-intelligence.md`
+  (test count), `index.md`, this log.
 
 ## [2026-10-02] lint | Respawn refinement attempt: self-health metadata (failed)
 
