@@ -1,0 +1,160 @@
+Sì, e secondo me è proprio il passo naturale per Hermes: non solo un bot che esegue singole azioni, ma un agente a cui dai un obiettivo di gioco e che costruisce/esegue da solo il piano.
+Per esempio:
+“Portami 20 diamanti.”
+“Costruisci una base sicura con letto, forno, bauli e fattoria.”
+“Preparami per andare nel Nether.”
+“Trova una stronghold e apri il portale dell’End.”
+“Porta il personaggio fino all’uccisione dell’Ender Dragon.”
+
+La differenza rispetto al classico Mineflayer-style goto(x,y,z) / dig(block) / craft(item) è enorme. Hermes dovrebbe ragionare su goal → sotto-goal → azioni → verifica → replanning.
+Io lo strutturerei più o meno così:
+User Goal
+   ↓
+Goal Interpreter
+   ↓
+Planner
+   ↓
+Task Graph
+   ↓
+Executor
+   ↓
+Minecraft Skills
+   ↓
+World State / Inventory / Events
+   ↑
+Verifier + Replanner
+
+Il punto fondamentale è che l'LLM non dovrebbe pilotare direttamente ogni movimento. Deve scegliere strategie usando primitive deterministiche.
+Per esempio:
+goal: "vai nel Nether"
+
+planner:
+1. obtain(iron_ingot, 3)
+2. craft(bucket)
+3. obtain(water_bucket)
+4. locate(lava_pool)
+5. build_nether_portal()
+6. ignite_portal()
+7. enter_dimension(nether)
+
+Poi ogni nodo viene delegato a skill concrete:
+obtain_item()
+mine_block()
+craft_item()
+smelt_item()
+equip_item()
+find_structure()
+find_block()
+navigate_to()
+fight_mob()
+place_block()
+build_structure()
+sleep()
+eat()
+escape_danger()
+
+Ed è qui che il tuo Hermes potrebbe distinguersi parecchio dai normali bot Minecraft: goal persistenti.
+Immagina:
+/goal Costruisci una casa di legno vicino allo spawn
+
+Hermes:
+Goal
+└── BuildHouse
+    ├── SelectLocation
+    ├── GatherLogs x64
+    │   ├── FindTree
+    │   ├── Navigate
+    │   └── Chop
+    ├── CraftPlanks
+    ├── CraftDoor
+    ├── CraftTorches
+    └── BuildBlueprint
+
+Se nel frattempo arriva la notte:
+interrupt:
+  hostile_mobs_nearby
+
+→ suspend(BuildHouse)
+→ execute(SurviveNight)
+→ resume(BuildHouse)
+
+E se muore:
+death detected
+→ determine death location
+→ respawn
+→ recover inventory
+→ resume original goal
+
+Questa è vera agentic gameplay, più che semplice automazione.
+Per Minecraft è particolarmente adatto perché il gioco è già quasi una macchina a stati: inventario, ricette, coordinate, blocchi, mob, dimensioni, salute, hunger, equipment, progressione. Inoltre le versioni recenti espongono sempre più elementi server-side e di stato; per esempio Java 1.21.9 ha introdotto anche un protocollo JSON-RPC/WebSocket per la gestione del dedicated server, con query/modifica dello stato server ed eventi come player join.     Minecraft_ Java Edition 1.21.9 … Non sostituisce il bot nel mondo, ma può diventare un secondo canale molto interessante per Hermes.
+Io però aggiungerei un concetto preciso: Goal Contract.
+goal: obtain_diamonds
+target:
+  item: diamond
+  count: 20
+
+constraints:
+  gameMode: survival
+  cheats: false
+  maxDeaths: 2
+  preserveItems:
+    - enchanted_diamond_pickaxe
+
+success:
+  inventory.diamond >= 20
+
+failure:
+  deaths > 2
+
+Così Hermes sa chiaramente quando l'obiettivo è:
+RUNNING
+SUCCESS
+FAILED
+BLOCKED
+
+Il livello successivo sarebbe ancora più interessante: permettere goal semantici, non codificati a mano.
+"Fammi una base decente per iniziare una partita survival"
+
+L'LLM potrebbe tradurlo in:
+- shelter
+- bed
+- crafting table
+- furnace
+- chest
+- food source
+- lighting
+- basic tools
+
+e poi lasciare l'esecuzione ai moduli deterministici.
+A quel punto Hermes diventerebbe più vicino a Devin/Codex per Minecraft che a un semplice bot.
+E visto dove eri già arrivato col tuo agente Bedrock, io farei proprio questa separazione:
+Hermes
+├── Brain
+│   ├── Planner
+│   ├── Memory
+│   ├── Goal manager
+│   └── Replanner
+│
+├── Minecraft Adapter
+│   ├── perceive
+│   ├── move
+│   ├── interact
+│   └── events
+│
+└── Skills
+    ├── navigation
+    ├── mining
+    ├── crafting
+    ├── building
+    ├── combat
+    └── survival
+
+Così domani puoi cambiare mineflayer-for-bedrock/NetherNet/altro senza dover riscrivere il cervello dell'agente.
+E come milestone iniziale eviterei deliberatamente “finisci Minecraft”, perché contiene quasi tutti i problemi difficili contemporaneamente. Partirei da 5 benchmark progressivi:
+1. ottieni 16 tronchi
+2. costruisci un rifugio e sopravvivi una notte
+3. ottieni un piccone di ferro
+4. ottieni 5 diamanti
+5. costruisci e attraversa un portale del Nether
+Se Hermes riesce a completare il quinto da uno spawn casuale e senza script specifico per quella seed, hai già qualcosa di molto interessante.
+E sì: a quel punto il tuo /goal diventerebbe letteralmente l'interfaccia principale del progetto.

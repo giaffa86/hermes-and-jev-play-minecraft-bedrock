@@ -87,6 +87,13 @@ audit above; the rest are design sketches, none implemented yet:
 | 5 | World awareness | home system (bed/chest/furnace/table/storage/safe area) and world memory (resource spots, caves, villages, danger zones, structures, death locations). |
 | 6 | Advanced navigation | world-modifying pathfinding: bridge, pillar, dig tunnel, safe descent, break obstacle. |
 | 7 | Planning | hierarchical goals with prerequisites and subgoals (e.g. `FIND_DIAMONDS → iron pickaxe → iron → smelt → …`), failure recovery. |
+
+[`raw/GOAL_ACHIEVEMENT_MINECRAFT.txt`](../raw/GOAL_ACHIEVEMENT_MINECRAFT.txt)
+sharpens milestones 1 and 7 with a **Goal Contract** (constraints + formal
+`success`/`failure` + `RUNNING/SUCCESS/FAILED/BLOCKED`) and a task graph over
+deterministic primitive skills, plus 5 progressive benchmarks; see
+[goal-achievement](goal-achievement.md) for the mapping onto the existing
+progression engine.
 | 8 | Character | personality layer (curiosity/risk tolerance/…) that *modulates* the Goal Manager weights, plus a player model; last, after the rest is stable. |
 
 ## Explicitly deferred
@@ -118,4 +125,5 @@ than the one-shot plan that `controller.mjs` currently is.
 - [human-command](human-command.md) — the chat command channel (M1–M3 done).
 - [architecture-evolution](architecture-evolution.md) — Hermes as strategic replanner.
 - [roadmap](roadmap.md) — consolidated implementation status of the current port.
+- [goal-achievement](goal-achievement.md) — Goal Contract, task graph and progressive benchmarks.
 - [open-questions](open-questions.md) — blockers and gaps.

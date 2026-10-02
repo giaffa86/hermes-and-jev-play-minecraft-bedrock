@@ -389,3 +389,23 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Torch chain derailed by the "drop below/on canopy" quirk (a log at y=77 was
   not picked up → no planks → no pickaxe → no coal), so `place_torch` stays
   unit-tested. `verification.md` row 32 → ✅.
+
+## [2026-10-02] ingest | Goal-driven gameplay proposal (Goal Contract + 5 benchmarks)
+
+- New raw source `docs/raw/GOAL_ACHIEVEMENT_MINECRAFT.txt` (Italian) digested
+  into a new wiki page `wiki/goal-achievement.md`: the pipeline (User Goal →
+  Goal Interpreter → Planner → Task Graph → Executor → Skills → Verifier +
+  Replanner), the **Goal Contract** (`target`/`constraints`/`success`/`failure`
+  → `RUNNING/SUCCESS/FAILED/BLOCKED`), the deterministic primitive skill API,
+  interrupt/suspend/resume, semantic goals, and 5 progressive seed-independent
+  benchmarks.
+- The 5 benchmarks were mapped onto the existing progression graph: 16 logs →
+  `wood`; shelter + night → `first_night`; iron pickaxe → `iron_age`/`iron_tools`;
+  5 diamonds → `diamonds`; Nether portal → `enter_nether`. None is run end-to-end.
+- Relationship recorded: the progression engine + gameplay skills + verifier are
+  the deterministic execution half; the Goal Contract, persistent Goal Manager
+  and task graph are missing (AI-player milestones 1 and 7). Flagged the
+  contradiction that `goals.beat_the_dragon` is aliased only to `enter_nether`.
+- Cross-links added from `roadmap.md` (benchmarks table + not-implemented + next
+  work), `ai-player-roadmap.md` (milestones 1/7), `open-questions.md` and
+  `verification.md`; `index.md` + `sources.md` updated.

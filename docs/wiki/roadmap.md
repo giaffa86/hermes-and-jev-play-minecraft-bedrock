@@ -60,6 +60,27 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 | First: wood → wooden pickaxe → stone → stone pickaxe | ✅ live (`runs/e2e-stone6`, `GOAL MET after 33 actions`) |
 | Second: food, coal/iron, smelt, iron tools | ◑ coal + iron + smelt (`iron_ingot`) live; `eat` live pending; full `CURRICULUM=first_night` run not executed |
 
+### Goal-driven gameplay benchmarks (proposal)
+
+[`raw/GOAL_ACHIEVEMENT_MINECRAFT.txt`](../raw/GOAL_ACHIEVEMENT_MINECRAFT.txt) proposes
+goal-driven agentic gameplay with an explicit **Goal Contract**
+(`target`/`constraints`/`success`/`failure` → `RUNNING/SUCCESS/FAILED/BLOCKED`),
+a task graph over deterministic primitives, and 5 seed-independent benchmarks.
+They map onto the existing progression graph but are not run end-to-end:
+
+| Benchmark | Existing milestone | Status |
+|---|---|---|
+| 16 logs | `wood` (`logs: 8`) | ✅ wood live; target 16 not run |
+| shelter + survive one night | `first_night` + `emergency_shelter` | ◑ skill exists; full run not executed |
+| iron pickaxe | `iron_age` / `iron_tools` | ◑ iron + smelt live; milestone not run |
+| 5 diamonds | `diamonds` (`diamonds: 1`) | ❌ not run |
+| build + cross a Nether portal | `enter_nether` | ❌ not implemented |
+
+The proposal's Goal Contract / persistent Goal Manager layer is missing; the
+deterministic execution half (progression + gameplay skills + verifier) already
+exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
+`enter_nether`) in [goal-achievement](goal-achievement.md).
+
 ## What is done and verified live
 
 - Connectivity + spawn as a real separate player.
@@ -135,6 +156,11 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
   pistons, hoppers, dispensers. Roadmap (R0–R6) in [redstone](redstone.md) /
   [`raw/REDSTONE_ROADMAP.md`](../raw/REDSTONE_ROADMAP.md); no redstone support
   today, but the world model already exposes component `getProperties()` state.
+- **Goal Contract / task graph** — no structured goal (constraints, formal
+  `success`/`failure`, `RUNNING/SUCCESS/FAILED/BLOCKED`), no persistent Goal
+  Manager, no semantic-goal interpreter. Proposal in
+  [goal-achievement](goal-achievement.md) /
+  [`raw/GOAL_ACHIEVEMENT_MINECRAFT.txt`](../raw/GOAL_ACHIEVEMENT_MINECRAFT.txt).
 
 ## Open cross-cutting issues
 
@@ -167,6 +193,11 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
    redstone in `DIG_PROTECTED`, `/observe.redstone`, state-aware search) and R1
    (oriented placement — needs a packet capture of a real placement to confirm
    how the BDS derives block state from yaw/face/click position).
+8. **Goal Contract** (proposal in [goal-achievement](goal-achievement.md)):
+   schema + status machine over the existing progression graph, then the 5
+   progressive benchmarks (16 logs → shelter+night → iron pickaxe → 5 diamonds
+   → Nether portal) as `CURRICULUM` goals run end-to-end. Depends on the
+   AI-player Goal Manager (milestone 1).
 
 ## Related pages
 
@@ -181,3 +212,4 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 - [exploration](exploration.md) — autonomous-exploration spec (find biome/block/structure).
 - [fluids](fluids.md) — swimming/drowning/breathing, waterfalls, lava avoidance, buckets/boats/potions.
 - [redstone](redstone.md) — redstone sensing/placement and primitive circuit automation.
+- [goal-achievement](goal-achievement.md) — Goal Contract, task graph, semantic goals, 5 progressive benchmarks.

@@ -77,6 +77,14 @@ capability collaudo checklist (done / pending live), see
   four cells adjacent to the bot, so the bot must already stand next to the 1×2
   opening; it does not search ahead or walk to a gap. Fine for a corridor, hard
   to trigger in the open base (see `verification.md` row 37).
+- **No Goal Contract / task graph.** A goal is a string plus a step budget; there
+  are no constraints (`maxDeaths`, `preserveItems`), no formal `success`/`failure`
+  expression, and no `RUNNING/SUCCESS/FAILED/BLOCKED` status. The deterministic
+  progression graph (`knowledge/progression.json`) is only a seed of the proposed
+  task graph. Proposal and gaps in [goal-achievement](goal-achievement.md).
+- **`beat_the_dragon` contradiction**: `knowledge/progression.json` aliases
+  `goals.beat_the_dragon` to `enter_nether`, so the graph never reaches the End or
+  the dragon. Either extend the graph or rename the alias.
 - **Crafting** only one item at a time; special recipes (smithing, anvil, looms)
   not implemented.
 
@@ -108,6 +116,10 @@ capability collaudo checklist (done / pending live), see
 - **Fluids** (swimming, drowning/breathing, waterfalls, lava avoidance, buckets/
   boats/potions) — spec only. Roadmap in [fluids](fluids.md); start at M0 (fluid
   awareness) and M1 (swimming physics + air budget).
+- **Goal-driven gameplay** — Goal Contract + task graph + 5 progressive
+  benchmarks (16 logs, shelter+night, iron pickaxe, 5 diamonds, Nether portal).
+  Proposal in [goal-achievement](goal-achievement.md); the 5 benchmarks have
+  never been run end-to-end.
 - **Redstone and primitive automation** — spec only. Roadmap in
   [redstone](redstone.md); start at R0 (protect redstone, `/observe.redstone`,
   state-aware search) and R1 (oriented placement, needs a placement packet

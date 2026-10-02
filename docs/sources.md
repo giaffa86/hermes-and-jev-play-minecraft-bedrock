@@ -17,6 +17,7 @@ never committed.
 | `docs/raw/GOAL_EXPLORATION.md` | `docs/raw/` | Autonomous Exploration v1 spec: find-biome MVP, mission model, deterministic planner, checkpoints, route replay, escort, search blocks/structures. |
 | `docs/raw/FLUIDS_ROADMAP.md` | `docs/raw/` | Fluids roadmap (Italian): swimming, drowning/breathing, waterfalls/bubble columns, lava avoidance, buckets/boats/potions, M0–M6 and Survival Intelligence integration. |
 | `docs/raw/REDSTONE_ROADMAP.md` | `docs/raw/` | Redstone roadmap (Italian): component sensing, oriented placement, switches/delay lines/observers/hoppers, declarative circuit blueprints, verification/teardown, R0–R6. |
+| `docs/raw/GOAL_ACHIEVEMENT_MINECRAFT.txt` | `docs/raw/` | Proposal (Italian): goal-driven agentic gameplay — pipeline, Goal Contract, task graph + primitive skills, suspend/resume, semantic goals, 5 progressive benchmarks. |
 | `docs/raw/evidence/` | `docs/raw/evidence/` | JSONL evidence from early harness runs. |
 
 ## Source code (authoritative for behaviour)

@@ -104,6 +104,11 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 - **Redstone and primitive automation**: sensing, oriented placement, switches,
   delay lines, observers/pistons, hoppers, dispensers, circuit blueprints. Spec
   in [redstone](redstone.md) (rows 44–48); no redstone support today.
+- **Goal-driven benchmarks** (proposal in [goal-achievement](goal-achievement.md)):
+  never run end-to-end — 16 logs (wood live, target 16 not run);
+  shelter + survive a night (`first_night`, not run); iron pickaxe (iron + smelt
+  live, milestone not run); 5 diamonds (not run); build + cross a Nether portal
+  (`enter_nether`, not implemented).
 
 ## Related pages
 

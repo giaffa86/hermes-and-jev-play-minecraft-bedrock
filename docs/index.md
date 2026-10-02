@@ -24,6 +24,7 @@ question about the project.
 | [exploration.md](wiki/exploration.md) | Autonomous-exploration spec (find biome/block/structure, deterministic spiral planner, checkpoints, route replay, escort) — spec only, not implemented. | `docs/raw/GOAL_EXPLORATION.md` |
 | [fluids.md](wiki/fluids.md) | Fluids roadmap: swimming, drowning/breathing, waterfalls (descent/ascent), lava avoidance, plus buckets/boats/bubble columns/potions — spec only, not implemented. | `docs/raw/FLUIDS_ROADMAP.md`, `bedrock-adapter.mjs`, `bedrock-fishing.mjs` |
 | [redstone.md](wiki/redstone.md) | Redstone and primitive automation roadmap: component sensing (state API), oriented placement, switches/delay lines/observers/hoppers, declarative circuit blueprints — spec only, not implemented. | `docs/raw/REDSTONE_ROADMAP.md`, `bedrock-adapter.mjs`, `bedrock-world.mjs` |
+| [goal-achievement.md](wiki/goal-achievement.md) | Goal-driven gameplay: Goal Contract, task graph, semantic goals, suspend/resume, and the 5 progressive benchmarks; maps the proposal onto the existing progression engine and the AI-player roadmap. | `docs/raw/GOAL_ACHIEVEMENT_MINECRAFT.txt`, `knowledge/progression.json`, `docs/raw/AI_PLAYER_ROADMAP.md` |
 
 ## Raw sources (`raw/`)
 
@@ -36,6 +37,7 @@ question about the project.
 | [GOAL_EXPLORATION.md](raw/GOAL_EXPLORATION.md) | Autonomous Exploration v1 spec: find-biome MVP, mission model, deterministic planner, checkpoints, route replay, escort, search blocks/structures. |
 | [FLUIDS_ROADMAP.md](raw/FLUIDS_ROADMAP.md) | Fluids roadmap (Italian): swimming physics, drowning/breathing, waterfalls and bubble columns, lava avoidance, buckets/boats/potions, Survival Intelligence integration (M0–M6). |
 | [REDSTONE_ROADMAP.md](raw/REDSTONE_ROADMAP.md) | Redstone roadmap (Italian): component state sensing, oriented placement, interaction/sensing, declarative primitive circuits, verification/teardown, automation integration (R0–R6). |
+| [GOAL_ACHIEVEMENT_MINECRAFT.txt](raw/GOAL_ACHIEVEMENT_MINECRAFT.txt) | Proposal (Italian): goal-driven agentic gameplay — pipeline, Goal Contract, task graph/primitives, suspend/resume, semantic goals, 5 progressive benchmarks. |
 | [evidence/](raw/evidence/) | JSONL evidence from early harness runs (`hermes-01`, `jev-03`). |
 
 ## Meta files
