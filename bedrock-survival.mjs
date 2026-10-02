@@ -130,8 +130,15 @@ const ANIMAL_FEED = {
   sheep: 'wheat',
   pig: 'carrot',
   rabbit: 'carrot',
-  wolf: 'bone',   // per il taming (stretch)
-  cat: 'raw_cod', // per il taming (stretch)
+};
+
+// Animali addomesticabili (taming) e il relativo item. Non sono animali da
+// allevamento: il flag `tamed` + `owner_eid` ne segna l'esito.
+const TAMEABLE_TYPES = new Set(['wolf', 'cat', 'ocelot']);
+const TAME_FEED = {
+  wolf: 'bone',
+  cat: 'raw_cod',
+  ocelot: 'raw_cod',
 };
 
 // Da item piantabile (seme od ortaggio) alla coltura che appare sul terreno.
@@ -152,8 +159,16 @@ export function isFarmAnimalType (type) {
   return FARM_ANIMAL_TYPES.has(normalizeEntityType(type));
 }
 
+export function isTameableType (type) {
+  return TAMEABLE_TYPES.has(normalizeEntityType(type));
+}
+
 export function animalFeed (type) {
   return ANIMAL_FEED[normalizeEntityType(type)] || null;
+}
+
+export function tameFeed (type) {
+  return TAME_FEED[normalizeEntityType(type)] || null;
 }
 
 export function cropForSeed (item) {
@@ -175,3 +190,5 @@ export const FOODS = [...FOOD_PRIORITY];
 export const PLANTABLE_ITEMS = Object.keys(SEED_TO_CROP);
 export const ANIMAL_FEED_MAP = { ...ANIMAL_FEED };
 export const SEED_TO_CROP_MAP = { ...SEED_TO_CROP };
+export const TAME_FEED_MAP = { ...TAME_FEED };
+export const TAMEABLE_TYPE_COUNT = TAMEABLE_TYPES.size;

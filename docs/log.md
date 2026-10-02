@@ -106,3 +106,16 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 - Tests: `tests/bedrock-farming.test.mjs` (10) + survival map assertions; suite
   257 green. Live verification on the BDS pending.
 - `BEDROCK.md` action table + Farming section; `roadmap.md` status updated.
+
+## [2026-10-03] ingest | Farming stretch: breed, tame, shear, throw_egg
+
+- Fixed the metadata flag bits against `protocol.json` (`baby` = 11, `tamed` = 28,
+  `sheared` = 31; `owner_eid` = key 5).
+- `bedrock-survival.mjs`: tameable whitelist (`wolf`/`cat`/`ocelot`) + `TAME_FEED`
+  (bone / raw cod).
+- `bedrock-adapter.mjs`: refactored `_feedEntity` (feed a specific entity, base
+  for feed/breed/tame); added `throw_egg`, `breed_<animal>`, `tame_wolf`/
+  `tame_cat`, `shear_sheep`, `craft_shears`; `/observe.farmAnimals` now carries
+  `sheared`; new `_nearbyTameable` census.
+- Tests: `tests/bedrock-farming.test.mjs` extended (18); suite 265 green. Live
+  verification on the BDS pending.

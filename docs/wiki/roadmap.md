@@ -31,7 +31,7 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 | `GOAL.md` | Original goal + launch runbook (Phases 1–10, two gameplay milestones) | ◑ Phases 1–9 done; Phase 10 (real multiplayer) and a full `first_night` run open | `BEDROCK.md`, `survival/` |
 | `JEV-TASK.md` | Jev decision quality + evaluation with new actions | ✅ implemented; live eval scenarios open | `controller-decisions.mjs`, `tests/controller-decisions.test.mjs` |
 | `DEFENSE-TASK.md` | Defense strategies (torch/lighting, weapons, shelter, armor, shield) | ◑ partial | `bedrock-adapter.mjs` (`attack_*`, `flee`, `sleep`, `craft_torch`, `recover_loot`) |
-| `FARMING-TASK.md` | Farming (plant/resow crops, passive animals, feed/breed/tame/shear) | ◑ partial — `plant_<seed>`, `feed_<animal>`, `attack_<animal>` implemented + unit-tested, live pending; breed/tame/shear/throw_egg/milk still open | `bedrock-adapter.mjs`, `bedrock-survival.mjs` |
+| `FARMING-TASK.md` | Farming (plant/resow crops, passive animals, feed/breed/tame/shear) | ◑ mostly done — `plant_<seed>`, `feed_<animal>`, `attack_<animal>`, `throw_egg`, `breed_<animal>`, `tame_wolf`/`tame_cat`, `shear_sheep` + `craft_shears` implemented + unit-tested, live pending; milk + mature-crop detection still open | `bedrock-adapter.mjs`, `bedrock-survival.mjs` |
 | `STORAGE-TASK.md` | Chest/barrel storage: read, take, deposit | ⚠️ implemented, live verification pending | `bedrock-adapter.mjs` (`read_container`, `take_<item>`, `deposit_<item>`) |
 | `TRADING-TASK.md` | Villager/wandering-trader trade + levelling | ⚠️ implemented, live verification pending | `bedrock-adapter.mjs` + `bedrock-trading.mjs`; see [trading](trading.md) |
 | `MINING-20261001.md` | Mining collaudo report | ✅ superseded (ore/durability live) | `BEDROCK.md` (Minerals and durability phase) |
@@ -76,7 +76,7 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 - Human chat command channel M1–M3 (capture/identify/follow/NL orders) —
   see [human-command](human-command.md).
 - Trading + levelling code path (unit-tested) — see [trading](trading.md).
-- 257 green unit tests.
+- 265 green unit tests.
 
 ## What is implemented but not verified live
 
@@ -87,15 +87,15 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
   detection).
 - `follow_player` and the chat command channel M1–M3 (wiring + unit tests done).
 - Farming slice: `plant_<seed>` (re-sow on free `farmland`), `feed_<animal>`
-  (`inlove`/consumed confirmation), `attack_<animal>` (farm-animal whitelist) —
-  unit-tested, live pending.
+  (`inlove`/consumed confirmation), `attack_<animal>` (farm-animal whitelist),
+  plus stretch `throw_egg`, `breed_<animal>`, `tame_wolf`/`tame_cat`,
+  `shear_sheep` + `craft_shears` — unit-tested, live pending.
 - Tool durability over many blocks / long ore runs (unit-tested only).
 - A live `CURRICULUM=first_night` round and the real-multiplayer test (Phase 10).
 
 ## What is not implemented
 
-- Farming stretch (`.private/FARMING-TASK.md`): `breed_*` (feed two adults),
-  `tame_wolf`/`tame_cat`, `shear_<sheep>`, `throw_egg`, milk collection, and
+- Farming leftovers (`.private/FARMING-TASK.md`): milk (bucket + cow) and
   mature-crop growth detection.
 - Defense gaps: `place_torch`, `craft_*_sword`, `retreat`/`go_home`,
   `close_door`, `barricade`, armor equip/armor points, shield (stretch).
@@ -110,9 +110,9 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 
 ## Next planned work
 
-1. **Finish the farming slice** — live-verify `plant_<seed>`/`feed_<animal>`/
-   `attack_<animal>` on the BDS, then the stretch (`breed_*`, `tame_*`,
-   `shear_*`, `throw_egg`).
+1. **Live-verify the farming actions** on the BDS (`plant_<seed>`/`feed_`/
+   `attack_<animal>`/`throw_egg`/`breed_*`/`tame_*`/`shear_sheep`), then milk +
+   mature-crop detection.
 2. Live verification of the other ⚠️ items (storage, trading, `eat`, chat
    channel).
 3. Defense completions (torch placement, swords, shelter) and a full

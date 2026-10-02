@@ -230,12 +230,18 @@ sudo docker cp hermes:/opt/data/runs /home/<ssh-user>/hermes-jev-bedrock/runs-fr
 | `plant_<seed>` | ⚠️ Needs live verification | Plants a seed/vegetable (`plant_wheat_seeds`, `plant_beetroot_seeds`, `plant_carrot`, `plant_potato`, ...) on the nearest free `farmland` (cell above is `air`): equips the item, walks to the farmland and sends a `click_block` transaction on the top face; confirmed when the crop appears in the cell above the farmland (`confirmedBy: server_world`). Offered only when the item is in the inventory and free farmland is loaded. |
 | `feed_<animal>` | ⚠️ Needs live verification | Feeds the nearest farm animal of the requested type the correct food (`chicken`→`wheat_seeds`, `cow`/`sheep`/`mooshroom`→`wheat`, `pig`/`rabbit`→`carrot`): equips the food and sends `item_use_on_entity` with `action_type: interact`. Confirmed by the animal's `inlove` flag (breeding) or by the consumed item. Offered only when the food is in the inventory. |
 | `attack_<animal>` | ⚠️ Needs live verification | Hunts the nearest farm animal of the requested type (whitelist `cow`/`mooshroom`/`sheep`/`pig`/`chicken`/`rabbit`) using the same `_combat` loop as hostiles; the drop must be collected with `collect_drop` afterwards. **Never** targets villagers/traders or tamed pets. |
+| `breed_<animal>` | ⚠️ Needs live verification | Breeds two nearby adults of the same type: feeds both (via `_feedEntity`) and waits for a new baby entity (flag `baby`). Offered only with ≥2 adults and ≥2 feed items; cooldown is implicit in the two-not-`inlove` adults requirement. |
+| `throw_egg` | ⚠️ Needs live verification | Throws an egg (`use_item` `click_air`); confirmed by the consumed egg. A chick spawns with 1/8 chance and is reported as `chick: observed`/`none`. |
+| `tame_wolf` / `tame_cat` | ⚠️ Needs live verification | Tames the nearest wild `wolf`/`cat`/`ocelot` (bone / raw cod): repeats the `item_use_on_entity` `interact` until the `tamed` flag (bit 28) or `owner_eid` = bot appears. The owner/tamed signal to confirm live (runtime id vs unique id). |
+| `shear_sheep` | ⚠️ Needs live verification | Shears the nearest adult, not-yet-sheared sheep with `shears` in hand (`item_use_on_entity` `interact`); confirmed by the `sheared` flag (bit 31). Requires `craft_shears` (2 iron ingots at the table). |
+| `craft_shears` | ⚠️ Needs live verification | Crafts `shears` from 2 iron ingots at the crafting table (offered when the recipe is present and a table is nearby). |
 
 ### Farming (update 03/10/2026)
 
-First farming slice: the crop cycle (`plant_<seed>`) and passive-animal
-interaction (`feed_<animal>`, `attack_<animal>`) are implemented and unit-tested;
-live verification on the BDS is pending.
+Crop cycle (`plant_<seed>`), passive-animal interaction (`feed_<animal>`,
+`attack_<animal>`) and the stretch (`throw_egg`, `breed_<animal>`,
+`tame_wolf`/`tame_cat`, `shear_sheep` + `craft_shears`) are implemented and
+unit-tested; live verification on the BDS is pending.
 
 - **Crop cycle**: `mine_<crop>` (already working) harvests mature crops, then
   `plant_<seed>` re-sows on free `farmland`. The seed→crop map (`wheat_seeds`→
@@ -244,18 +250,16 @@ live verification on the BDS is pending.
   `bedrock-survival.mjs` (`SEED_TO_CROP`). Maturity (`growth` metadata) is not
   yet distinguished: `mine_*` harvests whatever crop is present.
 - **Farm animals**: `add_entity`/`set_entity_data` track passive animals; the
-  flags metadata now exposes `baby`/`tempted`/`inlove` (bits 8/6/7) and
-  `owner_eid` (key 5), exposed in `/observe.farmAnimals` (type, distance,
-  baby/inlove/tempted, owner). `attack_<animal>` reuses `_combat` (target lookup
-  falls back from hostiles to farm animals via `_entityOfType`); villagers and
-  tamed pets are excluded.
+  flags metadata now exposes `baby`/`tempted`/`inlove` (bits 11/6/7),
+  `tamed` (bit 28), `sheared` (bit 31) and `owner_eid` (key 5), exposed in
+  `/observe.farmAnimals` (type, distance, baby/inlove/tempted/sheared, owner).
+  `attack_<animal>` reuses `_combat` (target lookup falls back from hostiles to
+  farm animals via `_entityOfType`); villagers and tamed pets are excluded.
 - **World safety**: `farmland`, fences/gates and crop blocks are now in
   `DIG_PROTECTED`, so `dig_down`/`dig_up` never dig through the family farms
   (`mine_*` still harvests crops on purpose).
-- **Not yet implemented (stretch)**: `breed_*` (feed two adults), `tame_wolf`/
-  `tame_cat`, `shear_<sheep>` (needs shears + the furnace chain), `throw_egg`,
-  milk collection, and a `farmAnimals`/mature-crop census richer than the
-  current listing. See `docs/wiki/roadmap.md`.
+- **Still not implemented**: milk (bucket + cow), and mature-crop growth
+  detection. See `docs/wiki/roadmap.md`.
 
 ### Trading (update 03/10/2026)
 

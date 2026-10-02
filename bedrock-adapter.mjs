@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BedrockWorld } from './bedrock-world.mjs';
 import { trackNethernetClient, closeBedrockClient } from './bedrock-lifecycle.mjs';
-import { bestFood, isHostileType, isTraderType, isFarmAnimalType, animalFeed, cropForSeed, isCropBlock, isFarmlandBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS } from './bedrock-survival.mjs';
+import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isTameableType, animalFeed, tameFeed, cropForSeed, isCropBlock, isFarmlandBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS } from './bedrock-survival.mjs';
 import { professionName, normalizeProfession, professionMatches, pickBestTrade } from './bedrock-trading.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
@@ -46,7 +46,10 @@ const HARVEST_TOOL_RANK = { 941: 1, 956: 1, 946: 2, 951: 2, 961: 3, 966: 4, 971:
 const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|_bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$|farmland$|_fence$|_fence_gate$|wheat$|carrots$|potatoes$|beetroots$|melon_stem$|pumpkin_stem$|sweet_berry_bush$|nether_wart$)/;
 // Bit dei MetadataFlags (key 0) delle entità: servono per baby/tempted/inlove
 // degli animali e per il flag resting del bot stesso.
-const METADATA_FLAG_BITS = { onfire: 0, sneaking: 1, riding: 2, sprinting: 3, action: 4, invisible: 5, tempted: 6, inlove: 7, baby: 8, resting: 23 };
+// Bit dei MetadataFlags1 (protocol.json, bedrock 1.26.51): l'ordine esatto è
+// onfire..inlove, saddled(8), powered(9), ignited(10), baby(11), ..., resting(23),
+// tamed(28), sheared(31).
+const METADATA_FLAG_BITS = { onfire: 0, sneaking: 1, riding: 2, sprinting: 3, action: 4, invisible: 5, tempted: 6, inlove: 7, saddled: 8, powered: 9, ignited: 10, baby: 11, resting: 23, sitting: 24, angry: 25, tamed: 28, orphaned: 29, leashed: 30, sheared: 31 };
 // Fornace: slot del container Bedrock e priorità dei combustibili (fusione).
 const FURNACE_SLOTS = { ingredient: 0, fuel: 1, output: 2 };
 const FURNACE_BY_CONTAINER = {
@@ -906,6 +909,10 @@ export class BedrockAdapter {
           this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
         o.push({ key: 'craft_furnace', description: 'Craft a furnace from 8 cobblestone (uses a crafting table)' });
       }
+      if (this.recipes.has('shears') && (this.inventory.iron_ingot || 0) >= 2 &&
+          this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
+        o.push({ key: 'craft_shears', description: 'Craft shears from 2 iron ingots (uses a crafting table)' });
+      }
     }
     // Piazzamento: solo ciò che serve alla progressione.
     if ((this.inventory.crafting_table || 0) > 0 && !this.world.findBlocks('crafting_table', this.position, 8, 1).length) {
@@ -980,6 +987,32 @@ export class BedrockAdapter {
         }
         if (offered.size >= 4) break;
       }
+      // Stretch: uova, riproduzione, taming e tosatura.
+      if ((this.inventory.egg || 0) > 0) {
+        o.push({ key: 'throw_egg', description: 'Throw an egg (1/8 chance of a chick)' });
+      }
+      const allFarm = this._nearbyFarmAnimals(32);
+      const breedable = new Set();
+      for (const animal of allFarm) {
+        if (animal.baby || animal.inlove || breedable.has(animal.type)) continue;
+        const feed = animalFeed(animal.type);
+        if (!feed || (this.inventory[feed] || 0) < 2) continue;
+        const adults = allFarm.filter(e => e.type === animal.type && !e.baby && !e.inlove);
+        if (adults.length >= 2) {
+          breedable.add(animal.type);
+          o.push({ key: `breed_${animal.type}`, description: `Breed two ${animal.type}s with ${feed} to get a baby (${adults.length} adults nearby)` });
+        }
+      }
+      for (const tame of this._nearbyTameable(12)) {
+        if (tame.tamed) continue;
+        const feed = tameFeed(tame.type);
+        if (!feed || (this.inventory[feed] || 0) < 1) continue;
+        o.push({ key: `tame_${tame.type}`, description: `Tame the ${tame.type} with ${feed} (${tame.distance.toFixed(1)} blocks away)` });
+      }
+      if ((this.inventory.shears || 0) > 0) {
+        const sheep = allFarm.find(e => e.type === 'sheep' && !e.sheared && !e.baby);
+        if (sheep) o.push({ key: 'shear_sheep', description: `Shear the sheep at ${sheep.distance.toFixed(1)} blocks for wool` });
+      }
     }
     // Fallback
     if (!o.length) o.push({ key: 'wait', description: 'Wait 2 seconds for fresh observations' });
@@ -1027,6 +1060,14 @@ export class BedrockAdapter {
         result = await this._plantSeed(key.slice('plant_'.length));
       } else if (key.startsWith('feed_')) {
         result = await this._feedAnimal(key.slice('feed_'.length));
+      } else if (key === 'throw_egg') {
+        result = await this._throwEgg();
+      } else if (key.startsWith('breed_')) {
+        result = await this._breedAnimals(key.slice('breed_'.length));
+      } else if (key.startsWith('tame_')) {
+        result = await this._tameAnimal(key.slice('tame_'.length));
+      } else if (key === 'shear_sheep') {
+        result = await this._shearSheep();
       } else if (key === 'read_container') {
         result = await this._readContainers();
       } else if (key.startsWith('take_')) {
@@ -3878,8 +3919,9 @@ export class BedrockAdapter {
         if (resting != null && resting !== this.sleeping) this.log('sleep_signal', { source: 'flags', resting, raw: entry.value?._value != null ? String(entry.value._value) : entry.value });
         if (resting != null) this._setSleeping(resting);
       }
-      // Flags degli animali da fattoria: baby/tempted/inlove guidano riproduzione
-      // e allevamento. `entity` qui è il mob (non il bot).
+      // Flags degli animali: baby/tempted/inlove guidano riproduzione e
+      // allevamento; tamed (28) e sheared (31) servono per taming e tosatura.
+      // `entity` qui è il mob (non il bot).
       if (key === 'flags' && entity && !isSelf) {
         const baby = this._metadataFlag(entry.value, 'baby');
         if (baby != null) entity.baby = baby;
@@ -3887,6 +3929,10 @@ export class BedrockAdapter {
         if (inlove != null) entity.inlove = inlove;
         const tempted = this._metadataFlag(entry.value, 'tempted');
         if (tempted != null) entity.tempted = tempted;
+        const tamed = this._metadataFlag(entry.value, 'tamed');
+        if (tamed != null) entity.tamed = tamed;
+        const sheared = this._metadataFlag(entry.value, 'sheared');
+        if (sheared != null) entity.sheared = sheared;
       }
       // owner_eid (chiave 5) per gli animali domati: il runtime id del padrone.
       if (key === 'owner_eid' && entity) {
@@ -4189,6 +4235,30 @@ export class BedrockAdapter {
         baby: !!entity.baby,
         inlove: !!entity.inlove,
         tempted: !!entity.tempted,
+        sheared: !!entity.sheared,
+        ownerEid: entity.ownerEid ?? null,
+      });
+    }
+    rows.sort((a, b) => a.distance - b.distance);
+    return rows.slice(0, limit);
+  }
+
+  // Animali addomesticabili (wolf/cat/ocelot) con stato tamed/owner.
+  _nearbyTameable (limit = 12) {
+    const rows = [];
+    for (const entity of this.entities.values()) {
+      if (entity.kind !== 'mob' || !entity.position || !isTameableType(entity.type)) continue;
+      if (entity.health != null && entity.health <= 0 && entity.deadAt) continue;
+      const distance = this._entityDistance(entity);
+      if (distance > 32) continue;
+      rows.push({
+        type: entity.type,
+        runtimeId: entity.runtimeId,
+        position: entity.position,
+        distance: +distance.toFixed(1),
+        health: entity.health ?? null,
+        tamed: !!entity.tamed,
+        baby: !!entity.baby,
         ownerEid: entity.ownerEid ?? null,
       });
     }
@@ -4529,9 +4599,8 @@ export class BedrockAdapter {
     return { ok: false, error: 'plant_not_confirmed', item: itemName };
   }
 
-  // Nutre l'animale da fattoria più vicino del tipo richiesto: equipaggia il cibo
-  // giusto e invia item_use_on_entity `interact`. Conferma dallo stato `inlove`
-  // (riproduzione) o dal consumo dell'item.
+  // Nutre l'animale da fattoria più vicino del tipo richiesto (wrapper di
+  // _feedEntity). Conferma dallo stato `inlove` (riproduzione) o dal consumo.
   async _feedAnimal (type) {
     const wanted = normalizeEntityType(type);
     const feed = animalFeed(wanted);
@@ -4539,6 +4608,15 @@ export class BedrockAdapter {
     if ((this.inventory[feed] || 0) < 1) return { ok: false, error: 'missing_feed', feed };
     const animal = this._farmAnimalOfType(wanted);
     if (!animal) return { ok: false, error: 'no_animal_nearby', type: wanted };
+    const result = await this._feedEntity(animal.runtimeId, feed);
+    return result.ok ? { ...result, type: wanted } : result;
+  }
+
+  // Nutre un'entità specifica (per runtime id): equipaggia il cibo, si avvicina
+  // e invia item_use_on_entity `interact`. Conferma dallo stato `inlove`/`tamed`
+  // o dal consumo dell'item. Base comune di feed/breed/tame.
+  async _feedEntity (runtimeId, feed, timeoutMs = 8000) {
+    if ((this.inventory[feed] || 0) < 1) return { ok: false, error: 'missing_feed', feed };
     let slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === feed && s.count > 0);
     if (slotIndex < 0) {
       try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
@@ -4551,13 +4629,15 @@ export class BedrockAdapter {
     }
     this._selectHotbarSlot(slotIndex);
     if (this._openContainer) await this._closeContainer();
-    if (this._entityDistance({ type: wanted, position: animal.position }) > 4.5) {
-      try { await this._moveTo(animal.position, 2.0, 25000); } catch (error) { this.log('animal_approach_failed', { message: error.message }); }
+    const entity = this.entities.get(String(runtimeId));
+    if (!entity) return { ok: false, error: 'animal_gone' };
+    if (this._entityDistance(entity) > 4.5) {
+      try { await this._moveTo(entity.position, 2.0, 25000); } catch (error) { this.log('animal_approach_failed', { message: error.message }); }
     }
     const beforeCount = this.inventory[feed] || 0;
-    const deadline = Date.now() + 8000;
+    const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const live = this.entities.get(animal.runtimeId);
+      const live = this.entities.get(String(runtimeId));
       if (!live) return { ok: false, error: 'animal_gone' };
       if (this._entityDistance(live) > 5) return { ok: false, error: 'animal_unreachable' };
       const look = this._lookAt({ x: live.position.x, y: live.position.y + entityHeight(live.type) * 0.5, z: live.position.z });
@@ -4566,13 +4646,143 @@ export class BedrockAdapter {
       this._interactEntity(live);
       const waitUntil = Math.min(deadline, Date.now() + 2500);
       while (Date.now() < waitUntil) {
-        const watched = this.entities.get(animal.runtimeId);
-        if (watched?.inlove) return { ok: true, fed: feed, type: wanted, state: 'inlove' };
-        if ((this.inventory[feed] || 0) < beforeCount) return { ok: true, fed: feed, type: wanted, state: 'consumed' };
+        const watched = this.entities.get(String(runtimeId));
+        if (watched?.tamed) return { ok: true, fed: feed, type: watched.type, state: 'tamed' };
+        if (watched?.inlove) return { ok: true, fed: feed, type: watched.type, state: 'inlove' };
+        if ((this.inventory[feed] || 0) < beforeCount) return { ok: true, fed: feed, type: watched?.type, state: 'consumed' };
         await delay(100);
       }
     }
-    return { ok: false, error: 'feed_not_confirmed', feed, type: wanted };
+    return { ok: false, error: 'feed_not_confirmed', feed };
+  }
+
+  // Riproduce due adulti dello stesso tipo: li nutre entrambi e attende un
+  // cucciolo (nuova entità con flag `baby`). Cooldown di coppia gestito a monte
+  // (due adulti non-inlove disponibili).
+  async _breedAnimals (type) {
+    const wanted = normalizeEntityType(type);
+    const feed = animalFeed(wanted);
+    if (!feed) return { ok: false, error: 'no_feed_for_type', type: wanted };
+    if ((this.inventory[feed] || 0) < 2) return { ok: false, error: 'need_2_feed', feed };
+    const adults = this._nearbyFarmAnimals(64).filter(e => e.type === wanted && !e.baby && !e.inlove);
+    if (adults.length < 2) return { ok: false, error: 'need_2_adults', type: wanted, adults: adults.length };
+    const babiesBefore = this._nearbyFarmAnimals(64).filter(e => e.type === wanted && e.baby).length;
+    const fedA = await this._feedEntity(adults[0].runtimeId, feed);
+    if (!fedA.ok) return fedA;
+    const fedB = await this._feedEntity(adults[1].runtimeId, feed);
+    if (!fedB.ok) return fedB;
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      const babiesNow = this._nearbyFarmAnimals(64).filter(e => e.type === wanted && e.baby).length;
+      if (babiesNow > babiesBefore) return { ok: true, bred: wanted, babies: babiesNow - babiesBefore, feed };
+      await delay(250);
+    }
+    return { ok: false, error: 'baby_not_observed', type: wanted };
+  }
+
+  // Addomestica un wolf/cat/ocelot: ripete l'interazione col cibo giusto finché
+  // il flag `tamed` (o owner_eid = bot) non compare, o scade il budget.
+  async _tameAnimal (type, timeoutMs = 30000) {
+    const wanted = normalizeEntityType(type);
+    const feed = tameFeed(wanted);
+    if (!feed) return { ok: false, error: 'no_tame_feed', type: wanted };
+    if ((this.inventory[feed] || 0) < 1) return { ok: false, error: 'missing_feed', feed };
+    const animal = this._nearbyTameable(64).find(e => e.type === wanted && !e.tamed);
+    if (!animal) return { ok: false, error: 'no_tameable_nearby', type: wanted };
+    const selfId = String(this.client?.entityId ?? '');
+    const deadline = Date.now() + timeoutMs;
+    let attempts = 0;
+    while (Date.now() < deadline) {
+      const live = this.entities.get(String(animal.runtimeId));
+      if (!live) return { ok: false, error: 'animal_gone' };
+      if (live.tamed || (live.ownerEid && live.ownerEid === selfId)) return { ok: true, tamed: wanted, attempts };
+      const fed = await this._feedEntity(live.runtimeId, feed, Math.min(8000, deadline - Date.now()));
+      attempts++;
+      if (!fed.ok) return fed;
+      const waitUntil = Math.min(deadline, Date.now() + 1500);
+      while (Date.now() < waitUntil) {
+        const watched = this.entities.get(String(animal.runtimeId));
+        if (watched?.tamed || (watched?.ownerEid && watched.ownerEid === selfId)) return { ok: true, tamed: wanted, attempts };
+        await delay(100);
+      }
+    }
+    return { ok: false, error: 'tame_not_confirmed', type: wanted, attempts };
+  }
+
+  // Lancia un uovo (use_item click_air): 1/8 di probabilità di un pulcino.
+  // Conferma dal consumo dell'uovo; il pulcino è rilevato tra le entità.
+  async _throwEgg (timeoutMs = 8000) {
+    const itemName = 'egg';
+    if ((this.inventory[itemName] || 0) < 1) return { ok: false, error: 'missing_egg' };
+    let slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && s.count > 0);
+    if (slotIndex < 0) {
+      try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
+      slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && s.count > 0);
+      if (slotIndex < 0) return { ok: false, error: 'missing_egg' };
+    }
+    if (slotIndex > 8) {
+      try { slotIndex = await this._moveSlotToHotbar(slotIndex); }
+      catch (error) { return { ok: false, error: `egg_equip_failed: ${error.message}` }; }
+    }
+    this._selectHotbarSlot(slotIndex);
+    const beforeCount = this.inventory[itemName] || 0;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const held = this.inventorySlots[this.selectedHotbar] || { network_id: 0 };
+      await this._queueAuthInput({ yaw: this._lastYaw, pitch: this._lastPitch, transaction: this._useItemTransaction(held, 'click_air') });
+      const waitUntil = Math.min(deadline, Date.now() + 2200);
+      while (Date.now() < waitUntil) {
+        if ((this.inventory[itemName] || 0) < beforeCount) {
+          await delay(500);
+          const chicks = this._nearbyFarmAnimals(64).filter(e => e.type === 'chicken' && e.baby).length;
+          return { ok: true, thrown: itemName, chick: chicks > 0 ? 'observed' : 'none' };
+        }
+        await delay(100);
+      }
+    }
+    return { ok: false, error: 'throw_not_confirmed', item: itemName };
+  }
+
+  // Tosa una pecora adulta non ancora tosata: equipaggia le cesoie e invia
+  // item_use_on_entity `interact`; conferma dal flag `sheared`.
+  async _shearSheep (timeoutMs = 20000) {
+    if ((this.inventory.shears || 0) < 1) return { ok: false, error: 'missing_shears' };
+    const sheep = this._nearbyFarmAnimals(64).find(e => e.type === 'sheep' && !e.sheared && !e.baby);
+    if (!sheep) return { ok: false, error: 'no_shearable_sheep' };
+    let slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === 'shears' && s.count > 0);
+    if (slotIndex < 0) {
+      try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
+      slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === 'shears' && s.count > 0);
+      if (slotIndex < 0) return { ok: false, error: 'missing_shears' };
+    }
+    if (slotIndex > 8) {
+      try { slotIndex = await this._moveSlotToHotbar(slotIndex); }
+      catch (error) { return { ok: false, error: `shears_equip_failed: ${error.message}` }; }
+    }
+    this._selectHotbarSlot(slotIndex);
+    if (this._openContainer) await this._closeContainer();
+    const entity = this.entities.get(String(sheep.runtimeId));
+    if (!entity) return { ok: false, error: 'sheep_gone' };
+    if (this._entityDistance(entity) > 4.5) {
+      try { await this._moveTo(entity.position, 2.0, 25000); } catch (error) { this.log('sheep_approach_failed', { message: error.message }); }
+    }
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const live = this.entities.get(String(sheep.runtimeId));
+      if (!live) return { ok: false, error: 'sheep_gone' };
+      if (this._entityDistance(live) > 5) return { ok: false, error: 'sheep_unreachable' };
+      const look = this._lookAt({ x: live.position.x, y: live.position.y + entityHeight(live.type) * 0.5, z: live.position.z });
+      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+      await delay(120);
+      this._interactEntity(live);
+      const waitUntil = Math.min(deadline, Date.now() + 2500);
+      while (Date.now() < waitUntil) {
+        const watched = this.entities.get(String(sheep.runtimeId));
+        if (watched?.sheared) return { ok: true, sheared: true, type: 'sheep' };
+        await delay(100);
+      }
+    }
+    return { ok: false, error: 'shear_not_confirmed' };
   }
 
   // Letto più vicino nel mondo caricato (scansione con TTL di 30 s).
