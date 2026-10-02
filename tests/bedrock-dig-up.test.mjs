@@ -79,3 +79,40 @@ test('options offer dig_up while a climbable step exists', () => {
   open.adapter.nearbyBlocks = {};
   assert.equal(open.adapter.options().some(o => o.key === 'dig_up'), false);
 });
+
+// ---- fisica: buca alta due blocchi con gradino e volta --------------------------------
+
+const SOLID = { name: 'stone', boundingBox: 'block' };
+const AIR = { name: 'air', boundingBox: 'empty' };
+const GROUND_Y = 63; // primo blocco del pavimento: i piedi stanno a 64.
+
+function physicsWorld () {
+  const blocks = new Set();
+  for (let x = -2; x <= 2; x++) for (let z = -2; z <= 8; z++) blocks.add(`${x},${GROUND_Y},${z}`);
+  // Terreno rialzato di un blocco oltre il gradino (z >= 1).
+  for (let x = -2; x <= 2; x++) for (let z = 1; z <= 8; z++) blocks.add(`${x},${GROUND_Y + 1},${z}`);
+  return {
+    blocks,
+    blockAt: ({ x, y, z }) => blocks.has(`${x},${y},${z}`) ? SOLID : AIR,
+  };
+}
+
+test('the pit blocks the climb until the ceiling is opened, then the step is climbed', () => {
+  const world = physicsWorld();
+  world.blocks.add(`0,${GROUND_Y + 3},0`); // volta sopra il bot a 66
+  const adapter = new BedrockAdapter({ logger: { log () {} } });
+  adapter.world = world;
+  adapter._feet = { x: 0.5, y: GROUND_Y + 1, z: 0.5 };
+  adapter._velocity = { x: 0, y: 0, z: 0 };
+  adapter._onGround = true;
+  adapter._syncPositionFromFeet();
+  adapter._motion = { active: true, forward: true, yaw: 0, jumpQueued: false, jumpHeldTicks: 0, jumpStart: false };
+  for (let i = 0; i < 40; i++) adapter._physicsStep();
+  assert.ok(adapter._feet.y <= GROUND_Y + 1.5, 'senza spazio per il salto non sale sul gradino');
+  assert.ok(adapter._feet.z < 1, 'resta bloccato davanti al gradino');
+  // La volta viene aperta (dig_up): ora il salto ha spazio.
+  world.blocks.delete(`0,${GROUND_Y + 3},0`);
+  for (let i = 0; i < 20; i++) adapter._physicsStep();
+  assert.ok(adapter._feet.y >= GROUND_Y + 2 - 1e-6, 'con la volta aperta sale sul gradino');
+  assert.ok(adapter._feet.z > 1, 'supera il gradino');
+});
