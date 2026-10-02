@@ -40,8 +40,16 @@ const CURRICULUM = process.env.CURRICULUM || null; // es. first_night, enter_net
 const GOAL = process.env.GOAL || (CURRICULUM
   ? `Progress the Survival tech tree until the "${CURRICULUM}" milestone is complete.`
   : 'Hold at least 4 dirt in inventory and stand within 2 blocks (XZ) of the waypoint.');
-const WAYPOINT = process.env.WAYPOINT ? JSON.parse(process.env.WAYPOINT) : null;   // e.g. {"x":380,"z":16}
-const TARGETS = process.env.TARGETS ? JSON.parse(process.env.TARGETS) : {dirt: 4}; // item -> min count
+// Env JSON invalido = errore di configurazione: fallire subito con un messaggio
+// azionabile invece che con uno SyntaxError nudo.
+function envJson (name, fallback) {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  try { return JSON.parse(raw); }
+  catch (error) { throw new Error(`${name} non è JSON valido: ${error.message}`); }
+}
+const WAYPOINT = envJson('WAYPOINT', null);   // e.g. {"x":380,"z":16}
+const TARGETS = envJson('TARGETS', {dirt: 4}); // item -> min count
 const MAX_STEPS = +(process.env.MAX_STEPS || 20);
 const CONTROLLER = process.env.CONTROLLER || 'jev';
 const JEV_MODEL = process.env.JEV_MODEL || (process.env.TYPESAFE_API_KEY ? 'jev-latest' : 'typesafe/jev-1.13');
@@ -173,6 +181,19 @@ function runHermes(prompt) {
   });
 }
 
+// P0 (memoria episodico → semantico): i suggerimenti di produttività sono
+// preferenze, non fatti — entrano nel prompt come indizi da ri-verificare.
+function provenHintLines (observation, limit = 5) {
+  const hints = observation?.memory?.hints ?? [];
+  if (!hints.length) return '';
+  const text = hints.slice(0, limit).map(h => {
+    const pos = h.position ? `${h.position.x},${h.position.z}` : '?,';
+    const flag = h.contradicted ? ', contradicted' : '';
+    return `${h.resource} near ${pos} (success ${h.confidence}${flag})`;
+  }).join('; ');
+  return `Proven locations from past episodes (prefer them, but re-verify on the spot — these are hints, not facts): ${text}`;
+}
+
 async function hermesPlan(observation) {
   const skillList = [...gameplaySkills.keys()].join(', ');
   const curriculumHint = CURRICULUM ? nextMilestone(observation) : null;
@@ -184,6 +205,7 @@ async function hermesPlan(observation) {
     WAYPOINT ? `Required waypoint (keep it unless reached): ${JSON.stringify(WAYPOINT)}` : '',
     `Required targets: ${JSON.stringify(TARGETS)}`,
     `Optional "skill" field, one of the declarative gameplay skills: ${skillList}. Use it when the objective matches one of them; it is verified against harness state, not by you.`,
+    provenHintLines(observation),
     'The harness exposes the currently valid actions (typical keys: goto_waypoint, dig_down, mine_<block>, collect_drop, craft_<item>, place_<item>, eat, flee, sleep, wait); the controller will pick one of them. Keep the objective to one sentence the controller can act on now.',
     `Observation: ${JSON.stringify(observation)}`,
   ].filter(Boolean).join('\n');
@@ -195,7 +217,11 @@ async function hermesPlan(observation) {
     return plan;
   }
   const m = out.match(/\{[\s\S]*\}/);
-  const plan = m ? JSON.parse(m[0]) : {objective: GOAL, targets: TARGETS, waypoint: WAYPOINT};
+  let plan = {objective: GOAL, targets: TARGETS, waypoint: WAYPOINT};
+  if (m) {
+    try { plan = JSON.parse(m[0]); }
+    catch (error) { log('plan_parse_failed', {raw: m[0].slice(0, 500), error: error.message}); }
+  }
   if (WAYPOINT && !plan.waypoint) plan.waypoint = WAYPOINT;
   log('plan', {plan, ms: Date.now() - started});
   return plan;
@@ -618,7 +644,9 @@ for (let step = 1; step <= MAX_STEPS; step++) {
   lastKey = key;
   log('result', {step, key, ok: !!result.ok, error: result.error ?? null, ms: result.ms ?? null, missionId: goal.missionId ?? null});
   if (goal.missionId) {
-    await api('POST', '/mission/action', {missionId: goal.missionId, actionType: key, outcome: result.ok ? 'ok' : (result.error ?? 'failed'), startedAt: actStarted, completedAt: Date.now()}).catch(() => {});
+    // `data.position` dà al consolidamento un'ancora spaziale forte (l'azione
+    // riuscita dice *dove* la risorsa è stata trovata).
+    await api('POST', '/mission/action', {missionId: goal.missionId, actionType: key, outcome: result.ok ? 'ok' : (result.error ?? 'failed'), startedAt: actStarted, completedAt: Date.now(), data: {position: obs.position, dimension: obs.dimension}}).catch(() => {});
   }
   console.log(`#${step} ${key} ->`, JSON.stringify(result));
   if (step === MAX_STEPS) { console.log('step budget exhausted'); log('budget_exhausted', {steps: step, totalCost}); }

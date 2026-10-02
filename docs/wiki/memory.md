@@ -35,6 +35,7 @@ Planner / skills
 WorldMemoryService  (world-memory.mjs)
   - record model + status (known/stale/invalid)
   - queries: findLandmarks / nearestLandmark / containersWithItem
+  - consolidation: terminal mission → productivity hint (episodic → semantic)
       |
 Memory repository (abstract: get/upsert/find/remove/markStaleBefore/count/flush)
   - SqliteMemoryRepository  (default; node:sqlite, WAL)
@@ -232,12 +233,69 @@ utente (una *missione*) ai nodi del mondo **senza sporcarli**.
 - `MEMORY_DIR` (env, default `runs/memory`) selects the directory; the file is
   `world.sqlite` (or `world.json` with `backend: 'json'`).
 
+## Episodic → semantic consolidation
+
+Implemented in `world-memory.mjs`: the service owns the semantics (no separate
+module, so the mission lifecycle can call it without an import cycle).
+
+- **Trigger**: every *terminal* mission patch (`finishMission`, `completeMission`,
+  `failMission`, `updateMission` with a terminal shape). Consolidation is
+  attempted on each terminal patch and is cheap + idempotent, so an outcome that
+  arrives after `completedAt` is still consolidated. `autoConsolidate: false`
+  disables the hook (used by the backfill test).
+- **Productivity hint**: a top-level `productivity` key on the spatial node
+  (`resource_site_<cx>_<cz>` for a chunk anchor, or the mission's `targets`
+  node): `productivity.iron_ore = { attempts, successes, failures, found,
+  confidence, contradicted, outcome, first, last, lastFailureAt, updatedAt,
+  sources[], sourcesCutoff }`. It is a **hint, not a fact**: the node keeps its
+  known/stale/invalid status and the planner re-verifies on the spot.
+- **Anchor resolution** (strongest evidence first): the mission's `targets` node
+  with a position → the position of the last successful action (`data.position`,
+  recorded by the controller) → `mission.targetPosition` → the last checkpoint →
+  the current position. The `origin` is deliberately never used: *starting* a
+  mission somewhere does not mean the resource is there.
+- **Chunk fusion**: a chunk-anchored episode reuses the discovery producer's id
+  (`resource_site_<floor(x/16)>_<floor(z/16)>`), so N episodes in one chunk
+  produce one node, not N.
+- **Resources**: `seeks` edges + successful `mine_<block>` (+1 each),
+  `collect_drop` (`item`/`count`), `take_<item>` (0: intent only) and the
+  numeric fields in `result` (`found = max(...)`, so a declared count never
+  inflates the estimate).
+- **Idempotency**: episodes are deduped by mission id inside `sources`;
+  `sourcesCutoff` makes a replay of a truncated source list a no-op; the
+  `consolidated_into` mission relation short-circuits an already-merged mission.
+- **Contradiction**: a later failure is recorded, not overwritten —
+  `contradicted: true`, `confidence = successes/attempts`, `lastFailureAt`; the
+  read path can exclude them (`includeContradicted: false`).
+- **Bounded**: `maxHintSources` (20) per resource and `maxHintsPerNode` (12) per
+  node (the least recently updated hint is dropped).
+- **Read path**: `productivityHints(...)` + `productivityScore(entry)` (success
+  rate with a yield bonus), `provenLocationsFor(resource, ...)`,
+  `GET /memory/hints?resource=&limit=`, `POST /memory/consolidate` (idempotent
+  backfill for missions closed before this feature); `observeView()` — hence
+  `GET /observe` → `memory.hints` — carries a bounded list, and the controller
+  turns it into a "proven locations … these are hints, not facts" line in the
+  planner prompt.
+- **Preservation**: `rememberLandmark`/`rememberResourceSite` rebuild the record
+  from a fixed field list, so they now carry `productivity` over — otherwise the
+  discovery rescan would silently erase a consolidation.
+- **Tests**: `tests/memory-consolidation.test.mjs` (27 cases × json/sqlite:
+  idempotency, merge, contradiction, truncation, caps, chunk fusion, backfill,
+  disabled flag, planner/observe views) and the read-path test in
+  `tests/adapter-memory.test.mjs` (the hint reaches `observe()` and survives a
+  rescan).
+- **Known limits**: the yield is an estimate from actions (`mine_<block>` = 1)
+  unless the mission declares counts, and the *score* caps that bonus at 10 even
+  though `found` stores the observed value; hints are per node, not per
+  biome/dimension; consolidation never deletes the episodic record, so a
+  retention/pruning policy is still open (see next slices).
+
 ## Next slices
 
-- **Episodic → semantic consolidation**: on mission completion, write a
-  *productivity hint* on the target node (e.g. `cave_07.data.productivity` =
-  `{ iron_ore: { found: 3, success: true, last } }`) so the planner prefers
-  proven locations without turning the hint into a hard fact.
+- ~~**Episodic → semantic consolidation**~~: implemented — see the
+  "Episodic → semantic consolidation" section above.
+- **Retention / pruning policy** for the episodic layer (missions, action events
+  and checkpoints only grow today).
 - **Structures** (`kind: structure`): villages, Ancient Cities, … — heuristic
   detection (villagers + beds + village blocks) in the exploration spec M5. The
   `kind` already exists in the model.

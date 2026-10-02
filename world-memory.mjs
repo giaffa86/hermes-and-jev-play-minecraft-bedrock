@@ -28,6 +28,18 @@ export function distance3d (a, b) {
 
 const round = (p) => ({ x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
 
+const TERMINAL_MISSION_STATES = new Set(['found', 'failed', 'cancelled']);
+
+// Punteggio dell'hint di produttività: la *riuscita* conta più della resa.
+// `confidence * (1 + min(found, 10)/10)` → 0 se non ha mai funzionato, ~1.1 quando
+// funziona sempre con resa abbondante. È una preferenza per il planner, non un fatto.
+export function productivityScore (entry) {
+  if (!entry) return 0;
+  const attempts = entry.attempts ?? 0;
+  const confidence = attempts ? (entry.successes ?? 0) / attempts : 0;
+  return Math.round(confidence * (1 + Math.min(entry.found ?? 0, 10) / 10) * 1000) / 1000;
+}
+
 export class WorldMemory {
   constructor ({
     repo,
@@ -35,12 +47,20 @@ export class WorldMemory {
     containerStaleMs = 5 * 60 * 1000,
     // Un luogo regge più a lungo (le strutture non si spostano), ma resta storico.
     landmarkStaleMs = 6 * 60 * 60 * 1000,
+    // Consolidamento episodico→semantico alla chiusura di una missione.
+    autoConsolidate = true,
+    // Crescita limitata: episodi tracciati per (nodo, risorsa) e risorse per nodo.
+    maxHintSources = 20,
+    maxHintsPerNode = 12,
   } = {}) {
     if (!repo) throw new Error('WorldMemory needs a repository');
     this.repo = repo;
     this._chunkBuffer = new Map();   // chunk visitati in RAM, scritti in blocco
     this.containerStaleMs = containerStaleMs;
     this.landmarkStaleMs = landmarkStaleMs;
+    this.autoConsolidate = autoConsolidate;
+    this.maxHintSources = maxHintSources;
+    this.maxHintsPerNode = maxHintsPerNode;
   }
 
   // ---- landmarks (luoghi: landmark/structure/resource_site/portal/entity) ---------
@@ -67,6 +87,9 @@ export class WorldMemory {
       confidence,
       status: MEMORY_STATUS.KNOWN,
       tags: [...new Set([...(existing?.tags ?? []), ...tags])],
+      // La conoscenza consolidata (hint di produttività) sopravvive alla
+      // ri-osservazione: è derivata dagli episodi, non dall'ultima scansione.
+      ...(existing?.productivity ? { productivity: existing.productivity } : {}),
       source,
     };
     this.repo.upsert(record);
@@ -186,6 +209,7 @@ export class WorldMemory {
       status: MEMORY_STATUS.KNOWN,
       observations: [...new Set([...(existing?.observations ?? []), ...observations])],
       tags: [...new Set([...(existing?.tags ?? []), ...tags])],
+      ...(existing?.productivity ? { productivity: existing.productivity } : {}),
       source,
     };
     this.repo.upsert(record);
@@ -511,6 +535,11 @@ export class WorldMemory {
     if (!mission) return null;
     const record = { ...mission, ...patch, id, lastSeenAt: Date.now() };
     this.repo.upsert(record);
+    // Consolidamento episodico→semantico quando la missione è chiusa: best-effort,
+    // non deve mai rompere il lifecycle (consolidateMission non lancia). È
+    // idempotente, quindi si può richiamare a ogni patch terminale: se la
+    // missione è già consolidata o non ha ancora un esito, esce subito.
+    if (this.autoConsolidate && this._isTerminal(record)) this.consolidateMission(id);
     return record;
   }
 
@@ -561,6 +590,7 @@ export class WorldMemory {
       dimension: mission.dimension,
       position: p,
       biome,
+      label,
       seq,
       at,
       discoveredAt: at,
@@ -675,6 +705,268 @@ export class WorldMemory {
     return limit != null ? out.slice(0, limit) : out;
   }
 
+  // ---- consolidamento episodico → semantico ----------------------------------------
+  //
+  // Le missioni restano episodi immutabili. Il consolidamento ne deriva un *hint di
+  // produttività* sul nodo spaziale dove la missione ha lavorato:
+  //
+  //   resource_site_3_-2.productivity.iron_ore = {
+  //     attempts, successes, failures, found, confidence, outcome, contradicted,
+  //     first, last, lastFailureAt, sources: [{ mission, at, outcome, found }] }
+  //
+  // Non è un fatto sul mondo (non tocca lo status known/stale/invalid): è una
+  // preferenza, così una località «proveniente» viene preferita senza diventare
+  // una verità. Proprietà garantite:
+  // - idempotente: la stessa missione non viene mai contata due volte (dedup per id
+  //   in `sources`, più `sourcesCutoff` quando la lista è troncata);
+  // - con provenance: ogni missione consolidata lascia un arco
+  //   `mission --consolidated_into--> nodo` (mission_relation, non world graph);
+  // - contraddizioni esplicite: successi e fallimenti sulla stessa risorsa
+  //   convivono (`contradicted: true`), `confidence = successes/attempts`;
+  // - crescita limitata: `maxHintSources` per (nodo, risorsa), `maxHintsPerNode`
+  //   per nodo, e un solo sito di risorse per chunk.
+
+  _isTerminal (mission) {
+    if (!mission) return false;
+    return mission.completedAt != null || TERMINAL_MISSION_STATES.has(mission.state) || mission.success != null;
+  }
+
+  _canonicalResource (name) {
+    return String(name ?? '').trim().replace(/^[a-z]+:/, '').replace(/^deepslate_/, '');
+  }
+
+  _episodeOutcome (mission) {
+    if (mission.success === true || mission.state === 'found' || mission.outcome === 'found') return 'ok';
+    if (mission.success === false || TERMINAL_MISSION_STATES.has(mission.state)) return 'failed';
+    return null;
+  }
+
+  // I repository appiattiscono `data` nell'evento d'azione (`data.position` →
+  // `position`): accetta entrambe le forme senza duplicare la lettura.
+  _actionField (action, key) {
+    if (!action) return null;
+    return action.data?.[key] ?? action[key] ?? null;
+  }
+
+  // Risorse toccate dall'episodio: `seeks` (intento), `mine_<blocco>`/`take_<item>`
+  // riusciti (evidenza) e i conteggi numerici in `result`. `found` è una stima.
+  _episodeResources (mission, { actions = null } = {}) {
+    const resources = new Map();
+    const bump = (name, found = 0) => {
+      const key = this._canonicalResource(name);
+      if (!key) return null;
+      const entry = resources.get(key) ?? { resource: key, found: 0 };
+      entry.found += found;
+      resources.set(key, entry);
+      return entry;
+    };
+    for (const edge of this.repo.missionRelations(mission.id, { relationType: 'seeks' })) bump(edge.targetId, 0);
+    for (const action of actions ?? this.missionActions(mission.id)) {
+      if (!action || action.outcome !== 'ok') continue;
+      const type = String(action.actionType ?? '');
+      if (type.startsWith('mine_')) bump(type.slice('mine_'.length), 1);
+      else if (type === 'collect_drop') {
+        const item = this._actionField(action, 'item');
+        if (item) bump(item, this._actionField(action, 'count') ?? 1);
+      } else if (type.startsWith('take_')) bump(type.slice('take_'.length), 0);
+    }
+    const result = mission.result && typeof mission.result === 'object' ? mission.result : {};
+    const counts = { ...result, ...(result.counts && typeof result.counts === 'object' ? result.counts : {}) };
+    for (const [key, value] of Object.entries(counts)) {
+      if (typeof value !== 'number') continue;
+      const entry = resources.get(this._canonicalResource(key));
+      if (entry) entry.found = Math.max(entry.found, value);
+    }
+    return resources;
+  }
+
+  // Nodo spaziale a cui attribuire l'episodio. Ordine: target esplicito della
+  // missione → posizione di un'azione riuscita → targetPosition → ultimo checkpoint
+  // → posizione corrente. L'origine non è un'ancora: è dove la missione è partita.
+  _missionAnchor (mission, { actions = null, create = false } = {}) {
+    for (const edge of this.repo.missionRelations(mission.id)) {
+      if (edge.relationType !== 'targets') continue;
+      const node = this.repo.get(edge.targetId);
+      if (node?.position) return { node, origin: 'targets' };
+    }
+    const acts = actions ?? this.missionActions(mission.id);
+    const acted = [...acts].reverse().find(a => a?.outcome === 'ok' && this._actionField(a, 'position'));
+    const at = this._actionField(acted, 'position') ?? mission.targetPosition ?? this.lastCheckpoint(mission.id)?.position ?? mission.currentPosition ?? null;
+    if (!at) return null;
+    return { node: this._chunkAnchor(at, { create }), origin: acted ? 'action' : 'movement' };
+  }
+
+  // Ancora spaziale = sito di risorse del chunk, con lo stesso id della discovery
+  // scan dell'adapter: un chunk, un nodo → gli episodi vicini si fondono invece di
+  // moltiplicare i nodi. `create` è concesso solo agli episodi riusciti.
+  _chunkAnchor (position, { create = false } = {}) {
+    const id = `resource_site_${Math.floor(position.x / 16)}_${Math.floor(position.z / 16)}`;
+    const existing = this.repo.get(id);
+    if (existing) return existing;
+    if (!create) return null;
+    return this.rememberResourceSite({
+      id,
+      kind: (position.y ?? 64) < 62 ? 'cave' : 'surface_ores',
+      position,
+      observations: [],       // nessuna affermazione sulle risorse: è solo un'ancora
+      source: 'consolidated',
+    });
+  }
+
+  _sourceOrder (source) {
+    return `${String(source?.at ?? 0).padStart(16, '0')}|${source?.mission ?? ''}`;
+  }
+
+  // Fusione idempotente di un episodio nell'hint (nodo, risorsa).
+  // `changed: false` = già applicato → il chiamante non riscrive il nodo.
+  _mergeHint (node, resource, episode) {
+    const productivity = node.productivity && typeof node.productivity === 'object' ? node.productivity : {};
+    const prev = productivity[resource] ?? null;
+    if (!prev) return { changed: true, entry: this._hintEntry(episode, null) };
+    const sources = Array.isArray(prev.sources) ? prev.sources : [];
+    if (sources.some(s => s.mission === episode.mission)) return { changed: false, entry: prev };
+    const cutoff = prev.sourcesCutoff ?? null;
+    if (cutoff && this._sourceOrder(episode) <= this._sourceOrder(cutoff)) return { changed: false, entry: prev };
+    return { changed: true, entry: this._hintEntry(episode, prev) };
+  }
+
+  _hintEntry (episode, prev) {
+    const attempts = (prev?.attempts ?? 0) + 1;
+    const successes = (prev?.successes ?? 0) + (episode.outcome === 'ok' ? 1 : 0);
+    const failures = (prev?.failures ?? 0) + (episode.outcome === 'ok' ? 0 : 1);
+    const found = (prev?.found ?? 0) + (episode.found ?? 0);
+    const all = [...(Array.isArray(prev?.sources) ? prev.sources : []), {
+      mission: episode.mission, at: episode.at, outcome: episode.outcome, found: episode.found ?? 0,
+    }];
+    all.sort((a, b) => (a.at - b.at) || String(a.mission).localeCompare(String(b.mission)));
+    let dropped = [];
+    if (all.length > this.maxHintSources) dropped = all.splice(0, all.length - this.maxHintSources);
+    const cutoffCandidate = dropped[dropped.length - 1] ?? null;
+    const sourcesCutoff = cutoffCandidate && this._sourceOrder(cutoffCandidate) > this._sourceOrder(prev?.sourcesCutoff)
+      ? { at: cutoffCandidate.at, mission: cutoffCandidate.mission }
+      : (prev?.sourcesCutoff ?? null);
+    const entry = {
+      attempts,
+      successes,
+      failures,
+      found,
+      confidence: Math.round((successes / attempts) * 1000) / 1000,
+      contradicted: successes > 0 && failures > 0,
+      outcome: episode.outcome,
+      first: prev?.first ?? episode.at,
+      last: episode.at,
+      lastFailureAt: episode.outcome === 'ok' ? (prev?.lastFailureAt ?? null) : episode.at,
+      updatedAt: episode.at,
+      sources: all,
+    };
+    if (sourcesCutoff) entry.sourcesCutoff = sourcesCutoff;
+    return entry;
+  }
+
+  // Tiene le `maxHintsPerNode` risorse più di recente aggiornate.
+  _capHints (productivity) {
+    const entries = Object.entries(productivity);
+    if (entries.length <= this.maxHintsPerNode) return productivity;
+    entries.sort((a, b) => (b[1]?.updatedAt ?? 0) - (a[1]?.updatedAt ?? 0) || a[0].localeCompare(b[0]));
+    return Object.fromEntries(entries.slice(0, this.maxHintsPerNode));
+  }
+
+  // Consolida un episodio chiuso nell'hint di produttività del nodo spaziale.
+  // Non lancia mai: è chiamato dal lifecycle di missione (best-effort).
+  consolidateMission (missionId, { create = true } = {}) {
+    try {
+      const mission = this.getMission(missionId);
+      if (!mission) return { ok: false, reason: 'no_mission', mission: missionId };
+      if (!this._isTerminal(mission)) return { ok: false, reason: 'not_terminal', mission: missionId };
+      const known = this.missionRelations(mission.id, { relationType: 'consolidated_into' });
+      if (known.length) return { ok: true, skipped: 'already_consolidated', mission: mission.id, anchor: known[0].targetId };
+      const outcome = this._episodeOutcome(mission);
+      if (!outcome) return { ok: false, reason: 'no_outcome', mission: mission.id };
+      const actions = this.missionActions(mission.id);
+      const resources = this._episodeResources(mission, { actions });
+      if (!resources.size) return { ok: true, skipped: 'no_resources', mission: mission.id };
+      const anchor = this._missionAnchor(mission, { actions, create: create && outcome === 'ok' });
+      if (!anchor?.node) return { ok: true, skipped: 'no_anchor', mission: mission.id };
+      const node = anchor.node;
+      const at = mission.completedAt ?? Date.now();
+      const productivity = { ...(node.productivity ?? {}) };
+      const applied = [];
+      for (const [resource, stats] of resources) {
+        const merged = this._mergeHint(node, resource, { mission: mission.id, at, outcome, found: stats.found ?? 0 });
+        if (!merged.changed) { applied.push({ resource, node: node.id, unchanged: true }); continue; }
+        productivity[resource] = merged.entry;
+        applied.push({
+          resource, node: node.id, attempts: merged.entry.attempts,
+          confidence: merged.entry.confidence, found: merged.entry.found,
+          contradicted: merged.entry.contradicted,
+        });
+      }
+      if (applied.some(a => !a.unchanged)) {
+        this.repo.upsert({ ...node, productivity: this._capHints(productivity) });
+      }
+      this.linkMission(mission.id, 'consolidated_into', node.id, {
+        metadata: { resources: applied.map(a => a.resource), outcome, origin: anchor.origin },
+      });
+      return { ok: true, mission: mission.id, anchor: node.id, origin: anchor.origin, outcome, resources: applied };
+    } catch (error) {
+      this.logger?.warn?.(`[memory] consolidamento di ${missionId} fallito: ${error.message}`);
+      return { ok: false, reason: 'error', mission: missionId, error: error.message };
+    }
+  }
+
+  // Backfill: consolida le missioni chiuse non ancora consolidate (ordine
+  // cronologico). Idempotente: una seconda passata salta tutto.
+  consolidatePending ({ limit = 50, since = null, create = true } = {}) {
+    let missions = this.missions({ limit: null }).filter(m => this._isTerminal(m));
+    if (since != null) missions = missions.filter(m => (m.completedAt ?? 0) >= since);
+    missions.sort((a, b) => (a.completedAt ?? a.startedAt ?? 0) - (b.completedAt ?? b.startedAt ?? 0));
+    const results = missions.slice(0, limit).map(m => this.consolidateMission(m.id, { create }));
+    return {
+      ok: true,
+      candidates: missions.length,
+      processed: results.length,
+      consolidated: results.filter(r => r.ok && !r.skipped).length,
+      results,
+    };
+  }
+
+  // Vista semantica: hint di produttività per risorsa/nodo, ordinati per punteggio.
+  productivityHints ({ resource = null, node = null, near = null, radius = null, includeContradicted = true, limit = null } = {}) {
+    const single = node ? this.repo.get(node) : null;
+    const nodes = node ? (single ? [single] : []) : this.repo.find({
+      kinds: ['resource_site', 'landmark', 'structure', 'home'], near, radius, includeInvalid: false,
+    });
+    const wanted = resource ? this._canonicalResource(resource) : null;
+    const out = [];
+    for (const n of nodes) {
+      const hints = n?.productivity && typeof n.productivity === 'object' ? n.productivity : null;
+      if (!hints) continue;
+      for (const [key, entry] of Object.entries(hints)) {
+        if (wanted && key !== wanted) continue;
+        if (!includeContradicted && entry.contradicted) continue;
+        out.push({
+          location: n.id, kind: n.kind, type: n.type, position: n.position ?? null,
+          resource: key, score: productivityScore(entry), ...entry,
+        });
+      }
+    }
+    out.sort((a, b) => b.score - a.score || (b.last ?? 0) - (a.last ?? 0) || a.location.localeCompare(b.location));
+    return limit != null ? out.slice(0, limit) : out;
+  }
+
+  // Località che hanno già funzionato per una risorsa (vista semantica, da
+  // preferire nel planning; `findSuccessfulLocationsFor` resta la vista episodica).
+  provenLocationsFor (resource, { near = null, limit = null, minConfidence = 0, includeContradicted = true } = {}) {
+    let hints = this.productivityHints({ resource, includeContradicted });
+    if (minConfidence > 0) hints = hints.filter(h => h.confidence >= minConfidence);
+    if (near) {
+      hints = hints.filter(h => h.position != null);
+      for (const hint of hints) hint.distance = +distance3d(hint.position, near).toFixed(1);
+      hints.sort((a, b) => (b.score - a.score) || (a.distance - b.distance));
+    }
+    return limit != null ? hints.slice(0, limit) : hints;
+  }
+
   // ---- status ----------------------------------------------------------------------
 
   // Promuove a STALE ciò che è stato osservato troppo tempo fa. Non invalida
@@ -708,7 +1000,7 @@ export class WorldMemory {
     };
   }
 
-  observeView ({ maxContainers = 20, maxLandmarks = 20 } = {}) {
+  observeView ({ maxContainers = 20, maxLandmarks = 20, maxHints = 10 } = {}) {
     const landmarks = this.findLandmarks({ limit: maxLandmarks }).map((r) => ({
       id: r.id, type: r.type, kind: r.kind, label: r.label ?? null, position: r.position,
       status: r.status, lastSeenAt: r.lastSeenAt,
@@ -720,7 +1012,12 @@ export class WorldMemory {
     const portals = this.findPortals({ limit: maxLandmarks }).map((r) => ({
       id: r.id, type: r.type, position: r.position, nether: r.nether ?? null, status: r.status,
     }));
-    return { landmarks, containers, portals, counts: this._kindCounts() };
+    const hints = this.productivityHints({ limit: maxHints }).map(h => ({
+      location: h.location, kind: h.kind, position: h.position, resource: h.resource,
+      score: h.score, confidence: h.confidence, found: h.found, attempts: h.attempts,
+      contradicted: h.contradicted, last: h.last,
+    }));
+    return { landmarks, containers, portals, hints, counts: this._kindCounts() };
   }
 
   _kindCounts () {

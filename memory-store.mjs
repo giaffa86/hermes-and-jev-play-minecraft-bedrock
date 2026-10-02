@@ -22,6 +22,7 @@ export class JsonMemoryRepository {
     this.relations = new Map();
     this._missionRelations = new Map();
     this.actionEvents = new Map();
+    this._actionSeq = 0;   // garantisce id unici per evento d'azione (non persistito)
     this.dirty = false;
   }
 
@@ -230,7 +231,12 @@ export class JsonMemoryRepository {
   recordAction ({ id = null, missionId = null, actionType, targetId = null, outcome = null, startedAt = null, completedAt = null, data = {} }) {
     if (!actionType) throw new Error('recordAction needs actionType');
     const now = Date.now();
-    const key = id || `${missionId ?? 'none'}|${actionType}|${targetId ?? 'none'}|${startedAt ?? now}`;
+    const base = id || `${missionId ?? 'none'}|${actionType}|${targetId ?? 'none'}|${startedAt ?? now}`;
+    // L'id generato è unico per evento: due azioni identiche nello stesso
+    // millisecondo (o senza `startedAt`) sono due episodi distinti, non una
+    // sovrascrittura silenziosa. Un `id` esplicito resta il solo modo di deduplicare.
+    let key = id ?? `${base}#${++this._actionSeq}`;
+    if (!id) while (this.actionEvents.has(key)) key = `${base}#${++this._actionSeq}`;
     this.actionEvents.set(key, {
       ...data,
       id: key, missionId, actionType, targetId, outcome,

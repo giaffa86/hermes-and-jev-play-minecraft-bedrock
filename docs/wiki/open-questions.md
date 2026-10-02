@@ -189,9 +189,14 @@ Still missing (the rest of the original gap):
 - **Goal/episodic memory** (03/10) — the mission layer over the world graph is
   implemented (`mission` + `mission_relation` goal edges + `action_event` +
   `findPreviousMissions`/`findSuccessfulLocationsFor`) and **wired into the
-  controller** (goal → mission, `seeks` edges, action events, outcome/success on
-  close). Live round pending; next slice is the **episodic → semantic
-  consolidation** (productivity hints on target nodes). See [memory](memory.md).
+  controller** (goal → mission, `seeks` edges, action events with the action
+  position, outcome/success on close). The **episodic → semantic consolidation**
+  (productivity hints on the target node, idempotent, with provenance and
+  contradiction handling) is **implemented and unit-tested** (465 tests green);
+  it is exposed via `GET /memory/hints`, `POST /memory/consolidate` and
+  `/observe.memory.hints`, and the controller feeds it to the planner as a
+  preference. Live round still pending; the retention/pruning policy for the
+  episodic layer is open. See [memory](memory.md).
 - **Human chat command channel**: natural-language remote control via in-game
   chat (`@bot seguimi`, `@bot aiutami coi mob`). M1–M3 implemented (chat capture,
   allowlist + trigger, NL → Hermes → `/plan`, `follow_player`); **live

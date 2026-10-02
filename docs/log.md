@@ -953,3 +953,43 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   watchdog. Also records where to report: **Mojira only if a vanilla client
   reproduces** (no personal data), otherwise upstream `bedrock-protocol`.
 - `index.md`, `open-questions.md` and `verification.md` (row 12) link the page.
+
+## [2026-10-02] feat | Episodic → semantic consolidation (P0) + productivity hints read path
+
+- `world-memory.mjs`: terminal missions are consolidated into a **productivity
+  hint** on the spatial node (`productivity.<resource>` = attempts/successes/
+  failures/found/confidence/contradicted/outcome/first/last/lastFailureAt/
+  sources/sourcesCutoff) — a hint, not a fact (the node keeps its status).
+  Anchor resolution: `targets` node → last successful action position → mission
+  `targetPosition` → last checkpoint → current position (never the origin);
+  chunk episodes fuse on the discovery producer's `resource_site_<cx>_<cz>` id.
+  Idempotent (dedup by mission id + `sourcesCutoff` + `consolidated_into`
+  relation), contradiction-aware, bounded (`maxHintSources`, `maxHintsPerNode`).
+- Read path: `productivityScore`, `productivityHints`, `provenLocationsFor`,
+  `observeView().hints`; harness `GET /memory/hints?resource=&limit=` and
+  `POST /memory/consolidate` (backfill); the controller adds a "proven
+  locations … these are hints, not facts" line to the planner prompt and now
+  records `data.position` on every mission action (the anchor evidence).
+- Two real bugs fixed: action events with identical `missionId|actionType|
+  startedAt` overwrote each other in both repositories (`#<seq>` suffix added,
+  collision loop in JSON); and auto-consolidation was skipped when
+  `completedAt` landed before the outcome (now attempted on every terminal
+  patch). `rememberLandmark`/`rememberResourceSite` now preserve
+  `productivity` across a rescan (the discovery loop used to rebuild the record
+  from a fixed field list). `addCheckpoint` stores the `label` it accepts.
+- Tests: new `tests/memory-consolidation.test.mjs` (27 cases × json/sqlite) plus
+  the adapter read-path test; full suite 465 pass / 0 fail. `npm run wiki:lint`
+  clean.
+- Docs: `wiki/memory.md` (new section + next slices), `wiki/open-questions.md`,
+  this log.
+
+## [2026-10-02] lint | Respawn refinement attempt: self-health metadata (failed)
+
+- Tested the hypothesis that the BDS does restore health but the adapter missed
+  it: `_applyEntityMetadata` ignored the self player's health (only
+  `set_health`/`update_attributes` updated it). Patched it to honor self health
+  from metadata and re-ran the death test → the bot still stayed `dead` and the
+  watchdog fired. Reverted: the server genuinely does not restore health after
+  the respawn handshake, so it is not a missing parse on our side.
+- `docs/wiki/respawn.md` "Refinement path" records the failed attempt; remaining
+  options are the vanilla-client capture and the in-place ack experiments.

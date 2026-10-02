@@ -109,3 +109,39 @@ test('the adapter records sparse mission checkpoints while a mission is active',
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('consolidated hints reach the observation and survive a rescan (P0 read path)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'adapter-hints-'));
+  try {
+    const memory = createWorldMemory({ dir, backend: 'json', logger: { warn () {} } });
+    const adapter = new BedrockAdapter({ logger: { log () {} }, memory });
+    adapter.dimension = 'overworld';
+    adapter.world = { findBlocks: () => [], biomeAt: () => 'plains', summary: () => ({}) };
+    // Episodio: un'azione `mine_iron_ore` riuscita nel chunk (6,12).
+    const mission = memory.createMission({ id: 'm_live', type: 'collect_resource', target: 'resource:iron_ore' });
+    memory.recordAction({
+      missionId: mission.id, actionType: 'mine_iron_ore', outcome: 'ok',
+      data: { position: { x: 100, y: 60, z: 200 } },
+    });
+    memory.finishMission(mission.id, { outcome: 'found', success: true, state: 'found' });
+
+    // Percorso di lettura: l'osservazione che arriva al planner contiene il hint.
+    const hints = adapter.observe().memory.hints;
+    assert.equal(hints.length, 1);
+    assert.equal(hints[0].resource, 'iron_ore');
+    assert.equal(hints[0].location, 'resource_site_6_12');
+    assert.ok(hints[0].score > 0);
+
+    // La riscoperta dello stesso chunk (scan dell'adapter) non cancella il consolidato.
+    adapter.position = { x: 100, y: 60, z: 200 };
+    adapter.nearbyBlocks = { iron_ore: [{ name: 'iron_ore', position: { x: 100, y: 60, z: 200 } }] };
+    adapter._lastDiscoveryAt = 0;
+    adapter._rememberDiscoveries();
+    const after = memory.productivityHints({ resource: 'iron_ore' });
+    assert.equal(after.length, 1);
+    assert.equal(after[0].found, 1, 'il consolidato sopravvive alla riscoperta');
+    memory.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

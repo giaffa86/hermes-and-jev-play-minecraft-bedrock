@@ -17,3 +17,6 @@ auth.json
 # Persistent world memory (runtime knowledge, not source)
 memory/
 memory/**
+
+# Stato locale degli agenti (non parte del progetto)
+.pi/

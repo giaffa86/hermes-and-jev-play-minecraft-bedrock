@@ -112,6 +112,7 @@ export class SqliteMemoryRepository {
     this.logger = logger;
     this.version = version;
     this.db = new DatabaseSync(file);
+    this._actionSeq = 0;   // id unici per evento d'azione (per istanza)
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA foreign_keys = ON;');
@@ -445,7 +446,10 @@ export class SqliteMemoryRepository {
   recordAction ({ id = null, missionId = null, actionType, targetId = null, outcome = null, startedAt = null, completedAt = null, data = {} }) {
     if (!actionType) throw new Error('recordAction needs actionType');
     const now = Date.now();
-    const key = id || `${missionId ?? 'none'}|${actionType}|${targetId ?? 'none'}|${startedAt ?? now}`;
+    const base = id || `${missionId ?? 'none'}|${actionType}|${targetId ?? 'none'}|${startedAt ?? now}`;
+    // Stesso criterio del repository JSON: id generato unico (un evento per
+    // chiamata), `id` esplicito per deduplicare.
+    const key = id ?? `${base}#${++this._actionSeq}`;
     this._recordAction.run(key, missionId, actionType, targetId, outcome, startedAt ?? now, completedAt ?? null, JSON.stringify(data));
     return key;
   }

@@ -3,6 +3,8 @@
 //   GET  /options  -> azioni valide in questo momento
 //   POST /act {key} -> esegue un'azione
 //   POST /plan {objective, waypoint, targets} -> registra il piano corrente
+//   GET  /memory/hints?resource=<item>&limit=N -> località provate (episodico → semantico)
+//   POST /memory/consolidate {limit,since} -> backfill idempotente dei consolidamenti
 // Il controller sceglie solo chiavi restituite da /options; la validità è qui.
 import { createServer } from 'node:http';
 import { appendFileSync, mkdirSync } from 'node:fs';
@@ -224,6 +226,20 @@ server = createServer(async (req, res) => {
     else if (req.method === 'POST' && req.url === '/mission/link') { const payload = body ? JSON.parse(body) : {}; const id = adapter.memory?.linkMission(payload.missionId, payload.relationType, payload.targetId, { metadata: payload.metadata ?? {} }); response = [200, { ok: !!id, id: id ?? null }]; }
     else if (req.method === 'POST' && req.url === '/mission/action') { const payload = body ? JSON.parse(body) : {}; const id = adapter.memory?.recordAction(payload); response = [200, { ok: !!id, id: id ?? null }]; }
     else if (req.method === 'POST' && req.url === '/mission/finish') { const payload = body ? JSON.parse(body) : {}; const missionId = payload.missionId ?? adapter.missionId; const record = missionId ? adapter.memory?.finishMission(missionId, payload) : null; response = [200, { ok: !!record, mission: record ?? null }]; }
+    // Lettura dei suggerimenti consolidati: il planner li usa come preferenza
+    // (mai come fatto) e può richiederli per risorsa.
+    else if (req.method === 'GET' && req.url.startsWith('/memory/hints')) {
+      const params = new URLSearchParams(req.url.split('?')[1] ?? '');
+      const resource = params.get('resource');
+      const limit = Number(params.get('limit') ?? 10) || 10;
+      const hints = resource ? worldMemory.provenLocationsFor(resource, { limit }) : worldMemory.productivityHints({ limit });
+      response = [200, { hints, count: hints.length, resource: resource ?? null }];
+    }
+    // Backfill idempotente: consolida le missioni chiuse prima di questa feature.
+    else if (req.method === 'POST' && req.url === '/memory/consolidate') {
+      const payload = body ? JSON.parse(body) : {};
+      response = [200, worldMemory.consolidatePending({ limit: payload.limit ?? 50, since: payload.since ?? null })];
+    }
     else if (req.method === 'POST' && req.url === '/plan') { adapter.setPlan(JSON.parse(body)); response = [200, { ok: true, plan: adapter.plan }]; }
     else if (req.method === 'POST' && req.url === '/act') { const { key } = JSON.parse(body); response = [200, await adapter.executeAction(key)]; }
     else response = [404, { error: 'unknown route' }];
