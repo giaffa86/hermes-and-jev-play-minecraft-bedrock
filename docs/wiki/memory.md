@@ -135,6 +135,27 @@ memory_relation   -> edges  (from_id --type--> to_id)
   (re-reading a chest invalidates the items that are gone). A future slice can
   make this an explicit observation log feeding the current graph.
 
+## Missions and checkpoints
+
+An exploration mission is a persistent node (`kind: mission`) with a lifecycle in
+`state` (`running`/`paused`/`found`/`failed`/`cancelled`), separate from the
+memory `status` freshness. It links to its target (`mission --targets-->
+biome:cherry_grove`). Checkpoints are **sparse** nodes linked to the mission
+(`mission --has_checkpoint--> checkpoint`) and chained
+(`checkpoint[n] --next--> checkpoint[n+1]`), so the route can be reconstructed,
+replayed to return to the target, and later guide a player ([exploration](exploration.md) M1/M2/M3).
+
+- `createMission`/`getMission`/`updateMission`/`completeMission`/`failMission`,
+  `missions({ state })`.
+- `addCheckpoint(missionId, position, { biome })`, `missionCheckpoints`,
+  `lastCheckpoint`, `missionRoute` (mission + ordered checkpoints + total
+  distance from the origin).
+- On spawn a `home` landmark is registered; the adapter records a checkpoint
+  **only while a mission is active** and only every `CHECKPOINT_MIN_DISTANCE`
+  (~48 blocks) — at motion end / discovery, never at every move.
+- HTTP: `GET /mission` (active route), `POST /mission` (create + activate),
+  `POST /mission/complete`.
+
 ## What is implemented
 
 > **Live-verified on 02/10**: the deployed container read 8 chests/barrels (a
@@ -167,6 +188,9 @@ memory_relation   -> edges  (from_id --type--> to_id)
 - **Knowledge graph**: `link`/`neighbors`/`traverse`/`find({ relation })` +
   conceptual resource nodes. The producer materializes `contains` edges from
   containers and resource sites (`chest_91 --contains--> resource:white_wool`).
+- **Missions + checkpoints**: `createMission`/`addCheckpoint`/`missionRoute` +
+  `GET /mission`, `POST /mission`; the adapter records sparse checkpoints during
+  an active mission (route replay / escort).
 - The adapter persists chest observations (`_setContainerContents`) and runs the
   discovery producers (`_rememberDiscoveries`, once per chunk: portal, resource
   site, notable entities).
@@ -180,9 +204,8 @@ memory_relation   -> edges  (from_id --type--> to_id)
 - **Structures** (`kind: structure`): villages, Ancient Cities, … — heuristic
   detection (villagers + beds + village blocks) in the exploration spec M5. The
   `kind` already exists in the model.
-- **Mission checkpoints**: persisted exploration routes (see [exploration](exploration.md)).
-- **Observation memory**: per-block observations (aggregated, batched with
-  `upsertMany`) if a query ever needs them.
+- **Observation log**: an explicit `subject/predicate/object/observedAt/confidence`
+  log that materializes the current graph (the API is already shaped for it).
 - **Vector index** over structured memory for *semantic* recall ("the iron-rich
   cave near the mountain") — on top of SQLite, never replacing it.
 

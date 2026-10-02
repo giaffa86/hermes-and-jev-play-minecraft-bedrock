@@ -185,6 +185,13 @@ server = createServer(async (req, res) => {
       const legacy = { take: 0, place: 1, swap: 2, drop: 3, destroy: 4 }[type_id] ?? 0;
       response = [200, await adapter._sendStackRequest([{ type_id, legacy_type_id: legacy, count, source, destination, randomly }], {})];
     }
+    else if (req.method === 'GET' && req.url === '/mission') {
+      // Rotta della missione attiva (missione + checkpoint + distanza); altrimenti le ultime.
+      const route = adapter.missionId ? adapter.memory?.missionRoute(adapter.missionId) : null;
+      response = [200, route ?? { mission: null, missions: adapter.memory?.missions({ limit: 10 }) ?? [] }];
+    }
+    else if (req.method === 'POST' && req.url === '/mission') { const payload = body ? JSON.parse(body) : {}; const record = adapter.memory?.createMission(payload); if (record) adapter.missionId = record.id; response = [200, { ok: !!record, mission: record ?? null }]; }
+    else if (req.method === 'POST' && req.url === '/mission/complete') { const payload = body ? JSON.parse(body) : {}; const missionId = payload.missionId ?? adapter.missionId; const record = missionId ? adapter.memory?.completeMission(missionId, payload.result ?? null) : null; response = [200, { ok: !!record, mission: record ?? null }]; }
     else if (req.method === 'POST' && req.url === '/plan') { adapter.setPlan(JSON.parse(body)); response = [200, { ok: true, plan: adapter.plan }]; }
     else if (req.method === 'POST' && req.url === '/act') { const { key } = JSON.parse(body); response = [200, await adapter.executeAction(key)]; }
     else response = [404, { error: 'unknown route' }];

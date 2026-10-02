@@ -92,6 +92,7 @@ const STORAGE_BLOCKS = ['chest', 'trapped_chest', 'barrel', 'shulker_box'];
 // TTL della cache contenitori: altri giocatori possono cambiare le scorte.
 const CONTAINER_TTL_MS = 5 * 60 * 1000;
 const DISCOVERY_RESCAN_MS = 15000;   // ri-scansione scoperte nella stessa chunk (mondo appena caricato)
+const CHECKPOINT_MIN_DISTANCE = 48;   // checkpoint sparsi: ogni ~48 blocchi di viaggio
 // Slot esposti da un baule/botte singolo (i bauli doppi ne espongono 54).
 const CONTAINER_SLOT_COUNT = 27;
 
@@ -108,6 +109,7 @@ export class BedrockAdapter {
     this.onLog = onLog;
     this.onDisconnect = onDisconnect;
     this.memory = memory;
+    this.missionId = null;             // missione di esplorazione attiva (checkpoint)
     this._lastDiscoveryChunk = null;   // dedup: scoperte scansionate una volta per chunk
     this._lastDiscoveryAt = 0;
     this.client = null;
@@ -707,14 +709,13 @@ export class BedrockAdapter {
       // Portale Nether (blocco 'portal'): il landmark serve al viaggio fra i due lati.
       const portal = this.world.findBlocks('portal', pos, 32, 1)[0];
       if (portal) this.memory.rememberPortal({ position: portal.position, portalType: 'nether', source: 'observed' });
-      // Sito di risorse: ore osservate (le comuni sono già in nearbyBlocks, le
-      // rare le scansioniamo qui), dedup per chunk.
+      // Sito di risorse: ore osservate, dedup per chunk. Scansione autonoma (non
+      // dipende da nearbyBlocks, che durante il pathfinding può essere stantio).
       const ores = new Set();
-      for (const [name, blocks] of Object.entries(this.nearbyBlocks || {})) {
-        if (/_ore$/.test(name) && blocks.length) ores.add(name.replace(/^deepslate_/, ''));
-      }
-      for (const name of ['diamond_ore', 'deepslate_diamond_ore', 'emerald_ore', 'deepslate_emerald_ore',
-        'gold_ore', 'deepslate_gold_ore', 'redstone_ore', 'deepslate_redstone_ore', 'lapis_ore', 'deepslate_lapis_ore']) {
+      for (const name of ['coal_ore', 'deepslate_coal_ore', 'iron_ore', 'deepslate_iron_ore',
+        'copper_ore', 'deepslate_copper_ore', 'gold_ore', 'deepslate_gold_ore',
+        'redstone_ore', 'deepslate_redstone_ore', 'lapis_ore', 'deepslate_lapis_ore',
+        'diamond_ore', 'deepslate_diamond_ore', 'emerald_ore', 'deepslate_emerald_ore']) {
         if (this.world.findBlocks(name, pos, 32, 1).length) ores.add(name.replace(/^deepslate_/, ''));
       }
       if (ores.size) {
@@ -742,6 +743,12 @@ export class BedrockAdapter {
         biome,
         y: pos.y,
       });
+      // Checkpoint di missione: sparsi (non a ogni movimento), per ricostruire la rotta.
+      if (this.missionId && this.memory.getMission(this.missionId)) {
+        const last = this.memory.lastCheckpoint(this.missionId);
+        const moved = last ? Math.hypot(last.position.x - pos.x, last.position.z - pos.z) : Infinity;
+        if (moved >= CHECKPOINT_MIN_DISTANCE) this.memory.addCheckpoint(this.missionId, pos, { biome });
+      }
     } catch (error) {
       this.log('memory_discovery_error', { message: error.message });
     }
@@ -3719,6 +3726,10 @@ export class BedrockAdapter {
     const resolve = motion.resolve;
     motion.resolve = null;
     if (resolve) resolve(reason);
+    // Movimento concluso: è il momento giusto per registrare le scoperte e i
+    // checkpoint (durante il pathfinding _refreshNearby non gira). Dedup in
+    // _maybeRememberDiscoveries (chunk + cooldown), quindi non è per-tick.
+    this._maybeRememberDiscoveries();
   }
 
   _updateMotionState () {

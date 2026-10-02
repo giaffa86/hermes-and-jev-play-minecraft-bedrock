@@ -47,6 +47,7 @@ test('the adapter records portals, resource sites and notable entities', () => {
       findBlocks: (name) => {
         if (name === 'portal') return [{ name: 'portal', position: { x: 20, y: 40, z: 20 } }];
         if (name === 'diamond_ore') return [{ name: 'diamond_ore', position: { x: 10, y: 40, z: 8 } }];
+        if (name === 'iron_ore') return [{ name: 'iron_ore', position: { x: 9, y: 40, z: 8 } }];
         return [];
       },
       blockAt: () => ({ name: 'stone' }),
@@ -81,4 +82,30 @@ test('discovery scans run on a new chunk, not on every refresh', () => {
   adapter._lastDiscoveryAt = 0; // stesso chunk, cooldown scaduto
   adapter._maybeRememberDiscoveries();
   assert.equal(scans, 3, 'ri-scansiona dopo il cooldown');
+});
+
+test('the adapter records sparse mission checkpoints while a mission is active', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'adapter-mission-'));
+  try {
+    const memory = createWorldMemory({ dir, backend: 'json', logger: { warn () {} } });
+    const adapter = new BedrockAdapter({ logger: { log () {} }, memory });
+    adapter.dimension = 'overworld';
+    adapter.nearbyBlocks = {};
+    adapter.world = { findBlocks: () => [], biomeAt: () => 'plains' };
+    const mission = memory.createMission({ type: 'explore', origin: { x: 0, y: 64, z: 0 } });
+    adapter.missionId = mission.id;
+
+    adapter.position = { x: 0, y: 64, z: 0 };
+    adapter._rememberDiscoveries(); // primo checkpoint
+    adapter.position = { x: 10, y: 64, z: 0 };
+    adapter._rememberDiscoveries(); // < 48 blocchi → nessun nuovo checkpoint
+    adapter.position = { x: 100, y: 64, z: 0 };
+    adapter._rememberDiscoveries(); // ≥ 48 → secondo checkpoint
+    const cps = memory.missionCheckpoints(mission.id);
+    assert.equal(cps.length, 2, 'checkpoint sparsi, non a ogni movimento');
+    assert.equal(cps[0].biome, 'plains');
+    memory.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

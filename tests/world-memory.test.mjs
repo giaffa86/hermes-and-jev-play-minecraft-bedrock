@@ -160,6 +160,26 @@ for (const backend of BACKENDS) {
     assert.ok(all.some(e => e.to === 'resource:white_wool' && e.status === 'invalid'), 'arco invalidato, non perso');
   }));
 
+  test(`[${backend}] missions: checkpoints chain, route and completion`, () => withMemory(backend, (wm) => {
+    const mission = wm.createMission({ type: 'find_biome', target: 'biome:cherry_grove', origin: { x: 0, y: 64, z: 0 } });
+    assert.equal(wm.getMission(mission.id).state, 'running');
+    assert.equal(wm.relationsFrom(mission.id, { type: 'targets' })[0].to, 'biome:cherry_grove');
+    wm.addCheckpoint(mission.id, { x: 40, y: 64, z: 0 }, { biome: 'plains' });
+    wm.addCheckpoint(mission.id, { x: 90, y: 64, z: 0 }, { biome: 'forest' });
+    wm.addCheckpoint(mission.id, { x: 150, y: 64, z: 0 }, { biome: 'cherry_grove' });
+    const cps = wm.missionCheckpoints(mission.id);
+    assert.deepEqual(cps.map(c => c.seq), [0, 1, 2]);
+    assert.equal(cps[2].biome, 'cherry_grove');
+    assert.equal(wm.relationsFrom(cps[0].id, { type: 'next' })[0].to, cps[1].id, 'catena next');
+    const route = wm.missionRoute(mission.id);
+    assert.equal(route.checkpoints.length, 3);
+    assert.equal(route.distanceTravelled, 150);
+    wm.completeMission(mission.id, { biome: 'cherry_grove' });
+    assert.equal(wm.getMission(mission.id).state, 'found');
+    assert.equal(wm.missions({ state: 'found' }).length, 1);
+    assert.throws(() => wm.addCheckpoint('nope', { x: 0, y: 0, z: 0 }), /existing mission/);
+  }));
+
   test(`[${backend}] memory persists across a new service instance`, () => {
     const dir = mkdtempSync(join(tmpdir(), `wm-${backend}-persist-`));
     try {

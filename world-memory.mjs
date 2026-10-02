@@ -463,6 +463,125 @@ export class WorldMemory {
     return records.filter(r => r.position).sort((a, b) => distance3d(a.position, from) - distance3d(b.position, from))[0] ?? null;
   }
 
+  // ---- missions + checkpoints -------------------------------------------------------
+  //
+  // Una missione è un nodo persistente (`kind: mission`) con un ciclo di vita in
+  // `state` (running/paused/found/failed/cancelled) — distinto dallo `status`
+  // di freschezza della memoria. I checkpoint sono nodi sparsi collegati dalla
+  // missione (`mission --has_checkpoint--> checkpoint`) e in catena
+  // (`checkpoint[n] --next--> checkpoint[n+1]`), così la rotta si ricostruisce.
+
+  createMission ({ id = null, type = 'exploration', target = null, dimension = 'overworld', origin = null, state = 'running', source = 'planner' }) {
+    const key = id ?? `mission_${type}_${Date.now().toString(36)}`;
+    const now = Date.now();
+    const record = {
+      id: key,
+      kind: 'mission',
+      type,
+      target,
+      dimension,
+      position: origin ? round(origin) : null,
+      origin: origin ? round(origin) : null,
+      currentPosition: origin ? round(origin) : null,
+      state,
+      startedAt: now,
+      completedAt: null,
+      result: null,
+      failureReason: null,
+      discoveredAt: now,
+      lastSeenAt: now,
+      confidence: 1,
+      status: MEMORY_STATUS.KNOWN,
+      tags: [],
+      source,
+    };
+    this.repo.upsert(record);
+    // La missione punta al suo target (nodo concettuale: biome:…/structure:…/resource:…).
+    if (target) this.link(key, target.includes(':') ? target : `biome:${target}`, 'targets');
+    return record;
+  }
+
+  updateMission (id, patch = {}) {
+    const mission = this.repo.get(id);
+    if (!mission) return null;
+    const record = { ...mission, ...patch, id, lastSeenAt: Date.now() };
+    this.repo.upsert(record);
+    return record;
+  }
+
+  completeMission (id, result = null) {
+    return this.updateMission(id, { state: 'found', completedAt: Date.now(), result });
+  }
+
+  failMission (id, failureReason = null) {
+    return this.updateMission(id, { state: 'failed', completedAt: Date.now(), failureReason });
+  }
+
+  getMission (id) {
+    const record = this.repo.get(id);
+    return record && record.kind === 'mission' ? record : null;
+  }
+
+  missions ({ state = null, limit = null } = {}) {
+    let records = this.repo.find({ kind: 'mission', limit: null });
+    if (state) records = records.filter(r => r.state === state);
+    records.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+    return limit != null ? records.slice(0, limit) : records;
+  }
+
+  addCheckpoint (missionId, position, { biome = null, label = null, at = Date.now() } = {}) {
+    const mission = this.getMission(missionId);
+    if (!mission) throw new Error('addCheckpoint needs an existing mission');
+    const existing = this.missionCheckpoints(missionId);
+    const seq = existing.length;
+    const prev = existing[existing.length - 1] ?? null;
+    const p = round(position);
+    const key = `checkpoint_${missionId}_${seq}_${p.x}_${p.z}`;
+    const record = {
+      id: key,
+      kind: 'checkpoint',
+      type: 'route',
+      dimension: mission.dimension,
+      position: p,
+      biome,
+      seq,
+      at,
+      discoveredAt: at,
+      lastSeenAt: at,
+      confidence: 1,
+      status: MEMORY_STATUS.KNOWN,
+      tags: [],
+      source: 'travel',
+    };
+    this.repo.upsert(record);
+    this.link(missionId, key, 'has_checkpoint');
+    if (prev) this.link(prev.id, key, 'next');
+    return record;
+  }
+
+  // Checkpoint della missione, ordinati per `seq` (la catena `next` li collega).
+  missionCheckpoints (missionId) {
+    const ids = this.repo.relationsFrom(missionId, { type: 'has_checkpoint' }).map(e => e.to);
+    return ids.map(id => this.repo.get(id)).filter(Boolean).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+  }
+
+  lastCheckpoint (missionId) {
+    const cps = this.missionCheckpoints(missionId);
+    return cps[cps.length - 1] ?? null;
+  }
+
+  // Rotta persistita: missione + checkpoint + distanza totale stimata.
+  missionRoute (missionId) {
+    const mission = this.getMission(missionId);
+    if (!mission) return null;
+    const checkpoints = this.missionCheckpoints(missionId);
+    // Distanza totale: dall'origine (se c'è) attraverso i checkpoint.
+    const points = mission.origin ? [mission.origin, ...checkpoints.map(c => c.position)] : checkpoints.map(c => c.position);
+    let distanceTravelled = 0;
+    for (let i = 1; i < points.length; i++) distanceTravelled += distance3d(points[i - 1], points[i]);
+    return { mission, checkpoints, distanceTravelled: +distanceTravelled.toFixed(1) };
+  }
+
   // ---- status ----------------------------------------------------------------------
 
   // Promuove a STALE ciò che è stato osservato troppo tempo fa. Non invalida
@@ -510,7 +629,7 @@ export class WorldMemory {
 
   _kindCounts () {
     const counts = {};
-    for (const kind of ['landmark', 'structure', 'home', 'resource_site', 'portal', 'entity', 'container', 'resource', 'biome']) {
+    for (const kind of ['landmark', 'structure', 'home', 'resource_site', 'portal', 'entity', 'container', 'resource', 'biome', 'mission', 'checkpoint']) {
       const n = this.repo.count({ kind });
       if (n) counts[kind] = n;
     }

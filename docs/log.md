@@ -780,3 +780,20 @@ where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
   idle timeout.
 - `verification.md` row 61 added (✅ live). Cleanup of `/tmp/session` and the
   `collaudo-resume` run.
+
+## [2026-10-02] feat | Missions + sparse checkpoints (route replay)
+
+- `world-memory.mjs`: mission nodes (`createMission`/`updateMission`/`completeMission`/
+  `failMission`/`missions`, lifecycle in `state`, linked `mission --targets--> bi:t`)
+  and sparse checkpoint nodes (`addCheckpoint`, `missionCheckpoints`,
+  `lastCheckpoint`, `missionRoute` with ordered checkpoints + total distance);
+  graph links `has_checkpoint`/`next`.
+- `bedrock-adapter.mjs`: records a checkpoint only while a mission is active and
+  every ~48 blocks (`CHECKPOINT_MIN_DISTANCE`), hooked to motion end
+  (`_finishMotion`) and discovery; the ore scan no longer depends on
+  `nearbyBlocks` and also runs at motion end.
+- `bedrock-harness.mjs`: `GET /mission`, `POST /mission`, `POST /mission/complete`.
+- Tests both backends + the adapter hook; suite green (397).
+- **Verified live**: mission created/activated, a sparse checkpoint recorded
+  (biome `bamboo_jungle_hills`), completed (`found`); `has_checkpoint`/`targets`
+  edges in SQLite. `wiki/memory.md` + `verification.md` row 42 updated.
