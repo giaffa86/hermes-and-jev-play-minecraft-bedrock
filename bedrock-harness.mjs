@@ -143,6 +143,20 @@ server = createServer(async (req, res) => {
           .filter(Boolean),
       }];
     }
+    else if (process.env.BEDROCK_DEBUG && req.method === 'GET' && req.url.startsWith('/debug/path')) {
+      // Diagnostica pathfinding: start, goal e percorso A* verso un punto x,z.
+      const u = new URL(req.url, 'http://x');
+      const x = +u.searchParams.get('x'), z = +u.searchParams.get('z');
+      const start = adapter._startNode();
+      const target = { x, y: adapter.position?.y ?? 70, z };
+      const goals = adapter._findGoalNodes(target);
+      const found = [];
+      for (const goal of goals.slice(0, 3)) {
+        const path = adapter._findPath(start, goal);
+        found.push({ goal, pathLen: path?.length ?? null, end: path?.at(-1) ?? null });
+      }
+      response = [200, { start, feet: adapter._feet, target, goalCount: goals.length, attempts: found }];
+    }
     else if (process.env.BEDROCK_DEBUG && req.method === 'GET' && req.url === '/debug/containers') {
       // Censisce i contenitori di stoccaggio nel mondo caricato (non solo i 32 blocchi).
       const found = [];
