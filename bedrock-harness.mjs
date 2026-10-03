@@ -16,7 +16,7 @@ import {
   evaluateSurvival, summarizeSurvival, loadSurvivalRules,
   filterOptionsForGovernor, loadGameplaySkills, loadProgression, resolveMilestone, resolveActiveSkill,
 } from './survival/index.mjs';
-import { resolveBiomeTarget, planExplorationStep, chunkKey, SUPPORTED_BIOMES } from './exploration.mjs';
+import { resolveBiomeTarget, planExplorationStep, chunkKey, SUPPORTED_BIOMES, replayRouteFromMission, replayRouteFromPlace, planReplayStep, buildReplayReport } from './exploration.mjs';
 
 console.log('BEDROCK HARNESS VERSION 2');
 const API_PORT = +(process.env.API_PORT || 3077);
@@ -208,19 +208,33 @@ server = createServer(async (req, res) => {
     }
     else if (req.method === 'POST' && req.url === '/explore') {
       // Risolve il target in un id Minecraft e crea/attiva la missione di esplorazione.
+      // Le esplorazioni rimaste `running` da un avvio precedente vengono chiuse come
+      // `superseded`: un riavvio del servizio non deve lasciare missioni zombie né
+      // far riprendere una ricerca vecchia.
       const payload = body ? JSON.parse(body) : {};
       const target = resolveBiomeTarget(payload.target ?? payload.biome ?? '');
       if (!target) response = [400, { ok: false, error: 'unknown_biome_target', supported: SUPPORTED_BIOMES }];
       else {
         const origin = adapter.position ? { x: adapter.position.x, y: adapter.position.y, z: adapter.position.z } : null;
+        const superseded = [];
+        for (const prev of adapter.memory.missions({ state: 'running', limit: 20 })) {
+          if (prev.type !== 'find_biome') continue;
+          adapter.memory.finishMission(prev.id, { outcome: 'superseded', success: false, state: 'cancelled', failureReason: 'superseded_by_new_mission' });
+          superseded.push(prev.id);
+        }
         const mission = adapter.memory.createMission({ type: 'find_biome', target, origin });
         adapter.missionId = mission.id;
-        response = [200, { ok: true, mission }];
+        adapter.explorationMissionId = mission.id;
+        adapter.replayRoute = null;
+        response = [200, { ok: true, mission, superseded }];
       }
     }
     else if (req.method === 'GET' && req.url === '/explore') {
       // Un passo deterministico: move / found / hold / exhausted.
-      const mission = adapter.missionId ? adapter.memory?.getMission(adapter.missionId) : adapter.memory?.missions({ state: 'running', limit: 1 })[0];
+      // Solo missioni di esplorazione: un run curriculum/autonomo attivo non deve
+      // far girare il planner dell'esplorazione su una missione di altro tipo.
+      const active = adapter.explorationMissionId ? adapter.memory?.getMission(adapter.explorationMissionId) : null;
+      const mission = active ?? adapter.memory?.missions({ state: 'running', limit: 20 }).find(m => m.type === 'find_biome') ?? null;
       if (!mission) response = [200, { action: 'hold', reason: 'no_mission' }];
       else {
         const visited = (adapter.memory.visitedChunks({ limit: 5000 }) || []).map(c => chunkKey(c.position.x, c.position.z));
@@ -231,6 +245,61 @@ server = createServer(async (req, res) => {
           adapter.memory.completeMission(mission.id, step.report);
         }
         response = [200, step];
+      }
+    }
+    else if (req.method === 'POST' && req.url === '/explore/replay') {
+      // M2: rigioca una rotta registrata verso un posto già scoperto.
+      // Sorgenti: i checkpoint di una missione, un posto del world graph, o
+      // coordinate esplicite. La destinazione è l'unica cosa obbligatoria: le
+      // tappe registrate sono guide, il pathfinding locale rifà i tratti.
+      const payload = body ? JSON.parse(body) : {};
+      const memory = adapter.memory;
+      let route = null;
+      if (payload.missionId) {
+        const source = memory.getMission(payload.missionId);
+        route = replayRouteFromMission(source, source ? memory.missionCheckpoints(source.id) : []);
+      } else if (payload.placeId) {
+        route = replayRouteFromPlace(memory.getRecord(payload.placeId));
+      } else if (Number.isFinite(payload.x) && Number.isFinite(payload.z)) {
+        route = { source: 'coordinates', id: null, label: `${payload.x},${payload.z}`, destination: { x: payload.x, y: payload.y ?? adapter.position?.y ?? 0, z: payload.z }, checkpoints: [] };
+      }
+      if (!route) response = [400, { ok: false, error: 'no_replay_route', hint: 'pass missionId, placeId or x/z' }];
+      else {
+        // Quanto deve essere preciso l'arrivo: lo decide il chiamante (una stanza
+        // piccola richiede una soglia più stretta del default di 6 blocchi).
+        if (Number.isFinite(payload.arrivedRadius)) route.arrivedRadius = payload.arrivedRadius;
+        if (Number.isFinite(payload.viaRadius)) route.viaRadius = payload.viaRadius;
+        // Come per l'esplorazione: un replay rimasto `running` da un avvio
+        // precedente non deve restare appeso né essere ripreso per sbaglio.
+        const superseded = [];
+        for (const prev of memory.missions({ state: 'running', limit: 20 })) {
+          if (prev.type !== 'replay') continue;
+          memory.finishMission(prev.id, { outcome: 'superseded', success: false, state: 'cancelled', failureReason: 'superseded_by_new_replay' });
+          superseded.push(prev.id);
+        }
+        const origin = adapter.position ? { x: adapter.position.x, y: adapter.position.y, z: adapter.position.z } : null;
+        const mission = memory.createMission({ type: 'replay', intent: route.label ?? null, origin, source: 'planner' });
+        if (route.missionId) memory.linkMission(mission.id, 'replay_of', route.missionId);
+        else if (route.id) memory.linkMission(mission.id, 'replays', route.id);
+        adapter.missionId = mission.id;
+        adapter.explorationMissionId = null;
+        adapter.replayRoute = route;
+        response = [200, { ok: true, mission, route, superseded }];
+      }
+    }
+    else if (req.method === 'GET' && req.url === '/explore/replay') {
+      // Un passo del replay; su `arrived` la missione si chiude con l'esito reale.
+      const mission = adapter.missionId ? adapter.memory?.getMission(adapter.missionId) : null;
+      const route = adapter.replayRoute;
+      if (!route || mission?.type !== 'replay') response = [200, { action: 'hold', reason: 'no_replay_route' }];
+      else {
+        const step = planReplayStep({ route, currentPosition: adapter.position, arrivedRadius: route.arrivedRadius, viaRadius: route.viaRadius });
+        if (step.action === 'arrived') {
+          const report = buildReplayReport({ route, mission, currentPosition: adapter.position });
+          adapter.memory.updateMission(mission.id, { targetPosition: adapter.position });
+          adapter.memory.finishMission(mission.id, { outcome: 'arrived', success: true, state: 'arrived', result: report });
+          response = [200, { ...step, report, missionId: mission.id }];
+        } else response = [200, { ...step, missionId: mission.id }];
       }
     }
     else if (req.method === 'GET' && req.url === '/mission') {

@@ -1648,3 +1648,62 @@ live resta bloccato dall'ambiente.
 - **Doc**: `verification.md` nuova riga 19.3 + lista "still not implemented"
   aggiornata, `open-questions.md` (bullet difesa), `roadmap.md` (riga
   `DEFENSE-TASK.md` + leftovers), `AGENTS.md` (`SHIELD_THREAT_RANGE`).
+
+## [2026-10-03] feat | Esplorazione: hardening M1 + M2 route replay (collaudo live)
+
+- **M1 (planner deterministico)**: già implementato (`exploration.mjs`, `POST/GET
+  /explore`, driver `explore.mjs`) e verificato live il 02/10; questo giro lo ha
+  irrobustito con tre difetti trovati in ricognizione. (1) Il report di un `found`
+  ora porta `found: true`: chiudere una missione è un atto che dichiara successo,
+  quindi la prova viaggia nel risultato (il DB live aveva una missione
+  `state: found` con `result: {found: false}`, falso positivo storico di una
+  versione precedente). (2) `GET /explore` avanza **solo** una missione
+  `find_biome`: prima usava qualunque `adapter.missionId`, quindi dopo un run
+  curriculum/autonomo il planner dell'esplorazione girava su una missione di
+  altro tipo. (3) `POST /explore` chiude le esplorazioni rimaste `running` come
+  `superseded` (`outcome: superseded`, `failureReason: superseded_by_new_mission`):
+  un riavvio del servizio non lascia più missioni zombie (live: 5 chiuse in un
+  colpo) e non riprende una ricerca vecchia.
+- **M2 route replay (nuovo)**: "torna al <posto già scoperto>" con le tappe
+  registrate come **guide**, non come percorso obbligato. Primitive pure in
+  `exploration.mjs`: `replayRouteFromMission` (destinazione = `targetPosition`,
+  altrimenti ultima tappa, altrimenti posizione; le tappe coincidenti con la
+  destinazione non sono guide), `replayRouteFromPlace` (posto del world graph),
+  `planReplayStep` (una tappa guida solo se ci **avvicina** alla destinazione: le
+  tappe alle spalle si saltano; `arrived` entro `arrivedRadius`, default 6),
+  `buildReplayReport`. Harness: `POST /explore/replay {missionId|placeId|x,z}`
+  crea una missione `replay` (arco `replay_of` verso la missione sorgente, o
+  `replays` verso il posto) e la attiva; `GET /explore/replay` restituisce un
+  passo (`move` con `via` = tappa guida, oppure `arrived`), e su `arrived` chiude
+  con `outcome: arrived`, `success: true`. Driver `explore-replay.mjs`.
+- **Evidenza live** (container `hermes-jev-bedrock`, BDS 1.26.52, VM 100):
+  `POST /explore {target:'pale garden'}` → missione nuova +
+  `superseded: [mission_find_biome_murmt124, …murfeku4, …murfe6om, …murfe67n,
+  …murey8jr]`; `GET /explore` ha continuato a servire la missione di esplorazione
+  mentre era attiva una missione di replay (fix 2 verificato). Replay:
+  `POST /explore/replay {missionId:'mission_autonomous_murgzqlh',
+  arrivedRadius:2}` → `mission_replay_murmyn84`, rotta con destinazione
+  (117,75,159) presa dai dati registrati → `GET /explore/replay` → `move`
+  (`remaining 2.6`, `legs 0`) → `POST /plan` + `goto_waypoint` → **ok,
+  `pathNodes: 4`** → `arrived` (`stopPosition {115.7,74.6,157.5}`) → `GET
+  /mission` → `state: arrived`, `outcome: arrived`, `success: true`,
+  `completedAt` valorizzato; in SQLite l'arco
+  `mission_replay_murmyn84|replay_of|mission_autonomous_murgzqlh`. Secondo caso
+  `POST /explore/replay {placeId:'home'}` → destinazione risolta dal world graph
+  (108,74,138) → `goto_waypoint` → `path_failed`: 21 blocchi fuori dal
+  componente camminabile.
+- **Limiti residui**: il run end-to-end dell'esplorazione resta bloccato
+  dall'ambiente (primo waypoint della spirale a 96 blocchi → `target_not_found`;
+  nessun bioma nuovo, nessun checkpoint di viaggio), e il caso **multi-tappa** di
+  M2 (rotta con checkpoint intermedi) è coperto solo dai test unitari: nella
+  stanza non è possibile guadagnare tappe (i checkpoint si scrivono ogni 48
+  blocchi di viaggio). Resta la domanda A/B/C in vigore **(C)**.
+- **Test**: 11 casi nuovi in `tests/exploration-replay.test.mjs` (derive della
+  rotta da missioni e posti **persistiti** su entrambi i backend, tappe avanti vs
+  indietro, soglia di arrivo, report) + asserzione `found: true` in
+  `tests/exploration.test.mjs`; suite completa **599 test, 599 pass, 0 fail**.
+- **Doc**: `exploration.md` (status, sezione "Route replay (M2)", stato del
+  codice con evidenza live e limiti, API `explore.returnTo`),
+  `verification.md` (riga 45 aggiornata, nuova riga 45.1, riga 46),
+  `open-questions.md` (bullet "No real exploration"),
+  `roadmap.md` (voce 10).

@@ -37,6 +37,8 @@ test('nextExplorationWaypoint skips visited chunks, deterministically', () => {
 test('planExplorationStep decides found / move / hold / exhausted', () => {
   const mission = { id: 'm', kind: 'mission', state: 'running', target: 'minecraft:cherry_grove', origin: { x: 0, y: 64, z: 0 } };
   assert.equal(planExplorationStep({ mission, currentBiome: 'cherry_grove', currentPosition: { x: 10, z: 10 } }).action, 'found');
+  // Il report di un found porta la prova: chiudere la missione dichiara successo.
+  assert.equal(planExplorationStep({ mission, currentBiome: 'cherry_grove', currentPosition: { x: 10, z: 10 } }).report.found, true);
   const move = planExplorationStep({ mission, currentBiome: 'plains', currentPosition: { x: 0, z: 0 }, visited: [chunkKey(0, 0)] });
   assert.equal(move.action, 'move');
   assert.deepEqual(move.waypoint, { x: -96, z: -96 });

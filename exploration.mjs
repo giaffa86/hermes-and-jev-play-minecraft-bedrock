@@ -106,10 +106,96 @@ export function buildExplorationReport ({ mission = null, checkpoints = [], curr
 export function planExplorationStep ({ mission, currentPosition, currentBiome, visited = [], spacing, maxRadius } = {}) {
   if (!mission) return { action: 'hold', reason: 'no_mission' };
   if (biomeReached(currentBiome, mission.target)) {
-    return { action: 'found', report: buildExplorationReport({ mission, currentPosition, biome: currentBiome }) };
+    // `found: true` esplicito: chiudere una missione è un atto che dichiara
+    // successo, quindi il report deve portare la prova, non lasciarla implicita.
+    return { action: 'found', report: { ...buildExplorationReport({ mission, currentPosition, biome: currentBiome }), found: true } };
   }
   if (mission.state !== 'running') return { action: 'hold', reason: mission.state };
   const waypoint = nextExplorationWaypoint({ origin: mission.origin, visited, spacing, maxRadius });
   if (!waypoint) return { action: 'exhausted' };
   return { action: 'move', waypoint };
+}
+
+// ---- M2: route replay -------------------------------------------------------------
+//
+// "Torna al <posto già scoperto>": si rigioca una rotta *registrata* (i
+// checkpoint di una missione) oppure si punta a un posto del world graph
+// (landmark, home, resource site). Le tappe sono **guide**, non un percorso
+// obbligato: il pathfinding locale rifà il tragitto tra una tappa e l'altra e
+// può trovarne uno migliore. Le funzioni qui sotto sono pure: dato il percorso
+// e la posizione corrente, qual è il prossimo passo.
+
+const round2 = (p) => ({ x: Math.round(p.x * 10) / 10, y: p.y == null ? p.y : Math.round(p.y * 10) / 10, z: Math.round(p.z * 10) / 10 });
+const distance2d = (a, b) => +Math.hypot(a.x - b.x, a.z - b.z).toFixed(1);
+
+// Rotta registrata di una missione: destinazione = dove è stata trovata la cosa
+// (targetPosition), altrimenti l'ultima tappa, altrimenti la posizione iniziale.
+// Le tappe coincidenti con la destinazione non servono come guida e vengono tolte.
+export function replayRouteFromMission (mission, checkpoints = []) {
+  if (!mission) return null;
+  const ordered = (checkpoints ?? [])
+    .filter(c => c?.position)
+    .slice()
+    .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+  const last = ordered[ordered.length - 1] ?? null;
+  const destination = mission.targetPosition ?? last?.position ?? mission.position ?? mission.origin ?? null;
+  if (!destination) return null;
+  return {
+    source: 'mission',
+    missionId: mission.id,
+    label: mission.target ?? mission.intent ?? mission.id,
+    destination: round2(destination),
+    checkpoints: ordered.filter(c => distance2d(c.position, destination) > 1).map(c => ({ id: c.id, seq: c.seq ?? 0, position: round2(c.position) })),
+  };
+}
+
+// Rotta verso un posto del world graph (landmark/home/resource site/container).
+export function replayRouteFromPlace (record) {
+  if (!record?.position) return null;
+  return {
+    source: 'place',
+    id: record.id,
+    label: record.label ?? record.type ?? record.id,
+    destination: round2(record.position),
+    checkpoints: [],
+  };
+}
+
+// Un passo del replay: 'move' (verso la prossima tappa utile o la destinazione)
+// oppure 'arrived' entro `arrivedRadius`. Una tappa è "utile" solo se ci avvicina
+// alla destinazione (le tappe alle spalle, cioè più lontane di noi, si saltano).
+export function planReplayStep ({ route, currentPosition, arrivedRadius = 6, viaRadius = 4 } = {}) {
+  if (!route?.destination) return { action: 'hold', reason: 'no_destination' };
+  if (!currentPosition) return { action: 'hold', reason: 'no_position' };
+  const remaining = distance2d(currentPosition, route.destination);
+  if (remaining <= arrivedRadius) return { action: 'arrived', destination: route.destination, remaining };
+  const legs = (route.checkpoints ?? []).filter(c => c?.position);
+  const ahead = legs.filter(c => distance2d(c.position, route.destination) <= remaining - viaRadius);
+  const leg = ahead[0] ?? null;
+  const target = leg ? leg.position : route.destination;
+  return {
+    action: 'move',
+    waypoint: { x: target.x, z: target.z },
+    via: leg?.id ?? null,
+    remaining,
+    legs: legs.length,
+    legsAhead: ahead.length,
+  };
+}
+
+// Report strutturato del replay arrivato (il gemello di buildExplorationReport).
+export function buildReplayReport ({ route = null, mission = null, currentPosition = null, now = Date.now() } = {}) {
+  const origin = mission?.origin ?? null;
+  const destination = route?.destination ?? null;
+  return {
+    missionId: mission?.id ?? null,
+    arrived: true,
+    replayOf: route?.missionId ?? route?.id ?? null,
+    label: route?.label ?? null,
+    destination,
+    origin,
+    distanceFromOrigin: origin && destination ? distance2d(origin, destination) : null,
+    stopPosition: currentPosition ? round2(currentPosition) : null,
+    durationSeconds: mission?.startedAt ? Math.round((now - mission.startedAt) / 1000) : null,
+  };
 }

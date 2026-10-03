@@ -100,6 +100,12 @@ export class WorldMemory {
     return this.repo.get(id) != null;
   }
 
+  // Accesso diretto per id: i consumer che hanno già un id noto (es. il replay di
+  // una rotta verso un posto registrato) non devono rifare una ricerca.
+  getRecord (id) {
+    return id ? (this.repo.get(id) ?? null) : null;
+  }
+
   findLandmarks ({ type = null, kind = null, tag = null, includeInvalid = false, near = null, radius = null, limit = null } = {}) {
     // I "luoghi" sono landmark/structure/home; resource_site/portal/entity hanno
     // i loro finder. `kind` può restringere ulteriormente.

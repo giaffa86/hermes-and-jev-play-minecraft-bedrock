@@ -4,9 +4,10 @@ Topic: synthesis of the **Autonomous Exploration v1** milestone spec in
 [`docs/raw/GOAL_EXPLORATION.md`](../raw/GOAL_EXPLORATION.md). It defines how the
 bot should accept high-level search goals ("find a Cherry Grove", "find a
 village", "find brown mushrooms"), explore the world autonomously and
-reproducibly, and report a structured result. **Status: spec only — not
-implemented** (this is the "no real exploration" gap tracked in
-[open-questions](open-questions.md) and [roadmap](roadmap.md)).
+reproducibly, and report a structured result. **Status: M1 (find biome) and M2
+(route replay) implemented and live-exercised; M3–M6 spec only** (the "no real
+exploration" gap of [open-questions](open-questions.md) and
+[roadmap](roadmap.md) is now only the *long-distance* part).
 
 ## Goal and examples
 
@@ -190,6 +191,28 @@ mineshaft = planks + rails + cobwebs + spawner; ancient city = an extended sculk
 - **Underground kit**: torches, blocks (bridge/pillar), sword + armor, food, a
   water bucket, a pickaxe, and **free inventory space**.
 
+## Route replay (M2)
+
+"Return to an already-discovered place": the recorded route is replayed as a
+sequence of *guides*, not as a compulsory path — the local pathfinder redoes each
+leg and may find a better one.
+
+- Source of a route: the **checkpoints of a mission** (`replay_of` edge to the
+  source mission), a **place of the world graph** (landmark/`home`/resource site,
+  `replays` edge), or explicit **coordinates**.
+- Destination: where the thing was found (`targetPosition`), else the last
+  checkpoint, else the mission position.
+- Pure planner: `replayRouteFromMission`, `replayRouteFromPlace`,
+  `planReplayStep` (a leg is a guide only while it moves us *closer* to the
+destination: the legs behind us are skipped), `buildReplayReport`.
+- Harness: `POST /explore/replay {missionId|placeId|x,z}` creates a `replay`
+  mission and activates it; `GET /explore/replay` returns one step
+  (`move` / `arrived`, with `via` = the guiding leg); on `arrived` the mission
+  closes with `outcome: arrived`, `success: true`. `arrivedRadius` default 6
+  blocks, settable per request.
+- Driver: `RUN_ID=exp-replay PLACE_ID=home node explore-replay.mjs` (or
+  `MISSION_ID=…` / `X=… Z=…`).
+
 ## Exploration Skill API (target)
 
 ```
@@ -202,7 +225,7 @@ explore.findMineshaft()
 explore.findSpawner()
 explore.findDeepDark()
 explore.pause() / explore.resume() / explore.cancel()
-explore.returnTo(resultId)
+explore.returnTo(resultId)        # implemented as POST /explore/replay (M2)
 explore.escortTo(resultId)
 ```
 
@@ -224,19 +247,47 @@ a report → stays on the spot → can return later → can escort the player th
 
 ## Current status in the code
 
-◑ **M1 core implemented.** `exploration.mjs` is the deterministic planner: biome
-target resolution (natural language → `minecraft:<id>`), the expanding-square/
-spiral over **unexplored chunks**, biome detection and the structured report. The
-harness steps it (`POST /explore` creates the mission, `GET /explore` returns one
-`move`/`found`/`hold`/`exhausted` step) and `explore.mjs` is the driver
-(mission → plan → `<act goto_waypoint>` → found). Missions + sparse checkpoints
-are persisted in the [world memory](memory.md) (`kind: mission`).
+◑ **M1 core implemented and M2 implemented.** `exploration.mjs` is the
+deterministic planner: biome target resolution (natural language →
+`minecraft:<id>`), the expanding-square/spiral over **unexplored chunks**, biome
+detection and the structured report — plus the M2 replay primitives. The harness
+steps it (`POST /explore` creates the mission, `GET /explore` returns one
+`move`/`found`/`hold`/`exhausted` step, `POST/GET /explore/replay` replays a
+recorded route) and `explore.mjs` / `explore-replay.mjs` are the drivers.
+Missions + sparse checkpoints are persisted in the [world memory](memory.md)
+(`kind: mission`).
 
-Still missing: a full autonomous run over long distances depends on the
+Hardening done with the live rounds (03/10):
+
+- a `found` report now carries `found: true`, so closing a mission never claims
+  success without its evidence;
+- `GET /explore` only ever steps a **`find_biome`** mission (it used to hijack
+  whatever `adapter.missionId` pointed at, e.g. a curriculum or replay mission);
+- `POST /explore` (and `/explore/replay`) closes the previous `running`
+  missions of the same kind as `superseded`, so a service restart leaves no
+  zombie mission and no stale search is silently resumed.
+
+Live evidence (03/10, container `hermes-jev-bedrock` vs BDS 1.26.52): `POST
+/explore {target:'pale garden'}` created the mission and reported
+`superseded: [5 stale explorations]`; `GET /explore` kept stepping the
+exploration mission while a replay mission was active; `POST /explore/replay
+{missionId:'mission_autonomous_murgzqlh', arrivedRadius:2}` → `move` to the
+recorded place → `goto_waypoint` ok (`pathNodes: 4`) → `arrived` → mission
+`state: arrived`, `outcome: arrived`, `success: true` (+ `replay_of` edge in
+SQLite). `POST /explore/replay {placeId:'home'}` resolved the destination from
+the world graph (108,74,138) and `goto_waypoint` returned `path_failed` —
+21 blocks away, outside the walkable component.
+
+Limits: a full autonomous run over long distances still depends on the
 perception cap below (the bot only "sees" loaded blocks near it — see
-[headless-client](headless-client.md#8-render-distance-not-comparable)), and
-M2–M5 (route replay, escort, blocks/resources, structures) plus the M6
-underground targets (caves, mineshafts, Deep Dark, spawners) are spec only.
+[headless-client](headless-client.md#8-render-distance-not-comparable)) and on
+the bot being able to leave its platform: on the live BDS it is boxed in a 4×5
+block room, so the spiral waypoint is 96 blocks away and unreachable
+(`target_not_found`), no new biome can be reached and no travel checkpoint is
+written. M3–M5 (escort, blocks/resources, structures) and the M6 underground
+targets (caves, mineshafts, Deep Dark, spawners) are still spec only. The
+multi-leg case of M2 (a route with intermediate checkpoints) is covered by unit
+tests; live only the single-leg case could be exercised inside the room.
 
 This spec is the missing piece that the persistent-agent vision
 ([ai-player-roadmap](ai-player-roadmap.md), milestone 5/6: world awareness +

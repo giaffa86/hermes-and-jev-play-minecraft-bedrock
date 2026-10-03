@@ -264,13 +264,15 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    build a portal, `/observe.portals`, fire/lava + projectile/gaze sensing),
    then N2/N3 (survive the Nether, dodge ghast fireballs), N4/N5 (piglin
    bartering, enderman gaze discipline), N6/N7 (fortress, blaze rods, End).
-10. **Exploration** (spec in [exploration](exploration.md)): M1 core is
-    implemented (`exploration.mjs` target resolution + spiral planner + report,
-    `POST/GET /explore`, driver `explore.mjs`, missions + sparse checkpoints in
-    the [world memory](memory.md)). Next: run M1 end-to-end on the BDS once the
-    bot can travel, then M2 (route replay), M3 (escort), M4 (blocks/resources),
-    M5 (structures), M6 (underground targets: caves, mineshafts, Deep Dark,
-    spawners).
+10. **Exploration** (spec in [exploration](exploration.md)): M1 core and M2
+    (route replay) are implemented and live-exercised (`exploration.mjs` target
+    resolution + spiral planner + report + replay primitives, `POST/GET
+    /explore`, `POST/GET /explore/replay`, drivers `explore.mjs` /
+    `explore-replay.mjs`, missions + sparse checkpoints in the
+    [world memory](memory.md)). Next: run M1 end-to-end on the BDS once the bot
+    can travel (today the spiral waypoint is 96 blocks away and unreachable),
+    then M3 (escort), M4 (blocks/resources), M5 (structures), M6 (underground
+    targets: caves, mineshafts, Deep Dark, spawners).
 11. **Memory follow-ups** (see [memory](memory.md)): a **structure detector**
     (villages / Ancient Cities → `structure:*` nodes), an explicit
     **observation log** (`subject/predicate/object` that materializes the
