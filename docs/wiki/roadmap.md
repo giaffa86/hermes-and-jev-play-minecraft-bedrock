@@ -198,13 +198,15 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 - **Fluids** — swimming, drowning/breathing, waterfalls (descent/ascent), lava
   avoidance, buckets/boats/bubble columns/potions. Roadmap (M0–M6) in
   [fluids](fluids.md) / [`raw/FLUIDS_ROADMAP.md`](../raw/FLUIDS_ROADMAP.md);
-  **M0 (fluid awareness) and M1 partial (wading + simulated air budget)
-  implemented, unit-tested and collaudato live 03/10** (`/observe.fluids`
-  census, hazard ladder, `avoid_lava`, dig-neighbour refusal, lava repulsion in
-  `_standable`, `airSource` with the simulated `AirMeter`). Deep water is still a
-  wall (`_passable` rejects `water|lava`) and the swimming motion/`surface`/
-  `swim_to` remain unimplemented because their Bedrock flags need a packet
-  capture of a real player swimming.
+  **M0 (fluid awareness) + M1 partial (wading + simulated air budget) + M2
+  (Water Breathing detection and the dive/work budget) implemented, unit-tested
+  and collaudato live 03/10** (`/observe.fluids` census, hazard ladder,
+  `avoid_lava`, dig-neighbour refusal, lava repulsion in `_standable`, `airSource`
+  with the simulated `AirMeter`; `/observe.dive` with the descent/work/ascent
+  budget and `_underwaterWorkAllowed` gating `_mineBlock`/`_collectDrop`). Deep
+  water is still a wall (`_passable` rejects `water|lava`) and the swimming
+  motion/`surface`/`swim_to` remain unimplemented because their Bedrock flags need
+  a packet capture of a real player swimming.
 - **Redstone and primitive automation** — switches, delay lines, observers/
   pistons, hoppers, dispensers. Roadmap (R0–R6) in [redstone](redstone.md) /
   [`raw/REDSTONE_ROADMAP.md`](../raw/REDSTONE_ROADMAP.md); **R0 (awareness and
@@ -320,11 +322,16 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    offline-verified since 03/10 (`fish_hook_hook` + dip fallback); the live round
    still has to confirm the bobber entity name and that the server really sends
    the event.
-6. **Fluids** (spec in [fluids](fluids.md)): **M0 + M1 partial done** (03/10 —
+6. **Fluids** (spec in [fluids](fluids.md)): **M0 + M1 partial + M2 done** (03/10 —
    fluid awareness: `/observe.fluids`, hazard ladder, `avoid_lava`, dig
    adjacency, lava repulsion; live round documented in [verification](verification.md)
    rows 47/47.1). M1's wading (shallow water traversal at `WADE_SPEED_FACTOR`)
    and the **simulated** air budget (`bedrock-air.mjs`, `airSource`) are done;
+   M2 adds the real **Water Breathing** detection (turtle helmet + `mob_effect`
+   effects with tick→second countdown) and the dive decision
+   (`bedrock-dive.mjs`: descent/work/ascent against the air minus a 3 s reserve),
+   which gates `_mineBlock` and `_collectDrop` under water and releases the
+   `drowning` rule while breathing. The underwater refusal is unit-tested only:
    the swimming motion (`surface`/`swim_to`, water A* nodes, buoyancy/`delta`
    flags) stays unimplemented because it needs a packet capture of a real player
    swimming, which requires a human on the BDS during a run. The remaining fluid

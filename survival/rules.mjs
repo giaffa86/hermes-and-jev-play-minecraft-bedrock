@@ -13,8 +13,8 @@ export const CONDITION_KEYS = [
   'bedAvailable', 'hasFood', 'weaponInInventory', 'pickaxeInInventory',
   'sleeping', 'dead', 'lootNearby',
   'hostileWithin', 'hostileSeverityAtLeast', 'hostileTypeWithin',
-  // Fluidi (M0 di docs/wiki/fluids.md).
-  'inWater', 'headInWater', 'inLava', 'lavaWithin', 'airBelow',
+  // Fluidi (M0 di docs/wiki/fluids.md) + respiro (M2).
+  'inWater', 'headInWater', 'inLava', 'lavaWithin', 'airBelow', 'waterBreathing',
   // Nether/End (N0 di docs/wiki/nether.md).
   'inFire', 'fireWithin', 'magmaWithin', 'projectileIncoming', 'gazedAtEnderman',
   'inNether', 'inEnd', 'spawnerWithin',
@@ -23,7 +23,7 @@ export const CONDITION_KEYS = [
 const BOOLEAN_KEYS = new Set([
   'night', 'timeKnown', 'bedAvailable', 'hasFood', 'weaponInInventory',
   'pickaxeInInventory', 'sleeping', 'dead', 'lootNearby',
-  'inWater', 'headInWater', 'inLava',
+  'inWater', 'headInWater', 'inLava', 'waterBreathing',
   // Nether/End (N0).
   'inFire', 'projectileIncoming', 'gazedAtEnderman', 'inNether', 'inEnd',
 ]);
@@ -155,6 +155,10 @@ export function evaluateCondition (key, value, perception = {}) {
       const air = perception.fluids?.air;
       return Number.isFinite(air) && air < value;
     }
+    // M2: respirare sott'acqua non è un pericolo (elmo di tartaruga o effetto
+    // `water_breathing`). La condizione è booleana e vale `false` se ignota.
+    case 'waterBreathing':
+      return perception.fluids?.waterBreathing === value;
     default:
       throw new Error(`unknown survival condition: ${key}`);
   }

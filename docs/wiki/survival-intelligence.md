@@ -75,7 +75,7 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**909 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**920 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
 
 - **Fluids in the survival layer (M0, 2026-10-03)**: the governor vocabulary grew
@@ -179,6 +179,29 @@ rule, the `surface` need and the hazard ladder. Live: `air: 300`,
 `airSeconds: 15`, `airSource: 'simulated'`, no invented emergency on a dry bot;
 the swimming motion (`surface`/`swim_to`) is blocked by the missing packet
 capture of a real player swimming.
+
+- **Breathing and the dive budget (M2, 2026-10-03)**: the second half of the fluid
+work is a *decision*, not a movement. `bedrock-dive.mjs` costs a dive as
+`descent (0.6 s/block) + work + ascent (0.7 s/block)` against `airSeconds − 3 s`,
+and `underwaterWork()` is the one gate: head above water → allowed, otherwise
+`budget_ok` or a typed refusal (`air_too_low`, `work_too_long`, `unknown_air`).
+Water Breathing is detected from **real** sources only — a `turtle_helmet` on the
+head or a `mob_effect` effect normalized to `water_breathing` (the packet carries
+**ticks**, the meter converts, `-1` = infinite, `0` = already expired); a conduit
+is reported (`conduitsNear`) but never trusted, because its effect depends on a
+validated 3×3 water prism the bot cannot verify — inventing safety would be worse
+than refusing. The governor follows: a new `waterBreathing` condition, `drowning`
+now requires `waterBreathing: false`, and the `surface` need plus the `drowning`
+risk stand down while breathing is held (unknown = `false` = prudent).
+`_mineBlock` and `_collectDrop` ask `_underwaterWorkAllowed()` before sending
+anything, so a dive that would not fit is refused in milliseconds instead of
+burning a 20–30 s movement into a drowning. Live: `/observe.dive` reports
+`depth: 0` and the gate transparent on a dry bot (`mine_cobblestone` still ok in
+2.8 s, `last: null`); an `effect @a water_breathing 600 0` typed in the BDS
+console was picked up as `{kind: 'effect', seconds: 600}` and counted down across
+probes (493 → 481 → 469 → 461 s), proving the tick→second math against the real
+server. The refusal path itself stays unit-tested: the bot cannot submerge from
+the base room (M1's swimming blocker).
 
 - **Mature-crop detection (2026-10-03)**: `cropMaturity()`/`seedForCrop()` live in
 `bedrock-survival.mjs` (`growth` 0..7 for wheat/carrots/potatoes/beetroots/melon

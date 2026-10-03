@@ -6,14 +6,15 @@ descend and ascend, and **avoid lava** until it is equipped (bucket, fire
 resistance, bridging). It also covers every fluid-related skill: buckets, boats,
 bubble columns, potions, underwater mining/fishing.
 
-Status: **M0 (fluid awareness) + M1 partial (wading and simulated air budget)
-implemented, unit-tested and collaudato live** (03/10/2026); the swimming
-*physics* of M1 (ballistic flags, water A*, `swim_to`) is **blocked** by a
-missing packet capture — see the M1 section. M2–M6 still spec only (tracked in
-[roadmap](roadmap.md) and [open-questions](open-questions.md)). Full raw source:
-[`docs/raw/FLUIDS_ROADMAP.md`](../raw/FLUIDS_ROADMAP.md).
+Status: **M0 (fluid awareness) + M1 partial (wading and simulated air budget) +.
+M2 (breathing and dive budget) implemented, unit-tested and collaudato live**
+(03/10/2026); the swimming *physics* of M1 (ballistic flags, water A*, `swim_to`)
+is **blocked** by a missing packet capture — see the M1 section. M3–M6 still spec
+only (tracked in [roadmap](roadmap.md) and [open-questions](open-questions.md)).
+Full raw source: [`docs/raw/FLUIDS_ROADMAP.md`](../raw/FLUIDS_ROADMAP.md).
 
-Sources: `bedrock-adapter.mjs` (movement, physics, digging, fishing), `BEDROCK.md`
+Sources: `bedrock-adapter.mjs` (movement, physics, digging, fishing),
+`bedrock-dive.mjs` (M2 decision), `BEDROCK.md`
 (action status), [headless-client](headless-client.md) (perception/action model),
 [survival-intelligence](survival-intelligence.md) (governor/skills/verifier),
 [fishing](fishing.md), [companions](companions.md) (boats/riding).
@@ -204,7 +205,6 @@ implemented and unit-tested; the second is **blocked** (see below).
 **Tests**: `tests/bedrock-fluids.test.mjs` (8), `tests/bedrock-fluids-adapter.test.mjs`
 (15: census/hazard/dig/lava gate + 5 wading + 3 air), `tests/bedrock-air.test.mjs`
 (5). Full suite 698 tests, 0 failures.
-
 **Live round (03/10/2026, container `hermes-jev-bedrock`, BDS 1.26.52)**
 
 - `GET /observe.fluids?force=1` → `ready: true`, `scanned: 259`, `lavaCells 251`
@@ -238,13 +238,89 @@ implemented and unit-tested; the second is **blocked** (see below).
 - `WADE_SPEED_FACTOR` is a conservative guess (half of the land speed); the first
   live wade will tell whether it should be tuned.
 
+## M2 — Breathing and controlled dives (implemented, live 03/10/2026)
+
+M2 asks for four things: a dive decision with an air budget, a gate on the work
+that happens under water, real **Water Breathing** detection, and a governor that
+knows the difference. All four are implemented; the underwater *movement* is not
+(the M1 blocker), so the live round exercises the decision rather than swimming.
+
+**`bedrock-dive.mjs` (pure, no I/O)**
+
+- `waterBreathingSources({armor, effects, conduits})` → `{active, sources, conduitsNear}`.
+  Two sources are *real*: a `turtle_helmet` on the head, and an effect whose
+  registry name normalizes to `water_breathing` (`WaterBreathing` →
+  `water_breathing`), with `duration` in **ticks** (`-1` = infinite, `0` = already
+  expired, so it does not protect). **Conduits are reported but never count as
+  active**: their effect needs a validated 3×3 water prism the bot cannot verify,
+  and claiming it would be invented safety.
+- `divePlan({air, depth, workSeconds, waterBreathing})` costs descent
+  (`0.6 s/block`), the work, and the ascent (`0.7 s/block`) against
+  `airSeconds − DIVE_RESERVE_SECONDS` (3 s). Typed errors: `no_water`,
+  `unknown_air`, `air_too_low` (not even the round trip fits), `work_too_long`
+  (with `maxWorkSeconds`); on success it reports `abortAtSeconds`, the instant the
+  ascent has to start. With breathing active there is no budget (`held: true`).
+- `underwaterWork(...)` is the single decision used everywhere: head above water →
+  allowed (`head_above_water`), otherwise `budget_ok`, `water_breathing`, or the
+  refusal reason.
+
+**Adapter**
+
+- `this.effects` is filled by the `mob_effect` packet (`add`/`update`/`remove`),
+  filtered to the bot's own runtime id; each entry keeps its remaining seconds and
+  an `expiresAt` — the server does **not** always send `remove` when an effect
+  ends, so `_activeEffects()` drops expired entries by itself.
+  `observe().fluids.waterBreathing` and `GET /observe.dive` expose
+  `{active, sources, conduitsNear}`.
+- `_diveDepth()` counts the water cells above the head: that is the distance to the
+  surface, i.e. the ascent the budget has to pay for.
+- `_underwaterWorkAllowed(workSeconds = DIVE_WORK_SECONDS)` is called by
+  `_mineBlock` (before any packet) and by `_collectDrop`: it logs
+  `underwater_work_refused` and returns
+  `{ok: false, error: 'air_too_low' | 'work_too_long' | 'unknown_air'}` instead of
+  burning a 20–30 s movement into a drowning.
+- `GET /observe.dive[?workSeconds=N]` reports `{depth, workSeconds, waterBreathing, plan, last}`.
+
+**Survival layer**: new boolean condition `waterBreathing`; the `drowning` rule now
+requires `waterBreathing: false`; `deriveNeeds` does not ask for `surface` and
+`assessRisk` does not score `drowning` while breathing is active (only the
+informational `head_underwater` reason stays). Unknown = `false` = prudent.
+
+**Tests**: `tests/bedrock-dive.test.mjs` (5), `tests/bedrock-fluids-adapter.test.mjs`
+(23, +5 for effects/dive/gate), `tests/survival-governor.test.mjs` (+1). Full
+suite 920 tests, 0 failures.
+
+**Live round (03/10/2026, container `hermes-jev-bedrock`, BDS 1.26.52)**
+
+| Probe | Result |
+|---|---|
+| `GET /observe.dive` (dry bot) | `{depth: 0, workSeconds: 3, waterBreathing: {active: false, sources: [], conduitsNear: 0}, plan: null, last: null}` |
+| `GET /observe.dive?workSeconds=20` | `workSeconds: 20`, `plan: null` (dry) |
+| `POST /act {"key":"mine_cobblestone"}` | `{ok: true, confirmedBy: 'server_world', ms: 2768}` — the gate is transparent when dry and `last` stays `null` (it never engaged, so no refusal was invented) |
+| `effect @a water_breathing 600 0` in the BDS console | `/observe.dive` → `{active: true, sources: [{kind: 'effect', name: 'water_breathing', seconds: 600, amplifier: 0}]}`, one `mob_effect` event in `runs/demo/events.jsonl`; the same source then counted down across probes (493 → 481 → 469 → 461 s), i.e. the tick→second conversion and the remaining-time math follow the server |
+| `effect @a clear`, then a second `effect … 5 0` in the console | **no change observed** (the first console command landed, the following ones did not) — so the `remove` path and the auto-expiry are unit-tested only |
+
+**Known limits (M2)**
+
+- The underwater refusal (`air_too_low` / `work_too_long`) is **unit-tested only**:
+  the bot cannot get its head under water (sealed base room, the only deep water is
+  20.6 blocks away, and swimming is the M1 blocker). The live round therefore shows
+  the gate as transparent, not as refusing.
+- The turtle-helmet source is not exercised live either (no helmet and no scutes in
+  the room); the conduit source is deliberately informational.
+- `DIVE_WORK_SECONDS` (3 s) is an estimate for one hand-mined block: a hard block
+  with the wrong tool takes longer, and the gate does not consult the tool yet.
+- Only the effects the *bot* receives are known. A potion drunk through the
+  inventory would arrive the same way (`mob_effect`), but that path has not been
+  observed live.
+
 ## Milestones
 
 | # | Milestone | Content | Status |
 |---|---|---|---|
 | M0 | Fluid awareness | Pure `bedrock-fluids.mjs`; `/observe.fluids`; scan water/lava; perception + governor rules (`drowning`, `lava_contact`, `lava_near`); pathfinding forbids/repels lava; dig adjacency check; generalized `avoid_lava`. | ◑ implemented + live 03/10/2026 (awareness, census, option gate and rule inertness collaudati live; the escape move and the emergency rules stay unit-tested — no reachable lava from the base room) |
 | M1 | Swimming physics & navigation | Water becomes passable; buoyancy/drag/swim speed in `_physicsStep`; correct `input_data` flags (packet-capture task); A* water nodes; air budget + auto-`surface`; `surface`/`swim_to`. | ◑ partial 03/10/2026: **wading** (shallow water traversal + slower local speed) and the **simulated air budget** (`bedrock-air.mjs`, `airSource`) are implemented and unit-tested; the live crossing round is blocked (only deep water within 20.6 blocks, bot sealed in the base room) and the swimming motion/water A*/`surface`/`swim_to` stay unimplemented pending a packet capture of a real player swimming |
-| M2 | Breathing & controlled dives | `dive` with air budget; underwater `mine_*`/`collect_drop`; Water Breathing detection; governor `drowning` + `breathe` need. | ❌ not implemented |
+| M2 | Breathing & controlled dives | `dive` with air budget; underwater `mine_*`/`collect_drop`; Water Breathing detection; governor `drowning` + `breathe` need. | ◑ implemented + live 03/10/2026: the **decision** (budget, `waterBreathing`, the gate on `mine_*`/`collect_drop`) is implemented, unit-tested and collaudato live (effect detected and counted down by the real server; the gate transparent on a dry bot). The underwater *move* stays blocked by M1: from the base room the head never gets under water, so the refusal path is unit-tested only. |
 | M3 | Waterfalls & bubble columns | `findWaterfalls`/`findBubbleColumns`; `descend_waterfall`, `climb_waterfall`, `use_bubble_column`; pathfinding edges; `dig_down` prefers a nearby waterfall. | ❌ not implemented |
 | M4 | Lava: avoid (cross later) | Absolute obstacle + repulsion; `move_to_safe`; lava-death marking; never mine into lava; bucket bridging (`place_water` → obsidian); Nether crossing gated behind `fire_resistance` + bridging. | ❌ not implemented |
 | M5 | Buckets, boats, potions | `craft_bucket`/`craft_boat`; `fill_bucket`/`empty_bucket`/`place_water`; boat travel on open water via `mount_*`/`_rideToward`; brewing. | ❌ not implemented |
@@ -258,8 +334,18 @@ implemented and unit-tested; the second is **blocked** (see below).
   16/17, `auto_jumping_in_water` 7).
 - The air budget was never sent by the server, so it is **simulated**
   (`bedrock-air.mjs`, 300 ticks + 4/tick recovery, `airSource: 'simulated'`):
-  correct for decisions, still unverified against server truth, and it cannot be
-  exercised until the bot can submerge.
+  correct for decisions, still unverified against server truth. M2 uses it for the
+  dive decision, but the **underwater** path (the refusal of `mine_*`/
+  `collect_drop` while the head is under water) has never been exercised live: the
+  bot cannot submerge from the base room, so only the dry (transparent) branch was
+  collaudato.
+- Water Breathing detection is real (turtle helmet + a `mob_effect` effect, both
+  counted down live against the server) but only the effect source was observed;
+  the helmet needs scutes the bot does not have, and the conduit is reported
+  without ever being trusted (a conduit’s effect depends on a validated 3×3 water
+  prism the bot cannot verify).
+- `DIVE_WORK_SECONDS` (3 s) is an estimate for one hand-mined block: the gate does
+  not consult the tool yet, so a slow block can outlast the work budget it claims.
 - Fall damage is not modelled today: waterfalls solve descent into water, not
   drops onto land. Add `_fallStartY` + a safe-landing predicate.
 - Deep-water air budgeting and large-ocean scan performance must be bounded.

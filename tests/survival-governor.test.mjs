@@ -247,3 +247,36 @@ test('summarizeSurvival returns the compact shape exposed by /observe', () => {
   assert.equal(summary.risk, 18);
   assert.deepEqual(summary.reasons, ['food_low']);
 });
+
+// ---- M2: respirare sott'acqua --------------------------------------------------------
+
+test('il governor non dichiara annegamento quando il respiro è attivo', () => {
+  const wet = (waterBreathing) => observation({
+    fluids: {
+      inWater: true, headInWater: true, air: 4, airSeconds: 0.2,
+      waterBreathing,
+      water: { count: 3 }, lava: { count: 0 }, lavaDistance: null,
+    },
+  });
+
+  const drowning = evaluateSurvival(wet({ active: false, sources: [], conduitsNear: 0 }), { rules });
+  assert.equal(drowning.rule, 'drowning');
+  assert.equal(drowning.mode, 'emergency');
+  assert.ok(drowning.needs.includes('surface'));
+  assert.ok(drowning.reasons.includes('drowning'));
+
+  // Elmo di tartaruga o effetto `water_breathing`: l'acqua non toglie aria, quindi
+  // né la regola né il bisogno né il punteggio di rischio scattano. Resta solo la
+  // nota informativa.
+  const held = evaluateSurvival(wet({ active: true, sources: [{ kind: 'armor', name: 'turtle_helmet' }], conduitsNear: 0 }), { rules });
+  assert.equal(held.rule, null);
+  assert.notEqual(held.mode, 'emergency');
+  assert.ok(!held.needs.includes('surface'));
+  assert.ok(held.reasons.includes('head_underwater'));
+  assert.ok(!held.reasons.includes('drowning'));
+  assert.ok(held.risk.score < drowning.risk.score);
+
+  // Un'osservazione senza il campo resta prudente: ignoto = non respira.
+  const unknown = evaluateSurvival(observation({ fluids: { inWater: true, headInWater: true, air: 4 } }), { rules });
+  assert.equal(unknown.rule, 'drowning');
+});

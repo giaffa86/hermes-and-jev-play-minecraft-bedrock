@@ -91,7 +91,9 @@ export function assessRisk (perception = {}) {
     push(reasons, 'lava_in_range');
   }
   if (fluids.headInWater === true) {
-    if (Number.isFinite(fluids.air) && fluids.air <= 8) {
+    // M2: con il respiro attivo l'acqua non toglie aria, quindi resta solo la
+    // nota informativa (nessun punteggio): un allarme sarebbe inventato.
+    if (Number.isFinite(fluids.air) && fluids.air <= 8 && fluids.waterBreathing !== true) {
       score += 45;
       push(reasons, 'drowning');
     } else {

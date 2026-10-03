@@ -305,3 +305,119 @@ test('un attributo del server vince sul contatore simulato', () => {
   assert.equal(adapter.air, 123, 'la verità del server resta');
   assert.equal(adapter._airMeter.value, 122, 'il contatore resta allineato');
 });
+
+// --- M2: respirare e gestire una discesa ------------------------------------
+// Il cancello del respiro passa da ogni scavo e da ogni raccolta: con la testa
+// fuori dall'acqua non deve costare nulla, con la testa sotto deve rifiutare
+// ciò che non sta nel budget. Il mondo finto ha il registro degli effetti
+// (names da `WaterBreathing`) e l'armatura dell'adapter.
+
+function breathAdapter (cells = {}, extra = {}) {
+  const { adapter } = fluidAdapter(cells, extra);
+  adapter.world.registry = { effects: { 13: { id: 13, name: 'WaterBreathing', displayName: 'Water Breathing' } } };
+  adapter.client = { write () {} };
+  return adapter;
+}
+
+test('_onMobEffect traccia solo gli effetti del bot e li rimuove', () => {
+  const adapter = breathAdapter({});
+  adapter.client.entityId = 7;
+  adapter._onMobEffect({ runtime_entity_id: 9n, event_id: 'add', effect_id: 13, amplifier: 0, duration: 600 });
+  assert.equal(adapter.effects.size, 0, 'un effetto di un altro mob non riguarda il bot');
+
+  adapter._onMobEffect({ runtime_entity_id: 7n, event_id: 'add', effect_id: 13, amplifier: 1, duration: 600 });
+  assert.equal(adapter.effects.size, 1);
+  assert.equal(adapter._waterBreathing().active, true);
+  assert.equal(adapter._waterBreathing().sources[0].seconds, 30);
+
+  adapter._onMobEffect({ runtime_entity_id: 7n, event_id: 'update', effect_id: 13, amplifier: 0, duration: -1 });
+  assert.equal(adapter._waterBreathing().sources[0].seconds, 'infinite');
+  adapter._onMobEffect({ runtime_entity_id: 7n, event_id: 'remove', effect_id: 13 });
+  assert.equal(adapter.effects.size, 0);
+  assert.equal(adapter._waterBreathing().active, false);
+
+  // Il server non manda sempre un `remove` quando l'effetto finisce: la scadenza
+  // basta a smettere di considerarlo attivo (e a buttarlo via).
+  adapter._onMobEffect({ runtime_entity_id: 7n, event_id: 'add', effect_id: 13, duration: 20 });
+  adapter.effects.get('water_breathing').expiresAt = Date.now() - 1;
+  assert.equal(adapter._waterBreathing().active, false);
+  assert.equal(adapter.effects.size, 0, 'un effetto scaduto non resta in mappa');
+  // Un id che il registro non conosce resta leggibile come `effect_<id>`.
+  adapter._onMobEffect({ runtime_entity_id: 7n, event_id: 'add', effect_id: 99, duration: 20 });
+  assert.deepEqual([...adapter.effects.keys()], ['effect_99']);
+});
+
+test('_waterBreathing legge l\'elmo di tartaruga e i conduit vicini', () => {
+  const adapter = breathAdapter({ '3,71,0': { name: 'conduit', boundingBox: 'block', diggable: true, hardness: 0.5 } });
+  assert.equal(adapter._waterBreathing().active, false);
+  assert.equal(adapter._waterBreathing().conduitsNear, 1, 'il conduit resta un indizio, non una certezza');
+  adapter.armor.helmet = 'turtle_helmet';
+  const source = adapter._waterBreathing().sources[0];
+  assert.deepEqual(source, { kind: 'armor', name: 'turtle_helmet' });
+  adapter.armor.helmet = 'iron_helmet';
+  assert.equal(adapter._waterBreathing().active, false);
+});
+
+test('_diveView conta i blocchi d\'acqua sopra la testa', () => {
+  const dry = breathAdapter({});
+  assert.equal(dry._diveView().depth, 0);
+  assert.equal(dry._diveView().plan, null, 'fuori dall\'acqua non c\'è un piano di discesa');
+
+  const wet = breathAdapter({ '0,71,0': water, '0,72,0': water, '0,73,0': water });
+  const view = wet._diveView();
+  assert.equal(view.depth, 2, 'acqua alla testa e un blocco sopra: è la distanza dalla superficie');
+  assert.equal(view.workSeconds, 3);
+  assert.equal(view.plan.ok, true);
+  assert.equal(view.plan.depth, 2);
+});
+
+test('_underwaterWorkAllowed non blocca un bot asciutto e rifiuta il lavoro troppo lungo', () => {
+  const dry = breathAdapter({});
+  assert.deepEqual(dry._underwaterWorkAllowed(), { allowed: true, reason: 'head_above_water', plan: null });
+
+  const wet = breathAdapter({ '0,71,0': water, '0,72,0': water, '0,73,0': water });
+  const allowed = wet._underwaterWorkAllowed(3);
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.reason, 'budget_ok');
+  assert.equal(wet._diveLast.reason, 'budget_ok', 'l\'ultima discesa accettata resta in vista');
+
+  wet.air = 20;
+  const refused = wet._underwaterWorkAllowed(3);
+  assert.equal(refused.allowed, false);
+  assert.equal(refused.reason, 'air_too_low');
+  assert.equal(refused.depth, 2);
+
+  wet.air = 300;
+  const tooLong = wet._underwaterWorkAllowed(120);
+  assert.equal(tooLong.reason, 'work_too_long');
+
+  // Con il respiro attivo il budget non esiste più.
+  wet.armor.helmet = 'turtle_helmet';
+  wet.air = 20;
+  assert.equal(wet._underwaterWorkAllowed(3).reason, 'water_breathing');
+});
+
+test('_mineBlock e _collectDrop passano dal cancello del respiro', async () => {
+  const adapter = breathAdapter({ '1,71,0': water, '0,71,0': water, '0,72,0': water, '0,73,0': water });
+  adapter.air = 10;
+  const target = { name: 'stone', position: { x: 1, y: 70, z: 0 } };
+  const refused = await adapter._mineBlock(target);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error, 'air_too_low');
+  assert.equal(refused.air, 10);
+
+  const drop = await adapter._collectDrop(1000);
+  assert.equal(drop.ok, false);
+  assert.equal(drop.error, 'air_too_low');
+
+  // Con il respiro attivo lo scavo non viene rifiutato dal cancello: arriva
+  // oltre e si ferma per il motivo successivo (nessun client/utensile nel finto).
+  adapter.armor.helmet = 'turtle_helmet';
+  let beyond = null;
+  try {
+    beyond = await adapter._mineBlock(target);
+  } catch (error) {
+    beyond = { error: error.message };
+  }
+  assert.notEqual(beyond?.error, 'air_too_low');
+});

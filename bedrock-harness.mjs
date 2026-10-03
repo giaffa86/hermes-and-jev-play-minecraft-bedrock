@@ -199,6 +199,14 @@ server = createServer(async (req, res) => {
       const u = new URL(req.url, 'http://x');
       const force = /^(1|true|on)$/i.test(u.searchParams.get('force') ?? '');
       response = [200, adapter._fluidsView({ force, cells: true })];
+    } else if (req.method === 'GET' && req.url.startsWith('/observe.dive')) {
+      // Discesa (M2 di docs/wiki/fluids.md): profondità della colonna d'acqua,
+      // fonti di respiro (elmo di tartaruga, effetto `water_breathing`, conduit
+      // vicini) e verdetto sul budget d'aria per un lavoro sott'acqua.
+      const u = new URL(req.url, 'http://x');
+      const raw = u.searchParams.get('workSeconds');
+      const workSeconds = raw == null || raw === '' ? undefined : Number(raw);
+      response = [200, adapter._diveView(Number.isFinite(workSeconds) ? { workSeconds } : {})];
     } else if (req.method === 'GET' && req.url.startsWith('/observe.redstone')) {
       // Redstone (R0 di docs/wiki/redstone.md): componenti vicini con potenza e
       // direzione, minerali di redstone e TNT. Come per i fluidi il censimento è

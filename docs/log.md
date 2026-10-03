@@ -2755,3 +2755,54 @@ L'adapter guadagna `_endFrames` (il censimento dei portali ora porta anche le `p
 Il pezzo più delicato è il verdetto sul drago: nuovo criterio `bossDefeated` in `survival/verify.mjs` che accetta **solo** `true` e lo legge da `observation.boss`, riempito da un handler del pacchetto Bedrock `boss_event` (`show_bar`/`hide_bar`/`set_bar_progress`) — non da un'entità che sparisce, perché uscire dall'End la fa sparire ugualmente. Il criterio c'è, il combattimento no (mancano cristalli, fase sulla fonte e combattimento a distanza): `beat_the_dragon` resta `success: null`.
 
 Test: 13 casi puri in `tests/end.test.mjs` e 11 in `tests/bedrock-end-adapter.test.mjs` (il bit dell'occhio riletto dal mondo, le perle contate **dagli slot**, il lancio con e senza entità, i rifiuti di `find_stronghold`, il riempimento dei telai, `_enterPortal('end')`, il gating delle opzioni, l'handler della barra del boss). Live (VM 100, container `hermes-jev-bedrock`, deploy scp + `docker cp` + md5 + restart): `GET /observe.end` -> `frames.total: 0`, `craft.craftable: 0` (`missingPearls: 12`, `missingPowder: 12`), `readings: []`, `stronghold: null`, `boss: {defeated: false, reason: "no_boss_bar"}`, `bossBar.events: 0`; `/observe.portals.end` la stessa proiezione compatta; le sei azioni rifiutano in 19–21 ms (`missing_ingredients`, `missing_eye_of_ender`, `needs_second_throw`, `no_frame_known`, `no_end_portal_known`); `/options` 23 chiavi senza nessuna delle sei. Nessun telaio, occhio, portale o barra del boss nel mondo live: il percorso felice è coperto dai soli test unitari. Dettagli in `docs/wiki/nether.md` §N7, riga 47.16 di `verification.md`.
+
+## [2026-10-03] feat | Fluidi M2: respirazione e budget di discesa
+
+M2 è la metà "decisione" dei fluidi: non sa nuotare, ma non annega per sbaglio.
+
+**Modulo puro `bedrock-dive.mjs`**: `waterBreathingSources({armor, effects, conduits})`
+riconosce le fonti **reali** (elmo di tartaruga, effetto normalizzato a
+`water_breathing` con `duration` in tick — `-1` infinito, `0` già scaduto) e
+riporta i conduit senza mai fidarsene (servirebbe un prisma d'acqua 3×3 validato
+dal server: dichiarare sicurezza inventata è peggio che rifiutare).
+`divePlan({air, depth, workSeconds, waterBreathing})` costa la discesa
+(0,6 s/blocco), il lavoro e la risalita (0,7 s/blocco) contro `airSeconds − 3 s`
+di riserva, con rifiuti tipizzati `no_water`/`unknown_air`/`air_too_low`/
+`work_too_long` e, quando passa, l'istante `abortAtSeconds`. `underwaterWork(...)`
+è l'unica porta: testa fuori dall'acqua → permesso, altrimenti `budget_ok`,
+`water_breathing` o il motivo del rifiuto.
+
+**Adapter**: `this.effects` è riempito dal pacchetto `mob_effect`
+(`add`/`update`/`remove`, filtrato sull'runtime id del bot) e ogni voce porta
+`expiresAt`, perché il server non manda sempre il `remove`: `_activeEffects()`
+scarta da sé ciò che è scaduto. `_diveDepth()` conta le celle d'acqua sopra la
+testa (la distanza dalla superficie), `_waterBreathing()` fonde elmo ed effetti,
+`GET /observe.dive` espone `{depth, workSeconds, waterBreathing, plan, last}`, e
+`_underwaterWorkAllowed()` viene chiamato da `_mineBlock` (prima di ogni
+pacchetto) e da `_collectDrop`: un'immersione che non entra nel budget si rifiuta
+in millisecondi invece di bruciare 20–30 s di movimento.
+
+**Layer survival**: nuova condizione booleana `waterBreathing`; la regola
+`drowning` ora richiede `waterBreathing: false` e il bisogno `surface` e il
+punteggio `drowning` tacciono mentre si respira (ignoto = `false` = prudente).
+
+**Test**: 920 verdi (5 in `tests/bedrock-dive.test.mjs`, +5 nell'adapter per
+effetti/scadenza/fonti/cancello, +1 nel governor).
+
+**Live** (VM 100, container `hermes-jev-bedrock`, deploy scp + `docker cp` +
+md5 + restart): `/observe.dive` → `{depth: 0, workSeconds: 3, waterBreathing:
+{active: false, sources: [], conduitsNear: 0}, plan: null, last: null}`;
+`mine_cobblestone` → `{ok: true, confirmedBy: 'server_world', ms: 2768}` con
+`last: null` (il cancello è trasparente da asciutto); un `effect @a
+water_breathing 600 0` digitato nella console del BDS è stato ricevuto come evento
+`mob_effect` e riportato come `{kind: 'effect', seconds: 600}`, poi contato alla
+rovescia tra le sonde (493 → 481 → 469 → 461 s): la conversione tick→secondi è
+allineata al server reale. `effect @a clear` e un secondo `effect … 5 0` non hanno
+invece avuto effetto osservabile, quindi il percorso `remove` e la scadenza
+automatica restano coperti dai soli test unitari.
+
+**Limiti**: il rifiuto sott'acqua (`air_too_low`/`work_too_long`) è verificato solo
+offline — il bot non riesce a mettere la testa sotto (stanza chiusa, e nuotare è il
+blocker di M1); l'elmo di tartaruga non è disponibile in partita; `DIVE_WORK_SECONDS
+(3 s)` è una stima per un blocco a mano, il cancello non consulta ancora il
+piccone.

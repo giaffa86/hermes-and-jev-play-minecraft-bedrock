@@ -71,8 +71,9 @@ Last lint: 2026-10-03.
   path**: the base has no obsidian and no loaded portal, so live only the typed
   refusals (`no_portal_known`, `missing_materials`, `missing_flint_and_steel`)
   were observed. No deliberate portal *search* either (the census radius is 32).
-- **Fluids** — **M0 (fluid awareness) and M1 partial (wading + simulated air
-  budget) implemented and collaudati live 03/10**: the bot knows where water and
+- **Fluids** — **M0 (fluid awareness), M1 partial (wading + simulated air
+  budget) and M2 (breathing + dive budget) implemented and collaudati live
+  03/10**: the bot knows where water and
   lava are (`GET /observe.fluids`, census + hazard ladder), refuses digs that
   would open into a fluid, repels lava in `_standable` and can `avoid_lava` when
   lava is within range; the governor gained the
@@ -81,11 +82,19 @@ Last lint: 2026-10-03.
   A* picks it up automatically, `WADE_SPEED_FACTOR` slows the local prediction)
   and a **simulated air budget** (`bedrock-air.mjs`: 300 ticks, 4/tick recovery,
   exposed as `air`/`airSeconds` with `airSource: 'simulated'`, no simulated
-  damage). Still missing: swimming itself — `_passable()` treats `water|lava` as
+  damage). M2 added the real **Water Breathing** detection (turtle helmet or a
+  `mob_effect` effect, remaining seconds counted down from the packet duration)
+  and the dive decision (`bedrock-dive.mjs`, `GET /observe.dive`): descent +
+  work + ascent must fit the air minus a 3 s reserve, otherwise `_mineBlock` and
+  `_collectDrop` refuse with `air_too_low`/`work_too_long` **before** any packet,
+  and while breathing is active the `drowning` rule and the `surface` need stand
+  down. Still missing: swimming itself — `_passable()` treats `water|lava` as
   walls, so deep water, `surface`, `swim_to` and the water A* nodes wait for the
   Bedrock water-movement `input_data` flags/`delta` semantics, which need a
   packet capture of a real player swimming (no human is connected during
-  autonomous runs); the air budget also stays unverified against server truth.
+  autonomous runs); the air budget also stays unverified against server truth, and
+  the underwater refusal has only been unit-tested (the bot cannot submerge from
+  the base room).
   Roadmap and limits in [fluids](fluids.md).
 
 ## Exploration travel kit (multi-day expeditions)
@@ -530,8 +539,8 @@ Still missing (the rest of the original gap):
   whether the BDS really sends that event.
   Roadmap in [fishing](fishing.md).
 - **Fluids** (swimming, drowning/breathing, waterfalls, lava avoidance, buckets/
-  boats/potions) — M0 + M1 partial (wading + simulated air) implemented and live
-  03/10; swimming motion and M2–M6 still spec. Roadmap in [fluids](fluids.md);
+  boats/potions) — M0 + M1 partial (wading + simulated air) + M2 (breathing) implemented and live
+  03/10; swimming motion and M3–M6 still spec. Roadmap in [fluids](fluids.md);
   the blocker is the missing packet capture of a real player swimming.
 - **Goal-driven gameplay** — Goal Contract + task graph + 5 progressive
   benchmarks (16 logs, shelter+night, iron pickaxe, 5 diamonds, Nether portal).

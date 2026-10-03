@@ -43,7 +43,7 @@ export function perceiveFluids (fluids = null) {
     return {
       known: false, inWater: false, headInWater: false, inLava: false,
       lavaDistance: null, lavaWithin: null, waterDistance: null, waterWithin: null,
-      lavaCount: 0, waterCount: 0, air: null,
+      lavaCount: 0, waterCount: 0, air: null, waterBreathing: false,
     };
   }
   const num = (value) => (Number.isFinite(value) ? value : null);
@@ -62,6 +62,9 @@ export function perceiveFluids (fluids = null) {
     lavaCount: num(fluids.lava?.count) ?? num(fluids.lavaCount) ?? 0,
     waterCount: num(fluids.water?.count) ?? num(fluids.waterCount) ?? 0,
     air: num(fluids.air),
+    // M2: l'adapter risponde con la forma di `waterBreathingSources`; una fixture
+    // vecchia può anche dichiarare solo il booleano. Ignoto = non respira.
+    waterBreathing: fluids.waterBreathing === true || fluids.waterBreathing?.active === true,
   };
 }
 

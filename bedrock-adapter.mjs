@@ -13,6 +13,7 @@ import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
 import { detectStructures } from './structures.mjs';
 import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT } from './bedrock-fluids.mjs';
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
+import { normalizeEffectName, waterBreathingSources, divePlan, underwaterWork, CONDUIT_BLOCK, CONDUIT_RANGE } from './bedrock-dive.mjs';
 import { loadCircuits, planCircuit, circuitSiteBlocked, circuitSafety, forbiddenBlock, checkCircuitSuccess, circuitAnchor, expectedDelayTicks, measureCircuitDelay, TICK_MS, MAX_CIRCUIT_STEPS, MAX_CIRCUIT_COMPONENTS, MIN_CLOCK_TICKS } from './circuits.mjs';
 import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
 import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, isNetherLike, landingHazard, maxFallDepth, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, projectileVelocity, dodgeCandidates, breaksLine, isPiglinType, goldArmorWorn, piglinNeutral, barterTarget, isBarterReward, BARTER_INGOT, BARTER_RANGE, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName, endermanAimPoint, isPumpkinMask, pumpkinMaskWorn, isEnderPearl, ENDERMAN_GAZE_TOLERANCE_DEG, isBlazeType, coverCandidates, blazeTactics, blazeRodProgress, BLAZE_RANGE, BLAZE_RETREAT_HEALTH, BLAZE_ROD, COVER_RADIUS } from './bedrock-nether.mjs';
@@ -157,6 +158,10 @@ const CHECKPOINT_MIN_DISTANCE = 48;   // checkpoint sparsi: ogni ~48 blocchi di 
 // Raggio entro cui alzare lo scudo ha senso (il blocco vale per gli attacchi
 // che arrivano davanti al bot).
 const SHIELD_THREAT_RANGE = +(process.env.SHIELD_THREAT_RANGE || 8);
+// M2: il conteggio della discesa vale per ogni lavoro sott'acqua (un blocco di
+// scavo a mani nude). I conduit si censisono in cache: un blocco non si sposta.
+const DIVE_WORK_SECONDS = +(process.env.DIVE_WORK_SECONDS || 3);
+const CONDUIT_RESCAN_MS = +(process.env.CONDUIT_RESCAN_MS || 60000);
 
 // Chat in uscita (M5): il bot scrive nel canale `chat` con un pacchetto `text`.
 // Tetto di lunghezza e intervallo minimo per non floodare il server.
@@ -222,6 +227,13 @@ export class BedrockAdapter {
     this._serverAir = null;
     this.airSource = 'simulated';
     this.air = MAX_AIR;
+    // M2: gli effetti attivi arrivano dal pacchetto `mob_effect`. Servono a una
+    // sola decisione — se respirare sott'acqua è gratis — quindi si tiene solo
+    // l'ultimo stato per nome dell'effetto, non uno storico.
+    this.effects = new Map();
+    this._conduitScan = null;
+    this._conduitScanAt = 0;
+    this._diveLast = null;
     this._redstoneScan = null;
     this._redstoneScanAt = 0;
     // R2: i blocchi dell'ultima scansione e l'ultimo cambio osservato, così un
@@ -727,6 +739,8 @@ export class BedrockAdapter {
       // `hide_bar` sono gli unici due eventi che contano: il verdetto è
       // "comparsa e poi scomparsa", non l'assenza di un'entità.
       client.on('boss_event', packet => this._onBossEvent(packet));
+      // M2: effetti del giocatore (elmo di tartaruga a parte, che è equipaggiamento).
+      client.on('mob_effect', packet => this._onMobEffect(packet));
 
       this.client.on('add_item_entity', (packet) => {
         // Traccia drop nelle vicinanze
@@ -1161,6 +1175,7 @@ export class BedrockAdapter {
       air,
       airSource: this.airSource,
       airSeconds: airSeconds(air),
+      waterBreathing: this._waterBreathing(),
       water: census.water,
       lava: census.lava,
       waterDistance: census.waterDistance,
@@ -1174,6 +1189,133 @@ export class BedrockAdapter {
     // da /observe evita di gonfiare la percezione del controller.
     if (cells) view.cells = census.cells;
     return view;
+  }
+
+  // ---- M2: respirare e gestire una discesa -----------------------------------
+  // Da dove viene il respiro. L'elmo di tartaruga e l'effetto `water_breathing`
+  // sono fonti *reali*; i conduit restano un indizio: la loro attivazione
+  // dipende da un prisma d'acqua validato dal server che non verifichiamo, e
+  // dichiararli attivi sarebbe una sicurezza inventata.
+  _waterBreathing () {
+    return waterBreathingSources({
+      armor: this.armor,
+      effects: this._activeEffects(),
+      conduits: this._conduitsNear(),
+    });
+  }
+
+  _conduitsNear () {
+    const now = Date.now();
+    if (this._conduitScan && now - this._conduitScanAt < CONDUIT_RESCAN_MS) return this._conduitScan;
+    if (!this.position || typeof this.world?.findBlocks !== 'function') return [];
+    const found = this.world.findBlocks(CONDUIT_BLOCK, this.position, CONDUIT_RANGE, 8)
+      .map(block => block?.position ?? block)
+      .filter(Boolean);
+    this._conduitScan = found;
+    this._conduitScanAt = now;
+    return found;
+  }
+
+  // Quanti blocchi d'acqua sopra la testa: la superficie è il primo tetto che
+  // non è acqua. Oltre il limite non serve contare, il budget non cambia.
+  _diveDepth (limit = 8) {
+    const feet = this._feet;
+    if (!feet) return 0;
+    const x = Math.floor(feet.x);
+    const z = Math.floor(feet.z);
+    const start = Math.floor(feet.y + 1);
+    let depth = 0;
+    for (let y = start; y < start + limit; y++) {
+      if (this._fluidKindAt(x, y, z) !== 'water') break;
+      depth++;
+    }
+    return depth;
+  }
+
+  // Il nome dell'effetto dal registry Bedrock (`WaterBreathing` -> `water_breathing`).
+  _effectName (id) {
+    const entry = this.world?.registry?.effects?.[id];
+    const raw = entry?.name ?? entry?.displayName ?? null;
+    return raw ? normalizeEffectName(raw) : null;
+  }
+
+  // `mob_effect` arriva anche per i mob: si tiene solo il giocatore.
+  _onMobEffect (packet) {
+    if (!packet) return;
+    const runtimeId = packet.runtime_entity_id;
+    const self = this.client?.entityId;
+    if (runtimeId != null && self != null && String(runtimeId) !== String(self)) return;
+    const event = String(packet.event_id ?? '');
+    const id = Number(packet.effect_id);
+    const key = this._effectName(id) ?? `effect_${id}`;
+    if (event === 'remove') {
+      this.effects.delete(key);
+    } else {
+      const duration = Number(packet.duration);
+      this.effects.set(key, {
+        id,
+        name: key,
+        amplifier: Number(packet.amplifier) || 0,
+        duration: Number.isFinite(duration) ? duration : null,
+        // La durata è in tick (50 ms): serve una scadenza, perché il server non
+        // manda sempre un `remove` quando l'effetto finisce.
+        expiresAt: Number.isFinite(duration) && duration > 0 ? Date.now() + duration * 50 : null,
+        at: Date.now(),
+      });
+    }
+    this.log('mob_effect', { event, effect: key, id, duration: Number.isFinite(Number(packet.duration)) ? Number(packet.duration) : null });
+  }
+
+  // Gli effetti ancora vivi, con i secondi che restano. Un effetto scaduto si
+  // butta via qui: il server non manda sempre un `remove` alla fine.
+  _activeEffects () {
+    const now = Date.now();
+    const out = [];
+    for (const [key, effect] of this.effects) {
+      if (effect.expiresAt != null && effect.expiresAt <= now) {
+        this.effects.delete(key);
+        continue;
+      }
+      out.push(effect.expiresAt == null ? effect : { ...effect, seconds: Math.round((effect.expiresAt - now) / 100) / 10 });
+    }
+    return out;
+  }
+
+  // Vista M2: profondità, fonti di respiro e ultimo verdetto di discesa.
+  _diveView ({ fluids = null, workSeconds = DIVE_WORK_SECONDS } = {}) {
+    const view = fluids ?? this._fluidsView();
+    const waterBreathing = view.waterBreathing ?? this._waterBreathing();
+    const depth = view.headInWater ? this._diveDepth() : 0;
+    const plan = view.headInWater
+      ? divePlan({ air: this.air, depth, workSeconds, waterBreathing: waterBreathing.active })
+      : null;
+    return { depth, workSeconds, waterBreathing, plan, last: this._diveLast };
+  }
+
+  // Il cancello che ogni lavoro sott'acqua attraversa. Con la testa fuori
+  // dall'acqua costa una lettura e ritorna subito.
+  _underwaterWorkAllowed (workSeconds = DIVE_WORK_SECONDS) {
+    const fluids = this._fluidsView();
+    if (!fluids.headInWater) return { allowed: true, reason: 'head_above_water', plan: null };
+    const waterBreathing = this._waterBreathing();
+    const depth = this._diveDepth();
+    const verdict = underwaterWork({
+      inWater: fluids.inWater,
+      headInWater: fluids.headInWater,
+      depth,
+      air: this.air,
+      workSeconds,
+      waterBreathing: waterBreathing.active,
+    });
+    verdict.depth = depth;
+    verdict.workSeconds = workSeconds;
+    verdict.waterBreathing = waterBreathing.active;
+    if (verdict.allowed) {
+      this._diveLast = { at: Date.now(), reason: verdict.reason, depth, air: this.air, workSeconds };
+    } else {
+      this.log('underwater_work_refused', { reason: verdict.reason, depth, air: this.air, workSeconds });
+    }
+    return verdict;
   }
 
   // ---- Nether/End: portali, pericoli, proiettili e sguardo (N0) ---------------
@@ -2435,6 +2577,9 @@ export class BedrockAdapter {
     const heldSlot = this.inventorySlots[this.selectedHotbar];
     const heldInfo = heldSlot?.network_id ? this.world.registry?.items[heldSlot.network_id] : null;
     const bed = this._findBed();
+    // La vista dei fluidi serve due volte (stato + discesa): calcolarla una volta
+    // sola evita di ripetere le letture delle celle.
+    const fluids = this._fluidsView();
     return {
       step: this.recent.length,
       position: this.pos(),
@@ -2464,7 +2609,8 @@ export class BedrockAdapter {
       nearby: this.nearbyBlocks,
       structures: this.structures.slice(0, 8),
       structureSurvey: this._structureSurvey,
-      fluids: this._fluidsView(),
+      fluids,
+      dive: this._diveView({ fluids }),
       nether: this._netherView(),
       redstone: this._redstoneView(),
       circuits: this._circuitsView(),
@@ -3394,6 +3540,11 @@ export class BedrockAdapter {
   }
 
   async _collectDrop (timeoutMs = 20000) {
+    // Guardia di respiro (M2): recuperare un drop sott'acqua costa una discesa.
+    const breath = this._underwaterWorkAllowed();
+    if (!breath.allowed) {
+      return { ok: false, error: breath.reason, depth: breath.depth ?? null, air: Number.isFinite(this.air) ? this.air : null };
+    }
     const tracked = this._nearestDrop();
     if (tracked && this._reachabilityUsable() && !this.dropReachable(tracked.position)) {
       // Drop in una tasca irraggiungibile (sotto il pavimento, dietro un muro):
@@ -5877,6 +6028,12 @@ export class BedrockAdapter {
     if (cropState && cropState.mature === false) {
       this.log('crop_not_mature', { crop: cropState.name, position: pos, growth: cropState.growth, maxGrowth: cropState.max });
       return { ok: false, error: 'crop_not_mature', crop: cropState.name, position: pos, growth: cropState.growth, maxGrowth: cropState.max };
+    }
+    // Guardia di respiro (M2): scavare con la testa sott'acqua ha un budget, e
+    // ogni percorso di scavo passa da qui. Fuori dall'acqua non costa nulla.
+    const breath = this._underwaterWorkAllowed();
+    if (!breath.allowed) {
+      return { ok: false, error: breath.reason, position: pos, block: blockData.name, depth: breath.depth ?? null, air: Number.isFinite(this.air) ? this.air : null };
     }
     // Utensile giusto in mano: senza il piccone la pietra non lascia cadere cobblestone.
     await this._selectToolFor(blockData);

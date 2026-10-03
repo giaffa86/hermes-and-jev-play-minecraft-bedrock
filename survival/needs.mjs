@@ -28,7 +28,10 @@ export function deriveNeeds (perception = {}, risk = {}) {
   }
   // Sott'acqua con l'aria agli sgoccioli: prima si risale. In M0 il budget d'aria
   // non è ancora noto (`air` null) e il bisogno non scatta: nessun allarme finto.
-  if (perception.fluids?.headInWater === true && Number.isFinite(perception.fluids?.air) && perception.fluids.air <= 8) {
+  // Con il respiro attivo (M2: elmo di tartaruga o effetto) non c'è nulla da
+  // risalire a fare in fretta.
+  if (perception.fluids?.headInWater === true && perception.fluids?.waterBreathing !== true &&
+      Number.isFinite(perception.fluids?.air) && perception.fluids.air <= 8) {
     add('surface');
   }
   // Contatto con la lava: fuga immediata, è più urgente di ogni altra cura.
