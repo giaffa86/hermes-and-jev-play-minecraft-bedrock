@@ -298,7 +298,8 @@ suite 920 tests, 0 failures.
 | `GET /observe.dive?workSeconds=20` | `workSeconds: 20`, `plan: null` (dry) |
 | `POST /act {"key":"mine_cobblestone"}` | `{ok: true, confirmedBy: 'server_world', ms: 2768}` — the gate is transparent when dry and `last` stays `null` (it never engaged, so no refusal was invented) |
 | `effect @a water_breathing 600 0` in the BDS console | `/observe.dive` → `{active: true, sources: [{kind: 'effect', name: 'water_breathing', seconds: 600, amplifier: 0}]}`, one `mob_effect` event in `runs/demo/events.jsonl`; the same source then counted down across probes (493 → 481 → 469 → 461 s), i.e. the tick→second conversion and the remaining-time math follow the server |
-| `effect @a clear`, then a second `effect … 5 0` in the console | **no change observed** (the first console command landed, the following ones did not) — so the `remove` path and the auto-expiry are unit-tested only |
+| `effect @a clear`, then a second `effect … 5 0` in the console | **no change observed** (the first console command landed, the following ones did not), so the `remove` path is unit-tested only |
+| Waiting out the effect | `active: false` again on its own, with the event log still holding **two** `mob_effect` packets (`add` + `update`, no `remove`): the expiry is handled by `expiresAt`/`_activeEffects()` exactly as designed, so the auto-expiry is **live-verified** |
 
 **Known limits (M2)**
 

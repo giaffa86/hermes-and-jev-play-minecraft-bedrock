@@ -2798,8 +2798,11 @@ water_breathing 600 0` digitato nella console del BDS è stato ricevuto come eve
 `mob_effect` e riportato come `{kind: 'effect', seconds: 600}`, poi contato alla
 rovescia tra le sonde (493 → 481 → 469 → 461 s): la conversione tick→secondi è
 allineata al server reale. `effect @a clear` e un secondo `effect … 5 0` non hanno
-invece avuto effetto osservabile, quindi il percorso `remove` e la scadenza
-automatica restano coperti dai soli test unitari.
+invece avuto effetto osservabile, quindi il percorso `remove` resta coperto dai
+soli test unitari. La scadenza automatica invece è ora **verificata live**:
+lasciando scadere l'effetto, `/observe.dive` è tornato `active: false` con il log
+che conteneva ancora solo due pacchetti `mob_effect` (`add` + `update`, nessun
+`remove`) — cioè il caso è gestito da `expiresAt`/`_activeEffects()` come previsto.
 
 **Limiti**: il rifiuto sott'acqua (`air_too_low`/`work_too_long`) è verificato solo
 offline — il bot non riesce a mettere la testa sotto (stanza chiusa, e nuotare è il
