@@ -37,6 +37,8 @@ const KEY_INTENTS = {
   dig_up: ['mine', 'travel'],
   // Fluidi: allontanarsi dalla lava è una fuga, non un semplice spostamento.
   avoid_lava: ['escape', 'travel'],
+  // Nether (N3): schivare un proiettile è una fuga laterale, non un viaggio.
+  dodge_projectile: ['escape', 'travel'],
   surface: ['surface', 'swim'],
   swim_to: ['swim', 'travel'],
   dive: ['descend', 'swim'],

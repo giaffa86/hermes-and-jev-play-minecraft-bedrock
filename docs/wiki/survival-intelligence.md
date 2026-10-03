@@ -75,7 +75,7 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**843 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**851 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
 
 - **Fluids in the survival layer (M0, 2026-10-03)**: the governor vocabulary grew
@@ -193,6 +193,13 @@ off. Live: `/observe.nearby` now reports `potatoes growth 7/7/6/6, mature true/f
 `carrots growth 7`; `harvest_potatoes` fails in 0.01 s with `drop_unreachable`
 (the only fields are outside the bot's walkable component), `harvest_wheat` with
 `no_crop_found`.
+- **Projectile dodge (N3, 2026-10-03)**: the `projectile_incoming` rule already
+  asked for `escape`/`shelter` and the only action carrying `escape` was `flee`
+  (run away from the nearest *entity*), which is the wrong answer to something
+  faster than the bot. `dodge_projectile` carries `['escape', 'travel']` and moves
+  *sideways* out of the line of fire; the governor therefore prefers it when a
+  projectile is inbound without any new rule being needed — the gap was an action,
+  not a verdict.
 - **Nether survival (N2, 2026-10-03)**: the survival layer does not need new
   rules for this — N2 changes what the *pathfinder* is willing to do. In the
   Nether/End the fall cap drops from four blocks to two (`maxFallDepth`, no

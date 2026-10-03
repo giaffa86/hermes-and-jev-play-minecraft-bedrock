@@ -77,6 +77,7 @@ test('option keys map to the shared intent vocabulary', () => {
   assert.deepEqual(optionIntents('light_portal'), ['build']);
   // Nether (N2): un hub è un rifugio e un punto di rientro.
   assert.deepEqual(optionIntents('build_nether_hub'), ['build', 'shelter']);
+  assert.deepEqual(optionIntents('dodge_projectile'), ['escape', 'travel']);
   assert.deepEqual(optionIntents('place_crafting_table'), ['build']);
   assert.deepEqual(optionIntents('goto_waypoint'), ['travel']);
   assert.deepEqual(optionIntents('wait'), ['wait']);

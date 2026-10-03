@@ -2648,3 +2648,46 @@ bruciano.
   sulla VM è stantia (qui `survival/intents.mjs` era rimasto indietro): dopo il
   deploy conviene confrontare gli **md5** host/container, non solo il numero di
   occorrenze di una stringa.
+
+## [2026-10-03] feat | Nether N3: schivare un proiettile — uscire dalla linea di tiro, non correre via
+
+Implementato N3 (`docs/wiki/nether.md`): la percezione dei proiettili esisteva da
+N0 (`projectileIncoming`), l'unica azione con intento `escape` era `flee` —
+scappare dall'entita piu vicina — che e la risposta sbagliata a qualcosa piu
+veloce del bot.
+
+- **Primitivi puri** (`bedrock-nether.mjs`): `projectileVelocity` (velocita
+  dichiarata, altrimenti stimata dai due campioni, altrimenti `null`: una
+  traiettoria ignota non si indovina; ora usata anche da `projectileThreat`,
+  cosi percezione e schivata misurano la velocita in un solo posto),
+  `perpendicularDirs` (le due perpendicolari orizzontali, o la congiungente
+  proiettile→bot quando la velocita non e nota), `lateralOffset` (distanza dalla
+  linea di tiro, la grandezza che una schivata deve far crescere), `breaksLine`,
+  `dodgeCandidates` (due lati, alla quota dei piedi, ordinati per distanza
+  laterale decrescente, mai la colonna del bot).
+- **Azione `dodge_projectile`**: rifiuta `no_projectile_incoming` quando non
+  arriva niente; filtra le candidate per `breaksLine` (spostarsi lungo la
+  traiettoria non e una schivata), `cellReachable` (fail-open), `_standable`
+  (N2: un appoggio che fa danno non e una destinazione) e `_lavaAdjacent`; prova
+  in ordine e **verifica dall'osservazione** (la minaccia non c'e piu) invece che
+  dal movimento. Esiti `no_dodge_spot`/`dodge_failed` tipizzati. L'opzione e
+  offerta solo se una candidata sopravvive ai filtri; intento
+  `['escape','travel']`, che e esattamente cio che la regola `projectile_incoming`
+  chiedeva.
+- **Test**: 851 verdi (4 casi puri, 4 sull'adapter, 1 asserzione di intento). La
+  fixture dell'adapter ora assegna un `boundingBox` ai blocchi (`_standable` ne
+  pretende uno pieno per l'appoggio). Un caso reale trovato nei test: `-0` come
+  zero negativo in `perpendicularDirs`, corretto con `|| 0`, perche `-0` e `0`
+  sono valori diversi in un confronto stretto senza essere informazioni diverse.
+- **Collaudo live (03/10/2026, BDS 1.26.52)**: `POST /act dodge_projectile` a
+  mondo quieto → `{ok:false, error:'no_projectile_incoming'}` (immediato, zero
+  pacchetti); `/options` 24 chiavi senza `dodge_projectile`; `POST /act
+  throw_egg` → `{ok:true, thrown:'egg', chick:'none'}` e subito dopo
+  `dodge_projectile` → di nuovo `no_projectile_incoming` (l'uovo va *via*: un
+  proiettile in allontanamento non e un proiettile in arrivo);
+  `/observe.portals` invariato (`maxFall: 4`, `projectile: null`), bot sano
+  (salute 20, cibo 19, inventario intatto). **Nessun fireball in arrivo reale
+  osservato**: la base non ha ghast, quindi il percorso felice resta coperto solo
+  dai test unitari (stesso limite dichiarato di N1/N2), e la geometria della
+  schivata e rettilinea in pianta con passo costante (`DODGE_DISTANCE` 3) — la
+  calibrazione contro la velocita reale del fireball richiede un ghast vivo.

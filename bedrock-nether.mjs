@@ -203,6 +203,28 @@ function dot (a, b) {
 // Minaccia di un singolo proiettile vista dal bot. La velocità arriva dal
 // pacchetto se c'è, altrimenti si stima da due posizioni osservate; con una sola
 // posizione la risposta onesta è `known: false` (nessuna traiettoria inventata).
+// La velocità del proiettile: quella dichiarata se c'è, altrimenti stimata dai
+// due campioni (posizione attuale + campione precedente). `null` quando non c'è
+// modo di misurarla — una traiettoria ignota non si indovina.
+export function projectileVelocity ({ position = null, velocity = null, previous = null, now = null } = {}) {
+  if (velocity && Number.isFinite(velocity.x) && Number.isFinite(velocity.y) && Number.isFinite(velocity.z)) {
+    return { velocity: { x: velocity.x, y: velocity.y, z: velocity.z }, source: 'velocity' };
+  }
+  if (!position || !previous?.position || !Number.isFinite(previous.at) || !Number.isFinite(now) || now <= previous.at) {
+    return { velocity: null, source: null };
+  }
+  const dt = (now - previous.at) / 1000;
+  if (dt <= 0 || dt > PROJECTILE_SAMPLE_MAX_AGE_MS / 1000) return { velocity: null, source: null };
+  return {
+    velocity: {
+      x: (position.x - previous.position.x) / dt,
+      y: (position.y - previous.position.y) / dt,
+      z: (position.z - previous.position.z) / dt,
+    },
+    source: 'samples',
+  };
+}
+
 export function projectileThreat ({
   from = null,
   position = null,
@@ -214,22 +236,9 @@ export function projectileThreat ({
 } = {}) {
   const unknown = { known: false, incoming: null, missDistance: null, timeToImpactMs: null, speed: null, source: null };
   if (!from || !position) return unknown;
-  let vel = null;
-  let source = null;
-  if (velocity && Number.isFinite(velocity.x) && Number.isFinite(velocity.y) && Number.isFinite(velocity.z)) {
-    vel = { x: velocity.x, y: velocity.y, z: velocity.z };
-    source = 'velocity';
-  } else if (previous?.position && Number.isFinite(previous.at) && Number.isFinite(now) && now > previous.at) {
-    const dt = (now - previous.at) / 1000;
-    if (dt > 0 && dt <= PROJECTILE_SAMPLE_MAX_AGE_MS / 1000) {
-      vel = {
-        x: (position.x - previous.position.x) / dt,
-        y: (position.y - previous.position.y) / dt,
-        z: (position.z - previous.position.z) / dt,
-      };
-      source = 'samples';
-    }
-  }
+  const measured = projectileVelocity({ position, velocity, previous, now });
+  const vel = measured.velocity;
+  const source = measured.source;
   if (!vel) return unknown;
 
   const speed = magnitude(vel);
@@ -623,4 +632,81 @@ export function netherHubPlan ({ feet = null, roofCenter = false, block = null }
     cells,
     needs: block ? { [block]: cells.length } : {}
   };
+}
+
+// --- N3: la schivata -------------------------------------------------------
+// Un fireball non si evita correndo "via": si evita uscendo dalla linea di
+// tiro. Il vettore utile è quindi la *perpendicolare* alla traiettoria, non
+// l'opposto del proiettile — e la destinazione deve restare un posto dove si
+// può stare (mai dentro o a ridosso della lava, che per un ghast è il modo più
+// comune di morire scappando).
+
+export const DODGE_DISTANCE = 3;
+export const DODGE_LINE_MARGIN = 0.5;
+
+// La retta di tiro in pianta: la velocità quando è nota, altrimenti la
+// congiungente proiettile→bot. Senza nessuna delle due non c'è una direzione da
+// cui uscire e `perpendicularDirs` non inventa niente.
+function trajectory ({ from = null, projectile = null } = {}) {
+  const origin = projectile?.position ?? from ?? null;
+  let dx = projectile?.velocity?.x ?? 0;
+  let dz = projectile?.velocity?.z ?? 0;
+  if (Math.abs(dx) < 1e-3 && Math.abs(dz) < 1e-3) {
+    if (!origin || !from) return null;
+    dx = from.x - origin.x;
+    dz = from.z - origin.z;
+  }
+  const length = Math.hypot(dx, dz);
+  if (!length) return null;
+  return { origin, dir: { x: dx / length, z: dz / length } };
+}
+
+// Le due perpendicolari orizzontali (lati opposti) della traiettoria: i due
+// modi sensati di uscire dalla linea di tiro.
+export function perpendicularDirs ({ from = null, projectile = null } = {}) {
+  const line = trajectory({ from, projectile });
+  if (!line) return [];
+  // `|| 0` evita lo zero negativo (`-0`), che è un valore diverso in un confronto
+  // stretto senza essere un'informazione diversa.
+  return [{ x: -line.dir.z || 0, z: line.dir.x || 0 }, { x: line.dir.z || 0, z: -line.dir.x || 0 }];
+}
+
+// Quanto un punto sta *di lato* rispetto alla linea di tiro (distanza della
+// retta, in pianta): è la grandezza che dice se la schivata serve a qualcosa.
+export function lateralOffset ({ point = null, from = null, projectile = null } = {}) {
+  const line = trajectory({ from, projectile });
+  if (!line || !point) return 0;
+  return Math.abs((point.x - line.origin.x) * line.dir.z - (point.z - line.origin.z) * line.dir.x);
+}
+
+// Uscire dalla linea significa aumentare la distanza laterale: uno spostamento
+// *lungo* la traiettoria (incontro o inseguimento) non cambia niente.
+export function breaksLine ({ from = null, candidate = null, projectile = null, margin = DODGE_LINE_MARGIN } = {}) {
+  if (!candidate) return false;
+  return lateralOffset({ point: candidate, from, projectile }) >
+    lateralOffset({ point: from, from, projectile }) + margin;
+}
+
+// Le celle candidate: entrambi i lati, alle distanze richieste, alla quota dei
+// piedi, ordinate per distanza laterale decrescente (la più "fuori linea" per
+// prima). La colonna del bot non è una candidata: non è una schivata.
+export function dodgeCandidates ({ from = null, projectile = null, distances = [DODGE_DISTANCE] } = {}) {
+  if (!from || !Number.isFinite(from.x) || !Number.isFinite(from.y) || !Number.isFinite(from.z)) return [];
+  const here = { x: Math.floor(from.x), z: Math.floor(from.z) };
+  const seen = new Set();
+  const cells = [];
+  for (const dir of perpendicularDirs({ from, projectile })) {
+    for (const distance of distances) {
+      const cell = {
+        x: Math.floor(from.x + dir.x * distance),
+        y: Math.floor(from.y + 0.1),
+        z: Math.floor(from.z + dir.z * distance),
+      };
+      const key = `${cell.x},${cell.y},${cell.z}`;
+      if (seen.has(key) || (cell.x === here.x && cell.z === here.z)) continue;
+      seen.add(key);
+      cells.push({ ...cell, distance, lateral: +lateralOffset({ point: cell, from, projectile }).toFixed(2) });
+    }
+  }
+  return cells.sort((a, b) => b.lateral - a.lateral);
 }

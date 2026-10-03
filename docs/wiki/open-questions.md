@@ -353,7 +353,7 @@ Still missing (the rest of the original gap):
   `nether_portal → … → enter_end → beat_the_dragon` chain and the goal points to
   the real milestone. The underlying Nether capabilities are still missing — see
   [nether](nether.md).
-- **No Nether/End capabilities (N0/N1/N2 done)**: N0 (awareness and hazards) is
+- **No Nether/End capabilities (N0/N1/N2/N3 done)**: N0 (awareness and hazards) is
   implemented, unit-tested and live-checked 03/10 — portal/fire/magma/spawner
   census, projectile tracking, enderman gaze sensing, `waterEvaporates`/
   `bedsExplode` and seven governor rules, all *perception only*; N1 adds the four
@@ -361,9 +361,11 @@ Still missing (the rest of the original gap):
   with pure frame geometry and typed refusals; N2 adds the survival primitives
   (`landingHazard`, `maxFallDepth`, `isFlammableBlock`, `pickHubBlock`,
   `shellCells`, `netherHubPlan`) and the `build_nether_hub` action, with a
-  dimension-aware fall cap and a refusal to ever land on magma/fire/cactus — all
-  unit-tested, live-checked only for the refusals (the live world is an Overworld
-  room and has no obsidian). Still missing:
+  dimension-aware fall cap and a refusal to ever land on magma/fire/cactus; N3
+  adds the dodge (`perpendicularDirs`, `lateralOffset`, `breaksLine`,
+  `dodgeCandidates`, action `dodge_projectile`) — all unit-tested, live-checked
+  only for the refusals (the live world is an Overworld room with no obsidian and
+  no ghast). Still missing:
   piglin bartering, gaze **discipline**, fortress/stronghold/End actions and a
   `bossDefeated` verifier criterion. Roadmap in [nether](nether.md).
 - **Crafting** only one item at a time; special recipes (smithing, anvil, looms)

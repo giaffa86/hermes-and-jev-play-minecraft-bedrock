@@ -14,6 +14,7 @@ import {
   planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates,
   maxFallDepth, OVERWORLD_MAX_FALL, NETHER_LIKE_MAX_FALL,
   landingHazard, safeLanding, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan,
+  projectileVelocity, perpendicularDirs, lateralOffset, breaksLine, dodgeCandidates, DODGE_DISTANCE,
 } from '../bedrock-nether.mjs';
 
 const at = (x, y, z) => ({ x, y, z });
@@ -438,4 +439,67 @@ test('netherHubPlan è la stessa forma del rifugio, col materiale dichiarato', (
   assert.equal(plan.cells.length, 12);
   assert.deepEqual(plan.needs, { cobblestone: 12 });
   assert.deepEqual(netherHubPlan({}), { ok: false, error: 'missing_feet' });
+});
+
+// --- N3: schivare un proiettile ------------------------------------------
+
+test('projectileVelocity measures the speed from samples, never invents it', () => {
+  const now = 10_000;
+  // Velocità dichiarata: vince sui campioni.
+  assert.deepEqual(
+    projectileVelocity({ position: at(0, 70, 0), velocity: at(0, 0, -4), previous: { position: at(0, 70, 4), at: now - 1000 }, now }),
+    { velocity: { x: 0, y: 0, z: -4 }, source: 'velocity' }
+  );
+  // Due campioni a 1 s: 10 blocchi in 1 s verso il bot.
+  assert.deepEqual(
+    projectileVelocity({ position: at(0.5, 72, 11.5), previous: { position: at(0.5, 72, 21.5), at: now - 1000 }, now }),
+    { velocity: { x: 0, y: 0, z: -10 }, source: 'samples' }
+  );
+  // Campione vecchio (oltre la finestra) o assente: nessuna velocità.
+  assert.deepEqual(projectileVelocity({ position: at(0, 70, 0), previous: { position: at(0, 70, 5), at: now - 5000 }, now }), { velocity: null, source: null });
+  assert.deepEqual(projectileVelocity({ position: at(0, 70, 0), now }), { velocity: null, source: null });
+});
+
+test('perpendicularDirs uses the flight direction, or the line towards the bot', () => {
+  const from = at(0.5, 71, 0.5);
+  // Verso sud (z+): i due lati sono est e ovest.
+  assert.deepEqual(
+    perpendicularDirs({ from, projectile: { position: at(0.5, 72, -10), velocity: at(0, 0, 1) } }),
+    [{ x: -1, z: 0 }, { x: 1, z: 0 }]
+  );
+  // Velocità ignota: la direzione è la congiungente proiettile→bot (qui nord, z-).
+  const unknown = perpendicularDirs({ from, projectile: { position: at(0.5, 72, 20.5) } });
+  assert.deepEqual(unknown, [{ x: 1, z: 0 }, { x: -1, z: 0 }]);
+  // Niente proiettile e niente posizione: nessuna direzione inventata.
+  assert.deepEqual(perpendicularDirs({ from: null, projectile: null }), []);
+  assert.deepEqual(perpendicularDirs({ from: at(0.5, 71, 0.5), projectile: { position: null, velocity: at(0, 0, 0) } }), []);
+});
+
+test('breaksLine grows the lateral distance: along the trajectory is not a dodge', () => {
+  const from = at(0.5, 71, 0.5);
+  const shot = { position: at(0.5, 72, 11.5), velocity: at(0, 0, -1) };
+  // Il bot è sulla linea (laterale 0).
+  assert.equal(lateralOffset({ point: from, from, projectile: shot }), 0);
+  // Un punto sulla traiettoria resta sulla linea: spostarsi lungo non serve.
+  assert.equal(breaksLine({ from, candidate: at(0, 71, -4), projectile: shot }), false);
+  // Uscire di lato sì (l'origine è a z=11.5, quindi una cella a x=3 ha laterale 2.5).
+  assert.equal(lateralOffset({ point: at(3, 71, 0), from, projectile: shot }), 2.5);
+  assert.equal(breaksLine({ from, candidate: at(3, 71, 0), projectile: shot }), true);
+  assert.equal(breaksLine({ from, candidate: at(-3, 71, 0), projectile: shot }), true);
+});
+
+test('dodgeCandidates picks both sides at the feet cell, never the bot column', () => {
+  const from = at(0.5, 71, 0.5);
+  const shot = { position: at(0.5, 72, 11.5), velocity: at(0, 0, -1) };
+  const cells = dodgeCandidates({ from, projectile: shot });
+  assert.equal(cells.length, 2);
+  assert.deepEqual(cells.map(c => [c.x, c.y, c.z]), [[-3, 71, 0], [3, 71, 0]]);
+  assert.deepEqual(cells.map(c => c.distance), [DODGE_DISTANCE, DODGE_DISTANCE]);
+  // Ordinati per distanza laterale decrescente: il primo è la schivata migliore.
+  assert.ok(cells[0].lateral >= cells[1].lateral, `${cells[0].lateral} >= ${cells[1].lateral}`);
+  // Distanze multiple e colonna del bot mai candidata.
+  const far = dodgeCandidates({ from, projectile: shot, distances: [2, 4] });
+  assert.equal(far.length, 4);
+  assert.ok(far.every(c => !(c.x === 0 && c.z === 0)));
+  assert.deepEqual(dodgeCandidates({ from: null, projectile: shot }), []);
 });

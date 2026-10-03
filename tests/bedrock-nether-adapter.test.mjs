@@ -26,11 +26,13 @@ function netherAdapter (cells = {}, { feet = { x: 0.5, y: 71, z: 0.5 }, dimensio
   adapter.world.loaded = new Map(loaded ? [['0,0', {}]] : []);
   const blocks = new Map();
   const put = (x, y, z, def) => {
-    const { name, properties = {} } = typeof def === 'string' ? { name: def } : def;
+    const { name, properties = {}, boundingBox = name === 'air' || name === 'cave_air' ? 'empty' : 'block' } = typeof def === 'string' ? { name: def } : def;
     blocks.set(`${x},${y},${z}`, {
       name,
       // Come in produzione: `findBlocks` restituisce il blocco con la cella
-      // intera (`blockAt` prismarine), non il centro.
+      // intera (`blockAt` prismarine), non il centro, e un blocco solido ha un
+      // boundingBox pieno (`_standable` lo pretende per l'appoggio).
+      boundingBox,
       position: { x, y, z },
       getProperties: () => properties,
     });
@@ -485,4 +487,92 @@ test('build_nether_hub è offerto solo nel Nether e solo con materiale che non b
   assert.equal(netherWood.options().map(o => o.key).includes('build_nether_hub'), false, 'solo legna: niente hub');
   const overworld = hubAdapter({ inventory: { cobblestone: 20 }, dimension: 'overworld' });
   assert.equal(overworld.options().map(o => o.key).includes('build_nether_hub'), false, 'in Overworld il rifugio è build_hut');
+});
+
+// Un fireball che arriva da sud verso il bot, con due campioni: la traiettoria
+// è misurata (source 'samples'), quindi la schivata sa da quale linea uscire.
+function inboundFireball (adapter, { z = 11.5, from = 21.5 } = {}) {
+  const now = Date.now();
+  adapter.entities.set('9', {
+    runtimeId: '9',
+    type: 'minecraft:fireball',
+    kind: 'mob',
+    position: { x: 0.5, y: 72, z },
+    prev: { position: { x: 0.5, y: 72, z: from }, at: now - 1000 },
+    lastAt: now - 500,
+  });
+  return adapter.entities.get('9');
+}
+
+// Le due celle candidate (x -3 e +3 alla quota dei piedi) libere e calpestabili.
+function dodgeCells () {
+  return {
+    '-3,71,0': 'air', '-3,72,0': 'air',
+    '3,71,0': 'air', '3,72,0': 'air',
+  };
+}
+
+test('_dodgeProjectile steps out of the line and verifies the threat cleared', async () => {
+  const adapter = netherAdapter(dodgeCells());
+  inboundFireball(adapter);
+  const moved = [];
+  adapter._moveTo = async (cell, tolerance, timeoutMs) => {
+    moved.push({ cell, tolerance, timeoutMs });
+    adapter.entities.clear(); // il proiettile è passato: la linea è libera
+  };
+  const result = await adapter._dodgeProjectile({ timeoutMs: 3000 });
+  assert.equal(result.ok, true);
+  assert.equal(result.dodged, true);
+  assert.equal(moved.length, 1);
+  assert.equal(result.threat.type, 'minecraft:fireball');
+  assert.equal(result.threat.source, 'samples');
+  // Una delle due celle laterali, mai la colonna del bot.
+  assert.ok(['-3', '3'].includes(String(moved[0].cell.x)), `x=${moved[0].cell.x}`);
+  assert.equal(moved[0].cell.z, 0);
+  assert.equal(moved[0].cell.y, 71);
+  assert.ok(result.lateral > 0);
+});
+
+test('_dodgeProjectile refuses when nothing is inbound', async () => {
+  const adapter = netherAdapter(dodgeCells());
+  let moves = 0;
+  adapter._moveTo = async () => { moves++; };
+  assert.deepEqual(await adapter._dodgeProjectile({}), { ok: false, error: 'no_projectile_incoming' });
+  assert.equal(moves, 0, 'refusing must not burn a pathfinding attempt');
+});
+
+test('_dodgeProjectile fails fast when every candidate is unsafe or blocked', async () => {
+  // Le due celle laterali murate: nessuna schivata possibile.
+  const blocked = netherAdapter({ '-3,71,0': 'stone', '-3,72,0': 'stone', '3,71,0': 'stone', '3,72,0': 'stone' });
+  inboundFireball(blocked);
+  let moves = 0;
+  blocked._moveTo = async () => { moves++; };
+  const result = await blocked._dodgeProjectile({});
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'no_dodge_spot');
+  assert.equal(result.threat.type, 'minecraft:fireball');
+  assert.equal(moves, 0);
+
+  // Lava accanto a una candidata: quella candidata non è una destinazione.
+  const lava = netherAdapter({ ...dodgeCells(), '-2,71,0': 'lava' });
+  inboundFireball(lava);
+  const cells = lava._dodgeCandidates().cells.map(c => c.x);
+  assert.ok(!cells.includes(-3), `la cella accanto alla lava non è candidata: ${JSON.stringify(cells)}`);
+  assert.deepEqual(cells, [3]);
+});
+
+test('the dodge option appears only with an inbound projectile and a safe cell', () => {
+  const quiet = netherAdapter(dodgeCells());
+  assert.ok(!quiet.options().some(o => o.key === 'dodge_projectile'));
+  const threatened = netherAdapter(dodgeCells());
+  inboundFireball(threatened);
+  const option = threatened.options().find(o => o.key === 'dodge_projectile');
+  assert.ok(option, 'expected the dodge option');
+  assert.match(option.description, /Step out of the line of the minecraft:fireball/);
+  assert.match(option.description, /impact in \d+ ms/);
+  // Con le celle laterali murate non c'è nessuna opzione: meglio niente che una
+  // schivata impossibile.
+  const walled = netherAdapter({ '-3,71,0': 'stone', '-3,72,0': 'stone', '3,71,0': 'stone', '3,72,0': 'stone' });
+  inboundFireball(walled);
+  assert.ok(!walled.options().some(o => o.key === 'dodge_projectile'));
 });

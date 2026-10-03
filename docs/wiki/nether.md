@@ -6,11 +6,12 @@ Roadmap for taking the bot from the first Nether portal to the End while
 gaze**, collect **blaze rods** and **ender pearls**, craft eyes of ender, find the
 stronghold, open the End portal, and (stretch) defeat the **Ender Dragon**.
 
-Status: **N0 (awareness and hazards), N1 (portal reach/build/light/enter) and N2
+Status: **N0 (awareness and hazards), N1 (portal reach/build/light/enter), N2
 (nether survival: non-flammable hub, dimension-aware fall, hazardous landings)
-implemented and unit-tested; all three have a live round (03/10/2026), N1 and N2
-partial because the live world is an Overworld room with no obsidian and no
-loaded portal; N3–N7 still spec only**.
+and N3 (dodging an incoming projectile sideways, never into lava) implemented and
+unit-tested; all four have a live round (03/10/2026), N1–N3 partial because the
+live world is an Overworld room with no obsidian, no loaded portal and no
+gun-armed mob; N4–N7 still spec only**.
 `knowledge/progression.json` now has the full chain and the
 `beat_the_dragon → enter_nether` contradiction is fixed: `beat_the_dragon` is a
 real milestone requiring `enter_end`. Full raw source:
@@ -75,7 +76,7 @@ New item tags: `gold_ingots`, `obsidian`, `blaze_rods`, `blaze_powder`,
 | N0 | Nether awareness & hazards | `_refreshNearby` (portal, end_portal_frame, magma, spawner, fire); `/observe.portals`; projectile sensing (`projectileIncoming`); gaze sensing (`gazedAtEnderman`); governor rules. | ◑ implemented + live (03/10/2026), see below |
 | N1 | Portal locate/build/light/enter | `goto_portal`, `build_portal`, `light_portal`, `enter_portal`; prefer reusing a nearby portal; verify `portal` block then `dimension: nether`. | ◑ implemented + live partial (03/10/2026), see below |
 | N2 | Nether survival | fire/lava avoidance (fluids), minimal nether hub, fall handling (no water), never sleep/place water. | ◑ implemented + live partial (03/10/2026), see below |
-| N3 | Ghast avoidance | track fireballs, dodge perpendicular to the trajectory (or deflect), never flee into lava. | ❌ not implemented |
+| N3 | Ghast avoidance | track fireballs, dodge perpendicular to the trajectory (or deflect), never flee into lava. | ◑ implemented + live partial (03/10/2026), see below |
 | N4 | Piglin bartering | wear gold armour for neutrality; `barter_piglin` (gold in hand → `item_use_on_entity` → collect drops); never hit piglins. | ❌ not implemented |
 | N5 | Ender gaze & pearls | never aim at enderman eyes; pumpkin option; kill at body/feet; collect pearls. | ❌ not implemented |
 | N6 | Fortress & blaze rods | find the fortress (exploration), fight blazes with cover, collect 7 rods. | ❌ not implemented |
@@ -326,6 +327,92 @@ tests** in the whole suite.
   cactus are never a destination in the Overworld either. That is a behaviour
   change for the pathfinder (documented here, covered by tests).
 
+## N3 — Dodging a projectile (implemented, live partial 03/10/2026)
+
+A fireball is **faster than the bot**, so “running away” is a decision to be hit
+from behind: the only direction that changes the geometry is the **perpendicular**
+to the flight path. N3 turns the N0 sensing (`projectileIncoming`) into an action
+that steps out of the line — and refuses to do it into lava, which is the classic
+way to die while escaping a ghast.
+
+### Implementation
+
+- **`bedrock-nether.mjs`** (pure): `projectileVelocity({position, velocity,
+  previous, now})` (declared velocity first, otherwise the two samples, otherwise
+  `null` — an unknown trajectory is never invented; `projectileThreat` now uses
+  it too, so sensing and dodging measure speed in one place);
+  `perpendicularDirs({from, projectile})` (the two horizontal perpendiculars of
+  the flight direction, or of the projectile→bot line when the speed is unknown);
+  `lateralOffset({point, from, projectile})` (distance from the line of fire,
+  the quantity a dodge must grow); `breaksLine({from, candidate, projectile,
+  margin})`; `dodgeCandidates({from, projectile, distances})` — both sides, at the
+  feet's cell level, ordered by lateral distance descending, never the bot's own
+  column.
+- **`_incomingThreat`**: the summary in `/observe.portals.projectile` has the
+  distance and the ETA but not the trajectory, so the action re-derives the
+  velocity from the projectile row (`_projectileRows` keeps `prev`) with the same
+  pure helper the census uses.
+- **`_dodgeProjectile`** (action `dodge_projectile`): refuses with
+  `no_projectile_incoming` when nothing is inbound; otherwise filters the
+  candidates by `breaksLine` (a move along the trajectory is not a dodge), by
+  `cellReachable` (fail-open when the reachability census is unusable), by
+  `_standable` (a landing that hurts is not a destination, N2) and by
+  `_lavaAdjacent`; tries them in order and **verifies by observation** — the
+  dodge succeeded when `_incomingThreat()` is gone after the move, not when the
+  bot moved. Errors: `not_ready`, `no_projectile_incoming`, `no_dodge_spot`
+  (with the threat summary and the raw candidate count), `dodge_failed` (with the
+  last reason).
+- **Option gating**: `dodge_projectile` is offered only when a threat exists
+  **and** at least one candidate survives the filters, so the planner is never
+  given a dodge that cannot happen. Intent `['escape', 'travel']`, which is what
+  the `projectile_incoming` governor rule already asks for (`escape`/`shelter`).
+
+### Tests
+
+`tests/bedrock-nether.test.mjs` (4 pure cases: `projectileVelocity` from declared
+speed / samples / stale sample, `perpendicularDirs` incl. the unknown-speed
+fallback and the “no information” case, `lateralOffset`/`breaksLine` with a
+point on the trajectory, `dodgeCandidates` both sides + multiple distances +
+never the bot column), `tests/bedrock-nether-adapter.test.mjs` (4 cases:
+`_dodgeProjectile` moves to one of the two lateral cells and succeeds when the
+threat clears, `no_projectile_incoming` with 0 pathfinding attempts,
+`no_dodge_spot` with the lateral cells walled and a lava-adjacent candidate
+dropped, option gating) and the `dodge_projectile` intent assertion — **851
+tests** in the whole suite. The adapter fixture now gives blocks a `boundingBox`
+(`_standable` needs a full one for the support).
+
+### Live round (03/10/2026, BDS 1.26.52)
+
+| Probe | Result |
+| --- | --- |
+| `POST /act {"key":"dodge_projectile"}` (quiet world) | `{ok: false, error: no_projectile_incoming}` — immediate, zero packets |
+| `GET /options` | 24 keys, **no** `dodge_projectile` (the option is gated on an inbound threat) |
+| `POST /act {"key":"throw_egg"}` | `{ok: true, thrown: egg, chick: none}` (inventory 24 → 22 eggs) |
+| `dodge_projectile` right after the throw | `{ok: false, error: no_projectile_incoming}` — the egg flies **away**, and an outbound projectile is not an inbound one |
+| `GET /observe.portals` | `dimension: overworld`, `maxFall: 4`, `hub: null`, `ready: true`, `projectile: null` — no N2/N0 regression |
+| `/observe` | `spawned`, health 20, food 19, inventory intact |
+
+### Known limits (N3)
+
+- **No real inbound fireball was observed live**: the base room has no ghast (and
+  the bot's own egg is outbound), so the happy path — stepping out of the line
+  and watching the threat disappear — is covered by unit tests only, exactly like
+  N1/N2. The live round proves the typed refusal, the option gating and that
+  throwing and dodging did not disturb the rest of the loop.
+- The dodge assumes a **straight, horizontal** trajectory (the pure geometry works
+  in plan view): a fireball on a steep dive is handled by the projectile→bot
+  fallback line, not by real 3D prediction, and the expected flight time is not
+  used to choose *how far* to step (`DODGE_DISTANCE` is a constant of 3 blocks).
+- **No deflection and no ranged answer**: the roadmap allows hitting the fireball
+  back, but there is no bow/melee-deflect primitive; `flee` still exists for
+  ground mobs and does not know about trajectories (the governor prefers
+  `dodge_projectile` when a projectile is inbound, both share the `escape`
+  intent).
+- The action spends at most `timeoutMs` (8 s) across its candidates; a fireball
+  with an ETA shorter than a pathfinding step can still arrive first, which is
+  why the geometry prefers the *closest* lateral cell with the greatest lateral
+  growth rather than the safest one further away.
+
 ## Dependencies and risks
 
 - **Fluids M0/M4** (lava/fire hazards) and **exploration** (fortress, stronghold)
@@ -336,8 +423,9 @@ tests** in the whole suite.
   need a bow.
 - **Death loses everything** (`keep-inventory=false`) — establish a hub/respawn
   anchor early (N1–N2).
-- The ghast dodge geometry must be calibrated to the real projectile speed and
-  latency.
+- The ghast dodge geometry is straight-line in plan view and its step distance is
+  a constant: calibrating it against the real fireball speed, latency and the
+  server's knockback needs a live ghast (missing from the base).
 - A **`bossDefeated`** verifier criterion does not exist, so `beat_the_dragon`
   cannot be verified today.
 

@@ -15,7 +15,7 @@ import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, d
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
 import { loadCircuits, planCircuit, circuitSiteBlocked, circuitSafety, forbiddenBlock, checkCircuitSuccess, circuitAnchor, expectedDelayTicks, measureCircuitDelay, TICK_MS, MAX_CIRCUIT_STEPS, MAX_CIRCUIT_COMPONENTS, MIN_CLOCK_TICKS } from './circuits.mjs';
 import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
-import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, isNetherLike, landingHazard, maxFallDepth, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName } from './bedrock-nether.mjs';
+import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, isNetherLike, landingHazard, maxFallDepth, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, projectileVelocity, dodgeCandidates, breaksLine, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName } from './bedrock-nether.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -1625,6 +1625,69 @@ export class BedrockAdapter {
     return { ok: false, error: `avoid_lava_failed${lastError ? `: ${lastError}` : ''}`, lava: threat.position };
   }
 
+  // N3: il proiettile che *sta arrivando*, con la traiettoria misurata. La
+  // vista Nether espone solo il riassunto (distanza, tempo all'impatto): per
+  // schivare serve la velocità, e la riga di `_projectileRows` ha i campioni.
+  _incomingThreat () {
+    const from = this._feet ?? this.position;
+    if (!from) return null;
+    const now = Date.now();
+    const projectiles = this._projectileRows();
+    const threat = projectileIncoming({ projectiles, from, now });
+    if (!threat) return null;
+    const row = projectiles.find(p => p.position && p.distance === threat.distance && (!threat.type || p.type === threat.type)) ?? null;
+    const measured = row ? projectileVelocity({ position: row.position, previous: row.previous, now }) : { velocity: null };
+    return { ...threat, velocity: measured.velocity };
+  }
+
+  // Le celle dove la schivata può portare: fuori dalla linea di tiro, dentro il
+  // componente raggiungibile, con un appoggio calpestabile e senza lava accanto
+  // (scappare da un ghast dentro la lava è il modo più comune di morire).
+  _dodgeCandidates (projectile = null) {
+    const threat = projectile ?? this._incomingThreat();
+    if (!threat || !this._feet) return { threat: null, from: null, cells: [] };
+    const from = { x: this._feet.x, y: this._feet.y, z: this._feet.z };
+    const usable = this._reachabilityUsable();
+    const cells = dodgeCandidates({ from, projectile: threat })
+      .filter(cell => breaksLine({ from, candidate: cell, projectile: threat }))
+      .filter(cell => !usable || this.cellReachable(cell))
+      .filter(cell => this._standable(cell.x, cell.y, cell.z))
+      .filter(cell => !this._lavaAdjacent(cell.x, cell.y, cell.z));
+    return { threat, from, cells };
+  }
+
+  // Uscire dalla linea di tiro, non "correre via": il proiettile viaggia più
+  // veloce del bot, quindi conta solo la componente laterale dello spostamento.
+  // La schivata è verificata dall'osservazione (non c'è più niente in arrivo),
+  // non dal fatto che il bot si sia mosso.
+  async _dodgeProjectile ({ timeoutMs = 8000 } = {}) {
+    if (!this.spawned || !this._feet) return { ok: false, error: 'not_ready' };
+    const { threat, from, cells } = this._dodgeCandidates();
+    if (!threat) return { ok: false, error: 'no_projectile_incoming' };
+    const summary = { type: threat.type ?? null, distance: threat.distance, timeToImpactMs: threat.timeToImpactMs, source: threat.source };
+    if (!cells.length) {
+      this.log('dodge_no_spot', { from, threat: summary, candidates: dodgeCandidates({ from, projectile: threat }).length });
+      return { ok: false, error: 'no_dodge_spot', threat: summary };
+    }
+    const deadline = Date.now() + timeoutMs;
+    let lastError = null;
+    for (const cell of cells) {
+      if (Date.now() >= deadline) break;
+      try {
+        await this._moveTo(cell, 0.8, Math.max(1200, Math.min(4000, deadline - Date.now())));
+        if (!this._incomingThreat()) {
+          this.log('dodge_projectile', { from, to: cell, lateral: cell.lateral, threat: summary });
+          return { ok: true, dodged: true, from, to: { x: cell.x + 0.5, y: this._feet.y, z: cell.z + 0.5 }, lateral: cell.lateral, threat: summary };
+        }
+        lastError = 'still_incoming';
+      } catch (error) {
+        lastError = error.message;
+      }
+    }
+    this.log('dodge_failed', { from, threat: summary, reason: lastError ?? 'timeout' });
+    return { ok: false, error: 'dodge_failed', reason: lastError ?? 'timeout', from, threat: summary };
+  }
+
   observe () {
     const heldSlot = this.inventorySlots[this.selectedHotbar];
     const heldInfo = heldSlot?.network_id ? this.world.registry?.items[heldSlot.network_id] : null;
@@ -1746,6 +1809,15 @@ export class BedrockAdapter {
     const lavaThreat = this._lavaThreat();
     if (lavaThreat) {
       o.push({ key: 'avoid_lava', description: `Move away from the lava at ${JSON.stringify({ x: Math.round(lavaThreat.position.x), y: Math.round(lavaThreat.position.y), z: Math.round(lavaThreat.position.z) })} (${lavaThreat.distance} blocks away)` });
+    }
+    // N3: un proiettile in arrivo si evita *uscendo dalla linea di tiro* (la
+    // perpendicolare della traiettoria), non correndo via — e solo verso una
+    // cella raggiungibile e lontana dalla lava.
+    const dodge = this._dodgeCandidates();
+    if (dodge.threat && dodge.cells.length) {
+      const cell = dodge.cells[0];
+      const eta = Number.isFinite(dodge.threat.timeToImpactMs) ? `, impact in ${Math.round(dodge.threat.timeToImpactMs)} ms` : '';
+      o.push({ key: 'dodge_projectile', description: `Step out of the line of the ${dodge.threat.type ?? 'projectile'} at ${JSON.stringify({ x: Math.round(dodge.threat.position.x), y: Math.round(dodge.threat.position.y), z: Math.round(dodge.threat.position.z) })} (${dodge.threat.distance} blocks away${eta}) towards ${JSON.stringify({ x: cell.x, y: cell.y, z: cell.z })}` });
     }
     // Rifugio: rientra a casa (spawn o HOME_WAYPOINT) quando è lontana o in pericolo.
     if (this.home && this.position) {
@@ -2305,6 +2377,8 @@ export class BedrockAdapter {
         result = await this._eat();
       } else if (key === 'flee') {
         result = await this._flee();
+      } else if (key === 'dodge_projectile') {
+        result = await this._dodgeProjectile({});
       } else if (key === 'avoid_lava') {
         result = await this._avoidLava();
       } else if (key === 'goto_portal') {
