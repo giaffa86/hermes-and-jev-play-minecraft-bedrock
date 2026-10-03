@@ -10,11 +10,13 @@ Status: **N0 (awareness and hazards), N1 (portal reach/build/light/enter), N2
 (nether survival: non-flammable hub, dimension-aware fall, hazardous landings),
 N3 (dodging an incoming projectile sideways, never into lava), N4 (bartering
 with a piglin, never hitting one), N5 (gaze discipline, pumpkin mask, torso
-aim, pearls) and N6 (fortress detection, blaze hunt with cover, blaze rods)
-implemented and unit-tested; all seven have a live round (03/10/2026), N1–N6
-partial because the live world is an Overworld room with no obsidian, no loaded
-portal, no gun-armed mob, no piglin, no enderman and no blaze; N7 still spec
-only**.
+aim, pearls), N6 (fortress detection, blaze hunt with cover, blaze rods) and N7
+(eyes of ender, stronghold triangulation, frame filling, End portal entry and a
+real boss verdict) implemented and unit-tested; all eight have a live round
+(03/10/2026), N1–N7 partial because the live world is an Overworld room with no
+obsidian, no loaded portal, no gun-armed mob, no piglin, no enderman, no blaze
+and no `end_portal_frame`; the dragon *fight* is still not implemented (its
+verdict is)**.
 `knowledge/progression.json` now has the full chain and the
 `beat_the_dragon → enter_nether` contradiction is fixed: `beat_the_dragon` is a
 real milestone requiring `enter_end`. Full raw source:
@@ -83,7 +85,7 @@ New item tags: `gold_ingots`, `obsidian`, `blaze_rods`, `blaze_powder`,
 | N4 | Piglin bartering | wear gold armour for neutrality; `barter_piglin` (gold in hand → `item_use_on_entity` → collect drops); never hit piglins. | ◑ implemented + live partial (03/10/2026), see below |
 | N5 | Ender gaze & pearls | never aim at enderman eyes; pumpkin option; kill at body/feet; collect pearls. | ◑ implemented + live partial (03/10/2026), see below |
 | N6 | Fortress & blaze rods | find the fortress (exploration), fight blazes with cover, collect 7 rods. | ◑ implemented + live partial (03/10/2026), see below |
-| N7 | Endgame | eyes of ender, stronghold via thrown eyes, fill/enter the portal, (stretch) dragon. | ❌ not implemented |
+| N7 | Endgame | eyes of ender, stronghold via thrown eyes, fill/enter the portal, (stretch) dragon. | ◑ implemented + live partial (03/10/2026), see below |
 
 ## N0 — Nether awareness & hazards (implemented, live 03/10/2026)
 
@@ -626,6 +628,77 @@ The live world is the usual Overworld room: there is no fortress and no blaze.
 - `nether_wart` is not an anchor: a corridor of bricks only stays under the
   threshold (5 < 6) and is not detected.
 
+## N7 — Endgame: eyes, stronghold, portal, dragon verdict (implemented, live partial 03/10/2026)
+
+N7 is the chain that turns a bot with seven rods and twelve pearls into a bot
+standing in the End: craft the eyes, throw them to find the stronghold, fill
+twelve frames, step into the portal. The dragon is deliberately *not* part of
+it — see "the honest position on the dragon" below.
+
+### Implementation
+
+| Layer | What it does |
+|---|---|
+| `bedrock-end.mjs` | Pure module. `frameHasEye(block)` reads `end_portal_eye_bit` (boolean, `{value}`, number) and returns `null` when the state is unreadable; `frameStatus({frames, from})` -> `{total, filled, empty, unknown, missing, complete, nearest, rows}` where `complete` requires **zero** empty *and* zero unreadable frames; `eyesNeeded`; `eyeCraftPlan({powder, pearls, rods, wanted})` (1 rod = 2 powder, 1 powder + 1 pearl = 1 eye); `eyeReading({origin, sample, at})` -> unit direction + client yaw (`-atan2(dx, dz)`); `readingAge`; `triangulateStronghold({first, second, now})` intersects the two rays and types every refusal (`missing_readings`, `invalid_reading`, `stale_reading`, `readings_too_close` < 16 blocks, `parallel_rays` < 12°, `no_intersection` behind a thrower); `endGate`, `bossVerdict({shown, hidden, shownAt, hiddenAt})` (`no_boss_bar` / `boss_bar_visible` / `hidden_before_shown` / `bar_shown_then_hidden`), `endSummary`. |
+| `survival/verify.mjs` | New criterion **`bossDefeated`**: accepts only `true`, reads `observation.boss.defeated` (the adapter's boss-bar verdict), and fails loudly otherwise (`solo true è verificabile`, `boss=<reason>`). Validated in `validateCriteria` like the others. |
+| `bedrock-adapter.mjs` | `_endFrames` (census -> `end_portal_frame` rows, now carrying their `properties`), `_eyeRows`, `_endReadings` (10 min TTL, max 6 kept), `_endView`, `_equipForUse`, `_craftPowderFromRods`, `_craftEyesOfEnder` (grinds the powder first when needed), `_throwEyeOfEnder` (equip, `click_air` transaction, then read the spawned `eye_of_ender_signal` after 250 ms), `_findStronghold` (`already` within 24 blocks, `needs_second_throw` with fewer than two readings, triangulate, then walk), `_awaitFrameEye`, `_fillEndPortal` (per empty frame: approach, look, `item_use_on_block`, confirm from the world), `_approachCell`; `_enterPortal({kind})` now handles `end` (`no_end_portal_known`) and `_nearestPortal`/`_gotoPortal` take a dimension kind. Options `craft_blaze_powder`, `craft_ender_eye`, `throw_eye_of_ender`, `find_stronghold`, `fill_end_portal`, `enter_end_portal`, each gated on the real material being in hand. A **`boss_event` handler** tracks `show_bar`/`hide_bar`/`set_bar_progress` into `_bossBar` (never inferred from a vanished entity). |
+| `bedrock-harness.mjs` | `GET /observe.end` (full endgame view, `?force=1`) and `end` inside `GET /observe.portals` (compact `endSummary`). |
+
+### Tests
+
+`node --test tests/*.test.mjs` -> **909 tests, 909 pass**. The new ones: 13 pure
+(`tests/end.test.mjs`: eye-bit reading in all three shapes, the unreadable frame
+that never counts as complete, `eyeCraftPlan` arithmetic and rod conversion, the
+reading's yaw, triangulation from two real origins plus every refusal, `endGate`,
+`bossVerdict` cases, `endSummary`) and 11 adapter
+(`tests/bedrock-end-adapter.test.mjs`: view shape, the empty inventory, powder
+from rods then two eyes (pearls counted **from the slots**, which is how the
+adapter does it), the throw with the entity appearing and with it missing,
+`find_stronghold` refusals and the walk, frame filling with the eye bit read back
+from the world, `_enterPortal('end')` unchanged with a null dimension, the option
+gating, and the boss-bar handler).
+
+### Live round (03/10/2026)
+
+The live room has no `end_portal_frame`, no eye and no boss bar: what is
+verifiable live is the *honesty* of the refusals.
+
+| Probe | Answer |
+|---|---|
+| `GET /observe.end` | `frames.total: 0`, `craft: {powder: 0, pearls: 0, rods: 0, craftable: 0, missingPearls: 12, missingPowder: 12}`, `readings: []`, `stronghold: null`, `boss: {defeated: false, reason: "no_boss_bar"}`, `bossBar.events: 0` |
+| `GET /observe.portals` (`.end`) | same projection compacted: `boss.reason: "no_boss_bar"`, `readings: 0` |
+| `POST /act {"key":"craft_blaze_powder"}` | `{"ok":false,"error":"missing_ingredients"}` — 21 ms |
+| `POST /act {"key":"craft_ender_eye"}` | `{"ok":false,"error":"missing_ingredients"}` — 19 ms |
+| `POST /act {"key":"throw_eye_of_ender"}` | `{"ok":false,"error":"missing_eye_of_ender"}` — 20 ms |
+| `POST /act {"key":"find_stronghold"}` | `{"ok":false,"error":"needs_second_throw","readings":0,"frames":0}` — 19 ms |
+| `POST /act {"key":"fill_end_portal"}` | `{"ok":false,"error":"no_frame_known"}` — 20 ms |
+| `POST /act {"key":"enter_end_portal"}` | `{"ok":false,"error":"no_end_portal_known"}` — 20 ms |
+| `GET /options` | 23 keys, **none** of the six endgame options offered |
+
+### The honest position on the dragon
+
+The acceptance criterion in the raw roadmap says `CURRICULUM=enter_end` must be
+reached and `beat_the_dragon` stays *gated* as long as a boss verifier is
+missing. Today: the verifier exists (`bossDefeated`), but the **fight does not** —
+there is no crystal breaking, no perch phase, no ranged combat (see
+"Dependencies and risks"). So `beat_the_dragon` keeps `success: null` and is not
+offered; the criterion lands now so that the fight, when it exists, cannot be
+declared won from a vanished entity: it needs a `show_bar` **then** `hide_bar`
+cycle from the server.
+
+### Known limits
+
+- **No End live**: no frame, no eye, no portal, no boss bar. The happy path
+  (craft -> throw -> triangulate -> fill -> enter) is covered by unit tests only.
+- The stronghold walk **is not** the real thing: `_findStronghold` moves toward the
+  estimate once and reports `stronghold_out_of_range` if the local pathfinder
+  cannot get there. Real stronghold navigation needs long-range travel (P6/M1
+  exploration + goal retention across restarts).
+- The eye throw reads one sample after 250 ms: enough for a direction, not for a
+  trajectory fit, so the estimate is a ray intersection, not a curve fit.
+- `_fillEndPortal` fills the frames it knows from the census radius; frames
+  outside it need a fresh survey.
+
 ## Dependencies and risks
 
 - **Fluids M0/M4** (lava/fire hazards) and **exploration** (fortress, stronghold)
@@ -639,8 +712,10 @@ The live world is the usual Overworld room: there is no fortress and no blaze.
 - The ghast dodge geometry is straight-line in plan view and its step distance is
   a constant: calibrating it against the real fireball speed, latency and the
   server's knockback needs a live ghast (missing from the base).
-- A **`bossDefeated`** verifier criterion does not exist, so `beat_the_dragon`
-  cannot be verified today.
+- The **`bossDefeated`** verifier criterion exists now (N7), but the dragon
+  fight does not: `beat_the_dragon` stays gated until ranged combat, the end
+  crystals and the perch phase exist. Its criterion only accepts a real
+  `show_bar` -> `hide_bar` cycle from the server.
 
 ## Related pages
 

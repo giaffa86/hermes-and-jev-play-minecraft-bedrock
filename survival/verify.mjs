@@ -106,6 +106,16 @@ export function evaluateCriteria (criteria, observation, { before = null, contex
     evidence.dimension = after.dimension ?? null;
     return after.dimension === criteria.dimension ? { ok: true, evidence } : fail(`dimension=${evidence.dimension}`);
   }
+  // N7: verdetto sul boss. Il fatto è osservabile (`after.boss.defeated`, dal
+  // ciclo della barra del boss del server) e non un'opinione del modello: senza
+  // barra comparsa *e* scomparsa il criterio resta falso.
+  if ('bossDefeated' in criteria) {
+    evidence.boss = after.boss ?? null;
+    if (criteria.bossDefeated !== true) return fail(`bossDefeated=${JSON.stringify(criteria.bossDefeated)} (solo true è verificabile)`);
+    return after.boss?.defeated === true
+      ? { ok: true, evidence }
+      : fail(`boss=${after.boss ? after.boss.reason ?? 'unknown' : 'unobserved'}`);
+  }
   if ('nearbyBlock' in criteria) {
     const wanted = typeof criteria.nearbyBlock === 'string'
       ? { name: criteria.nearbyBlock, within: null }
@@ -293,7 +303,7 @@ export function tagEvidence (inventory, tag) {
 
 export const CRITERIA_KEYS = [
   'inventoryGte', 'inventoryTagGte', 'healthAtLeast', 'foodAtLeast', 'phaseIn',
-  'dimension', 'nearbyBlock', 'foodIncreased', 'healthIncreased', 'noHostileWithin',
+  'dimension', 'nearbyBlock', 'bossDefeated', 'foodIncreased', 'healthIncreased', 'noHostileWithin',
   'threatDistanceIncreasedBy', 'nightSurvived', 'deathsAtLeast', 'itemPreserved',
   'inWater', 'notInLava', 'airAtLeast',
   'blockPoweredAt', 'circuitActive', 'circuitBuilt',
@@ -330,6 +340,7 @@ export function validateCriteria (criteria, where = 'criteria') {
     if (key === 'airAtLeast' && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) errors.push(`${where}.${key}: must be a non-negative number`);
     if (key === 'itemPreserved' && (!Array.isArray(value) || !value.length || value.some(item => typeof item !== 'string' || !item))) errors.push(`${where}.${key}: must be a non-empty array of item names`);
     if (key === 'nearbyBlock' && typeof value !== 'string' && (typeof value !== 'object' || !value?.name)) errors.push(`${where}.${key}: must be a block name or {name, within}`);
+    if (key === 'bossDefeated' && value !== true) errors.push(`${where}.${key}: only true is verifiable (the boss bar cycle is a server signal, there is no static check for "not defeated")`);
   }
   return errors;
 }

@@ -353,7 +353,7 @@ Still missing (the rest of the original gap):
   `nether_portal → … → enter_end → beat_the_dragon` chain and the goal points to
   the real milestone. The underlying Nether capabilities are still missing — see
   [nether](nether.md).
-- **No Nether/End capabilities (N0/N1/N2/N3/N4/N5/N6 done)**: N0 (awareness and hazards) is
+- **No Nether/End capabilities (N0/N1/N2/N3/N4/N5/N6/N7 done)**: N0 (awareness and hazards) is
   implemented, unit-tested and live-checked 03/10 — portal/fire/magma/spawner
   census, projectile tracking, enderman gaze sensing, `waterEvaporates`/
   `bedsExplode` and seven governor rules, all *perception only*; N1 adds the four
@@ -378,9 +378,16 @@ Still missing (the rest of the original gap):
   detector (dimension-scoped, so the Overworld survey never invents one) and the
   `hunt_blaze` action (`lineBlocked`/`coverCandidates`/`blazeTactics`: low health
   and *being on fire* come before shooting, cover before approaching, and an
-  unknown cell is not cover). Still missing:
-  stronghold/End actions and a
-  `bossDefeated` verifier criterion. Roadmap in [nether](nether.md).
+  unknown cell is not cover). N7 closes the chain: eyes of ender
+  (`eyeCraftPlan`, `craft_blaze_powder`, `craft_ender_eye`), the thrown eye and
+  its triangulation (`eyeReading`, `triangulateStronghold` with `readings_too_close`/
+  `parallel_rays`/`stale_reading` and the rest), `find_stronghold`,
+  `fill_end_portal` (the eye bit is read back **from the world**, and one
+  unreadable frame is enough to refuse `complete`), `enter_end_portal`, and a
+  real **`bossDefeated`** verifier criterion fed by the server's `boss_event`
+  bar cycle — not by a vanished entity, which would also be true after simply
+  leaving the End. Still missing: the dragon **fight** (end crystals, perch
+  phase, ranged combat), so `beat_the_dragon` keeps `success: null`. Roadmap in [nether](nether.md).
 - **Crafting** only one item at a time; special recipes (smithing, anvil, looms)
   not implemented.
 

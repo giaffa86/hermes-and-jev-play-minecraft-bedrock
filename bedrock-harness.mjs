@@ -213,6 +213,13 @@ server = createServer(async (req, res) => {
       const u = new URL(req.url, 'http://x');
       const force = /^(1|true|on)$/i.test(u.searchParams.get('force') ?? '');
       response = [200, adapter._netherView({ force, cells: true })];
+    } else if (req.method === 'GET' && req.url.startsWith('/observe.end')) {
+      // Endgame (N7 di docs/wiki/nether.md): telai del portale dell'End con lo
+      // stato dell'occhio, piano di craft, lanci di occhi e verdetto sul drago
+      // dal ciclo della barra del boss. Censimento con TTL, `?force=1` lo rifà.
+      const u = new URL(req.url, 'http://x');
+      const force = /^(1|true|on)$/i.test(u.searchParams.get('force') ?? '');
+      response = [200, adapter._endView({ force })];
     } else if (req.method === 'GET' && req.url === '/options') {
       // Validity owner resta l'adapter; il governor può solo restringere in
       // emergenza le opzioni già offerte, mai aggiungerne.

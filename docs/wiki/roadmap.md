@@ -255,9 +255,11 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   enter), N2 (nether survival: non-flammable hub, dimension-aware fall,
   hazardous landings), N3 (dodging an incoming projectile sideways, never into
   lava), N4 (bartering with a piglin, never hitting one), N5 (gaze
-  discipline, pumpkin mask, torso aim, pearls) and N6 (fortress detection,
-  blaze hunt with cover, blaze rods) implemented and unit-tested; N0
-  live-checked 03/10, N1–N6 live only for the typed refusals**: the
+  discipline, pumpkin mask, torso aim, pearls), N6 (fortress detection,
+  blaze hunt with cover, blaze rods) and N7 (eyes of ender, stronghold
+  triangulation, frame filling, End portal, real boss verdict) implemented and
+  unit-tested; N0
+  live-checked 03/10, N1–N7 live only for the typed refusals**: the
   portal/fire/magma/spawner census (`GET /observe.portals`), projectile tracking
   (`projectileThreat`/`projectileIncoming`/`projectileVelocity`), gaze sensing
   (`gazedAtEnderman` now separating `aimingAtEyes` from `gazed`),
@@ -274,9 +276,15 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   `avoid_enderman_gaze`, `equip_pumpkin`, torso aim in `_combat`, `pearls` in the
   view), the blaze hunt (`nether_fortress` detector in `dimension: nether`,
   `lineBlocked`/`coverCandidates`/`blazeTactics`, action `hunt_blaze` that takes
-  cover before shooting and refuses to duel while on fire). Still missing: the
-  live happy paths (the base has no obsidian, no ghast, no piglin, no enderman
-  and no blaze), stronghold/End actions and a `bossDefeated` verifier. Roadmap in
+  cover before shooting and refuses to duel while on fire), and the endgame chain
+  (`frameHasEye`/`frameStatus` for the twelve frames, `eyeCraftPlan`,
+  `eyeReading`/`triangulateStronghold` with every refusal, `bossVerdict` from the
+  server's `boss_event` bar cycle, actions `craft_blaze_powder`,
+  `craft_ender_eye`, `throw_eye_of_ender`, `find_stronghold`, `fill_end_portal`,
+  `enter_end_portal`). Still missing: the
+  live happy paths (the base has no obsidian, no ghast, no piglin, no enderman,
+  no blaze and no `end_portal_frame`) and the dragon fight (the `bossDefeated`
+  criterion exists now; `beat_the_dragon` stays `success: null`). Roadmap in
   [nether](nether.md) / [`raw/NETHER_ROADMAP.md`](../raw/NETHER_ROADMAP.md). The
   progression chain (incl. the fixed `beat_the_dragon`) is already in
   `knowledge/progression.json`.
@@ -362,7 +370,10 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    projectile sideways, never into lava), N4 done (bartering with a piglin,
    never hitting one), N5 done (gaze discipline, pumpkin mask, torso aim,
    pearls) and N6 done (fortress detector + blaze hunt with cover and rods), all
-   unit-tested and live-checked for the refusals; next is N7 (stronghold, End).
+   unit-tested and live-checked for the refusals; N7 is done too (eyes of ender,
+   stronghold triangulation, frame filling, End portal entry, real `bossDefeated`
+   criterion), also live-checked for the refusals — the dragon **fight** is the
+   remaining piece.
 10. **Exploration** (spec in [exploration](exploration.md)): M1 core, M2
     (route replay) and M4 (observable targets) are implemented and live-exercised
     (`exploration.mjs` target resolution + spiral planner + report + replay +
@@ -427,5 +438,6 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 - [goal-achievement](goal-achievement.md) — Goal Contract, task graph, semantic goals, 5 progressive benchmarks.
 - [nether](nether.md) — Nether/End survival, ghasts, piglins, endermen, portals.
 
-  see below), N5 is done too (gaze discipline and pumpkin mask), and the next slice is N6
-  (fortress and blaze rods).
+  see below), N5 is done too (gaze discipline and pumpkin mask), and N7 completes the
+  chain (eyes of ender, stronghold, frames, End portal, boss verdict); the dragon
+  fight is what is still missing.

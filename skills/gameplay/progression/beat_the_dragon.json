@@ -6,5 +6,5 @@
   "success": null,
   "intents": ["fight", "travel", "collect", "heal", "eat"],
   "planTargets": {},
-  "notes": "Verification needs a new boss-defeated criterion (no static world criterion yet); not implemented."
+  "notes": "The verifier criterion exists now (`bossDefeated`, fed by the server's boss_event bar cycle and accepting only a show_bar -> hide_bar transition), but the fight itself is not implemented: no end-crystal breaking, no perch phase, no ranged combat. `success` stays null on purpose, so the milestone is never offered and can never be reported as won from a boss that merely stopped being visible."
 }

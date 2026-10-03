@@ -15,7 +15,8 @@ import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, d
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
 import { loadCircuits, planCircuit, circuitSiteBlocked, circuitSafety, forbiddenBlock, checkCircuitSuccess, circuitAnchor, expectedDelayTicks, measureCircuitDelay, TICK_MS, MAX_CIRCUIT_STEPS, MAX_CIRCUIT_COMPONENTS, MIN_CLOCK_TICKS } from './circuits.mjs';
 import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
-import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, isNetherLike, landingHazard, maxFallDepth, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, projectileVelocity, dodgeCandidates, breaksLine, isPiglinType, goldArmorWorn, piglinNeutral, barterTarget, isBarterReward, BARTER_INGOT, BARTER_RANGE, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName, endermanAimPoint, isPumpkinMask, pumpkinMaskWorn, isEnderPearl, ENDER_PEARL, ENDERMAN_GAZE_TOLERANCE_DEG, isBlazeType, coverCandidates, blazeTactics, blazeRodProgress, BLAZE_RANGE, BLAZE_RETREAT_HEALTH, BLAZE_ROD, COVER_RADIUS } from './bedrock-nether.mjs';
+import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, isNetherLike, landingHazard, maxFallDepth, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, projectileVelocity, dodgeCandidates, breaksLine, isPiglinType, goldArmorWorn, piglinNeutral, barterTarget, isBarterReward, BARTER_INGOT, BARTER_RANGE, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName, endermanAimPoint, isPumpkinMask, pumpkinMaskWorn, isEnderPearl, ENDERMAN_GAZE_TOLERANCE_DEG, isBlazeType, coverCandidates, blazeTactics, blazeRodProgress, BLAZE_RANGE, BLAZE_RETREAT_HEALTH, BLAZE_ROD, COVER_RADIUS } from './bedrock-nether.mjs';
+import { END_DIMENSION, END_PORTAL, END_PORTAL_FRAME, EYE_OF_ENDER, BLAZE_POWDER, BLAZE_ROD_ITEM, ENDER_EYE_FRAME_TOTAL, STRONGHOLD_RADIUS, EYE_READINGS_MAX, POWDER_PER_ROD, isEyeSignalType, frameHasEye, frameStatus, eyeCraftPlan, eyeReading, triangulateStronghold, bossVerdict, endSummary } from './bedrock-end.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -237,6 +238,15 @@ export class BedrockAdapter {
     // Il campo non può chiamarsi `_netherHub`: ombreggerebbe il metodo.
     this._netherHubLast = null;
     this._blazeLast = null;
+    // N7: lanci di occhi di ender (posizione del lancio + direzione stimata dal
+    // volo), l'ultimo cantiere del portale dell'End e lo stato della barra del
+    // boss. `_eyeReadings` è limitato: le letture vecchie non descrivono più
+    // dove sta andando un occhio appena lanciato.
+    this._eyeReadings = [];
+    this._eyeLast = null;
+    this._frameLast = null;
+    this._bossBar = { shown: false, hidden: false, shownAt: null, hiddenAt: null, entityId: null, progress: null };
+    this._bossBarEvents = 0;
     // Ultimo bartering (N4): il campo non può chiamarsi `_barter`, che è un
     // verbo già usato per il metodo.
     this._barterLast = null;
@@ -713,6 +723,10 @@ export class BedrockAdapter {
         if (String(packet.runtime_entity_id) !== String(client.entityId)) return;
         this._onMobEquipment(packet);
       });
+      // N7: la barra del boss è il segnale del server sul drago. `show_bar` e
+      // `hide_bar` sono gli unici due eventi che contano: il verdetto è
+      // "comparsa e poi scomparsa", non l'assenza di un'entità.
+      client.on('boss_event', packet => this._onBossEvent(packet));
 
       this.client.on('add_item_entity', (packet) => {
         // Traccia drop nelle vicinanze
@@ -1173,7 +1187,13 @@ export class BedrockAdapter {
     if (this.position && typeof this.world?.findBlocks === 'function') {
       for (const name of ['portal', 'end_portal', 'end_gateway', 'end_portal_frame', 'fire', 'soul_fire', 'magma', 'mob_spawner']) {
         for (const block of this.world.findBlocks(name, this.position, NETHER_SCAN_RADIUS, NETHER_SCAN_LIMIT)) {
-          rows.push({ name, position: block?.position ?? block });
+          // N7: il telaio dell'End porta il suo stato (l'occhio c'è o no) e la
+          // census è l'unico punto in cui il blocco è ancora in mano: se lo
+          // stato si perde qui, più tardi non c'è modo di rileggerlo.
+          const properties = typeof block?.getProperties === 'function'
+            ? block.getProperties()
+            : (block?._properties ?? block?.properties ?? null);
+          rows.push({ name, position: block?.position ?? block, properties });
         }
       }
     }
@@ -1292,6 +1312,25 @@ export class BedrockAdapter {
       blaze: this._blazeRows()[0] ?? null,
       rods: this.inventory[BLAZE_ROD] || 0,
       hunt: this._blazeLast ?? null,
+      // N7: la proiezione compatta dell'endgame (telai, occhi, letture, drago).
+      // La vista completa resta in `_endView()`, che è diagnostica e non gira a
+      // ogni passo del controller.
+      end: endSummary({
+        frames: this._endFrames({ census }),
+        craft: eyeCraftPlan({
+          powder: this.inventory[BLAZE_POWDER] || 0,
+          pearls: this._pearlsHeld(),
+          rods: this.inventory[BLAZE_ROD_ITEM] || 0,
+        }),
+        readings: this._endReadings().length,
+        stronghold: (() => {
+          const readings = this._endReadings();
+          return readings.length >= 2
+            ? triangulateStronghold({ first: readings[readings.length - 2], second: readings[readings.length - 1] })
+            : null;
+        })(),
+        boss: bossVerdict({ ...this._bossBar }),
+      }),
       scanned: census.scanned,
       ready: census.ready !== false,
       at: census.at,
@@ -1558,11 +1597,335 @@ export class BedrockAdapter {
     return report;
   }
 
+  // --- N7: occhi di ender e portale dell'End --------------------------------
+  // La barra del boss è l'unico segnale che il server dà sul drago: `show_bar`
+  // seguito da `hide_bar`. L'assenza dell'entità non è una prova (il chunk può
+  // non essere caricato), quindi il verdetto poggia su questo ciclo.
+  _onBossEvent (packet) {
+    const type = String(packet?.type ?? '');
+    if (type !== 'show_bar' && type !== 'hide_bar' && type !== 'set_bar_progress') return;
+    this._bossBarEvents++;
+    const at = Date.now();
+    if (type === 'show_bar') {
+      this._bossBar.shown = true;
+      this._bossBar.shownAt = at;
+      this._bossBar.entityId = packet?.target_entity_id != null ? String(packet.target_entity_id) : null;
+      this._bossBar.title = packet?.title ?? null;
+      this.log('boss_bar', { type, entityId: this._bossBar.entityId, title: this._bossBar.title });
+    } else if (type === 'hide_bar') {
+      this._bossBar.hidden = true;
+      this._bossBar.hiddenAt = at;
+      this.log('boss_bar', { type, shownForMs: Number.isFinite(this._bossBar.shownAt) ? at - this._bossBar.shownAt : null });
+    } else if (Number.isFinite(packet?.progress)) {
+      // La barra si aggiorna in continuazione: qui non si logga nulla.
+      this._bossBar.progress = packet.progress;
+    }
+  }
+
+  // Il telaio del portale è l'unico blocco il cui stato serve *prima* di agire:
+  // quanti occhi mancano decide se vale la pena avvicinarsi. Lo stato arriva
+  // dalla palette del server, quindi un telaio illeggibile resta `null`.
+  _endFrames ({ force = false, census = null } = {}) {
+    const scan = census ?? this._netherCensus({ force });
+    const from = this._feet ?? this.position;
+    const rows = [];
+    for (const row of scan.rows ?? []) {
+      if (row.name !== END_PORTAL_FRAME) continue;
+      rows.push({ position: row.position, hasEye: frameHasEye(row) });
+    }
+    return frameStatus({ frames: rows, from });
+  }
+
+  // Gli occhi lanciati che il server ha fatto comparire come entità: la
+  // posizione è quella dell'occhio, non l'origine del lancio.
+  _eyeRows () {
+    const rows = [];
+    for (const entity of this.entities.values()) {
+      if (!entity.position || !isEyeSignalType(entity.type)) continue;
+      rows.push({ runtimeId: entity.runtimeId, type: entity.type, position: { ...entity.position }, seenAt: entity.seenAt ?? null });
+    }
+    return rows;
+  }
+
+  _endReadings ({ now = Date.now() } = {}) {
+    return this._eyeReadings.filter(reading => reading && (reading.at == null || now - reading.at <= 10 * 60 * 1000));
+  }
+
+  _endView ({ force = false, census = null } = {}) {
+    const frames = this._endFrames({ force, census });
+    const craft = eyeCraftPlan({
+      powder: this.inventory[BLAZE_POWDER] || 0,
+      pearls: this._pearlsHeld(),
+      rods: this.inventory[BLAZE_ROD_ITEM] || 0,
+    });
+    const readings = this._endReadings();
+    const stronghold = readings.length >= 2
+      ? triangulateStronghold({ first: readings[readings.length - 2], second: readings[readings.length - 1] })
+      : null;
+    const boss = bossVerdict({ ...this._bossBar });
+    return {
+      dimension: this.dimension,
+      inEnd: this.dimension === END_DIMENSION,
+      frames,
+      craft,
+      readings,
+      stronghold,
+      boss,
+      bossBar: { ...this._bossBar, events: this._bossBarEvents },
+      portal: (census ?? this._netherCensus({ force })).portals?.end?.nearest ?? null,
+      lastThrow: this._eyeLast ?? null,
+      lastFill: this._frameLast ?? null,
+    };
+  }
+
+  // Un oggetto in mano prima di usarlo: trova lo slot, lo porta in hotbar e lo
+  // seleziona. È lo stesso gesto del ripianto dei semi e dell'accensione del
+  // portale, quindi vive una volta sola.
+  async _equipForUse (itemName) {
+    let slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && s.count > 0);
+    if (slotIndex < 0) return { ok: false, error: `missing_${itemName}` };
+    if (slotIndex > 8) {
+      try { slotIndex = await this._moveSlotToHotbar(slotIndex); }
+      catch (error) { return { ok: false, error: `equip_failed: ${error.message}` }; }
+    }
+    this._selectHotbarSlot(slotIndex);
+    return { ok: true, slotIndex };
+  }
+
+  // Le bacchette del blaze diventano polvere con un craft senza forma (non una
+  // fornace): una bacchetta per volta, perché ogni scomposizione consuma uno
+  // slot e il conteggio che interessa è quello che cresce.
+  async _craftPowderFromRods ({ maxCrafts = ENDER_EYE_FRAME_TOTAL } = {}) {
+    const before = this.inventory[BLAZE_POWDER] || 0;
+    const rods = this.inventory[BLAZE_ROD_ITEM] || 0;
+    if (rods < 1) return { ok: false, error: 'missing_blaze_rod' };
+    const crafted = [];
+    const failed = [];
+    for (let i = 0; i < Math.min(maxCrafts, rods); i++) {
+      if ((this.inventory[BLAZE_ROD_ITEM] || 0) < 1) break;
+      const result = await this._craftItem(BLAZE_POWDER);
+      if (result?.ok) crafted.push({ item: BLAZE_POWDER, count: result.count ?? POWDER_PER_ROD });
+      else { failed.push({ item: BLAZE_POWDER, error: result?.error ?? 'unknown' }); break; }
+    }
+    const after = this.inventory[BLAZE_POWDER] || 0;
+    const report = {
+      ok: after > before,
+      error: after > before ? undefined : (failed[0]?.error ?? 'powder_not_crafted'),
+      powder: after,
+      gained: after - before,
+      rods: this.inventory[BLAZE_ROD_ITEM] || 0,
+      crafted,
+      failed,
+    };
+    this.log(report.ok ? 'blaze_powder_crafted' : 'blaze_powder_failed', report);
+    return report;
+  }
+
+  // Gli occhi sono il pezzo che manca più spesso: si craftano finché ci sono
+  // polvere e perle, e il conteggio finale è quello letto dall'inventario.
+  async _craftEyesOfEnder ({ maxCrafts = ENDER_EYE_FRAME_TOTAL } = {}) {
+    const before = this.inventory[EYE_OF_ENDER] || 0;
+    const plan = eyeCraftPlan({
+      powder: this.inventory[BLAZE_POWDER] || 0,
+      pearls: this._pearlsHeld(),
+      rods: this.inventory[BLAZE_ROD_ITEM] || 0,
+    });
+    if (plan.missingPowder > 0 && (this.inventory[BLAZE_ROD_ITEM] || 0) > 0) await this._craftPowderFromRods({});
+    const craftable = eyeCraftPlan({
+      powder: this.inventory[BLAZE_POWDER] || 0,
+      pearls: this._pearlsHeld(),
+      rods: 0,
+    }).craftable;
+    if (craftable < 1) {
+      const report = { ok: false, error: plan.missingPearls > 0 ? 'missing_ender_pearl' : 'missing_blaze_powder', plan, crafted: 0 };
+      this.log('ender_eye_failed', report);
+      return report;
+    }
+    const crafted = [];
+    const failed = [];
+    for (let i = 0; i < Math.min(maxCrafts, craftable); i++) {
+      if ((this.inventory[BLAZE_POWDER] || 0) < 1 || this._pearlsHeld() < 1) break;
+      const result = await this._craftItem(EYE_OF_ENDER);
+      if (result?.ok) crafted.push({ item: EYE_OF_ENDER, count: result.count ?? 1 });
+      else { failed.push({ error: result?.error ?? 'unknown' }); break; }
+    }
+    const after = this.inventory[EYE_OF_ENDER] || 0;
+    const report = {
+      ok: after > before,
+      error: after > before ? undefined : (failed[0]?.error ?? 'eye_not_crafted'),
+      eyes: after,
+      gained: after - before,
+      powder: this.inventory[BLAZE_POWDER] || 0,
+      pearls: this._pearlsHeld(),
+      crafted,
+      failed,
+    };
+    this.log(report.ok ? 'ender_eyes_crafted' : 'ender_eye_failed', report);
+    return report;
+  }
+
+  // Un occhio di ender lanciato vola verso la stronghold: la direzione la stima  // il volo dell'entità che il server fa comparire, non lo sguardo del bot
+  // (l'occhio ignora dove guardi). Se l'entità non compare — l'occhio può
+  // rompersi — non c'è nessuna direzione da leggere.
+  async _throwEyeOfEnder ({ timeoutMs = 5000, sampleDelayMs = 250 } = {}) {
+    if ((this.inventory[EYE_OF_ENDER] || 0) < 1) return { ok: false, error: 'missing_eye_of_ender' };
+    const equipped = await this._equipForUse(EYE_OF_ENDER);
+    if (!equipped.ok) return equipped;
+    const origin = this._feet ? { ...this._feet } : (this.position ? { ...this.position } : null);
+    if (!origin) return { ok: false, error: 'not_ready' };
+    const known = new Set(this._eyeRows().map(row => row.runtimeId));
+    const before = this.inventory[EYE_OF_ENDER] || 0;
+    await this._queueAuthInput({ yaw: this._lastYaw ?? 0, pitch: 0, transaction: this._airUseTransaction() });
+    let sample = null;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline && !sample) {
+      const fresh = this._eyeRows().find(row => !known.has(row.runtimeId));
+      if (fresh) {
+        await delay(sampleDelayMs);
+        const moved = this._eyeRows().find(row => row.runtimeId === fresh.runtimeId) ?? fresh;
+        sample = moved.position;
+      } else {
+        await delay(100);
+      }
+    }
+    if (!sample) {
+      const report = { ok: false, error: 'eye_not_spawned', held: before, inventory: this.inventory[EYE_OF_ENDER] || 0 };
+      this._eyeLast = report;
+      this.log('eye_throw_failed', report);
+      return report;
+    }
+    const reading = eyeReading({ origin, sample, at: Date.now() });
+    if (!reading) {
+      const report = { ok: false, error: 'eye_direction_unknown', sample };
+      this._eyeLast = report;
+      this.log('eye_throw_failed', report);
+      return report;
+    }
+    this._eyeReadings.push(reading);
+    while (this._eyeReadings.length > EYE_READINGS_MAX) this._eyeReadings.shift();
+    const readings = this._endReadings();
+    const stronghold = readings.length >= 2
+      ? triangulateStronghold({ first: readings[readings.length - 2], second: readings[readings.length - 1] })
+      : null;
+    const report = {
+      ok: true,
+      reading,
+      readings: readings.length,
+      stronghold,
+      consumed: before - (this.inventory[EYE_OF_ENDER] || 0),
+      remaining: this.inventory[EYE_OF_ENDER] || 0,
+    };
+    this._eyeLast = report;
+    this.log('eye_thrown', { yaw: reading.yaw, readings: readings.length, stronghold: stronghold?.ok ? stronghold.position : stronghold?.error ?? null });
+    return report;
+  }
+
+  // La milestone `find_stronghold` è soddisfatta da un telaio entro 24 blocchi:
+  // prima di camminare, si guarda se ci si è già arrivati.
+  async _findStronghold ({ timeoutMs = 20000 } = {}) {
+    const frames = this._endFrames({ force: true });
+    if (frames.total > 0 && frames.nearest && frames.nearest.distance <= STRONGHOLD_RADIUS) {
+      return { ok: true, already: true, frames: frames.total, distance: frames.nearest.distance, position: frames.nearest.position };
+    }
+    const readings = this._endReadings();
+    if (readings.length < 2) return { ok: false, error: 'needs_second_throw', readings: readings.length, frames: frames.total };
+    const estimate = triangulateStronghold({ first: readings[readings.length - 2], second: readings[readings.length - 1] });
+    if (!estimate.ok) return { ok: false, error: estimate.error, readings: readings.length, ...estimate };
+    const target = { x: estimate.position.x, y: (this._feet ?? this.position).y, z: estimate.position.z };
+    try {
+      await this._moveTo(target, 3.0, timeoutMs);
+      const after = this._endFrames({ force: true });
+      return { ok: true, estimate, moved: true, frames: after.total, distance: after.nearest?.distance ?? null };
+    } catch (error) {
+      return {
+        ok: false,
+        error: 'stronghold_out_of_range',
+        estimate,
+        distance: estimate.distance,
+        detail: error.message,
+        hint: 'il pathfinder è locale: una stronghold a centinaia di blocchi richiede il viaggio a lungo raggio (esplorazione M1)',
+      };
+    }
+  }
+
+  async _awaitFrameEye (position, timeoutMs = 2000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (frameHasEye(this.world.blockAt(position)) === true) return true;
+      await delay(100);
+    }
+    return false;
+  }
+
+  // Riempire il portale è un click per telaio vuoto, con la conferma presa dal
+  // mondo: il telaio legge `end_portal_eye_bit` dal blocco, non dal nostro
+  // ottimismo. Gli occhi mancanti fermano il lavoro senza consumarne altri.
+  async _fillEndPortal ({ timeoutMs = 20000, frameTimeoutMs = 2000 } = {}) {
+    const frames = this._endFrames({ force: true });
+    if (frames.total === 0) return { ok: false, error: 'no_frame_known' };
+    if (frames.missing === 0) return { ok: true, already: true, total: frames.total, filled: frames.filled, complete: frames.complete };
+    if ((this.inventory[EYE_OF_ENDER] || 0) < 1) return { ok: false, error: 'missing_eye_of_ender', empty: frames.missing, total: frames.total };
+    const placed = [];
+    const failed = [];
+    const deadline = Date.now() + timeoutMs;
+    for (const row of frames.rows) {
+      if (row.hasEye !== false) continue;
+      if ((this.inventory[EYE_OF_ENDER] || 0) < 1) break;
+      if (Date.now() >= deadline) break;
+      const center = { x: row.position.x + 0.5, y: row.position.y, z: row.position.z + 0.5 };
+      if (this._pointDistance(center) > 4.5) {
+        try { await this._moveTo(center, 2.0, 8000); } catch (error) { this.log('end_frame_approach_failed', { message: error.message }); }
+      }
+      if (this._pointDistance(center) > 5.0) { failed.push({ position: row.position, error: 'frame_unreachable' }); continue; }
+      const equipped = await this._equipForUse(EYE_OF_ENDER);
+      if (!equipped.ok) { failed.push({ position: row.position, error: equipped.error }); break; }
+      const look = this._lookAt({ x: center.x, y: center.y + 0.5, z: center.z });
+      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+      await delay(120);
+      const held = this.inventorySlots[this.selectedHotbar];
+      await this._queueAuthInput({
+        yaw: look.yaw,
+        pitch: look.pitch,
+        transaction: this._itemUseOnBlockTransaction(held, row.position, 1),
+      });
+      if (await this._awaitFrameEye(row.position, frameTimeoutMs)) placed.push({ ...row.position });
+      else failed.push({ position: row.position, error: 'eye_not_placed' });
+    }
+    const after = this._endFrames({ force: true });
+    const report = {
+      ok: placed.length > 0,
+      filled: placed.length,
+      placed,
+      failed,
+      total: after.total,
+      empty: after.missing,
+      complete: after.complete,
+      frames: { total: after.total, filled: after.filled, missing: after.missing, unknown: after.unknown },
+    };
+    this._frameLast = report;
+    this._refreshNearby();
+    this.log(report.ok ? 'end_frames_filled' : 'end_frames_failed', report);
+    return report;
+  }
+
+  // Muoversi verso una cella che non è un portale (l'ingresso dell'End): se la
+  // raggiungibilità conferma che è fuori dal componente camminabile, il rifiuto
+  // è immediato invece di un timeout di pathfinding.
+  async _approachCell (center, { range = PORTAL_APPROACH_RANGE, timeoutMs = 20000 } = {}) {
+    const cell = { x: Math.floor(center.x), y: Math.floor(center.y), z: Math.floor(center.z) };
+    if (this._reachabilityUsable() && !this.approachReachable(cell, { range, dy: 2 })) {
+      return { ok: false, error: 'portal_unreachable', portal: cell };
+    }
+    try { await this._moveTo(center, range, timeoutMs); }
+    catch (error) { return { ok: false, error: 'move_failed', portal: cell, message: error.message }; }
+    return { ok: true, portal: cell, distance: this._pointDistance(center) };
+  }
+
   // --- N1: azioni sul portale -------------------------------------------------
   // Il portale più vicino fra quelli visti dal censimento N0 (posizione in
   // blocchi): senza un portale caricato non c'è nulla da raggiungere.
-  _nearestPortal () {
-    return this._netherView().portals?.nether?.nearest ?? null;
+  _nearestPortal (kind = 'nether') {
+    return this._netherView().portals?.[kind]?.nearest ?? null;
   }
 
   // Aprire un inventario o accendere un portale sono lo stesso gesto: un click
@@ -1638,9 +2001,9 @@ export class BedrockAdapter {
     return null;
   }
 
-  async _gotoPortal ({ timeoutMs = 45000 } = {}) {
-    const portal = this._nearestPortal();
-    if (!portal?.position) return { ok: false, error: 'no_portal_known', hint: 'nessun blocco `portal` nel raggio del censimento' };
+  async _gotoPortal ({ timeoutMs = 45000, kind = 'nether' } = {}) {
+    const portal = this._nearestPortal(kind);
+    if (!portal?.position) return { ok: false, error: 'no_portal_known', hint: `nessun blocco \`${kind === 'end' ? END_PORTAL : PORTAL_BLOCK}\` nel raggio del censimento` };
     const center = { x: portal.position.x + 0.5, y: portal.position.y, z: portal.position.z + 0.5 };
     if (this._reachabilityUsable() && !this.approachReachable(portal.position, { range: PORTAL_APPROACH_RANGE, dy: 2 })) {
       return { ok: false, error: 'portal_unreachable', portal: { ...portal.position }, distance: portal.distance };
@@ -1657,13 +2020,15 @@ export class BedrockAdapter {
 
   // Entrare è camminare dentro la colonna del portale e aspettare che il server
   // cambi dimensione: la conferma è `this.dimension` (packet `change_dimension`).
-  async _enterPortal ({ timeoutMs = PORTAL_ENTER_TIMEOUT_MS } = {}) {
-    const portal = this._nearestPortal();
-    if (!portal?.position) return { ok: false, error: 'no_portal_known' };
+  // Vale per il Nether (`portal`) e per l'End (`end_portal`): cambia solo il
+  // blocco che il censimento cerca e il nome dell'errore che si vuole leggere.
+  async _enterPortal ({ timeoutMs = PORTAL_ENTER_TIMEOUT_MS, kind = 'nether' } = {}) {
+    const portal = this._nearestPortal(kind);
+    if (!portal?.position) return { ok: false, error: kind === 'nether' ? 'no_portal_known' : 'no_end_portal_known' };
     const before = this.dimension;
     const center = { x: portal.position.x + 0.5, y: portal.position.y, z: portal.position.z + 0.5 };
     if (this._pointDistance(center) > PORTAL_APPROACH_RANGE) {
-      const approach = await this._gotoPortal({});
+      const approach = kind === 'nether' ? await this._gotoPortal({}) : await this._approachCell(center);
       if (!approach.ok) return { ...approach, stage: 'approach' };
     }
     const deadline = Date.now() + timeoutMs;
@@ -2305,6 +2670,33 @@ export class BedrockAdapter {
       const frame = this._findPortalFrame({ radius: PORTAL_FRAME_RADIUS });
       if (frame && !frame.check.lit) o.push({ key: 'light_portal', description: `Light the nether portal frame at ${JSON.stringify(frame.plan.origin)}` });
     }
+    // N7: endgame. Le opzioni nascono dai fatti: quanti occhi si possono
+    // craftare, se un occhio è in mano per lanciarlo, quanti telai vuoti sono
+    // stati letti, e se il portale dell'End è già lì. Un portale completo non
+    // chiede occhi: chiede di essere attraversato.
+    if (this.recipes?.has(BLAZE_POWDER) && (this.inventory[BLAZE_ROD_ITEM] || 0) > 0 && (this.inventory[BLAZE_POWDER] || 0) < ENDER_EYE_FRAME_TOTAL) {
+      o.push({ key: 'craft_blaze_powder', description: `Grind ${this.inventory[BLAZE_ROD_ITEM]} blaze rod(s) into blaze powder (${POWDER_PER_ROD} per rod), one at a time, to make eyes of ender` });
+    }
+    if (this.recipes?.has(EYE_OF_ENDER) && (this.inventory[BLAZE_POWDER] || 0) >= 1 && this._pearlsHeld() >= 1) {
+      o.push({ key: 'craft_ender_eye', description: `Craft eyes of ender from ${this.inventory[BLAZE_POWDER]} blaze powder and ${this._pearlsHeld()} ender pearl(s)` });
+    }
+    const endFrames = this._endFrames();
+    const endPortal = this._nearestPortal('end');
+    if ((this.inventory[EYE_OF_ENDER] || 0) >= 1) {
+      o.push({ key: 'throw_eye_of_ender', description: `Throw an eye of ender (${this.inventory[EYE_OF_ENDER]} left): it flies toward the stronghold, two throws from different spots triangulate it` });
+    }
+    if (this._endReadings().length >= 2 && !(endFrames.total > 0 && endFrames.nearest?.distance <= STRONGHOLD_RADIUS)) {
+      o.push({ key: 'find_stronghold', description: `Walk toward the triangulated stronghold position ${JSON.stringify(this._endView().stronghold?.position ?? null)}` });
+    }
+    if (endFrames.total > 0 && endFrames.missing > 0 && (this.inventory[EYE_OF_ENDER] || 0) >= 1) {
+      o.push({ key: 'fill_end_portal', description: `Place an eye of ender into the empty End portal frames at ${JSON.stringify(endFrames.nearest?.position ?? null)} (${endFrames.missing} missing of ${endFrames.total})` });
+    }
+    if (endPortal?.position) {
+      const reachable = !this._reachabilityUsable() || this.approachReachable(endPortal.position, { range: PORTAL_APPROACH_RANGE, dy: 2 });
+      if (reachable && endPortal.distance != null && endPortal.distance <= PORTAL_APPROACH_RANGE + 1) {
+        o.push({ key: 'enter_end_portal', description: 'Step into the End portal and wait for the dimension change' });
+      }
+    }
     // Recupero post-morte: il loot e gli orb EXP sono rimasti dov'è morto.
     if (this.deathSite && this.position) {
       const p = this.deathSite.position;
@@ -2799,6 +3191,18 @@ export class BedrockAdapter {
         result = await this._avoidGaze({});
       } else if (key === 'equip_pumpkin') {
         result = await this._equipPumpkin();
+      } else if (key === 'craft_blaze_powder') {
+        result = await this._craftPowderFromRods();
+      } else if (key === 'craft_ender_eye') {
+        result = await this._craftEyesOfEnder();
+      } else if (key === 'throw_eye_of_ender') {
+        result = await this._throwEyeOfEnder({});
+      } else if (key === 'find_stronghold') {
+        result = await this._findStronghold({});
+      } else if (key === 'fill_end_portal') {
+        result = await this._fillEndPortal({});
+      } else if (key === 'enter_end_portal') {
+        result = await this._enterPortal({ kind: 'end' });
       } else if (key === 'avoid_lava') {
         result = await this._avoidLava();
       } else if (key === 'goto_portal') {
