@@ -15,7 +15,7 @@ import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, d
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
 import { loadCircuits, planCircuit, circuitSiteBlocked, circuitSafety, forbiddenBlock, checkCircuitSuccess, circuitAnchor, expectedDelayTicks, measureCircuitDelay, TICK_MS, MAX_CIRCUIT_STEPS, MAX_CIRCUIT_COMPONENTS, MIN_CLOCK_TICKS } from './circuits.mjs';
 import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
-import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, isNetherLike, landingHazard, maxFallDepth, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, projectileVelocity, dodgeCandidates, breaksLine, isPiglinType, isBarterPayment, isGoldArmorPiece, goldArmorWorn, piglinNeutral, barterTarget, isBarterReward, BARTER_INGOT, BARTER_RANGE, PIGLIN_BRUTE, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName } from './bedrock-nether.mjs';
+import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, isNetherLike, landingHazard, maxFallDepth, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, projectileVelocity, dodgeCandidates, breaksLine, isPiglinType, goldArmorWorn, piglinNeutral, barterTarget, isBarterReward, BARTER_INGOT, BARTER_RANGE, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName, endermanAimPoint, isPumpkinMask, pumpkinMaskWorn, isEnderPearl, ENDER_PEARL, ENDERMAN_GAZE_TOLERANCE_DEG } from './bedrock-nether.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -1264,7 +1264,9 @@ export class BedrockAdapter {
           source: threat.source,
         }
         : null,
-      enderman: gazedAtEnderman({ from: this.position ?? from, yaw: this._lastYaw, pitch: this._lastPitch, endermans }),
+      // N5: la zucca in testa non cambia dove punta lo sguardo, ma impedisce
+      // all'enderman di accorgersene — la vista riporta i due fatti separati.
+      enderman: gazedAtEnderman({ from: this.position ?? from, yaw: this._lastYaw, pitch: this._lastPitch, endermans, protected: pumpkinMaskWorn(this.armor) }),
       hazard: netherHazard({
         dimension,
         inFire: inFire || headInFire || standingOnFire,        fireDistance: census.hazards.fireDistance,
@@ -1278,6 +1280,11 @@ export class BedrockAdapter {
       piglin: this._barterPiglinView(),
       goldArmor: (() => { const worn = this._wornArmor(); return { worn: goldArmorWorn(worn), neutral: piglinNeutral({ worn }) }; })(),
       barter: this._barterLast ?? null,
+      // N5: `pearls` è il bottino che conta nel Nether, `pumpkin` lo stato della
+      // maschera. Il conteggio delle perle viene dagli slot (l'inventario può
+      // essere riallineato a metà transazione), non dalla mappa di comodo.
+      pearls: this._pearlsHeld(),
+      pumpkin: isPumpkinMask(this.armor?.helmet),
       scanned: census.scanned,
       ready: census.ready !== false,
       at: census.at,
@@ -1289,6 +1296,113 @@ export class BedrockAdapter {
     // `/observe` senza dover rileggere il mondo.
     view.portalFrame = this._lastPortalFrame ?? null;
     return view;
+  }
+
+  // --- N5: disciplina dello sguardo e maschera di zucca ----------------------
+  // Le perle dagli slot: la mappa `this.inventory` è un comodo riassunto che
+  // può restare indietro rispetto a una transazione in corso, e qui si conta
+  // una cosa che vale la pena contare bene.
+  _pearlsHeld () {
+    let total = 0;
+    for (const slot of this.inventorySlots) {
+      if ((slot?.count ?? 0) > 0 && isEnderPearl(this._slotItemName(slot))) total += slot.count;
+    }
+    return total;
+  }
+
+  _pumpkinInInventory () {
+    for (let index = 0; index < this.inventorySlots.length; index++) {
+      const slot = this.inventorySlots[index];
+      const name = this._slotItemName(slot);
+      if ((slot?.count ?? 0) > 0 && isPumpkinMask(name)) return { index, name };
+    }
+    return null;
+  }
+
+  // Candidati di fuga dello sguardo: due lati e il dietro, tutti col pitch
+  // verso il basso, ordinati per quanto lasciano gli occhi fuori dall'asse di
+  // visione. Non è una direzione di movimento ma solo di testa — muoversi
+  // mentre si è visti sarebbe il modo peggiore di risolvere il problema.
+  _gazeEscapeCandidates (enderman) {
+    const from = this.position ?? null;
+    const position = enderman?.position;
+    if (!from || !position) return [];
+    const torso = endermanAimPoint(position);
+    if (!torso) return [];
+    const base = this._lookAt({ x: torso.x, y: torso.y, z: torso.z });
+    const angles = [base.yaw + 120, base.yaw - 120, base.yaw + 180];
+    return angles
+      .map(yaw => ({ yaw, pitch: Math.max(base.pitch, 15) }))
+      .map(candidate => ({
+        ...candidate,
+        angle: gazedAtEnderman({ from, yaw: candidate.yaw, pitch: candidate.pitch, endermans: [enderman] })?.angleDeg ?? null,
+      }))
+      .filter(candidate => candidate.angle == null || candidate.angle > ENDERMAN_GAZE_TOLERANCE_DEG)
+      .sort((a, b) => (b.angle ?? 0) - (a.angle ?? 0));
+  }
+
+  // Smettere di fissare gli occhi: non basta volgere lo sguardo, si verifica
+  // dalla percezione che l'angolo sia uscito dalla tolleranza (con la zucca in
+  // testa invece non c'è nulla da evitare).
+  async _avoidGaze ({ timeoutMs = 3000 } = {}) {
+    if (!this.spawned) return { ok: false, error: 'not_ready' };
+    const deadline = Date.now() + timeoutMs;
+    const current = () => this._netherView({ force: true }).enderman ?? null;
+    const start = current();
+    if (!start) return { ok: false, error: 'no_enderman' };
+    if (start.protected) return { ok: true, already: false, protected: true, enderman: start };
+    if (start.aimingAtEyes !== true) return { ok: true, already: true, enderman: start };
+    const candidates = this._gazeEscapeCandidates(start);
+    if (!candidates.length) return { ok: false, error: 'no_gaze_escape', enderman: start };
+    const tried = [];
+    for (const candidate of candidates) {
+      if (Date.now() > deadline) break;
+      await this._queueAuthInput({ yaw: candidate.yaw, pitch: candidate.pitch });
+      await delay(150);
+      const after = current();
+      tried.push({ yaw: +candidate.yaw.toFixed(1), pitch: +candidate.pitch.toFixed(1), gazed: after?.gazed ?? null });
+      if (!after || after.gazed !== true) {
+        this.log('gaze_avoided', { yaw: +candidate.yaw.toFixed(1), pitch: +candidate.pitch.toFixed(1), tried });
+        return { ok: true, already: false, enderman: after, tried };
+      }
+    }
+    this.log('gaze_not_cleared', { tried });
+    return { ok: false, error: 'gaze_not_cleared', enderman: current(), tried };
+  }
+
+  // La zucca in testa è l'unica difesa dallo sguardo dell'enderman. Si equipaggia
+  // come un elmo, ma con un metodo suo perché `_armorSlotFor` non riconosce
+  // `carved_pumpkin` (nessun suffisso `_helmet`): senza questo la zucca
+  // resterebbe in inventario per sempre.
+  async _equipPumpkin () {
+    if (isPumpkinMask(this.armor?.helmet)) return { ok: true, already: true, item: this.armor.helmet };
+    const held = this._pumpkinInInventory();
+    if (!held) return { ok: false, error: 'missing_pumpkin' };
+    const slot = this.inventorySlots[held.index];
+    const info = this._invSlotAsSource(held.index);
+    const take = await this._sendStackRequest([{
+      type_id: 'take', legacy_type_id: 0, count: 1,
+      source: this._slotInfo(info.container, info.slot, slot.stack_id || 0),
+      destination: this._slotInfo('cursor', 0, 0),
+    }]).catch(() => null);
+    if (!take || (String(take.status) !== 'ok' && take.status !== 0)) return { ok: false, error: 'pumpkin_equip_failed' };
+    this._applyStackResponse(take);
+    const cursorStack = this._responseSlotStack(take, 'cursor', 0) ?? 0;
+    const place = await this._sendStackRequest([{
+      type_id: 'place', legacy_type_id: 1, count: 1,
+      source: this._slotInfo('cursor', 0, cursorStack),
+      destination: this._slotInfo('armor', 0, 0),
+    }]).catch(() => null);
+    if (!place || (String(place.status) !== 'ok' && place.status !== 0)) {
+      await this._returnCursorToInventory().catch(() => {});
+      return { ok: false, error: 'pumpkin_equip_failed' };
+    }
+    this._applyStackResponse(place, { networkId: slot.network_id });
+    this._cursor = null;
+    this.armor.helmet = slot.name;
+    this._refreshInventory();
+    this.log('pumpkin_equipped', { item: slot.name, status: place.status });
+    return { ok: true, already: false, item: slot.name };
   }
 
   // --- N1: azioni sul portale -------------------------------------------------
@@ -1934,6 +2048,16 @@ export class BedrockAdapter {
       const eta = Number.isFinite(dodge.threat.timeToImpactMs) ? `, impact in ${Math.round(dodge.threat.timeToImpactMs)} ms` : '';
       o.push({ key: 'dodge_projectile', description: `Step out of the line of the ${dodge.threat.type ?? 'projectile'} at ${JSON.stringify({ x: Math.round(dodge.threat.position.x), y: Math.round(dodge.threat.position.y), z: Math.round(dodge.threat.position.z) })} (${dodge.threat.distance} blocks away${eta}) towards ${JSON.stringify({ x: cell.x, y: cell.y, z: cell.z })}` });
     }
+    // N5: uno sguardo fisso sugli occhi si stacca dalla linea, non si ignora.
+    const gaze = this._netherView().enderman;
+    if (gaze?.aimingAtEyes === true && gaze.protected !== true) {
+      o.push({ key: 'avoid_enderman_gaze', description: `Stop looking at the ${gaze.type} at ${JSON.stringify({ x: Math.round(gaze.position.x), y: Math.round(gaze.position.y), z: Math.round(gaze.position.z) })} (${gaze.distance} blocks away, ${gaze.angleDeg}° off the eyes)` });
+    }
+    // N5: la zucca in testa è la difesa passiva dallo sguardo.
+    const pumpkin = this._pumpkinInInventory();
+    if (pumpkin && !isPumpkinMask(this.armor?.helmet)) {
+      o.push({ key: 'equip_pumpkin', description: `Wear the ${pumpkin.name} from inventory as a mask (endermen ignore a masked gaze)` });
+    }
     // Rifugio: rientra a casa (spawn o HOME_WAYPOINT) quando è lontana o in pericolo.
     if (this.home && this.position) {
       const homeDist = Math.hypot(this.home.x - this.position.x, this.home.z - this.position.z);
@@ -2502,6 +2626,10 @@ export class BedrockAdapter {
         result = await this._flee();
       } else if (key === 'dodge_projectile') {
         result = await this._dodgeProjectile({});
+      } else if (key === 'avoid_enderman_gaze') {
+        result = await this._avoidGaze({});
+      } else if (key === 'equip_pumpkin') {
+        result = await this._equipPumpkin();
       } else if (key === 'avoid_lava') {
         result = await this._avoidLava();
       } else if (key === 'goto_portal') {
@@ -6854,7 +6982,12 @@ export class BedrockAdapter {
   // (l'azione attack_<tipo> copre entrambi).
   _entityOfType (type) {
     const wanted = normalizeEntityType(type);
-    const hostile = this._hostiles().find(e => e.type === wanted);
+    // Le righe di `_hostiles`/`_farmAnimalOfType` portano il tipo come arriva
+    // dal server, che su Bedrock può essere nudo (`zombie`) o con namespace
+    // (`minecraft:enderman`): confrontare i nomi grezzi rendeva un
+    // `attack_enderman` impossibile contro un server che manda il namespace.
+    const matches = entity => normalizeEntityType(entity.type) === wanted;
+    const hostile = this._hostiles().find(matches);
     if (hostile) return hostile;
     return this._farmAnimalOfType(wanted) || null;
   }
@@ -6908,7 +7041,11 @@ export class BedrockAdapter {
     const held = this.inventorySlots[this.selectedHotbar] || { network_id: 0 };
     let runtimeId;
     try { runtimeId = BigInt(entity.runtimeId); } catch { return false; }
-    const centerY = entity.position.y + entityHeight(entity.type) * 0.5;
+    // N5: di un enderman si colpisce il torso, mai gli occhi — è la stessa
+    // disciplina della mira in `_combat`, applicata al punto di click.
+    const centerY = isEndermanType(entity.type)
+      ? endermanAimPoint(entity.position).y
+      : entity.position.y + entityHeight(entity.type) * 0.5;
     this.client.write('inventory_transaction', {
       transaction: {
         legacy: { legacy_request_id: 0 },
@@ -6990,11 +7127,12 @@ export class BedrockAdapter {
         continue;
       }
       if (!weapon && !weaponChecked) { weapon = await this._selectWeapon(); weaponChecked = true; }
-      const aim = this._lookAt({
-        x: entity.position.x,
-        y: entity.position.y + entityHeight(entity.type) * 0.5,
-        z: entity.position.z,
-      });
+      // N5: di un enderman si mira il torso, mai gli occhi — è la mira a
+      // decidere se lo scontro inizia con un teletrasporto addosso.
+      const aimY = isEndermanType(type)
+        ? endermanAimPoint(entity.position).y
+        : entity.position.y + entityHeight(entity.type) * 0.5;
+      const aim = this._lookAt({ x: entity.position.x, y: aimY, z: entity.position.z });
       await this._queueAuthInput({ yaw: aim.yaw, pitch: aim.pitch });
       await delay(120);
       const pre = this._lockedTargetState(lockedId);

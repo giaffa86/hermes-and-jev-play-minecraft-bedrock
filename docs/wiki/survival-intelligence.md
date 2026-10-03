@@ -75,7 +75,7 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**859 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**870 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
 
 - **Fluids in the survival layer (M0, 2026-10-03)**: the governor vocabulary grew
@@ -193,6 +193,7 @@ off. Live: `/observe.nearby` now reports `potatoes growth 7/7/6/6, mature true/f
 `carrots growth 7`; `harvest_potatoes` fails in 0.01 s with `drop_unreachable`
 (the only fields are outside the bot's walkable component), `harvest_wheat` with
 `no_crop_found`.
+- **Ender gaze (N5, 2026-10-03)**: the survival layer reads `nether.enderman.gazed`, and that flag is now disciplined twice over: the aim of a fight is the torso (`endermanAimPoint`, 1.45 vs eyes at 2.55) and `avoid_enderman_gaze` (`escape`/`shelter`) turns the head off the eye axis, verified from perception; `equip_pumpkin` (`heal`/`shelter`) is the passive answer — with a mask the bot may look at the eyes and `gazed` stays false, so the risk rule does not fire for a danger that no longer exists.
 - **Bartering (N4, 2026-10-03)**: a new `barter` intent in the vocabulary and
   `barter_piglin → ['barter', 'collect']`. No rule was needed: the value here is
   the *removal* of a temptation — `piglin` and `piglin_brute` are in

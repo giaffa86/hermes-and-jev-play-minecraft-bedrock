@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BedrockAdapter } from '../bedrock-adapter.mjs';
-import { planPortalFrame } from '../bedrock-nether.mjs';
+import { planPortalFrame, endermanAimPoint, ENDERMAN_EYE_HEIGHT, ENDERMAN_GAZE_TOLERANCE_DEG } from '../bedrock-nether.mjs';
 
 // Mondo finto: quattro celle d'aria sopra un pavimento di pietre, più le celle
 // passate esplicitamente. `findBlocks` filtra per nome (o suffisso `_<nome>`,
@@ -742,4 +742,196 @@ test('_netherView reports the piglin and the last barter', async () => {
   assert.equal(after.barter.ok, true);
   assert.deepEqual(after.barter.drops, ['ender_pearl']);
   assert.ok(after.barter.at, 'il resoconto è timbrato');
+});
+
+// N5: un enderman davanti agli occhi del bot (piedi a 70.07 → occhi a 72.62,
+// come la testa del bot a 71 + 1.62) e, se serve, una zucca in inventario.
+function gazeAdapter ({
+  position = { x: 0.5, y: 70.07, z: 2.0 },
+  type = 'minecraft:enderman',
+  armor = {},
+  items = {},
+} = {}) {
+  const adapter = netherAdapter();
+  adapter.entities.set('31', { runtimeId: '31', type, kind: 'mob', position: { ...position }, lastAt: Date.now() });
+  adapter.armor = { helmet: null, chestplate: null, leggings: null, boots: null, ...armor };
+  adapter.inventory = { ...items };
+  adapter.inventorySlots = Object.entries(items).map(([name, count], i) => ({ network_id: 100 + i, name, count, stack_id: i }));
+  adapter.selectedHotbar = 0;
+  adapter._inputs = [];
+  adapter._queueAuthInput = async ({ yaw, pitch }) => {
+    adapter._lastYaw = yaw;
+    adapter._lastPitch = pitch;
+    adapter._inputs.push({ yaw, pitch });
+  };
+  return adapter;
+}
+
+test('_netherView reports the enderman gaze, the mask state and the pearls held', () => {
+  const adapter = gazeAdapter({ items: { ender_pearl: 2, carved_pumpkin: 1 } });
+  const view = adapter._netherView();
+  assert.equal(view.enderman.type, 'minecraft:enderman');
+  assert.equal(view.enderman.aimingAtEyes, true);
+  assert.equal(view.enderman.gazed, true);
+  assert.equal(view.enderman.protected, false);
+  assert.equal(view.pearls, 2);
+  assert.equal(view.pumpkin, false);
+
+  // La zucca in testa non sposta lo sguardo: punta gli occhi ma non sveglia.
+  adapter.armor.helmet = 'carved_pumpkin';
+  const masked = adapter._netherView();
+  assert.equal(masked.pumpkin, true);
+  assert.equal(masked.enderman.aimingAtEyes, true);
+  assert.equal(masked.enderman.gazed, false);
+});
+
+test('_pearlsHeld counts the ender pearls in the slots, not the summary map', () => {
+  const adapter = gazeAdapter({ items: { ender_pearl: 3, ender_eye: 1, dirt: 5 } });
+  assert.equal(adapter._pearlsHeld(), 3);
+  // Un secondo stack nella hotbar conta due volte: si contano gli slot.
+  adapter.inventorySlots.push({ network_id: 200, name: 'ender_pearl', count: 2, stack_id: 9 });
+  assert.equal(adapter._pearlsHeld(), 5);
+  // Uno slot vuoto non conta nemmeno col nome giusto.
+  adapter.inventorySlots.push({ network_id: 201, name: 'ender_pearl', count: 0, stack_id: 10 });
+  assert.equal(adapter._pearlsHeld(), 5);
+  assert.equal(gazeAdapter({ items: {} })._pearlsHeld(), 0);
+});
+
+test('_gazeEscapeCandidates turns the head away, never further into the line', () => {
+  const adapter = gazeAdapter();
+  const enderman = adapter._netherView().enderman;
+  const candidates = adapter._gazeEscapeCandidates(enderman);
+  assert.equal(candidates.length, 3);
+  for (const candidate of candidates) {
+    assert.ok(candidate.angle === null || candidate.angle > ENDERMAN_GAZE_TOLERANCE_DEG, `angolo ${candidate.angle}`);
+    assert.ok(candidate.pitch >= 15, 'il pitch guarda in basso');
+  }
+  const angles = candidates.map(candidate => candidate.angle);
+  assert.deepEqual(angles, [...angles].sort((a, b) => b - a));
+  // Senza enderman o senza posizione non si inventa una direzione.
+  assert.deepEqual(adapter._gazeEscapeCandidates(null), []);
+  assert.deepEqual(adapter._gazeEscapeCandidates({ type: 'enderman', position: null }), []);
+});
+
+test('_avoidGaze stops the gaze and verifies it from perception', async () => {
+  const adapter = gazeAdapter();
+  const result = await adapter._avoidGaze({});
+  assert.equal(result.ok, true);
+  assert.equal(result.already, false);
+  assert.deepEqual(result.tried.map(t => t.gazed), [false]);
+  assert.equal(adapter._inputs.length, 1, 'una sola rotazione basta');
+  assert.notEqual(adapter._lastYaw, 0);
+  // La percezione dopo la rotazione non vede più gli occhi, e la decisione
+  // successiva non ripropone l'azione.
+  assert.equal(adapter._netherView().enderman.gazed, false);
+  const again = await adapter._avoidGaze({});
+  assert.equal(again.ok, true);
+  assert.equal(again.already, true);
+  assert.equal(adapter._inputs.length, 1, 'già sistemato: nessun altro movimento');
+});
+
+test('_avoidGaze refuses politely: nothing to dodge, masked, or gaze stuck', async () => {
+  const quiet = netherAdapter();
+  assert.deepEqual(await quiet._avoidGaze({}), { ok: false, error: 'no_enderman' });
+
+  const masked = gazeAdapter({ armor: { helmet: 'carved_pumpkin' } });
+  const protectedResult = await masked._avoidGaze({});
+  assert.equal(protectedResult.ok, true);
+  assert.equal(protectedResult.protected, true);
+  assert.equal(masked._inputs.length, 0, 'con la maschera non c è nulla da fare');
+
+  // Un input che non cambia l orientamento (server che ignora la rotazione):
+  // non si dichiara riuscito, si prova ogni candidato e si fallisce tipizzati.
+  const stuck = gazeAdapter();
+  stuck._queueAuthInput = async () => {};
+  const notCleared = await stuck._avoidGaze({ timeoutMs: 1200 });
+  assert.equal(notCleared.ok, false);
+  assert.equal(notCleared.error, 'gaze_not_cleared');
+  assert.equal(notCleared.tried.length, 3);
+  for (const attempt of notCleared.tried) assert.equal(attempt.gazed, true);
+});
+
+test('_equipPumpkin wears the mask in the helmet slot and reports what happened', async () => {
+  const adapter = gazeAdapter({ items: { carved_pumpkin: 1, dirt: 4 } });
+  const writes = [];
+  adapter._invSlotAsSource = () => ({ container: 'inventory', slot: 0 });
+  adapter._slotInfo = (container, slot, stack) => ({ container_id: container, slot, stack_id: stack });
+  adapter._returnCursorToInventory = async () => {};
+  adapter._applyStackResponse = () => {};
+  adapter._responseSlotStack = () => 0;
+  adapter._refreshInventory = () => {};
+  adapter._sendStackRequest = async requests => { writes.push(requests); return { status: 'ok' }; };
+
+  const result = await adapter._equipPumpkin();
+  assert.deepEqual(result, { ok: true, already: false, item: 'carved_pumpkin' });
+  assert.equal(adapter.armor.helmet, 'carved_pumpkin');
+  assert.equal(writes.length, 2);
+  assert.equal(writes[0][0].type_id, 'take');
+  assert.equal(writes[1][0].type_id, 'place');
+  assert.equal(writes[1][0].destination.container_id, 'armor');
+  assert.equal(writes[1][0].destination.slot, 0, 'la zucca va sull elmo (slot 0)');
+
+  // Già in testa: nessuna transazione.
+  const again = await adapter._equipPumpkin();
+  assert.deepEqual(again, { ok: true, already: true, item: 'carved_pumpkin' });
+  assert.equal(writes.length, 2);
+
+  // Senza zucca in inventario: rifiuto tipizzato prima di qualsiasi pacchetto.
+  const bare = gazeAdapter({ items: { dirt: 1, pumpkin_pie: 2 } });
+  bare._sendStackRequest = async () => { throw new Error('non deve essere chiamato'); };
+  assert.deepEqual(await bare._equipPumpkin(), { ok: false, error: 'missing_pumpkin' });
+});
+
+test('the gaze options are offered only when they can change something', () => {
+  const exposed = gazeAdapter({ items: { carved_pumpkin: 1 } });
+  const keys = exposed.options().map(option => option.key);
+  assert.equal(keys.includes('avoid_enderman_gaze'), true);
+  assert.equal(keys.includes('equip_pumpkin'), true);
+  const description = exposed.options().find(option => option.key === 'avoid_enderman_gaze').description;
+  assert.match(description, /Stop looking at the minecraft:enderman/);
+
+  // Con la maschera già in testa la fuga non serve e la zucca non è più un opzione.
+  const masked = gazeAdapter({ armor: { helmet: 'carved_pumpkin' }, items: { carved_pumpkin: 1 } });
+  const maskedKeys = masked.options().map(option => option.key);
+  assert.equal(maskedKeys.includes('avoid_enderman_gaze'), false);
+  assert.equal(maskedKeys.includes('equip_pumpkin'), false);
+
+  // Senza zucca in inventario resta solo la fuga.
+  const noPumpkin = gazeAdapter();
+  const bareKeys = noPumpkin.options().map(option => option.key);
+  assert.equal(bareKeys.includes('avoid_enderman_gaze'), true);
+  assert.equal(bareKeys.includes('equip_pumpkin'), false);
+
+  // Sguardo altrove: nessuna delle due.
+  const away = gazeAdapter();
+  away._lastYaw = 180;
+  const awayKeys = away.options().map(option => option.key);
+  assert.equal(awayKeys.includes('avoid_enderman_gaze'), false);
+});
+
+test('_combat aims an enderman at the torso, never at the eyes', async () => {
+  const adapter = gazeAdapter();
+  const enderman = adapter.entities.get('31');
+  let hits = 0;
+  adapter._selectWeapon = async () => null;
+  adapter._attackEntity = () => { hits++; enderman.health = 0; return true; };
+  const result = await adapter._combat('enderman', 4000);
+  assert.equal(result.ok, true);
+  assert.equal(result.killed, true);
+  assert.equal(hits, 1);
+  assert.equal(adapter._inputs.length, 1);
+  // Il pitch dell unico input è esattamente quello del torso...
+  const torsoAim = adapter._lookAt(endermanAimPoint(enderman.position));
+  assert.ok(Math.abs(adapter._inputs[0].pitch - torsoAim.pitch) < 1e-9, 'mira al torso');
+  // ...e non quello degli occhi.
+  const eyeAim = adapter._lookAt({ x: enderman.position.x, y: enderman.position.y + ENDERMAN_EYE_HEIGHT, z: enderman.position.z });
+  assert.notEqual(adapter._inputs[0].pitch, eyeAim.pitch);
+  // Il punto di click è lo stesso torso: due strade, una sola mira.
+  const writes = [];
+  adapter.client = { write: (name, packet) => writes.push({ name, packet }), entityId: '1' };
+  adapter._attackEntity = BedrockAdapter.prototype._attackEntity;
+  adapter._attackEntity(enderman);
+  const transaction = writes.find(w => w.name === 'inventory_transaction').packet.transaction.transaction_data;
+  assert.equal(transaction.action_type, 'attack');
+  assert.equal(transaction.click_pos.y, endermanAimPoint(enderman.position).y);
 });

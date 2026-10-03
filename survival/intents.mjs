@@ -60,6 +60,11 @@ const KEY_INTENTS = {
   build_nether_hub: ['build', 'shelter'],
   // Nether (N4): pagare un piglin con l'oro in mano e raccogliere il pegno.
   barter_piglin: ['barter', 'collect'],
+  // Nether (N5): staccare gli occhi da un enderman è una fuga (la regola
+  // `gazed_at_enderman` chiede `escape`/`shelter`); la zucca è preparazione, e
+  // `heal` perché è comunque un pezzo di armatura.
+  avoid_enderman_gaze: ['escape', 'shelter'],
+  equip_pumpkin: ['heal', 'shelter'],
 };
 
 const PREFIX_INTENTS = [

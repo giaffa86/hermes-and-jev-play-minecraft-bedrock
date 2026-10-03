@@ -17,6 +17,8 @@ import {
   projectileVelocity, perpendicularDirs, lateralOffset, breaksLine, dodgeCandidates, DODGE_DISTANCE,
   isPiglinType, isBarterPayment, isGoldArmorPiece, goldArmorWorn, piglinNeutral,
   isBarterReward, barterTarget, BARTER_INGOT, PIGLIN_TYPES,
+  endermanAimPoint, aimsAtEndermanEyes, isPumpkinMask, pumpkinMaskWorn, isEnderPearl,
+  ENDERMAN_TORSO_HEIGHT, ENDERMAN_EYE_HEIGHT,
 } from '../bedrock-nether.mjs';
 
 const at = (x, y, z) => ({ x, y, z });
@@ -558,4 +560,67 @@ test('barterTarget picks the nearest adult piglin and reports why it cannot bart
   assert.equal(mixed.target.distance, 3);
   assert.equal(mixed.target.runtimeId, '42', 'i campi extra della riga viaggiano con essa');
   assert.equal(BARTER_INGOT, 'gold_ingot');
+});
+
+test('gazedAtEnderman separates aiming at the eyes from being noticed', () => {
+  const from = at(0, 64, 0);
+  const endermans = [{ type: 'minecraft:enderman', position: at(0, 64 - 2.55, 3) }];
+  const seen = gazedAtEnderman({ from, yaw: 0, pitch: 0, endermans });
+  assert.equal(seen.gazed, true);
+  assert.equal(seen.aimingAtEyes, true);
+  assert.equal(seen.protected, false);
+
+  // Con la zucca in testa si punta gli occhi *e* non si viene notati: sono due
+  // fatti diversi e la regola di rischio legge solo il secondo.
+  const masked = gazedAtEnderman({ from, yaw: 0, pitch: 0, endermans, protected: true });
+  assert.equal(masked.aimingAtEyes, true);
+  assert.equal(masked.protected, true);
+  assert.equal(masked.gazed, false);
+  assert.equal(masked.angleDeg, seen.angleDeg);
+
+  // Sguardo voltato: si punta qualcosa d'altro e nessuno dei due fatti è vero.
+  const away = gazedAtEnderman({ from, yaw: 180, pitch: 0, endermans, protected: true });
+  assert.equal(away.aimingAtEyes, false);
+  assert.equal(away.gazed, false);
+
+  // Orientamento ignoto: `null` su entrambi, mai un'accusa inventata.
+  const blind = gazedAtEnderman({ from, yaw: null, pitch: null, endermans });
+  assert.equal(blind.gazed, null);
+  assert.equal(blind.aimingAtEyes, null);
+});
+
+test('endermanAimPoint stays under the eyes and aimsAtEndermanEyes says so', () => {
+  const feet = at(0, 63, 0);
+  const torso = endermanAimPoint(feet);
+  assert.deepEqual(torso, at(0, 63 + ENDERMAN_TORSO_HEIGHT, 0));
+  assert.equal(endermanAimPoint(null), null);
+  assert.equal(endermanAimPoint(feet, 0.5).y, 63.5);
+
+  // L'invariante che conta: il punto di mira di un enderman non è mai
+  // all'altezza degli occhi, e la tolleranza è più stretta della distanza fra
+  // torso e occhi.
+  assert.equal(aimsAtEndermanEyes({ aimY: torso.y, position: feet }), false);
+  assert.equal(aimsAtEndermanEyes({ aimY: feet.y + ENDERMAN_EYE_HEIGHT, position: feet }), true);
+  assert.equal(aimsAtEndermanEyes({ aimY: feet.y + ENDERMAN_EYE_HEIGHT + 0.5, position: feet }), false);
+  assert.equal(aimsAtEndermanEyes({ aimY: feet.y + ENDERMAN_EYE_HEIGHT + 0.3, position: feet }), true);
+  // Ignoto non è colpevole.
+  assert.equal(aimsAtEndermanEyes({ aimY: null, position: feet }), null);
+  assert.equal(aimsAtEndermanEyes({ aimY: 64, position: null }), null);
+  assert.equal(aimsAtEndermanEyes(), null);
+});
+
+test('pumpkin masks and ender pearls are recognised by name', () => {
+  assert.equal(isPumpkinMask('carved_pumpkin'), true);
+  assert.equal(isPumpkinMask('minecraft:pumpkin'), true);
+  assert.equal(isPumpkinMask('pumpkin_pie'), false);
+  assert.equal(isPumpkinMask(null), false);
+  assert.equal(pumpkinMaskWorn({ helmet: 'carved_pumpkin' }), true);
+  assert.equal(pumpkinMaskWorn({ helmet: 'minecraft:carved_pumpkin' }), true);
+  assert.equal(pumpkinMaskWorn({ helmet: 'diamond_helmet' }), false);
+  assert.equal(pumpkinMaskWorn({}), false);
+  assert.equal(pumpkinMaskWorn(null), false);
+  assert.equal(isEnderPearl('ender_pearl'), true);
+  assert.equal(isEnderPearl('minecraft:ender_pearl'), true);
+  assert.equal(isEnderPearl('ender_eye'), false);
+  assert.equal(isEnderPearl(null), false);
 });

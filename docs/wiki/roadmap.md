@@ -253,24 +253,27 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   [`raw/GOAL_ACHIEVEMENT_MINECRAFT.txt`](../raw/GOAL_ACHIEVEMENT_MINECRAFT.txt).
 - **Nether / End** — **N0 (awareness + hazards), N1 (portal reach/build/light/
   enter), N2 (nether survival: non-flammable hub, dimension-aware fall,
-  hazardous landings) and N3 (dodging an incoming projectile sideways, never into
-  lava) implemented and unit-tested; N0 live-checked 03/10, N1–N3 live only for
-  the typed refusals**: portal/fire/magma/spawner census (`GET
-  /observe.portals`), projectile tracking (`projectileThreat`/
-  `projectileIncoming`/`projectileVelocity`), enderman gaze sensing
-  (`gazedAtEnderman`), `waterEvaporates`/`bedsExplode`, seven governor rules, the
-  four portal actions (`goto_portal`, `build_portal`, `light_portal`,
-  `enter_portal`) with pure frame geometry, the survival primitives
-  (`landingHazard`/`maxFallDepth`/`isFlammableBlock`/`pickHubBlock`/`shellCells`/
-  `netherHubPlan`, shared shell geometry with `build_hut`, `build_nether_hub`
-  remembered as `home`) and the fireball dodge (`perpendicularDirs`/
-  `breaksLine`/`dodgeCandidates`, action `dodge_projectile`) and N4 (bartering:
-  `barterTarget`/`piglinNeutral`/gold vocabulary, `_equipItemInHotbar` shared with
-  feeding, action `barter_piglin` verified by a fresh drop, piglins removed from
-  the attack options). Still missing: the
-  live happy paths (the base has no obsidian, no ghast and no piglin), gaze
-  *discipline*, fortress/stronghold/End actions and a `bossDefeated`
-  verifier. Roadmap in
+  hazardous landings), N3 (dodging an incoming projectile sideways, never into
+  lava), N4 (bartering with a piglin, never hitting one) and N5 (gaze
+  discipline, pumpkin mask, torso aim, pearls) implemented and unit-tested; N0
+  live-checked 03/10, N1–N5 live only for the typed refusals**: the
+  portal/fire/magma/spawner census (`GET /observe.portals`), projectile tracking
+  (`projectileThreat`/`projectileIncoming`/`projectileVelocity`), gaze sensing
+  (`gazedAtEnderman` now separating `aimingAtEyes` from `gazed`),
+  `waterEvaporates`/`bedsExplode`, seven governor rules, the four portal actions
+  (`goto_portal`, `build_portal`, `light_portal`, `enter_portal`) with pure frame
+  geometry, the survival primitives (`landingHazard`/`maxFallDepth`/
+  `isFlammableBlock`/`pickHubBlock`/`shellCells`/`netherHubPlan`, shared shell
+  geometry with `build_hut`, `build_nether_hub` remembered as `home`), the
+  fireball dodge (`perpendicularDirs`/`breaksLine`/`dodgeCandidates`, action
+  `dodge_projectile`), the bartering chain (`barterTarget`/`piglinNeutral`/gold
+  vocabulary, `_equipItemInHotbar` shared with feeding, action `barter_piglin`
+  verified by a fresh drop, piglins removed from the attack vocabulary) and the
+  gaze discipline (`endermanAimPoint`/`aimsAtEndermanEyes`/`isPumpkinMask`,
+  `avoid_enderman_gaze`, `equip_pumpkin`, torso aim in `_combat`, `pearls` in the
+  view). Still missing: the live happy paths (the base has no obsidian, no ghast,
+  no piglin and no enderman), fortress/stronghold/End actions and a
+  `bossDefeated` verifier. Roadmap in
   [nether](nether.md) / [`raw/NETHER_ROADMAP.md`](../raw/NETHER_ROADMAP.md). The
   progression chain (incl. the fixed `beat_the_dragon`) is already in
   `knowledge/progression.json`.
@@ -354,8 +357,8 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    reach/build/light/enter), N2 done (nether survival: non-flammable hub,
    dimension-aware fall, hazardous landings), N3 done (dodge an incoming
    projectile sideways, never into lava) and N4 done (bartering with a piglin,
-   never hitting one), all unit-tested and live-checked for the
-   refusals; next is N5 (enderman gaze discipline), N6/N7
+   never hitting one) and N5 done (gaze discipline, pumpkin mask, torso aim,
+   pearls), all unit-tested and live-checked for the refusals; next is N6/N7
    (fortress, blaze rods, End).
 10. **Exploration** (spec in [exploration](exploration.md)): M1 core, M2
     (route replay) and M4 (observable targets) are implemented and live-exercised
@@ -420,3 +423,6 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 - [redstone](redstone.md) — redstone sensing/placement and primitive circuit automation.
 - [goal-achievement](goal-achievement.md) — Goal Contract, task graph, semantic goals, 5 progressive benchmarks.
 - [nether](nether.md) — Nether/End survival, ghasts, piglins, endermen, portals.
+
+  see below), N5 is done too (gaze discipline and pumpkin mask), and the next slice is N6
+  (fortress and blaze rods).

@@ -79,6 +79,8 @@ test('option keys map to the shared intent vocabulary', () => {
   assert.deepEqual(optionIntents('build_nether_hub'), ['build', 'shelter']);
   assert.deepEqual(optionIntents('dodge_projectile'), ['escape', 'travel']);
   assert.deepEqual(optionIntents('barter_piglin'), ['barter', 'collect']);
+  assert.deepEqual(optionIntents('avoid_enderman_gaze'), ['escape', 'shelter']);
+  assert.deepEqual(optionIntents('equip_pumpkin'), ['heal', 'shelter']);
   assert.deepEqual(optionIntents('place_crafting_table'), ['build']);
   assert.deepEqual(optionIntents('goto_waypoint'), ['travel']);
   assert.deepEqual(optionIntents('wait'), ['wait']);

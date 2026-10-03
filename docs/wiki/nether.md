@@ -8,10 +8,11 @@ stronghold, open the End portal, and (stretch) defeat the **Ender Dragon**.
 
 Status: **N0 (awareness and hazards), N1 (portal reach/build/light/enter), N2
 (nether survival: non-flammable hub, dimension-aware fall, hazardous landings),
-N3 (dodging an incoming projectile sideways, never into lava) and N4 (bartering
-with a piglin, never hitting one) implemented and unit-tested; all five have a
-live round (03/10/2026), N1–N4 partial because the live world is an Overworld
-room with no obsidian, no loaded portal, no gun-armed mob and no piglin; N5–N7
+N3 (dodging an incoming projectile sideways, never into lava), N4 (bartering
+with a piglin, never hitting one) and N5 (gaze discipline, pumpkin mask, torso
+aim, pearls) implemented and unit-tested; all six have a live round
+(03/10/2026), N1–N5 partial because the live world is an Overworld room with no
+obsidian, no loaded portal, no gun-armed mob, no piglin and no enderman; N6–N7
 still spec only**.
 `knowledge/progression.json` now has the full chain and the
 `beat_the_dragon → enter_nether` contradiction is fixed: `beat_the_dragon` is a
@@ -79,89 +80,11 @@ New item tags: `gold_ingots`, `obsidian`, `blaze_rods`, `blaze_powder`,
 | N2 | Nether survival | fire/lava avoidance (fluids), minimal nether hub, fall handling (no water), never sleep/place water. | ◑ implemented + live partial (03/10/2026), see below |
 | N3 | Ghast avoidance | track fireballs, dodge perpendicular to the trajectory (or deflect), never flee into lava. | ◑ implemented + live partial (03/10/2026), see below |
 | N4 | Piglin bartering | wear gold armour for neutrality; `barter_piglin` (gold in hand → `item_use_on_entity` → collect drops); never hit piglins. | ◑ implemented + live partial (03/10/2026), see below |
-| N5 | Ender gaze & pearls | never aim at enderman eyes; pumpkin option; kill at body/feet; collect pearls. | ❌ not implemented |
+| N5 | Ender gaze & pearls | never aim at enderman eyes; pumpkin option; kill at body/feet; collect pearls. | ◑ implemented + live partial (03/10/2026), see below |
 | N6 | Fortress & blaze rods | find the fortress (exploration), fight blazes with cover, collect 7 rods. | ❌ not implemented |
 | N7 | Endgame | eyes of ender, stronghold via thrown eyes, fill/enter the portal, (stretch) dragon. | ❌ not implemented |
 
 ## N0 — Nether awareness & hazards (implemented, live 03/10/2026)
-
-Everything in this section is **perception only**: it tells the planner that a
-portal, a fire, a magma block, a spawner, an incoming projectile or an enderman
-gaze is there. No action in N0 moves the bot to a portal or fights a ghast.
-
-### Implementation
-
-- **`bedrock-nether.mjs`** (new, pure, no I/O): `portalKind`/`hazardKind`
-  (`portal` → nether, `end_portal`/`end_gateway` → end, `end_portal_frame` →
-  frame; `fire`/`soul_fire` → fire, `magma` → magma), `isFireBlock`,
-  `isSpawnerBlock`, `isProjectileType` (20 types: `fireball`, `small_fireball`,
-  `dragon_fireball`, `wither_skull`, `arrow`, `thrown_trident`, `snowball`,
-  `egg`, `ender_pearl`, `llama_spit`, `shulker_bullet`, potions, `xp_bottle`,
-  `fishing_hook`, `firework_rocket`, `wind_charge`, `evoker_fang`, …),
-  `isEndermanType`, `isNetherDimension`/`isEndDimension`, `waterEvaporates`,
-  `bedsExplode`, `summarizePortals`, `summarizeHazards`,
-  `projectileThreat({from,position,velocity,previous,now})` →
-  `{known,incoming,missDistance,timeToImpactMs,speed,source}`,
-  `projectileIncoming` (the most urgent one), `gazeVector`, `gazeAngle`,
-  `gazedAtEnderman`, `netherHazard` (critical/high/medium/low ladder).
-- **Adapter**: `_netherCensus({force})` (the same TTL pattern as
-  `_fluidCensus`, `NETHER_RESCAN_MS` = 10 s, radius 32, limit 64; it never
-  caches a scan of a world that is not loaded) and `_netherView({force,cells})`,
-  published by `observe()` as `nether` and by the gated route
-  `GET /observe.portals`.
-- **Projectiles**: `_onEntityMove` now stores `entity.prev` **only for projectile
-  types**, which is what lets `projectileThreat` fall back to two samples when
-  the server does not send a velocity. A `known:false` verdict (no velocity, no
-  second sample, stale samples) is **not** an all-clear — it is "unknown".
-- **Gaze**: `gazedAtEnderman` compares the bot's own `yaw`/`pitch` (the same
-  `_lookAt` convention: yaw 0 = +z) with the vector to the enderman's eyes
-  (2.55 blocks above its feet), tolerance 8°.
-- **Nether rules**: the bot refuses to sleep in the Nether/End
-  (`beds_explode_here`) and the `sleep` option is not even offered there; water
-  is reported as evaporating rather than as a rescue option.
-- **Survival layer**: `perceiveNether` (unknown shape when the field is missing,
-  so an old observation never raises a false alarm), risk weights (fire +50, on
-  lava +60 from M0, magma +35, incoming projectile +45/+30, enderman gaze +12
-  only in the Nether/End, spawner +6), needs (`escape`), conditions and seven
-  new rules in `knowledge/survival-rules.json`: `on_fire` (98),
-  `projectile_incoming` (96), `magma_contact` (95), `fire_adjacent` (92),
-  `fire_near` (72), `gazed_at_enderman` (62), `spawner_nearby` (58).
-
-### Tests
-
-`tests/bedrock-nether.test.mjs` (12 cases), `tests/bedrock-nether-adapter.test.mjs`
-(10 cases) and `tests/survival-nether.test.mjs` (7 cases) — 818 tests in the
-whole suite at this point. The unit tests are the only place where the
-**Nether-specific** branches run: the live world is an Overworld room.
-
-### Live round (03/10/2026, BDS 1.26.52)
-
-- `GET /observe.portals` on the live bot (Overworld, room of oak planks):
-  `dimension: overworld`, `isNether: false`, `inFire: false`, no portal, no
-  spawner, `hazard: {level: none, reasons: []}`, `scanned: 0`, `ready: true` —
-  five consecutive calls cost **56 ms total** (the census is cached).
-- `GET /observe` carries the new `nether` key and the governor still answers
-  `{mode: normal, risk: 0, needs: [continue_progression]}`; `/options` is
-  unchanged (24 options, no regression, `sleep` absent because the room is lit
-  and daytime).
-- **Projectiles live**: `POST /act {"key":"throw_egg"}` → `{ok: true,
-  thrown: "egg"}` and `/observe.portals` caught the flying entity at 14.3 → 15.7
-  → 18.4 blocks (distance growing, `projectile: null` = correctly *not*
-  incoming). This is the end-to-end proof that a real server entity reaches the
-  projectile pipeline.
-
-### Known limits (N0)
-
-- `inFire`, `magma`, `beds_explode_here` and the Nether/End dimension branches
-  are covered by unit tests only: the live bot never left the Overworld.
-- The "incoming" verdict was never triggered by a *real* hostile projectile
-  live (a thrown egg flies away). The dodge itself is N3.
-- `gazedAtEnderman` is only a **detection**: nothing prevents the bot from
-  aiming at an enderman yet (N5).
-- The census is bounded by radius 32 / limit 64, so a portal further away is
-  simply not in the view (N1 has to search for it deliberately).
-- `portalKind('nether_portal')` returns `null` on purpose: the Bedrock block is
-  named `portal`.
 
 ## N1 — The portal: reach, build, light, enter (implemented, live partial 03/10/2026)
 
@@ -498,6 +421,148 @@ tests** in the whole suite.
 - Gold armour is only *reported*, not equipped automatically: `equip_armor`
   already equips any armour in the inventory, and the survival layer decides
   whether spending gold on armour is worth it.
+
+## N5 — Ender gaze and pearls (implemented, live partial 03/10/2026)
+
+### Implementation
+
+Geometry and predicates live in [`bedrock-nether.mjs`](../../bedrock-nether.mjs):
+`endermanAimPoint` (the torso, 1.45 above the feet, always **below** the eyes at
+2.55), `aimsAtEndermanEyes` (tells whether a given aim height is at eye level,
+`null` when unknown), `isPumpkinMask`/`pumpkinMaskWorn` and `isEnderPearl`.
+`gazedAtEnderman` now reports two separate facts: `aimingAtEyes` (where the bot
+is looking) and `gazed` (whether the enderman notices). With a pumpkin on the
+head the bot can aim at the eyes and still be ignored, and the survival layer
+reads the second fact, not the first.
+
+In the adapter:
+
+- `_combat` and `_attackEntity` aim an enderman at the torso (via
+  `endermanAimPoint`), never at the eye height;
+- `avoid_enderman_gaze` → `_avoidGaze`: two sides at ±120° and the back at 180°,
+  all with the pitch down, ranked by how far they leave the eye axis, and
+  verified **from perception** (`gaze_cleared`), with typed refusals
+  (`no_enderman`, `no_gaze_escape`, `gaze_not_cleared`, `not_ready`) and
+  `protected: true` short-circuit when a mask is worn;
+- `equip_pumpkin` → `_equipPumpkin`: a carved pumpkin goes in the helmet slot,
+  with its own path because `_armorSlotFor` does not know `carved_pumpkin`;
+- `_netherView()` exposes `enderman.{aimingAtEyes,gazed,protected}`, `pearls`
+  (counted from the slots, not from the summary map) and `pumpkin`.
+
+### Tests
+
+Three pure cases in `tests/bedrock-nether.test.mjs` (the two facts separated by
+`protected`, the torso/eye invariant, the name predicates) and eight adapter
+cases in `tests/bedrock-nether-adapter.test.mjs` (the view, `_pearlsHeld`, the
+candidates, a successful `_avoidGaze` that verifies itself, its refusals, the
+pumpkin equip with the armor slot checked, the option gates, and `_combat`
+aiming exactly at the torso pitch). Suite: **870 tests**.
+
+### Live round (03/10/2026)
+
+| Probe | Result |
+| --- | --- |
+| `GET /observe` → `nether` | `enderman: null`, `pearls: 0`, `pumpkin: false`, `projectile: null` — the new perception is exposed and inert with no enderman around |
+| `POST /act avoid_enderman_gaze` | `{"ok":false,"error":"no_enderman"}` immediately (no 3 s sweep) |
+| `POST /act equip_pumpkin` | `{"ok":false,"error":"missing_pumpkin"}` in 0.01 s |
+| `GET /options` | no `avoid_enderman_gaze`/`equip_pumpkin`, 26 ordinary keys (the gates hold) |
+| `POST /act wait` | `{"ok":true}` — dispatch has no regression |
+| `/observe.entities` | `villager_v2`, `cat`, `donkey`: the server sends **bare** type names, no `minecraft:` prefix |
+
+### Known limits (N5)
+
+- **No enderman was met live** (the live room is an Overworld room): the happy
+  paths (mask, gaze escape, torso kill, pearl collection) are covered by unit
+  tests only.
+- The gaze escape is a head movement, not a path: it breaks the line instead of
+  walking away, which is exactly what the enderman checks.
+- Killing an enderman still goes through the generic `attack_<type>`: there is no
+  `hunt_enderman` that decides to fight one only for its pearls.
+- `pearls` counts the pearls in the slots; the drop of a kill is collected by the
+  existing `collect_drop` path.
+- A **namespaced** entity type (`minecraft:enderman`) used to be invisible to
+  `_entityOfType`, which made `attack_enderman` impossible against a server that
+  sends the prefix. Found by a unit test and fixed by comparing normalized
+  names; the live server sends bare types, so it was never observed live.
+
+
+Everything in this section is **perception only**: it tells the planner that a
+portal, a fire, a magma block, a spawner, an incoming projectile or an enderman
+gaze is there. No action in N0 moves the bot to a portal or fights a ghast.
+
+### Implementation
+
+- **`bedrock-nether.mjs`** (new, pure, no I/O): `portalKind`/`hazardKind`
+  (`portal` → nether, `end_portal`/`end_gateway` → end, `end_portal_frame` →
+  frame; `fire`/`soul_fire` → fire, `magma` → magma), `isFireBlock`,
+  `isSpawnerBlock`, `isProjectileType` (20 types: `fireball`, `small_fireball`,
+  `dragon_fireball`, `wither_skull`, `arrow`, `thrown_trident`, `snowball`,
+  `egg`, `ender_pearl`, `llama_spit`, `shulker_bullet`, potions, `xp_bottle`,
+  `fishing_hook`, `firework_rocket`, `wind_charge`, `evoker_fang`, …),
+  `isEndermanType`, `isNetherDimension`/`isEndDimension`, `waterEvaporates`,
+  `bedsExplode`, `summarizePortals`, `summarizeHazards`,
+  `projectileThreat({from,position,velocity,previous,now})` →
+  `{known,incoming,missDistance,timeToImpactMs,speed,source}`,
+  `projectileIncoming` (the most urgent one), `gazeVector`, `gazeAngle`,
+  `gazedAtEnderman`, `netherHazard` (critical/high/medium/low ladder).
+- **Adapter**: `_netherCensus({force})` (the same TTL pattern as
+  `_fluidCensus`, `NETHER_RESCAN_MS` = 10 s, radius 32, limit 64; it never
+  caches a scan of a world that is not loaded) and `_netherView({force,cells})`,
+  published by `observe()` as `nether` and by the gated route
+  `GET /observe.portals`.
+- **Projectiles**: `_onEntityMove` now stores `entity.prev` **only for projectile
+  types**, which is what lets `projectileThreat` fall back to two samples when
+  the server does not send a velocity. A `known:false` verdict (no velocity, no
+  second sample, stale samples) is **not** an all-clear — it is "unknown".
+- **Gaze**: `gazedAtEnderman` compares the bot's own `yaw`/`pitch` (the same
+  `_lookAt` convention: yaw 0 = +z) with the vector to the enderman's eyes
+  (2.55 blocks above its feet), tolerance 8°.
+- **Nether rules**: the bot refuses to sleep in the Nether/End
+  (`beds_explode_here`) and the `sleep` option is not even offered there; water
+  is reported as evaporating rather than as a rescue option.
+- **Survival layer**: `perceiveNether` (unknown shape when the field is missing,
+  so an old observation never raises a false alarm), risk weights (fire +50, on
+  lava +60 from M0, magma +35, incoming projectile +45/+30, enderman gaze +12
+  only in the Nether/End, spawner +6), needs (`escape`), conditions and seven
+  new rules in `knowledge/survival-rules.json`: `on_fire` (98),
+  `projectile_incoming` (96), `magma_contact` (95), `fire_adjacent` (92),
+  `fire_near` (72), `gazed_at_enderman` (62), `spawner_nearby` (58).
+
+### Tests
+
+`tests/bedrock-nether.test.mjs` (12 cases), `tests/bedrock-nether-adapter.test.mjs`
+(10 cases) and `tests/survival-nether.test.mjs` (7 cases) — 818 tests in the
+whole suite at this point. The unit tests are the only place where the
+**Nether-specific** branches run: the live world is an Overworld room.
+
+### Live round (03/10/2026, BDS 1.26.52)
+
+- `GET /observe.portals` on the live bot (Overworld, room of oak planks):
+  `dimension: overworld`, `isNether: false`, `inFire: false`, no portal, no
+  spawner, `hazard: {level: none, reasons: []}`, `scanned: 0`, `ready: true` —
+  five consecutive calls cost **56 ms total** (the census is cached).
+- `GET /observe` carries the new `nether` key and the governor still answers
+  `{mode: normal, risk: 0, needs: [continue_progression]}`; `/options` is
+  unchanged (24 options, no regression, `sleep` absent because the room is lit
+  and daytime).
+- **Projectiles live**: `POST /act {"key":"throw_egg"}` → `{ok: true,
+  thrown: "egg"}` and `/observe.portals` caught the flying entity at 14.3 → 15.7
+  → 18.4 blocks (distance growing, `projectile: null` = correctly *not*
+  incoming). This is the end-to-end proof that a real server entity reaches the
+  projectile pipeline.
+
+### Known limits (N0)
+
+- `inFire`, `magma`, `beds_explode_here` and the Nether/End dimension branches
+  are covered by unit tests only: the live bot never left the Overworld.
+- The "incoming" verdict was never triggered by a *real* hostile projectile
+  live (a thrown egg flies away). The dodge itself is N3.
+- `gazedAtEnderman` is only a **detection**: nothing prevents the bot from
+  aiming at an enderman yet (N5).
+- The census is bounded by radius 32 / limit 64, so a portal further away is
+  simply not in the view (N1 has to search for it deliberately).
+- `portalKind('nether_portal')` returns `null` on purpose: the Bedrock block is
+  named `portal`.
 
 ## Dependencies and risks
 

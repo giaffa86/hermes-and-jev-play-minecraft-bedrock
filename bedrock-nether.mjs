@@ -317,6 +317,7 @@ export function gazedAtEnderman ({
   range = ENDERMAN_GAZE_RANGE,
   toleranceDeg = ENDERMAN_GAZE_TOLERANCE_DEG,
   targetEyeHeight = ENDERMAN_EYE_HEIGHT,
+  protected: masked = false,
 } = {}) {
   let best = null;
   for (const entity of endermans) {
@@ -325,18 +326,65 @@ export function gazedAtEnderman ({
     const distance = distance3d(entity.position, from);
     if (!(distance <= range)) continue;
     const angleDeg = gazeAngle({ from, yaw, pitch, target: entity.position, targetEyeHeight });
+    const aimingAtEyes = angleDeg == null ? null : angleDeg <= toleranceDeg;
     const row = {
       type: entity.type,
       position: { ...entity.position },
       distance: +distance.toFixed(1),
       angleDeg,
-      gazed: angleDeg == null ? null : angleDeg <= toleranceDeg,
+      // `aimingAtEyes` dice dove punta lo sguardo, `gazed` se l'enderman se ne
+      // accorge: con una zucca in testa punta gli occhi ma non lo sveglia, e
+      // sono due fatti diversi che il planner deve poter distinguere.
+      aimingAtEyes,
+      protected: !!masked,
+      gazed: aimingAtEyes == null ? null : (aimingAtEyes && !masked),
     };
     if (!best || row.distance < best.distance) best = row;
   }
   // Un enderman più vicino ma con sguardo ignoto resta più rilevante di uno
   // lontano che si vede di striscio: si ordina per distanza, non per `gazed`.
   return best;
+}
+
+// --- N5: disciplina dello sguardo e maschera di zucca ------------------------
+// Gli occhi dell'enderman stanno a 2.55 dal suolo; il corpo sta sotto. Colpire
+// il corpo è l'unico modo di non incrociare lo sguardo per sbaglio, quindi la
+// mira per un enderman non è "il centro della bounding box" ma un punto del
+// torso scelto per stare sotto gli occhi.
+export const ENDERMAN_TORSO_HEIGHT = 1.45;
+export const ENDERMAN_AIM_TOLERANCE = 0.35;
+export const PUMPKIN_MASKS = new Set(['carved_pumpkin', 'pumpkin']);
+export const ENDER_PEARL = 'ender_pearl';
+
+export function endermanAimPoint (position, targetHeight = ENDERMAN_TORSO_HEIGHT) {
+  if (!position) return null;
+  return { x: position.x, y: position.y + targetHeight, z: position.z };
+}
+
+// La mira è all'altezza degli occhi? `null` quando non si sa (nessuno dei due
+// dati): in quel caso non si accusa nulla, come per `gazedAtEnderman`.
+export function aimsAtEndermanEyes ({
+  aimY = null,
+  position = null,
+  eyeHeight = ENDERMAN_EYE_HEIGHT,
+  tolerance = ENDERMAN_AIM_TOLERANCE,
+} = {}) {
+  if (aimY == null || !position) return null;
+  return Math.abs(aimY - (position.y + eyeHeight)) <= tolerance;
+}
+
+export function isPumpkinMask (name) {
+  return PUMPKIN_MASKS.has(normalizeNetherName(name));
+}
+
+// La zucca in testa è l'unico modo di guardare un enderman restando ignorati:
+// vale solo per l'elmo (il resto dell'armatura non conta).
+export function pumpkinMaskWorn (armor = {}) {
+  return isPumpkinMask(armor?.helmet);
+}
+
+export function isEnderPearl (name) {
+  return normalizeNetherName(name) === ENDER_PEARL;
 }
 
 // Verdetto compatto sui pericoli propri del Nether. La lava resta nei fluidi:

@@ -2733,3 +2733,7 @@ Nether accetta e i piglin sono l'unica banca.
   **Nessun piglin incontrato live**: il percorso felice resta coperto solo dai test
   unitari (come N1–N3) e l'accettazione del roadmap ("un barter live completato")
   non è soddisfatta.
+
+## [2026-10-03] feat | Nether N5: disciplina dello sguardo, maschera di zucca, mira al torso, perle
+
+Quinta milestone del Nether (commit successivo, **870 test verdi**): in `bedrock-nether.mjs` `endermanAimPoint` (torso a 1.45, sotto gli occhi a 2.55), `aimsAtEndermanEyes`, `isPumpkinMask`/`pumpkinMaskWorn`, `isEnderPearl`, e `gazedAtEnderman` che ora separa `aimingAtEyes` (dove si guarda) da `gazed` (se l’enderman se ne accorge, falso con la maschera). Nell’adapter: `_combat`/`_attackEntity` mirano il torso, `avoid_enderman_gaze` (`_avoidGaze`, candidati a ±120°/180° col pitch in basso, verificati dalla percezione), `equip_pumpkin` (`_equipPumpkin`, slot elmo 0), `_pearlsHeld` dagli slot osservati, `_netherView()` con `enderman.aimingAtEyes/gazed/protected`, `pearls`, `pumpkin`; `_entityOfType` ora confronta nomi normalizzati (un tipo `minecraft:enderman` era invisibile: bug trovato dai test). Live: percezione esposta e inerte (`enderman: null`, `pearls: 0`, `pumpkin: false`), `avoid_enderman_gaze` → `no_enderman`, `equip_pumpkin` → `missing_pumpkin` (0.01 s), `/options` senza le due chiavi, `wait` ok; nessun enderman nel mondo live. Dettagli in `docs/wiki/nether.md` §N5, riga 47.14 di `verification.md`.
