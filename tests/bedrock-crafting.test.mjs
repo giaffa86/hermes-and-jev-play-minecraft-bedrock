@@ -127,6 +127,49 @@ test('craft actions pick an empty slot when the output item is not held yet', ()
   assert.deepEqual(place.destination, { slot_type: { container_id: 'hotbar_and_inventory' }, slot: 1, stack_id: 0 });
 });
 
+test('placing the grid keeps the crafting window open (workbench regression)', async () => {
+  // Live 03/10: `craft_bucket` finiva in `place_failed_55` perché `_takeToCursor`
+  // chiamava `_ensureInventoryOpen()`, che **chiude** il banco da lavoro appena
+  // aperto da `_ensureCraftingTableOpen()` e apre l'inventario del giocatore:
+  // nella nuova finestra le celle 32..40 della griglia 3x3 non esistono più.
+  const adapter = craftAdapter();
+  const bucket = shaped(9001, 'minecraft:bucket', 3, 2,
+    [name('iron_ingot'), null, name('iron_ingot'), null, name('iron_ingot'), null, null, null, null],
+    { networkId: 9002, count: 1 });
+  adapter.world.registry.items[307] = { name: 'iron_ingot' };
+  adapter.inventorySlots[0] = { network_id: 307, name: 'iron_ingot', count: 3, stack_id: 137 };
+  adapter._openContainer = { id: 19, type: 'workbench' };
+  let opens = 0;
+  adapter._ensureInventoryOpen = async () => {
+    opens++;
+    adapter._openContainer = { id: 20, type: 'inventory' };
+  };
+  const requests = [];
+  adapter._sendStackRequest = async ([action]) => {
+    requests.push(action);
+    return action.type_id === 'take'
+      ? { status: 'ok', containers: [{ slot_type: 'cursor', slots: [{ stack_id: 900 + requests.length }] }] }
+      : { status: 'ok', containers: [{ slot_type: 'crafting_input', slots: [{ stack_id: 950 + requests.length }] }] };
+  };
+  adapter._applyStackResponse = () => {};
+  adapter._responseSlotStack = () => 1;
+
+  const grid = await adapter._placeGridIngredients(bucket, true);
+  assert.equal(opens, 0, 'il take della griglia non deve riaprire l\'inventario');
+  assert.equal(adapter._openContainer.type, 'workbench');
+  const takes = requests.filter(r => r.type_id === 'take');
+  const places = requests.filter(r => r.type_id === 'place');
+  assert.equal(takes.length, 3);
+  assert.deepEqual(takes.map(t => t.source.slot_type.container_id), ['hotbar', 'hotbar', 'hotbar']);
+  // 3x2 nel banco: righe 1-2 della griglia, offset 32 + (y+1)*3 + x.
+  assert.deepEqual(places.map(p => p.destination.slot), [35, 37, 39]);
+  assert.deepEqual(places.map(p => p.destination.slot_type.container_id), ['crafting_input', 'crafting_input', 'crafting_input']);
+  assert.deepEqual([...grid.keys()], [35, 37, 39]);
+  // Fuori dal craft il comportamento resta quello documentato: la finestra si apre.
+  await adapter._takeToCursor(0, 1);
+  assert.equal(opens, 1);
+});
+
 test('stale slot detection compares aggregate pickups with tracked slots', () => {
   const adapter = craftAdapter();
   adapter.inventory = { cobblestone: 3, stick: 2 };

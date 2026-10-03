@@ -4,6 +4,46 @@ Append-only record of wiki operations. Prefix: `## [YYYY-MM-DD] <type> | <title>
 where `<type>` is one of `ingest`, `query`, `lint`, `doc`, `feat`, `fix`,
 `verify`, `report` (the last four joined as the wiki grew).
 
+## [2026-10-03] fix | The 3×3 crafting window, stale container contents, and a bounded storage read
+
+Three defects from the same live round on the deployed container, each one found by doing
+the work on the real BDS instead of trusting the code:
+
+1. **`craft_bucket` → `place_failed_55`** (18.2 s). `_placeGridIngredients` moved every
+   ingredient to the cursor through `_takeToCursor`, which opened the *player* inventory
+   first — and that closes any window that is not `inventory`, i.e. the open `workbench`
+   holding the 3×3 grid. The event log shows the sequence: `container_open workbench
+   (windowId 19)` immediately followed by `container_open inventory (windowId 20)`, a
+   `take` that succeeds and a `place` refused with status 55. `_takeToCursor` now accepts
+   `{ ensureInventory }` and the crafting path passes `false`.
+2. **`read_container` reported `{}` for chests that were full**, and `take_iron_ingot`
+   answered `item_not_in_container` with 795 ingots in the cache. Contents arrive in a
+   separate `inventory_content` packet; only one window out of eight had sent it, and a
+   stale `_openContainerContentAt` flag let the others be read with the previous window's
+   (or an empty) slot array — which then **overwrote the cache**. The flag now records
+   *which* window sent its contents (`_openContainerContentWindow`), is reset on every
+   open/close, and `_ensureStorageOpen` waits for its own window (3 attempts, then the
+   typed `container_content_timeout`) instead of a fixed 200 ms.
+3. **A 16-chest read took 142 s and the server dropped the session right after it**
+   (`connecterror:9` for minutes until a BDS restart, see
+   [open questions](wiki/open-questions.md)). Reads are now capped
+   (`STORAGE_READ_LIMIT = 8`, `STORAGE_READ_BUDGET_MS = 90000`,
+   `STORAGE_READ_WALK_MS = 8000` for the walk to each container, reported as
+   `considered`/`truncated`/`budgetExceeded`) and the scan no longer stops at six blocks
+   per storage name (`STORAGE_SCAN_PER_NAME = 24`) — which is also why the iron chest two
+   blocks away was invisible and why walking two blocks changed the answer.
+
+Tests: `tests/bedrock-storage.test.mjs` (23 cases) and `tests/bedrock-crafting.test.mjs`
+(16 cases), with the new cases falsified against the old behaviour (the workbench case
+fails without the option; two storage cases fail with the fixed `delay(200)` wait). Suite
+**1067 pass / 0 fail**. Live after the deploy: `take_iron_ingot` (64) → `craft_bucket` →
+`milk_cow` (`milk_bucket` in the inventory), `craft_shears` → `shear_sheep`
+(`sheared:true`), `harvest_carrots` (2 carrots + replant, server-confirmed), `eat`
+(food 16 → 19) and `go_home` (47 path nodes), plus typed refusals (`tame_cat`
+`missing_feed {cod/salmon}`, `open_trade` `trader_unreachable`, `mount_donkey`
+`no_rideable_nearby`). Rows 47.32-47.34 of [verification](wiki/verification.md);
+`AGENTS.md` unchanged — the new caps are module constants, not environment variables.
+
 ## [2026-10-03] fix | Bedrock item names in the gameplay tables: `cod`/`salmon` and `beetroot`
 
 Found live while running the companion round: `POST /act {tame_cat}` answered

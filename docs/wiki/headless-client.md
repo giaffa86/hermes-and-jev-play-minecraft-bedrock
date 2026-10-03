@@ -164,6 +164,20 @@ Item movement, crafting and smelting are `item_stack_request` transactions
   request with consumes and output;
 - smelting uses the right station (furnace/blast furnace/smoker) and the
   `furnace_ingredient`/`furnace_fuel`/`furnace_output` slots.
+- **A container's contents arrive in a separate `inventory_content` packet** for that
+  window, so opening a chest is not enough: reading too early returns the *previous*
+  window's slots (or an empty array), and writing that into the cache makes full chests
+  look empty. The adapter records which window sent its contents
+  (`_openContainerContentWindow`), resets it on every open/close, and waits for *its own*
+  window (3 attempts, then the typed `container_content_timeout`).
+- **Moving a grid ingredient must not change the window.** `_takeToCursor` opened the
+  player inventory by default; with a `workbench` open that closed the 3×3 grid and every
+  later `place` was refused with status 55 (`craft_bucket → place_failed_55`). The
+  crafting path passes `{ ensureInventory: false }`; the equip paths keep the default,
+  because they *need* the player window (`take`/`place` are only valid with a window open).
+- Reading is bounded on purpose: `STORAGE_READ_LIMIT` (8) containers per action and a
+  time budget (`STORAGE_READ_BUDGET_MS`), because a long read can end with the server
+  dropping the session (see [open questions](open-questions.md)).
 
 ### 4.4 Interactions — `click_block`, `item_use`, `item_use_on_entity`
 

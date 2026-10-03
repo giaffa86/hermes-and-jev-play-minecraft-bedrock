@@ -149,6 +149,44 @@ Last lint: 2026-10-03.
   free approach side). Worth checking whether the approach cell can be validated
   before the walk (the typed `container_unreachable` error already exists; row
   42.3 of [verification](verification.md) shows it in the boxed-in case).
+- **Update 2026-10-03 (later): part of this was not "outside the component" at all.**
+  `_findNearbyStorageBlocks` asked `findBlocks(name, position, radius, 6)` — **six blocks
+  per storage name** — so a wall of chests hid the iron chest standing two blocks away
+  (walking two blocks west changed the answer), and the windows that *did* open were read
+  with a stale slot array. With `STORAGE_SCAN_PER_NAME = 24`, the per-window content wait
+  and the bounded read, `read_container` now lists the iron chests and
+  `take_iron_ingot` works live (rows 47.33/15 of [verification](verification.md)). The
+  `movement timeout` failures for containers genuinely beyond the walkable component
+  remain — they cost 30 s each when asked for explicitly.
+
+## The BDS drops the session during a container read (2026-10-03)
+
+- Four times in one afternoon the server closed the session while a `read_container`
+  was running: twice right after a ~140 s read (`client_close {reason:'disconnected'}`
+  at 10:36:46 and 11:08:25), once 180 s into a read (the harness then answered
+  `action_timeout`), and once **mid-read after only 66 s and 8 windows** — the read
+  that was supposed to be safe. Every time, the following actions answer `not_connected`.
+- What the server says: the BDS console (`screen` hardcopy through the Proxmox broker)
+  logs just `Player disconnected: <player>, xuid: …` — **no kick reason, no crash, no
+  error**. On the last round the harness reconnected **by itself** ~5 s later
+  (`Player connected` → `Player Spawned`) and resumed, so the `connecterror:9` loop seen
+  earlier is a *transient* state, not a permanent one; twice a
+  `systemctl restart minecraft-bedrock.service` on CT 108 was still needed to get back
+  quickly.
+- **Leading hypothesis**: while the read walks towards containers that are outside the
+  walkable component, the walk fails with `movement timeout` (up to 30 s each) and the
+  client stops producing normal movement/keep-alive traffic for ~a minute, so the server
+  times the session out. It is not the *read* per se: the last drop happened with the
+  shortest read of the day.
+- **Mitigation in the adapter** (row 47.33 of [verification](verification.md)): the scan
+  no longer stops at six blocks per storage name, the read is capped at 8 containers and
+  90 s, and each walk gets 8 s instead of 30 s. Result: the same read now returns
+  `{ok:true, read:3, ms:65644}` — the action **survives** the drop and reports what it
+  read, instead of dying on the 180 s watchdog.
+- **Open**: a bounded experiment (reads whose walks always succeed vs reads with failing
+  walks, watching the console timestamps) would separate "many open/close windows" from
+  "no traffic while walking". Not attempted: each round costs a reconnect of the live
+  world, and the storage work it unblocks is done.
 
 ## Missing Bedrock capabilities (for the full first-night milestone)
 

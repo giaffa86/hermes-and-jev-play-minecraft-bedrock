@@ -136,6 +136,8 @@ carrot or shears remain in reach and there is nothing to feed with. Recorded in
 chain beyond item lookup (approach within 4.5 blocks, `item_use_on_entity
 interact`, `tamed` confirmation) stays covered by unit tests only.
 
+**Round 03/10/2026 (afternoon): the shearing chain ran live; the tame chain still has nothing to eat.** With iron taken from the village chest (`take_iron_ingot` → 64), `craft_shears` → `{ok:true, crafted:'shears', count:1}` and then **`shear_sheep` → `{ok:true, sheared:true, type:'sheep'}`** — the action found a sheep within 64 blocks and walked to it, so the search + approach + `item_use_on_entity` + confirmation chain is live-verified. The `yellow_wool` drop then appeared in `GET /observe.drops` at 2.3 blocks with `reachable: true`, but the bot had already walked on and `collect_drop` answered `no_drop_nearby`: the wool never entered the inventory, so the *drop* side of shearing is still unit-tested. `milk_cow` (the same `item_use_on_entity` + inventory-delta pattern, see row 19.2 of [verification](verification.md)) is live-verified too. The **tame** chain is still refused live with the right names (`missing_feed {feed: cod/salmon}`): every step after the item gate (approach within 4.5 blocks, `interact`, `tamed` confirmation) remains covered by unit tests only.
+
 ## Related pages
 
 - [roadmap](roadmap.md) — overall implementation status.

@@ -120,6 +120,26 @@ const SMELT_RECIPES = {
 // La window_type Bedrock per baule/botte è 'container'; lo slot nelle richieste
 // stack usa ContainerSlotType 7 ('container') per i bauli e 58 ('barrel') per le botti.
 const STORAGE_BLOCKS = ['chest', 'trapped_chest', 'barrel', 'shulker_box'];
+// `world.findBlocks` si ferma a N blocchi per nome: con una parete di scrigni il
+// sesto più vicino nascondeva gli altri (live 03/10: la cassa del ferro a
+// (90,73,160) non compariva stando a due blocchi, e il take rispondeva
+// `item_not_in_container` su una cache piena).
+const STORAGE_SCAN_PER_NAME = 24;
+// Le letture sono un'azione sola: si leggono i N più vicini, non tutti. Il
+// limite tiene il costo dell'azione sotto il minuto: live 03/10 con 16
+// contenitori la lettura è durata 142 s e il server ha chiuso la sessione
+// (poi `connecterror:9` fino al restart del BDS).
+const STORAGE_READ_LIMIT = 8;
+// Ogni contenitore può costare i suoi tentativi (apertura + attesa del
+// contenuto): un tetto di tempo rende l'azione prevedibile invece di sfiorare
+// il timeout dell'harness.
+const STORAGE_READ_BUDGET_MS = 90000;
+// Il cammino verso un contenitore è la voce che pesa di più in una lettura: un
+// blocco irraggiungibile costa il suo timeout intero. Nella lettura il budget è
+// per-blocco più stretto (live 03/10: con 30 s per blocco una lettura ha toccato
+// il watchdog dei 180 s e il BDS ha chiuso la sessione), mentre un `take_*`
+// esplicito tiene il timeout generoso.
+const STORAGE_READ_WALK_MS = 8000;
 // TTL della cache contenitori: altri giocatori possono cambiare le scorte.
 const CONTAINER_TTL_MS = 5 * 60 * 1000;
 const DISCOVERY_RESCAN_MS = 15000;   // ri-scansione scoperte nella stessa chunk (mondo appena caricato)
@@ -334,6 +354,9 @@ export class BedrockAdapter {
     this._openContainer = null;        // { id, type } del container UI aperto
     this._openContainerBlock = null;   // { name, position } del blocco storage aperto
     this._openContainerSlots = [];     // slot grezzi dell'inventory_content del container storage
+    this._openContainerContentAt = 0;  // quando è arrivato il contenuto della finestra aperta
+    this._openContainerContentWindow = null; // finestra a cui quel contenuto appartiene
+    this._containerContentWaiters = [];
     this.containers = new Map();       // "<x,y,z>" -> { type, readAt, contents: { item: count } }
     this._containerWaiters = [];
     this._craftingGrid = new Map();    // gridSlot -> { network_id, count, stack_id }
@@ -466,6 +489,8 @@ export class BedrockAdapter {
         this._openContainer = { id: packet.window_id, type: packet.window_type };
         this._openContainerBlock = null;
         this._openContainerSlots = [];
+        this._openContainerContentAt = 0;      // il contenuto della finestra precedente non vale
+        this._openContainerContentWindow = null;
         if (packet.window_type === 'trading' || packet.window_type === 15) {
           // La finestra di trading viene aperta dal server in risposta all'interact
           // sul villager; il contenuto delle tre slot arriva con inventory_content.
@@ -494,6 +519,8 @@ export class BedrockAdapter {
         this._openContainer = null;
         this._openContainerBlock = null;
         this._openContainerSlots = [];
+        this._openContainerContentAt = 0;
+        this._openContainerContentWindow = null;
         if (wasTrading) {
           this.tradeOffers = [];
           this.tradeOpenedAt = 0;
@@ -727,6 +754,9 @@ export class BedrockAdapter {
           // 'container'; il contenuto è l'elenco completo delle slot 0..26 (54 se doppio).
           if (this._openContainer.type === 'container' && this._openContainerBlock) {
             this._openContainerSlots = packet.input;
+            this._openContainerContentAt = Date.now();
+            this._openContainerContentWindow = this._openContainer.id;
+            for (const waiter of this._containerContentWaiters.filter(w => w.windowId === this._openContainer.id)) waiter.resolve(true);
             this.log('container_content', {
               block: this._openContainerBlock.name,
               containerId: containerId ?? null,
@@ -4514,6 +4544,29 @@ export class BedrockAdapter {
     });
   }
 
+  // Il contenuto di un container storage arriva in un pacchetto separato
+  // (`inventory_content` con il window id della finestra aperta), spesso
+  // centinaia di ms dopo `container_open`. Chi legge `_openContainerSlots`
+  // senza aspettarlo vede le slot della finestra **precedente** (o un array
+  // vuoto) e decide su dati sbagliati: live 03/10 `take_iron_ingot` rispondeva
+  // `item_not_in_container` 300 ms dopo l'apertura del baule, con la cache che
+  // diceva ancora 795 lingotti. Attesa limitata ed esplicita.
+  _waitForContainerContent (windowId, timeoutMs = 2000) {
+    if (this._openContainerContentAt > 0 && this._openContainerContentWindow === windowId) return Promise.resolve(true);
+    return new Promise(resolve => {
+      const waiter = {
+        windowId,
+        resolve: value => {
+          clearTimeout(timer);
+          this._containerContentWaiters = this._containerContentWaiters.filter(w => w !== waiter);
+          resolve(value);
+        },
+      };
+      const timer = setTimeout(() => waiter.resolve(false), timeoutMs);
+      this._containerContentWaiters.push(waiter);
+    });
+  }
+
   async _ensureInventoryOpen () {
     if (this._openContainer?.type === 'inventory') return;
     if (this._openContainer) await this._closeContainer();
@@ -4531,6 +4584,8 @@ export class BedrockAdapter {
     this._openContainer = null;
     this._openContainerBlock = null;
     this._openContainerSlots = [];
+    this._openContainerContentAt = 0;
+    this._openContainerContentWindow = null;
     // Il server restituisce o fa cadere gli item rimasti nella griglia: lo stato locale non è più valido.
     if (this._craftingGrid.size) this.log('grid_leftovers_discarded', { slots: [...this._craftingGrid.keys()] });
     this._craftingGrid.clear();
@@ -4678,8 +4733,15 @@ export class BedrockAdapter {
   //    ogni take verso il cursore viene rifiutato con 50 finché non lo si
   //    rimette in uno slot: rimedio documentato, rimetterlo e ritentare una
   //    volta sola.
-  async _takeToCursor (slotIndex, count, { attempts = 2 } = {}) {
-    await this._ensureInventoryOpen();
+  // 3. la finestra deve restare quella del craft in corso: con un banco da
+  //    lavoro aperto `_ensureInventoryOpen()` lo **chiude** e apre l'inventario
+  //    del giocatore, dove le celle della griglia 3x3 non esistono più. Live
+  //    03/10: `craft_bucket` finiva in `place_failed_55` esattamente per questo
+  //    (il `place` nella griglia veniva rifiutato dopo che il banco era stato
+  //    sostituito dall'inventario). Il percorso della griglia passa
+  //    `ensureInventory: false` perché la finestra l'ha già aperta `_craftAttempt`.
+  async _takeToCursor (slotIndex, count, { attempts = 2, ensureInventory = true } = {}) {
+    if (ensureInventory) await this._ensureInventoryOpen();
     const item = this.inventorySlots[slotIndex];
     if (!item?.network_id) throw new Error('missing_ingredients');
     const info = this._invSlotAsSource(slotIndex);
@@ -4742,7 +4804,9 @@ export class BedrockAdapter {
       for (let unit = 0; unit < count; unit++) {
         const source = this._findSourceSlot(ingredient);
         if (source < 0) throw new Error('missing_ingredients');
-        const cursorStack = await this._takeToCursor(source, 1);
+        // Mai riaprire l'inventario qui: chiuderebbe il banco da lavoro e la
+        // griglia 3x3 sparirebbe dalla finestra corrente (status 55 live 03/10).
+        const cursorStack = await this._takeToCursor(source, 1, { ensureInventory: false });
         gridStackIds.set(gridSlot, await this._placeFromCursor(gridSlot, 1, cursorStack));
       }
     }
@@ -5558,7 +5622,7 @@ export class BedrockAdapter {
     if (!this.position || !this.world?.findBlocks) return [];
     const found = [];
     for (const name of STORAGE_BLOCKS) {
-      found.push(...this.world.findBlocks(name, this.position, radius, 6));
+      found.push(...this.world.findBlocks(name, this.position, radius, STORAGE_SCAN_PER_NAME));
     }
     found.sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity));
     return found;
@@ -5598,7 +5662,7 @@ export class BedrockAdapter {
     return contents;
   }
 
-  async _ensureStorageOpen (target) {
+  async _ensureStorageOpen (target, { contentTimeoutMs = 2000, walkTimeoutMs = 30000 } = {}) {
     const alreadyOpen = this._openContainer?.type === 'container' && this._openContainerBlock
       && this._openContainerBlock.position.x === target.position.x
       && this._openContainerBlock.position.y === target.position.y
@@ -5611,29 +5675,35 @@ export class BedrockAdapter {
       throw new Error('storage_unreachable');
     }
     if ((target.distance ?? this._pointDistance(target.position)) > 3.5) {
-      await this._moveTo({ x: target.position.x + 0.5, y: target.position.y, z: target.position.z + 0.5 }, 3, 30000);
+      await this._moveTo({ x: target.position.x + 0.5, y: target.position.y, z: target.position.z + 0.5 }, 3, walkTimeoutMs);
     }
     await delay(100);
     let lastError = null;
-    for (let attempt = 1; attempt <= 3 && this._openContainer?.type !== 'container'; attempt++) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
       const wait = this._waitForContainerOpen(p => p.window_type === 'container', 2500);
       const yaw = this._yawTo(this._feet, { x: target.position.x + 0.5, z: target.position.z + 0.5 });
       const pitch = this._lookAt({ x: target.position.x + 0.5, y: target.position.y + 0.5, z: target.position.z + 0.5 }).pitch;
-      await this._queueAuthInput({ yaw, pitch, transaction: this._blockUseTransaction(target.position) });
       try {
+        await this._queueAuthInput({ yaw, pitch, transaction: this._blockUseTransaction(target.position) });
         await wait;
       } catch (error) {
         lastError = error;
-        if (this._openContainer?.type === 'container') break;
         await delay(300);
+        continue;
       }
+      this._openContainerBlock = { name: target.name, position: target.position };
+      // La finestra è aperta ma il contenuto può arrivare dopo: senza attesa il
+      // take legge slot vecchie e dichiara `item_not_in_container` su una cache
+      // ancora piena. Se il contenuto non arriva si ritenta l'apertura.
+      if (await this._waitForContainerContent(this._openContainer.id, contentTimeoutMs)) return;
+      lastError = new Error('container_content_timeout');
+      await this._closeContainer().catch(() => {});
+      await delay(300);
     }
-    if (this._openContainer?.type !== 'container') throw lastError || new Error(`${target.name}_not_opened`);
-    this._openContainerBlock = { name: target.name, position: target.position };
-    await delay(200); // lascia arrivare inventory_content con le slot del container
+    throw lastError || new Error(`${target.name}_not_opened`);
   }
 
-  async _readContainers () {
+  async _readContainers ({ budgetMs = STORAGE_READ_BUDGET_MS } = {}) {
     const all = this._findNearbyStorageBlocks();
     if (!all.length) return { ok: false, error: 'container_not_found' };
     // Salta i contenitori che il bot non può raggiungere (fuori dal componente
@@ -5645,10 +5715,15 @@ export class BedrockAdapter {
       return { ok: false, error: 'container_unreachable', containers: all.map(b => ({ type: b.name, position: b.position })) };
     }
     const started = Date.now();
+    const considered = blocks.length;
+    const batch = blocks.slice(0, STORAGE_READ_LIMIT);
     const read = [];
-    for (const block of blocks) {
+    let budgetExceeded = false;
+    for (const block of batch) {
+      // Almeno un contenitore viene letto, poi il budget decide se continuare.
+      if (read.length && Date.now() - started > budgetMs) { budgetExceeded = true; break; }
       try {
-        await this._ensureStorageOpen(block);
+        await this._ensureStorageOpen(block, { walkTimeoutMs: STORAGE_READ_WALK_MS });
         const contents = this._storageContentsFromSlots(this._openContainerSlots);
         const key = this._containerCacheKey(block.position);
         this._setContainerContents({ key, type: block.name, position: block.position }, contents);
@@ -5660,7 +5735,7 @@ export class BedrockAdapter {
       }
     }
     if (!read.length) return { ok: false, error: 'container_read_failed' };
-    return { ok: true, read: read.length, containers: read, ms: Date.now() - started };
+    return { ok: true, read: read.length, containers: read, considered, truncated: considered > batch.length, budgetExceeded, ms: Date.now() - started };
   }
 
   async _takeFromContainer (itemName) {

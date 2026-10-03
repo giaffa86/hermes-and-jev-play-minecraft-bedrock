@@ -258,3 +258,185 @@ test('executeAction routes read_container, take_ and deposit_', async () => {
   assert.equal((await adapter.executeAction('deposit_gold_ingot')).ok, true);
   assert.deepEqual(calls, ['read', 'take:iron_ingot', 'deposit:gold_ingot']);
 });
+
+// Live 03/10: il contenuto di un container arriva in un pacchetto separato,
+// spesso qualche centinaio di ms dopo `container_open`. Con il vecchio
+// `delay(200)` fisso il take leggeva le slot della finestra **precedente** e
+// dichiarava `item_not_in_container` su una cache ancora piena (baule a
+// (90,73,160) con 795 lingotti).
+function delayedContainerOpen (adapter, { windowId = 10, slots, delayMs = 300 } = {}) {
+  adapter.opens = 0;
+  adapter._queueAuthInput = async () => {
+    adapter.opens++;
+    adapter._openContainer = { id: windowId, type: 'container' };
+    setTimeout(() => {
+      if (adapter._openContainer?.id !== windowId) return; // finestra già chiusa
+      adapter._openContainerSlots = slots;
+      adapter._openContainerContentAt = Date.now();
+      for (const waiter of adapter._containerContentWaiters.filter(w => w.windowId === windowId)) waiter.resolve(true);
+    }, delayMs);
+  };
+  adapter._waitForContainerOpen = async () => ({ window_type: 'container', window_id: windowId });
+}
+
+test('the take waits for the container content and uses its slots', async () => {
+  const adapter = storageAdapter();
+  seedContainer(adapter, { contents: { iron_ingot: 3 } });
+  // Slot rimaste dal contenitore precedente: se il take le usasse, l'item non
+  // ci sarebbe e la cache verrebbe riscritta con dati falsi.
+  adapter._openContainerSlots = [{ network_id: 5, name: 'oak_planks', count: 1, stack_id: 1 }];
+  const ironSlots = [];
+  ironSlots[0] = { network_id: 458, name: 'iron_ingot', count: 3, stack_id: 99 };
+  delayedContainerOpen(adapter, { slots: ironSlots });
+  const requests = [];
+  adapter._sendStackRequest = async ([request]) => { requests.push(request); return { status: 'ok', containers: [] }; };
+  adapter._applyStackResponse = () => {};
+  adapter._returnCursorToInventory = async () => true;
+  adapter._refreshInventory = () => {};
+
+  const result = await adapter._takeFromContainer('iron_ingot');
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.count, 3);
+  assert.equal(adapter.opens, 1);
+  assert.equal(requests[0].source.slot, 0, 'slot del contenuto appena arrivato');
+  assert.equal(requests[0].source.stack_id, 99);
+  assert.equal(adapter._cachedContainers().find(c => c.type === 'chest').contents.iron_ingot, undefined, 'lo scrigno si svuota nella cache');
+});
+
+test('a window that never sends its content is retried, then typed', async () => {
+  const adapter = storageAdapter();
+  adapter.opens = 0;
+  adapter._queueAuthInput = async () => { adapter.opens++; adapter._openContainer = { id: 10, type: 'container' }; };
+  adapter._waitForContainerOpen = async () => ({ window_type: 'container', window_id: 10 });
+  await assert.rejects(
+    () => adapter._ensureStorageOpen({ name: 'chest', position: { x: 2, y: 64, z: 0 }, distance: 2 }, { contentTimeoutMs: 30 }),
+    /container_content_timeout/,
+  );
+  assert.equal(adapter.opens, 3, 'un tentativo per apertura, poi errore tipizzato');
+  assert.equal(adapter._openContainer, null, 'nessuna finestra lasciata aperta');
+});
+
+test('a second container never accepts the previous window content', async () => {
+  const adapter = storageAdapter();
+  const first = seedContainer(adapter, { x: 2, contents: { iron_ingot: 3 } });
+  const second = seedContainer(adapter, { x: 3, contents: { gold_ingot: 7 } });
+  adapter.opens = 0;
+  adapter._reachabilityUsable = () => false;
+  adapter._waitForContainerOpen = async () => ({ window_type: 'container', window_id: adapter._openContainer?.id });
+  adapter._queueAuthInput = async () => {
+    adapter.opens++;
+    const id = 10 + adapter.opens - 1;
+    adapter._openContainer = { id, type: 'container' };
+    if (id === 10) { // solo il primo contenitore consegna il suo contenuto
+      adapter._openContainerSlots = [{ network_id: 458, name: 'iron_ingot', count: 3, stack_id: 99 }];
+      adapter._openContainerContentAt = Date.now();
+      adapter._openContainerContentWindow = id;
+    }
+  };
+  adapter._closeContainer = async () => {
+    adapter._openContainer = null;
+    adapter._openContainerBlock = null;
+    adapter._openContainerSlots = [];
+    adapter._openContainerContentAt = 0;
+    adapter._openContainerContentWindow = null;
+  };
+
+  await adapter._ensureStorageOpen(first);
+  assert.equal(adapter.opens, 1);
+  assert.equal(adapter._openContainerSlots[0].name, 'iron_ingot', 'il primo contenitore ha consegnato il contenuto');
+  // Live 03/10: la finestra 3..10 si aprivano senza contenuto e il flag della
+  // finestra 2 restava acceso, così la lettura scriveva {} nella cache e il take
+  // dichiarava item_not_in_container su uno scrigno pieno di ferro.
+  await assert.rejects(
+    () => adapter._ensureStorageOpen(second, { contentTimeoutMs: 20 }),
+    /container_content_timeout/,
+  );
+  assert.equal(adapter.opens, 4, 'il secondo contenitore viene ritentato tre volte senza accettare il contenuto della finestra precedente');
+});
+
+test('_waitForContainerContent only accepts the content of the window it waits for', async () => {
+  const adapter = storageAdapter();
+  adapter._openContainer = { id: 2, type: 'container' };
+  adapter._openContainerSlots = [{ network_id: 458, name: 'iron_ingot', count: 3, stack_id: 99 }];
+  adapter._openContainerContentAt = Date.now();
+  adapter._openContainerContentWindow = 2;
+  assert.equal(await adapter._waitForContainerContent(2, 20), true, 'la finestra 2 ha il suo contenuto');
+  // Live 03/10: la finestra 3 si apriva con il contenuto della 2 ancora registrato
+  // e la lettura dichiarava {} uno scrigno pieno.
+  assert.equal(await adapter._waitForContainerContent(3, 20), false, 'il contenuto della finestra 2 non vale per la 3');
+});
+
+test('a take never rewrites the cache when the container content is missing', async () => {
+  const adapter = storageAdapter();
+  seedContainer(adapter, { contents: { iron_ingot: 3 } });
+  adapter._ensureStorageOpen = async () => { throw new Error('container_content_timeout'); };
+  const result = await adapter._takeFromContainer('iron_ingot');
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'container_content_timeout');
+  assert.deepEqual(adapter._cachedContainers()[0].contents, { iron_ingot: 3 }, 'la cache resta quella buona');
+});
+
+test('the storage scan asks for more than the nearest handful per name', () => {
+  const adapter = storageAdapter();
+  const calls = [];
+  adapter.world.findBlocks = (name, _position, radius, count) => {
+    calls.push({ name, radius, count });
+    return [];
+  };
+  adapter._findNearbyStorageBlocks();
+  assert.equal(calls.length, 4, 'un giro per ogni nome di contenitore');
+  for (const call of calls) {
+    assert.ok(call.count >= 16, `troppi pochi blocchi per nome: ${call.name} ${call.count}`);
+  }
+});
+
+test('reading a wall of chests stops at the limit, nearest first', async () => {
+  const adapter = storageAdapter();
+  const chests = [];
+  for (let i = 0; i < 20; i++) {
+    chests.push({ name: 'chest', position: { x: i, y: 64, z: 0 }, distance: i });
+  }
+  adapter.world.findBlocks = (name) => (name === 'chest' ? [...chests] : []);
+  adapter._reachabilityUsable = () => false;
+  const opened = [];
+  adapter._ensureStorageOpen = async (block) => { opened.push(block.position.x); adapter._openContainerSlots = []; };
+  const result = await adapter._readContainers();
+  assert.equal(result.ok, true);
+  assert.equal(result.considered, 20, 'il censimento vede tutta la parete');
+  assert.equal(result.read, 8, 'la lettura si ferma al limite');
+  assert.equal(result.truncated, true);
+  assert.deepEqual(opened, [...Array(8).keys()], 'si leggono i contenitori più vicini, in ordine');
+});
+
+test('a slow read stops on its budget instead of running to the action timeout', async () => {
+  const adapter = storageAdapter();
+  const chests = [];
+  for (let i = 0; i < 8; i++) chests.push({ name: 'chest', position: { x: i, y: 64, z: 0 }, distance: i });
+  adapter.world.findBlocks = (name) => (name === 'chest' ? [...chests] : []);
+  adapter._reachabilityUsable = () => false;
+  let opened = 0;
+  adapter._ensureStorageOpen = async () => { opened++; await new Promise(r => setTimeout(r, 25)); adapter._openContainerSlots = []; };
+  const result = await adapter._readContainers({ budgetMs: 40 });
+  assert.equal(result.ok, true);
+  assert.equal(result.budgetExceeded, true, 'il budget ferma la lettura');
+  assert.ok(opened < 8, `non si legge tutta la parete con il budget: ${opened}`);
+  assert.equal(result.read, opened);
+});
+
+test('the read walks with a short timeout, an explicit take keeps the generous one', async () => {
+  const adapter = storageAdapter();
+  const chest = { name: 'chest', position: { x: 20, y: 64, z: 0 }, distance: 20 };
+  adapter.world.findBlocks = (name) => (name === 'chest' ? [chest] : []);
+  adapter._reachabilityUsable = () => false;
+  const walks = [];
+  adapter._moveTo = async (target, radius, timeoutMs) => { walks.push({ target, radius, timeoutMs }); return { ok: true }; };
+  adapter._openContainerSlots = [];
+  adapter._waitForContainerOpen = async () => { throw new Error('container_open_timeout'); };
+  adapter._waitForContainerContent = async () => false;
+  await adapter._readContainers({ budgetMs: 1000 }).catch(() => {});
+  assert.equal(walks.length, 1);
+  assert.equal(walks[0].timeoutMs, 8000, 'nella lettura il cammino è corto');
+  // Un `take_*` esplicito non cambia il timeout generoso.
+  await adapter._ensureStorageOpen(chest).catch(() => {});
+  assert.equal(walks[1].timeoutMs, 30000, 'il take mantiene il default');
+});
