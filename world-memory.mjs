@@ -234,6 +234,69 @@ export class WorldMemory {
     return this.repo.remove(id);
   }
 
+  // ---- placements (R4) -------------------------------------------------------------
+  //
+  // Il registro dei blocchi che il bot ha piazzato *lui*: è l'unico titolo che
+  // lo autorizza a rimuoverli senza toccare la base. Vive anche qui (kind
+  // `placement`, id spaziale `placement_x_y_z`) perché un restart dell'harness
+  // non deve far perdere la titolarità dei propri blocchi: senza registro il
+  // teardown non tocca nulla.
+
+  placementId (position) {
+    return this._spatialId('placement', position);
+  }
+
+  rememberPlacement ({ position, block, item = null, circuitId = null, dimension = 'overworld', source = 'place', placedAt = null }) {
+    if (!position || !block) throw new Error('rememberPlacement: position and block required');
+    const key = this.placementId(position);
+    const existing = this.repo.get(key);
+    const now = placedAt ?? Date.now();
+    const record = {
+      id: key,
+      kind: 'placement',
+      type: block,
+      label: `${block} placed by the bot`,
+      dimension,
+      position: round(position),
+      placedAt: now,
+      item,
+      circuitId,
+      source,
+      discoveredAt: existing?.discoveredAt ?? now,
+      lastSeenAt: now,
+      confidence: 1,
+      status: MEMORY_STATUS.KNOWN,
+    };
+    this.repo.upsert(record);
+    return record;
+  }
+
+  // Il cantiere impara *dopo* il piazzamento che quella cella è di un circuito:
+  // il record va aggiornato, non duplicato.
+  setPlacementCircuit (position, circuitId = null) {
+    const record = this.placementAt(position);
+    if (!record) return null;
+    this.repo.upsert({ ...record, circuitId, lastSeenAt: Date.now() });
+    return this.repo.get(record.id);
+  }
+
+  placements ({ circuitId = null, near = null, radius = null, limit = null } = {}) {
+    const rows = this.repo.find({ kind: 'placement', near, radius, limit });
+    const filtered = circuitId == null ? rows : rows.filter((r) => r.circuitId === circuitId);
+    if (near) filtered.sort((a, b) => distance3d(a.position, near) - distance3d(b.position, near));
+    return filtered;
+  }
+
+  placementAt (position) {
+    if (!position) return null;
+    return this.repo.get(this.placementId(position));
+  }
+
+  forgetPlacement (position) {
+    if (!position) return false;
+    return this.repo.remove(this.placementId(position));
+  }
+
   // ---- resource sites / portals / entities -----------------------------------------
 
   _spatialId (prefix, position) {
@@ -1376,7 +1439,7 @@ export class WorldMemory {
 
   _kindCounts () {
     const counts = {};
-    for (const kind of ['landmark', 'structure', 'home', 'resource_site', 'portal', 'entity', 'container', 'resource', 'biome', 'mission', 'checkpoint']) {
+    for (const kind of ['landmark', 'structure', 'home', 'resource_site', 'portal', 'entity', 'container', 'resource', 'biome', 'mission', 'checkpoint', 'placement']) {
       const n = this.repo.count({ kind });
       if (n) counts[kind] = n;
     }

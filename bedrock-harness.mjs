@@ -5,6 +5,7 @@
 //   POST /plan {objective, waypoint, targets} -> registra il piano corrente
 //   POST /say {message, type?} -> il bot scrive in chat (pacchetto `text`)
 //   GET  /memory/hints?resource=<item>&limit=N -> località provate (episodico → semantico)
+//   GET  /memory/placements?circuitId=&limit=N -> registro dei blocchi piazzati dal bot (R4)
 //   POST /memory/consolidate {limit,since} -> backfill idempotente dei consolidamenti
 //   GET  /memory/observations?subject=&predicate=&limit=N -> log grezzo delle osservazioni
 //   POST /memory/materialize {limit} -> riproietta il log nel grafo (idempotente)
@@ -530,6 +531,16 @@ server = createServer(async (req, res) => {
       const limit = Number(params.get('limit') ?? 10) || 10;
       const hints = resource ? worldMemory.provenLocationsFor(resource, { limit }) : worldMemory.productivityHints({ limit });
       response = [200, { hints, count: hints.length, resource: resource ?? null }];
+    }
+    // R4: il registro dei blocchi che il bot ha piazzato *lui*: è il titolo con cui
+    // `mine_owned`/`teardown_circuit` possono rimuoverli senza toccare la base, e
+    // sopravvive ai restart perché vive nella memoria del mondo.
+    else if (req.method === 'GET' && req.url.startsWith('/memory/placements')) {
+      const params = new URLSearchParams(req.url.split('?')[1] ?? '');
+      const circuitId = params.get('circuitId');
+      const limit = Number(params.get('limit') ?? 50) || 50;
+      const placements = worldMemory.placements({ circuitId: circuitId ?? null, limit });
+      response = [200, { placements, count: placements.length, circuitId: circuitId ?? null }];
     }
     // Backfill idempotente: consolida le missioni chiuse prima di questa feature.
     else if (req.method === 'POST' && req.url === '/memory/consolidate') {

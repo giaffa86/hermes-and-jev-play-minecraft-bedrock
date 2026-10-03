@@ -211,6 +211,14 @@ utente (una *missione*) ai nodi del mondo **senza sporcarli**.
   but not yet visited — the "next place to explore" for the deterministic
   planner). Visits are **buffered in RAM** and written in one transaction
   (`upsertMany`), so the perception loop never does one INSERT per block.
+- **Placements** (`kind: placement`): `rememberPlacement`, `placements`,
+  `placementAt`, `forgetPlacement`, `setPlacementCircuit` — the adapter's own
+  record of the blocks it placed, one record per cell (id
+  `placement_<x>_<y>_<z>`) with `block`, `item`, `circuitId` (for a circuit work
+  site), `source` (`place` / `restored`) and `placedAt`. `GET
+  /memory/placements` reads it back. This is the R4 ledger the teardown relies on
+  — see [redstone](redstone.md) — made persistent, so ownership survives a
+  restart of the harness.
 - **Knowledge graph**: `link`/`neighbors`/`traverse`/`find({ relation })` +
   conceptual resource nodes. The producer materializes `contains` edges from
   containers and resource sites (`chest_91 --contains--> resource:white_wool`).
@@ -480,6 +488,16 @@ while they are within `keepPerFact`.
   with the per-neighbour diagnostic in `hits[].reachability.detail` (beds east
   and west, the harness's own `crafting_table` south, its own `oak_log` at the
   north head cell).
+- ~~**Persistent placement ledger**~~: implemented — the R4 ledger is mirrored
+  into world memory (`kind: placement`, `GET /memory/placements`) and rehydrated
+  at spawn, and the new `mine_owned` action removes a block the bot made only
+  when the world still shows it where the bot left it and the cell is in reach; a
+  claim whose cell now holds something else is dropped, not mined. Live
+  03/10/2026: the route and the refusal path are verified
+  (`nothing_owned_nearby`, 1 ms, `owned: 0`); the positive cycle (place →
+  restart → rehydrate → recover) is block-tested, not live, because the standing
+  room offers no placeable item — see
+  [open questions](open-questions.md#bot-stuck-on-a-built-platform-2026-10-02).
 
 ## Related pages
 

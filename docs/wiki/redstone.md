@@ -441,6 +441,35 @@ nothing else.
   (`{block, item, at, source, circuit}`) and `_buildCircuit` stamps `circuit:
   <id>` on the cells of its work site. The ledger is what makes a teardown
   *owned*: a cell the bot never placed cannot be removed.
+- **The ledger is persistent** (03/10/2026): `_placedBlocks` is still the hot
+  map, but every write goes through `_rememberPlacement` / `_setPlacementCircuit`
+  and every removal through `_forgetPlacement`, which mirror it into world memory
+  as `kind: placement` (`rememberPlacement` / `setPlacementCircuit` /
+  `forgetPlacement`, one record per cell, id `placement_<x>_<y>_<z>`, with the
+  `item`, the `circuitId`, the `source` and the instant). At spawn
+  `_hydratePlacements()` reads it back (`memory.placements({limit: null})`) and
+  rebuilds the map — `placements_hydrated {count, owned}` — so a restart of the
+  harness no longer erases what the bot built. `GET /memory/placements` reads the
+  same records over HTTP. A failed write is logged
+  (`placement_persist_failed` / `placement_forget_failed` /
+  `placement_hydrate_failed`) and never breaks a placement that the server
+  already accepted.
+- **`mine_owned` — the way back to a cell of its own**: the recovery action
+  (`_mineOwned`) reconciles first (`_reconcilePlacements`: a claim whose cell now
+  holds a *different*, loaded block is dropped from both ledgers —
+  `placement_claims_dropped` — because it may have been put there by someone
+  else), then mines the nearest cell that is still the bot's own, still in reach
+  (`_ownedRecoverable`, range 5.1, the world must show the same block, and the
+  drop must be reachable when the reachability model is usable) and still
+  diggable. Report `{ok: true, block, item, position, circuit, dropped, owned}`
+  on success (`placement_recovered`), and `nothing_owned_nearby` with
+  `{owned, dropped, hint}` when there is nothing to recover. The option is
+  offered only when a recoverable cell exists. **The dispatch comes before the
+  `mine_<block>` prefix**, so a key that starts with `mine_` but is a verb is not
+  swallowed (the same trap `place_water`/`mount_boat` fell into in M5).
+  `DIG_PROTECTED` is not consulted by `_mineBlock` (only `_digTargets` and
+  `_digUpTargets` use it), so recovery needed **no exemption and relaxed no
+  protection**: what decides is the ledger plus the world's current block.
 - **`teardown_circuit`** (and `teardown_circuit_<id>`): removes the circuit cells
   the bot placed, one by one, and **skips** any cell that is no longer the block
   it placed (`{reason: 'changed', expected, found}` — someone else touched it) or
@@ -484,7 +513,17 @@ nothing else.
   changed (skipped, not mined) and the two "nothing to tear down" errors, plus two
   cases for the clock: the tolerance boundary (360 ms passes, 361 ms does not,
   exactly) and the repeatability of the measurement (three builds with the same
-  fake clock give the same `[300, 6, true]`). Suite: **1021 tests green**.
+  fake clock give the same `[300, 6, true]`). `tests/memory-placements.test.mjs`
+  covers the persistent record on both storage backends (7 cases each: identity,
+  upsert of the same cell, the circuit tag after the fact, distance ordering,
+  idempotent forgetting, survival across a reopen of the store, invalid input)
+  and `tests/bedrock-placements.test.mjs` covers the adapter (10 cases: the write
+  through both ledgers, hydration without duplicates, only the bot's own
+  `crafting_table` recovered — the base's stays, a changed cell dropped instead
+  of mined, an out-of-reach cell not offered, the nearest first with a typed
+  failure, the `mine_owned` key not swallowed by the prefix, the real
+  `_placeAtCell` path writing the ledger, the teardown forgetting in both, and
+  the circuit tag kept in sync). Suite: **1045 tests green**.
 - **Live round (03/10/2026, container `hermes-jev-bedrock`)**: `/observe.circuits`
   → `{count: 8, buildable: […4…], declared: […4 with a reason…], invalid: null,
   last: null, owned: 0}`; `/options` → 22 keys with **no** `teardown_circuit` and
@@ -494,12 +533,42 @@ nothing else.
   after a failed `place_torch`); `build_circuit_delay_line` → `missing_materials`
   (cobblestone, lever, repeater ×3, redstone_lamp) and the attempt landed in
   `runs/demo/circuits.jsonl`.
+- **Live round for the persistent ledger (03/10/2026, container
+  `hermes-jev-bedrock`)**: the three files were copied in (`world-memory.mjs`
+  `ae4fab85…`, `bedrock-adapter.mjs` `fedc99c6…`, `bedrock-harness.mjs`
+  `d5a67677…`, md5 identical host/container) and the container restarted with no
+  run active. After the restart: `/observe` 25 251 bytes with `observations:
+  179` (same store, `runs/memory/world.sqlite`), `circuits.owned: 0`, **`GET
+  /memory/placements` → `{placements: [], count: 0, circuitId: null}`** (the new
+  route answers) and no `placement` key in the kind counts (empty ledger).
+  `POST /act {"key":"mine_owned"}` → `{ok: false, error: 'nothing_owned_nearby',
+  owned: 0, dropped: 0, hint: 'no placement of mine is both in reach and still
+  standing where I left it'}` in **1 ms**, recorded as an `action` event with the
+  bot's position — the action is reachable from the API, typed and fail-safe. The
+  **positive** cycle (place → restart → rehydrate → recover) is not live yet: the
+  inventory holds one `dirt`, and a `place_*` option exists only for
+  `crafting_table` / `furnace` / `torch` / `bed` (progression) or a redstone
+  component in hand, none of which the standing room can produce (no coal in
+  reach, a table already within 8 blocks, no redstone), so nothing can be placed
+  without touching the base.
 - **Known limits (R4)**: the measured path, the rollback and the teardown of real
   cells are covered by the adapter tests with a modelled server, because the
   standing room has no redstone material and plan C forbids touching the base —
   the live round exercises the empty/refused paths (`owned: 0`,
-  `nothing_to_tear_down`, `missing_materials`, the JSONL row). The measurement
-  depends on the server reporting block updates for the output: if it stays
+  `nothing_to_tear_down`, `missing_materials`, the JSONL row). The same is true
+  of the recovery: `mine_owned` is live-verified on the refusal
+  (`nothing_owned_nearby`) but not on a real removal, because the room offers
+  nothing to place (see [open questions](open-questions.md) — the persistence
+  itself is proven by `tests/memory-placements.test.mjs` reopening the store, and
+  the hydration by `tests/bedrock-placements.test.mjs`). The ledger grows
+  monotonically: nothing prunes it (a cell is only forgotten when it is torn down
+  or recovered), so a long-lived bot with many placements carries that many
+  records — the `placement` kind is cheap, but it should be revisited together
+  with the other retention policies if the registry ever gets large. Hydration
+  trusts the record's own `block`: a cell that changed while the harness was down
+  is caught by the first `mine_owned` (the claim is dropped, nothing is mined),
+  not at spawn. The measurement depends on the server reporting block updates for
+  the output: if it stays
   silent, the honest answer is `circuit_delay_unmeasured`, not a passed test. A
   tolerance of ±60 ms absorbs the 50 ms tick but cannot tell "6 ticks late" from
   "one tick late, seven times": it is a timing check, not a trace analysis.

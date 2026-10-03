@@ -81,6 +81,21 @@ Last lint: 2026-10-03.
   world. Recommended: the bot-owned cleanup action, because it unblocks the whole
   live backlog (riding, trade, containers, crops, mounting) with no base
   modification. Until an answer arrives, plan **(C)** stays in force.
+- **Update (2026-10-03, later)**: the bot-owned cleanup action now exists. The R4
+  placement ledger is persisted in world memory and rehydrated at spawn
+  (`kind: placement`, `GET /memory/placements`, `_hydratePlacements`) and
+  `mine_owned` removes the nearest cell that is still the bot's own, still in
+  reach and still holding the block it left there — a cell someone else changed is
+  dropped from the ledger, never mined. Live the refusal path is verified
+  (`POST /act {"key":"mine_owned"}` → `nothing_owned_nearby`, `owned: 0`, 1 ms);
+  the positive path is block-tested only, because the room offers nothing to
+  place (inventory `{dirt: 1}`, and `place_*` exists only for
+  `crafting_table`/`furnace`/`torch`/`bed` or a redstone component in hand).
+  **The two probe blocks of this room are *not* in the ledger**: they were placed
+  before the registry existed and the ledger only knows what it recorded, so
+  `mine_owned` cannot claim them. Option A (the console edit) therefore remains
+  the only way to remove those two specific blocks; option B now works for
+  everything the bot places from now on.
 
 ## Mounting a vehicle is never confirmed (2026-10-03)
 

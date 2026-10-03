@@ -541,6 +541,8 @@ export class BedrockAdapter {
           }
           this.memory.hydrate();
         }
+        // R4: il registro dei propri piazzamenti sopravvive ai restart.
+        this._hydratePlacements();
         this.drops = [];
         this._syncFeetFromPosition();
         this._velocity = { x: 0, y: 0, z: 0 };
@@ -3607,6 +3609,17 @@ export class BedrockAdapter {
       offeredKeys.add(key);
       o.push({ key, description: `Mine ${ore.name} at ${JSON.stringify(ore.position)} (${ore.distance} blocks away, opportunity)` });
     }
+    // R4: il bot può anche *disfare* una propria posa (`mine_owned`): è l'unica
+    // azione che toglie un blocco «protetto» (`crafting_table`, `_planks`, …)
+    // senza allentare `DIG_PROTECTED`, perché il registro dice che la cella è sua.
+    const recoverable = this._ownedRecoverable();
+    if (recoverable.length) {
+      const first = recoverable[0];
+      o.push({
+        key: 'mine_owned',
+        description: `Mine the ${first.block} the bot placed itself at ${JSON.stringify(first.cell)} (${first.distance} blocks away)${first.circuit ? `, part of circuit ${first.circuit}` : ''}`,
+      });
+    }
     // Discesa: scavare un gradino verso il basso (testa, fronte e cella sotto il
     // fronte), poi avanzare di un blocco e scendere. Serve a raggiungere lo stone
     // quando è coperto; i gradini restano percorribili per tornare su.
@@ -3965,6 +3978,10 @@ export class BedrockAdapter {
         result = await this._digDown();
       } else if (key === 'dig_up') {
         result = await this._digUp();
+      } else if (key === 'mine_owned') {
+        // R4: sta *prima* del prefisso `mine_<blocco>` — `mine_owned` non è un
+        // blocco (stessa trappola di `place_water`/`mount_boat` in M5).
+        result = await this._mineOwned();
       } else if (key.startsWith('mine_')) {
         const blockName = key.slice('mine_'.length);
         const found = this.world.findBlocks(blockName, this.position, 96, 8);
@@ -5919,10 +5936,9 @@ export class BedrockAdapter {
         this._refreshNearby();
         this._lastPlacement.after = blockName;
         // R4: il bot ricorda cosa ha piazzato lui, per poterlo rimuovere senza
-        // toccare il resto del mondo.
-        this._placedBlocks.set(`${target.x},${target.y},${target.z}`, {
-          block: blockName, item: itemName, at: Date.now(), source: 'place', circuit: null,
-        });
+        // toccare il resto del mondo. Il registro è anche *persistente*
+        // (`memory.rememberPlacement`): un restart non deve far perdere il titolo.
+        this._rememberPlacement({ position: target, block: blockName, item: itemName, source: 'place' });
         return { ok: true, block: blockName, position: target };
       }
       if (placed && placed.name !== 'air' && placed.name !== 'unknown') {
@@ -6219,6 +6235,180 @@ export class BedrockAdapter {
     return out.sort((a, b) => a.at - b.at);
   }
 
+  // R4: la `Map` in memoria è una cache del registro persistente (`kind:
+  // placement` nella memoria del mondo). Si scrive passando da qui, così le due
+  // copie non divergono mai e un restart le ricompone (`_hydratePlacements`).
+  _rememberPlacement ({ position, block, item = null, circuitId = null, source = 'place', placedAt = null }) {
+    const key = `${position.x},${position.y},${position.z}`;
+    const name = String(block).replace(/^minecraft:/i, '').toLowerCase();
+    const at = placedAt ?? Date.now();
+    this._placedBlocks.set(key, { block: name, item: item ?? null, at, source, circuit: circuitId ?? null });
+    try {
+      this.memory?.rememberPlacement({ position, block: name, item: item ?? null, circuitId, source, placedAt: at });
+    } catch (error) {
+      this.log('placement_persist_failed', { position, block: name, error: String(error?.message ?? error) });
+    }
+    return { key, block: name, at };
+  }
+
+  // R4: il titolo se ne va insieme al blocco (rimosso dal bot, o cambiato da
+  // qualcun altro): il registro non conserva celle che non sono più sue.
+  _forgetPlacement (position) {
+    const key = `${position.x},${position.y},${position.z}`;
+    const had = this._placedBlocks.delete(key);
+    try {
+      this.memory?.forgetPlacement(position);
+    } catch (error) {
+      this.log('placement_forget_failed', { position, error: String(error?.message ?? error) });
+    }
+    return had;
+  }
+
+  // R4: il cantiere impara *dopo* il piazzamento che quella cella è di un circuito.
+  _setPlacementCircuit (position, circuitId) {
+    const entry = this._placedBlocks.get(`${position.x},${position.y},${position.z}`);
+    if (entry) entry.circuit = circuitId;
+    try {
+      this.memory?.setPlacementCircuit?.(position, circuitId);
+    } catch (error) {
+      this.log('placement_persist_failed', { position, circuit: circuitId, error: String(error?.message ?? error) });
+    }
+    return entry ?? null;
+  }
+
+  // R4: ricompone il registro all'avvio. Il mondo non viene interrogato qui:
+  // chi rimuove (`_teardownCells`, `_mineOwned`) verifica comunque che il blocco
+  // sia ancora quello piazzato dal bot, e una cella che qualcun altro ha
+  // cambiato finisce nei `skipped` con motivo `changed`.
+  _hydratePlacements () {
+    if (!this.memory || typeof this.memory.placements !== 'function') return { hydrated: 0 };
+    let hydrated = 0;
+    try {
+      for (const record of this.memory.placements({ limit: null })) {
+        if (!record?.position || !record.type) continue;
+        const key = `${record.position.x},${record.position.y},${record.position.z}`;
+        if (this._placedBlocks.has(key)) continue;
+        this._placedBlocks.set(key, {
+          block: String(record.type).replace(/^minecraft:/i, '').toLowerCase(),
+          item: record.item ?? null,
+          at: record.placedAt ?? record.lastSeenAt ?? Date.now(),
+          source: record.source ?? 'restored',
+          circuit: record.circuitId ?? null,
+        });
+        hydrated += 1;
+      }
+    } catch (error) {
+      this.log('placement_hydrate_failed', { error: String(error?.message ?? error) });
+    }
+    if (hydrated) this.log('placements_hydrated', { count: hydrated, owned: this._placedBlocks.size });
+    return { hydrated };
+  }
+
+  // R4: tutte le celle del registro (torce, rifugi, cantieri), non solo i circuiti.
+  _ownedCells (id = null) {
+    const out = [];
+    for (const [key, entry] of this._placedBlocks) {
+      if (!entry) continue;
+      if (id && entry.circuit !== id) continue;
+      const [x, y, z] = key.split(',').map(Number);
+      out.push({ cell: { x, y, z }, block: entry.block, item: entry.item ?? null, circuit: entry.circuit ?? null, at: entry.at, key });
+    }
+    return out.sort((a, b) => a.at - b.at);
+  }
+
+  // R4: le celle del registro che il bot può togliersi di torno *adesso*: il
+  // mondo mostra ancora il blocco che ha piazzato lui e la cella è a portata.
+  // Una cella che qualcun altro ha cambiato non è più sua (non compare).
+  _ownedRecoverable ({ range = 5.1 } = {}) {
+    if (!this.position) return [];
+    const out = [];
+    for (const entry of this._ownedCells()) {
+      const block = this.world.blockAt(entry.cell);
+      const name = String(block?.name ?? '').replace(/^minecraft:/i, '').toLowerCase();
+      if (!name || name !== entry.block) continue;
+      if (block && block.diggable === false) continue;
+      const distance = Math.round(Math.hypot(
+        entry.cell.x + 0.5 - this.position.x,
+        entry.cell.y + 0.5 - this.position.y,
+        entry.cell.z + 0.5 - this.position.z,
+      ) * 10) / 10;
+      // Si offre solo ciò che è a portata di braccio: per *andare* a prendere un
+      // proprio blocco lontano c'è `goto_waypoint`, e offrire un'azione che
+      // richiede un percorso che non esiste è la stessa famiglia di difetto dei
+      // filtri di raggiungibilità (P2).
+      if (distance > range) continue;
+      if (this._reachabilityUsable() && !this.mineDropReachable(entry.cell)) continue;
+      out.push({ ...entry, distance });
+    }
+    return out.sort((a, b) => a.distance - b.distance);
+  }
+
+  // R4: una cella il cui blocco non è più quello che il bot ha piazzato non è
+  // più sua: il titolo si butta, altrimenti un blocco messo da altri nella
+  // stessa cella potrebbe essere rimosso al posto suo. I chunk non caricati non
+  // si giudicano (`blockAt` nullo o `unknown`): lì la verifica la fa chi rimuove.
+  _reconcilePlacements () {
+    const dropped = [];
+    for (const entry of this._ownedCells()) {
+      const block = this.world.blockAt(entry.cell);
+      const name = String(block?.name ?? '').replace(/^minecraft:/i, '').toLowerCase();
+      if (!name || name === 'unknown' || name === entry.block) continue;
+      this._forgetPlacement(entry.cell);
+      dropped.push({ ...entry, found: name });
+    }
+    if (dropped.length) this.log('placement_claims_dropped', { count: dropped.length, cells: dropped.map(d => d.cell) });
+    return dropped;
+  }
+
+  // R4: `mine_owned` è l'unico modo che il bot ha di disfare una *propria*
+  // posa — la leva per liberarsi di un blocco che ha messo lui e che ora gli
+  // impedisce di muoversi. Il registro dice che la cella è sua, il mondo deve
+  // ancora mostrare quel blocco: se qualcuno l'ha cambiato il blocco non gli
+  // appartiene più e la cella non viene toccata. `DIG_PROTECTED` non entra qui:
+  // quella guardia serve a non aprire buchi nella base scavando gradini
+  // (`dig_down`/`dig_up`), non a impedire di riprendersi un proprio piazzamento.
+  async _mineOwned ({ timeoutMs = 30000, maxAttempts = 3 } = {}) {
+    const dropped = this._reconcilePlacements();
+    const candidates = this._ownedRecoverable();
+    if (!candidates.length) {
+      return {
+        ok: false,
+        error: 'nothing_owned_nearby',
+        owned: this._placedBlocks.size,
+        dropped: dropped.length,
+        hint: 'no placement of mine is both in reach and still standing where I left it',
+      };
+    }
+    const failed = [];
+    for (const candidate of candidates.slice(0, Math.max(1, maxAttempts))) {
+      const block = this.world.blockAt(candidate.cell);
+      if (!block) { failed.push({ ...candidate, error: 'world_not_loaded' }); continue; }
+      const res = await this._mineBlock(block, timeoutMs);
+      if (res?.ok) {
+        this._forgetPlacement(candidate.cell);
+        this.log('placement_recovered', { position: candidate.cell, block: candidate.block, item: candidate.item, circuit: candidate.circuit });
+        return {
+          ok: true,
+          block: candidate.block,
+          item: candidate.item,
+          position: candidate.cell,
+          circuit: candidate.circuit,
+          dropped: res.dropped ?? null,
+          owned: this._placedBlocks.size,
+        };
+      }
+      failed.push({ ...candidate, error: res?.error ?? 'mine_failed' });
+    }
+    return {
+      ok: false,
+      error: failed[0]?.error ?? 'mine_failed',
+      position: failed[0]?.cell ?? null,
+      block: failed[0]?.block ?? null,
+      attempts: failed.length,
+      failed,
+    };
+  }
+
   // Smonta le celle indicate **solo** se il bot le ha piazzate lui e se il mondo
   // mostra ancora quel blocco: se qualcun altro l'ha cambiato non si tocca.
   async _teardownCells (cells, { timeoutMs = 30000 } = {}) {
@@ -6227,9 +6417,11 @@ export class BedrockAdapter {
     const failed = [];
     for (const entry of cells) {
       const key = entry.key ?? `${entry.cell.x},${entry.cell.y},${entry.cell.z}`;
+      const [kx, ky, kz] = key.split(',').map(Number);
+      const cell = entry.cell ?? { x: kx, y: ky, z: kz };
       const owned = this._placedBlocks.get(key) ?? null;
       if (!owned) { skipped.push({ ...entry, reason: 'not_owned' }); continue; }
-      const block = this.world.blockAt(entry.cell);
+      const block = this.world.blockAt(cell);
       const name = String(block?.name ?? '').replace(/^minecraft:/i, '').toLowerCase();
       if (name !== owned.block) {
         skipped.push({ ...entry, reason: 'changed', expected: owned.block, found: name || null });
@@ -6237,7 +6429,7 @@ export class BedrockAdapter {
       }
       const res = await this._mineBlock(block, timeoutMs);
       if (res?.ok) {
-        this._placedBlocks.delete(key);
+        this._forgetPlacement(cell);
         removed.push({ ...entry, block: owned.block });
       } else {
         failed.push({ ...entry, error: res?.error ?? 'mine_failed' });
@@ -6296,8 +6488,7 @@ export class BedrockAdapter {
       }
       placed.push({ label: step.label, item: step.item, block: step.block, cell: step.cell, facing: res.facing ?? null });
       // R4: il registro impara che quella cella è di questo circuito.
-      const owned = this._placedBlocks.get(`${step.cell.x},${step.cell.y},${step.cell.z}`);
-      if (owned) owned.circuit = id;
+      this._setPlacementCircuit(step.cell, id);
     }
     if (failed.length) {
       // R4: un cantiere a metà non resta in piedi. Il rollback è best effort e

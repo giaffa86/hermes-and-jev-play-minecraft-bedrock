@@ -3291,3 +3291,36 @@ same waypoints today fail in 20-60 ms with typed errors (`target_not_found`,
 budget was changed (a larger budget would only have stretched the failures).
 Docs: [redstone](wiki/redstone.md) R4, [verification](wiki/verification.md) row
 47.6, [final report](wiki/final-report.md).
+
+## [2026-10-03] feat | The placement ledger survives a restart, and `mine_owned` recovers it (R4)
+
+The R4 registry (`_placedBlocks`) lived in RAM: a redeploy erased it, so the bot
+could no longer tell a wall it had built from a wall of the base. Now every
+placement is mirrored into world memory as `kind: placement`
+(`rememberPlacement`, `setPlacementCircuit`, `forgetPlacement`; one record per
+cell, `placement_<x>_<y>_<z>`, with `block`, `item`, `circuitId`, `source`,
+`placedAt`), `_hydratePlacements()` rebuilds the map at spawn
+(`placements_hydrated {count, owned}`) and `GET /memory/placements` reads it over
+HTTP. The new `mine_owned` action removes the nearest cell that is still the
+bot's own, still in reach and still holding the block it left there: a claim
+whose cell now holds something else is dropped from both ledgers
+(`placement_claims_dropped`) instead of mined, which is what keeps recovery safe
+inside a base. `DIG_PROTECTED` is not consulted by `_mineBlock`, so no protection
+was relaxed — ownership, not pattern matching, decides. Persistence failures are
+logged and never invalidate a placement the server already accepted.
+
+Tests: `tests/memory-placements.test.mjs` (7 cases ×2 backends) and
+`tests/bedrock-placements.test.mjs` (10 cases) — suite **1045 green** (was 1021).
+Live (container `hermes-jev-bedrock`, md5 identical host/container, then a
+restart): `GET /memory/placements` → `{placements: [], count: 0, circuitId: null}`,
+`circuits.owned: 0`, and `POST /act {"key":"mine_owned"}` →
+`{ok: false, error: 'nothing_owned_nearby', owned: 0, dropped: 0, hint: …}` in
+**1 ms** with the attempt recorded as an `action` event. The positive cycle
+(place → restart → rehydrate → recover) is block-tested only: the standing room
+offers nothing to place (inventory `{dirt: 1}`; `place_*` exists only for
+`crafting_table`/`furnace`/`torch`/`bed` or a redstone component), and the two
+probe blocks of that room predate the ledger, so no action can claim them — see
+[open questions](wiki/open-questions.md).
+
+Docs: [redstone](wiki/redstone.md) R4, [memory](wiki/memory.md),
+[verification](wiki/verification.md) row 47.26.
