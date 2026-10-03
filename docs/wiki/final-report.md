@@ -5,8 +5,8 @@ Synthetic close-out of the priority campaign run against the goal contract
 below is backed by a repo commit, a unit test file or a live probe recorded in
 [verification](verification.md).
 
-Session shape: **51 commits**, suite **466 → 987 tests** (`node --test
-tests/*.test.mjs`, 75 files), 11 of 23 goal tasks complete, 1 skipped as an
+Session shape: **60 commits**, suite **466 → 1053 tests** (`node --test
+tests/*.test.mjs`, 79 files), 12 of 23 goal tasks complete, 1 skipped as an
 environmental blocker.
 
 ## 1. Completed (code + tests + live where required + docs)
@@ -28,7 +28,8 @@ environmental blocker.
 | **P6** hit → real waypoint | `937244c` | live refusal, honestly: all three hits came back `reachability_unknown`, so `semantic_waypoint_skipped` and no destination was invented |
 | **P6** episodic retention (dry-run first) | `8b5d2e6` | `POST /memory/prune` live: dry-run lists 40 candidates, a real run with `keepMissions: 50` deletes nothing and every count stays identical |
 | **P6** observation-log retention (dedupe + prune) | `cd5d4f9` | live 5654 rows → **32 facts / 131 rows**, same search hits and scores before/after, then **0 growth in 180 s** with the write-side dedupe on (was ~280 rows/min) |
-| **R4** persistent placement ledger + `mine_owned` | `d866a5b` | route and refusal live (`GET /memory/placements` → `count: 0`; `mine_owned` → `nothing_owned_nearby`, `owned: 0`, 1 ms, logged as an action); the positive cycle is block-tested because the room offers nothing to place |
+| **R4** persistent placement ledger + `mine_owned` | `d866a5b`, `7553510` | route and refusal live (`GET /memory/placements` → `count: 0`; `mine_owned` → `nothing_owned_nearby`, `owned: 0`, 1 ms, logged as an action); **then the positive cycle live too**: `craft_crafting_table` → `place_crafting_table` at `(106,71,151)` → 1 ledger record → `mine_owned` → ledger back to 0 |
+| **P2/P4** low surfaces, the equip inventory window, the door trap | `7553510` | the bot walked out of the room that had sealed it (`green_carpet` corridor, `{distance: 2, pathNodes: 7}`, then a 38-node walk to the potato field); `harvest_potatoes` live end-to-end (growth read, server-confirmed break, replant); `read_container` read 7 chests; `take_shield` live from a village chest; the take fixed at the source (`_ensureInventoryOpen`) so the failure moved to the offhand place (still 50); the door a villager closed on the bot's cell opened by the bot itself (`[door_opened] {key: '90,73,163'}` → `pathNodes: 5`), with no world edit |
 
 ## 2. Improved but not complete
 
@@ -40,10 +41,12 @@ environmental blocker.
   `attack_<animal>` answer typed refusals live (`missing_feed`, `missing_shears`,
   `need_2_feed`, `cannot_reach_target`); no sheep/bone/iron/rod is available and
   the animals sit outside the walkable component.
-- **Everything that needs walking** (companion happy paths, fishing, containers,
-  trade, mounting, crop harvesting): the bot's walkable component is **one cell**
-  (see the blocker below), so `path_failed`/`target_not_found` is the honest
-  answer until the room is addressed.
+- **Everything that needs walking — unblocked 03/10**: the walkable component was
+  one cell because low surfaces (`green_carpet`) read as walls; after the
+  `_lowProfile` fix the bot left the room on its own, so the walking rounds are
+  possible again (crops and the containers were then verified live). What remains
+  out of reach is no longer geometry: the mount/trade/swim confirmations need a
+  real-client capture, and the farm census has no cow and no sheep.
 - **Fishing**: bite detection rewritten from the `fish_hook_hook` event (the cast
   descent used to be read as a bite); live only `missing_fishing_rod`.
 - **Trading (`p2-trade-timeout`)**: the budget defect is fixed and tested
@@ -57,25 +60,25 @@ environmental blocker.
   safety limits are live-probed, but no lapis/redstone/obsidian/glowstone exists
   in the live world, so the builds themselves are unit-tested only.
 - **Placement recovery (`mine_owned`)**: the ledger is persistent and the action
-  reconciles, reaches and removes; live it only answers the refusal
-  (`nothing_owned_nearby`), because the room offers nothing to place (inventory
-  `{dirt: 1}`, and `place_*` exists only for `crafting_table`/`furnace`/`torch`/
-  `bed` or a redstone component). The two probe blocks that seal the room predate
-  the ledger, so no action can claim them.
+  reconciles, reaches and removes — **live both ways now**: outside the room the
+  bot crafted a table, placed it (`place_crafting_table` → 1 ledger record),
+  `mine_owned` removed it and the ledger returned to 0. The two probe blocks that
+  sealed the room predate the ledger, so no action could ever claim them (they are
+  gone anyway, and the room opened without a console edit — see open questions).
 
 ## 3. Blockers (root cause, attempts, next action)
 
 | Blocker | Root cause | Attempts | Next action |
 |------|------|------|------|
 | No human player ever joins the BDS | Environmental (user-declared, m01312) | Chat order flow, allowlist, stale-inbox and self-echo handling all fixed and live-verified with the bot's own echo | Keep the multiplayer/social items documented as blocked; a real player would unblock chat orders, escort and the mount/trade captures at once |
-| Entities and containers outside the walkable component | The bot lives in a sealed room; the walkable BFS component is now **one cell** — east/west are the room's beds, north/south are the two blocks the P5 probes placed (`place_crafting_table`, `build_hut`) | Reachability filters, typed errors, `movement timeout` findings, `placeReach` per-neighbour diagnostic | Answer the room question (m01403): remove the two probe blocks from the console (and, if needed, the two carpets closing the corridor), or ship a bot-owned cleanup action — or accept the room and stop claiming those live rounds |
+| ~~Entities and containers outside the walkable component~~ (resolved 03/10) | Low surfaces (`green_carpet`) read as walls, so the bot's feet cell was solid and the walkable component stayed one cell wide; the server also refused to move a bot whose own cell held a closed door | `_lowProfile`, `_selfCells`/`ignoreSelf`, `_doorAhead` (rows 47.27/47.28) | Closed: the bot walked out by itself (`y 73 → 72.62`), crops and containers were verified live, and a door closed on its cell now opens from the inside. No `setblock`, no world edit — (A)/(B)/(C) is moot |
 | BDS 1.26.52 ignores `player_action respawn` | Server-side bug (health never restored) | `respawn` packet state 2, `PACKET_DEBUG=1` packet dump | Mitigated by the auto-reconnect watchdog; a clean in-place respawn stays impossible |
 | Mounting and the trade window are never confirmed | The server wants a trigger the vanilla client produces; no capture available | M0+ two packet shapes for the mount, `npc_open` + `item_interact` for the trade | Capture a real client mounting a saddled donkey and opening a trade |
 | Live crop growth was `null` | `findBlocks` spread the prismarine Block, losing `getProperties()` | Added `_properties` fallback, then stopped spreading | Resolved (`growth 7/7/6/6` live); kept as a regression test |
 
 ## 4. Tests
 
-- `node --test tests/*.test.mjs` → **1045 pass / 0 fail** (81 files). The one flake
+- `node --test tests/*.test.mjs` → **1053 pass / 0 fail** (79 files). The one flake
   that used to appear under full-suite load
   (`tests/bedrock-circuits.test.mjs`, "a different delay is an error", which
   measured real tick timing) is **fixed**: the delay measurement reads an
@@ -91,15 +94,19 @@ environmental blocker.
   crops, milk, shield, travel kit, exploration M2/M4/M5/M6, fluids M0–M6, redstone
   R0–R6, nether N0–N7, P2 refusals, semantic recall and waypoint, both retention
   fronts, the placement ledger (route + refusal).
-- `npm run wiki:lint` → no errors (39 files, 416 relative links).
-- **Deployment parity re-checked** after the last front: `md5sum` of every
-  git-tracked file outside `docs/` and `tests/` compared against the live
-  container's `/app` → **119 local / 114 in the container, no differing file**;
-  the five local-only paths are build inputs and local drivers (`Dockerfile`,
-  `docker-compose.yml`, `.gitignore`, `explore-find.mjs`,
-  `tools/respawn-capture.mjs`). So the live evidence in
-  [verification](verification.md) was produced by the code at HEAD, not by a
-  stale copy.
+- `npm run wiki:lint` → no errors (39 files, 421 relative links).
+- **Deployment parity re-checked**: a full `git ls-files` + `rsync` + `docker cp`
+  re-deploy followed the container rebuild (`docker compose up -d` drops every
+  `docker cp` overlay, and enabling `BEDROCK_DEBUG=1` needs a recreate — a live
+  trap now written down). Every tracked file is in `/app` and the adapter md5 in
+  the container equals the md5 at HEAD (`c7827c9f…`), so the live evidence in
+  [verification](verification.md) was produced by the code at HEAD. The tracked
+  `Dockerfile` is part of that sync; the local-only paths are `docker-compose.yml`,
+  `.gitignore`, `explore-find.mjs`, `tools/respawn-capture.mjs`.
+- **`BEDROCK_DEBUG=1` is on temporarily** (VM `~/hermes-jev-bedrock/.env` line 37,
+  backup `.env.bak-20261003-debug`) to keep `/debug/*` reachable while diagnosing
+  the door trap; it must be emptied before closing the session (`/debug/mine`
+  bypasses `DIG_PROTECTED`).
 
 ## 5. Main changes
 
@@ -129,20 +136,19 @@ environmental blocker.
 
 ## 7. Next five tasks, ordered by technical dependency
 
-1. **Unblock the live environment** (m01403): answer A/B/C on the room. The
-   cheapest version is removing **only the two blocks our own probes placed**
-   (`setblock 115 73 160 air`, `setblock 115 74 158 air`); if that is not enough,
-   the two carpets that close the corridor to the door. Almost every remaining
-   live-only item (companion, fishing, containers, trade, mounting, crops) sits
-   behind it. The no-console variant exists now (`mine_owned` over the persistent
-   R4 ledger), but it can only claim blocks placed **after** the registry shipped:
-   the two probe blocks that seal this room were placed before it and are not in
-   the ledger, so the console edit is still the only way to remove those two.
+1. **Finish the shield round the honest way** (row 19.3): the take is fixed and
+   live, the `place` into `offhand`/0 still answers 50. Probe it with
+   `POST /debug/isr` (any stack-request shape, no code change) and, if a real
+   client ever joins, capture one equipping a shield — the same capture family as
+   mounting a saddled donkey, opening a trade window and swimming (M1).
 2. **Packet capture from a real client** (mount, trade, swim): one capture unblocks
    `p2-riding`, `p2-trade-timeout` and fluids M1 with the same work.
-3. **`p2-companion` / `p2-fishing` happy paths**: need iron ingots (shears, bucket,
-   shield), a bone and a fishing rod — a deterministic supply chain goal, then the
-   live rounds.
+3. **`p2-companion` / `p2-fishing` happy paths**: the village chests are now
+   reachable **and readable** (`read_container` live: 7 chests, one holding
+   `iron_ingot 859`, `shears 2`, `diamond 19`, `flint_and_steel`), so the supply
+   chain (`take_iron_ingot` → `craft_bucket`/`craft_shears`) is a live round
+   rather than a blocker; what is still missing is a sheep in the census (the farm
+   is pigs) and a fishing rod.
 4. **Exploration M6 deep side**: cave systems beyond the loaded radius, plus the
    structure→vector-index integration for "the iron-rich cave near the mountain".
 5. **Dragon fight** (`beat_the_dragon`): the `bossDefeated` criterion exists and is
