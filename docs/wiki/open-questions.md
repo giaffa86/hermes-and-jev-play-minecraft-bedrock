@@ -258,16 +258,19 @@ Still missing (the rest of the original gap):
   player on the BDS) and the *deep* side of M6 (following a cave system beyond
   the loaded radius, Deep Dark/Ancient City never observed live).
 - **Placement** only on a top face adjacent to the bot; no scaling/orientation.
-- **No redstone awareness or placement.** `_refreshNearby`'s fixed list excludes
-  redstone ore and components, so the bot cannot *watch* for them; the separate
-  opportunity scan (`ore-value.mjs` table → `mine_redstone_ore`/`mine_lapis_ore`
-  when harvestable, see [opportunity](opportunity.md)) can since 02/10 at least
-  *mine* those veins — the gap is state sensing and placement:
-  `_placeAtCell`
-  cannot set orientation (`facing_direction`/`cardinal_direction`); `DIG_PROTECTED`
-  does not cover redstone components. The world model *does* expose component
-  state via `blockAt().getProperties()` (`redstone_signal`, `powered_bit`,
-  `open_bit`, `repeater_delay`, ...). Roadmap in [redstone](redstone.md).
+- **Redstone awareness done (R0, 03/10); placement/use still missing.**
+  `bedrock-redstone.mjs` now owns the vocabulary (components, sources, outputs,
+  `tnt` hazard) and reads state through `powerOf`/`facingOf`/`blockProperties`
+  (`null` when unreadable — never "off" by assumption); the component list is in
+  `DIG_PROTECTED`, `_redstoneCensus` feeds `GET /observe.redstone` (one scan,
+  `REDSTONE_RESCAN_MS` TTL, `ready: false` on an unloaded world) and
+  `findBlocksByState` can search by state ("a powered repeater"). Still open:
+  oriented placement (R1: `_placeAtCell` cannot set
+  `facing_direction`/`cardinal_direction` and confirms only the name), using a
+  component (`use_redstone`, R2) and building circuits (R3+) — a placement packet
+  capture is the declared blocker. The ore was already mineable from the
+  opportunity scan (`ore-value.mjs`) when an iron pickaxe is held. Roadmap in
+  [redstone](redstone.md).
 - **Barricade** (`.private/DEFENSE-TASK.md`): `_barricadeGap` only checks the
   four cells adjacent to the bot, so the bot must already stand next to the 1×2
   opening; it does not search ahead or walk to a gap. Fine for a corridor, hard
@@ -439,10 +442,9 @@ Still missing (the rest of the original gap):
 - **Nether / End** — portal locate/build/light/enter, Nether survival (ghasts,
   piglins, endermen), fortress/blaze, stronghold, End and dragon. Roadmap in
   [nether](nether.md); the progression chain is already in the graph.
-- **Redstone and primitive automation** — spec only. Roadmap in
-  [redstone](redstone.md); start at R0 (protect redstone, `/observe.redstone`,
-  state-aware search) and R1 (oriented placement, needs a placement packet
-  capture).
+- **Redstone and primitive automation** — R0 done (awareness + protection,
+  live 03/10), R1–R6 spec only. Roadmap in [redstone](redstone.md); next is R1
+  oriented placement (needs a placement packet capture).
 
 ## Known code defects (not fixed)
 

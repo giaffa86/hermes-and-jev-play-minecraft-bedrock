@@ -207,8 +207,12 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   capture of a real player swimming.
 - **Redstone and primitive automation** — switches, delay lines, observers/
   pistons, hoppers, dispensers. Roadmap (R0–R6) in [redstone](redstone.md) /
-  [`raw/REDSTONE_ROADMAP.md`](../raw/REDSTONE_ROADMAP.md); no redstone support
-  today, but the world model already exposes component `getProperties()` state.
+  [`raw/REDSTONE_ROADMAP.md`](../raw/REDSTONE_ROADMAP.md); **R0 (awareness and
+  protection) implemented, unit-tested and collaudato live 03/10**
+  (`bedrock-redstone.mjs` vocabulary + `powerOf`/`facingOf`, component list in
+  `DIG_PROTECTED`, `_redstoneCensus`/`GET /observe.redstone`,
+  `findBlocksByState`). Building and using circuits is R1+ (oriented placement
+  needs a packet capture).
 - **Goal Contract** — thin slice implemented (`survival/goal-contract.mjs`,
   opt-in via `GOAL_CONTRACT`/`MAX_DEATHS`/`PRESERVE_ITEMS`; status logged). Still
   missing: the persistent Goal Manager/queue, a `target`-driven `obtain_item`
@@ -264,10 +268,12 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    milestones are therefore parked with a documented blocker; the next
    macro-area is **Redstone R0** (below), a deviation to record in the final
    report.
-7. **Redstone** (spec in [redstone](redstone.md)): start with R0 (protect
-   redstone in `DIG_PROTECTED`, `/observe.redstone`, state-aware search) and R1
-   (oriented placement — needs a packet capture of a real placement to confirm
-   how the BDS derives block state from yaw/face/click position).
+7. **Redstone** (R0 done 03/10, spec in [redstone](redstone.md)): R0 (protect
+   redstone in `DIG_PROTECTED`, `/observe.redstone`, state-aware search) is
+   implemented, unit-tested and collaudato live (see [verification](verification.md)
+   row 47.2); next is **R1** oriented placement — needs a packet capture of a real
+   placement to confirm how the BDS derives block state from yaw/face/click
+   position; the deterministic fallback is a place → read → correct loop.
 8. **Goal Contract** (proposal in [goal-achievement](goal-achievement.md)):
    schema + status machine over the existing progression graph, then the 5
    progressive benchmarks (16 logs → shelter+night → iron pickaxe → 5 diamonds

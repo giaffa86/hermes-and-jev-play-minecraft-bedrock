@@ -223,7 +223,11 @@ export class BedrockWorld {
     }
   }
 
-  findBlocks (names, point, radius = 48, count = 8) {
+  // Scansione a celle verso un punto: è il motore comune di `findBlocks` (filtro
+  // per nome) e di `findBlocksByState` (filtro per stato). `accept`, se presente,
+  // riceve l'entry di palette e la posizione: le celle rifiutate non consumano
+  // il budget di `count`, quindi il tetto vale sempre sui blocchi *accettati*.
+  _scanBlocks (names, point, radius, count, accept = null) {
     if (!this.registry || !point) return [];
     const wanted = new Set(Array.isArray(names) ? names : [names]);
     const result = [];
@@ -239,16 +243,40 @@ export class BedrockWorld {
         if (!wanted.has(entry.name)) continue;
         const distance = Math.hypot(x - point.x, y - point.y, z - point.z);
         if (distance > radius || (result.length === count && distance >= result.at(-1).distance)) continue;
+        if (accept && !accept(entry, { x, y, z })) continue;
         result.push({ position: { x, y, z }, distance });
         result.sort((a, b) => a.distance - b.distance);
         if (result.length > count) result.pop();
       }
     }
+    return result;
+  }
+
+  findBlocks (names, point, radius = 48, count = 8) {
     // Restituisce l'oggetto blocco *intero* (istanza prismarine Block), non una
     // copia spalmata: lo spread perdeva i metodi e con essi `getProperties()`,
     // quindi gli stati di blocco (es. `growth` delle colture) risultavano
     // illeggibili in produzione.
-    return result.map(entry => {
+    return this._scanBlocks(names, point, radius, count).map(entry => {
+      const block = this.blockAt(entry.position) || {};
+      block.distance = entry.distance;
+      return block;
+    });
+  }
+
+  // Ricerca per **stato**, non solo per nome: serve a "repeater alimentato",
+  // "leva aperta", "torcia accesa" — domande che un filtro per nome non sa
+  // esprimere. Il predicato riceve il blocco risolto (con `getProperties()`),
+  // quindi lo stesso vocabolario dei moduli puri (`powerOf`, `facingOf`) si
+  // applica direttamente.
+  findBlocksByState (names, predicate, point, radius = 48, count = 8) {
+    if (typeof predicate !== 'function') return [];
+    const rows = this._scanBlocks(names, point, radius, count, (_entry, position) => {
+      const block = this.blockAt(position);
+      if (!block) return false;
+      try { return predicate(block) === true; } catch { return false; }
+    });
+    return rows.map(entry => {
       const block = this.blockAt(entry.position) || {};
       block.distance = entry.distance;
       return block;

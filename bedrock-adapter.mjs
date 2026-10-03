@@ -13,6 +13,7 @@ import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
 import { detectStructures } from './structures.mjs';
 import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT } from './bedrock-fluids.mjs';
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
+import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView } from './bedrock-redstone.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -54,7 +55,12 @@ const TOOL_HARVEST_RANK = { wooden: 1, golden: 1, stone: 2, copper: 2, iron: 3, 
 const HARVEST_TOOL_RANK = { 941: 1, 956: 1, 946: 2, 951: 2, 961: 3, 966: 4, 971: 5 };
 // Blocchi funzionali o costruiti che dig_down non deve mai scavare per errore
 // (tavoli, contenitori, stazioni): il passo verrebbe rifiutato invece che distruggerli.
-const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|_bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$|farmland$|_fence$|_fence_gate$|wheat$|carrots$|potatoes$|beetroots$|melon_stem$|pumpkin_stem$|sweet_berry_bush$|nether_wart$)/;
+const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|_bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$|farmland$|_fence$|_fence_gate$|wheat$|carrots$|potatoes$|beetroots$|melon_stem$|pumpkin_stem$|sweet_berry_bush$|nether_wart$|redstone_wire$|redstone_block$|lever$|_button$|pressure_plate$|_repeater$|_comparator$|observer$|piston$|dispenser$|dropper$|lamp$|daylight_detector$|tripwire_hook$|target$|crafter$|sculk_sensor$)/;
+// Redstone (R0): un circuito non è un ostacolo da scavare ma un impianto della
+// base. I minerali di redstone restano **fuori** da DIG_PROTECTED (si estraggono
+// con `mine_redstone_ore`), i componenti no.
+const REDSTONE_RESCAN_MS = +(process.env.REDSTONE_RESCAN_MS || 5000);
+const REDSTONE_NEARBY_NAMES = [...new Set([...REDSTONE_ORES, ...REDSTONE_COMPONENTS, ...REDSTONE_HAZARDS])];
 // Bit dei MetadataFlags (key 0) delle entità: servono per baby/tempted/inlove
 // degli animali e per il flag resting del bot stesso.
 // Bit dei MetadataFlags1 (protocol.json, bedrock 1.26.51): l'ordine esatto è
@@ -189,6 +195,8 @@ export class BedrockAdapter {
     this._serverAir = null;
     this.airSource = 'simulated';
     this.air = MAX_AIR;
+    this._redstoneScan = null;
+    this._redstoneScanAt = 0;
     this.dimension = 'overworld';
     this.standingOn = null;
     this.plan = null;
@@ -788,6 +796,9 @@ export class BedrockAdapter {
     // Bedrock player_position is at eye height (1.62 blocks above the feet).
     this.standingOn = this.world.blockAt({ ...this.position, y: this.position.y - 1.63 })?.name ?? null;
     this._pruneEntities();
+    // La vista redstone segue la percezione (ha un TTL proprio, quindi durante il
+    // pathfinding non costa nulla).
+    this._redstoneCensus();
     this._scanValuableOres();
     this._maybeRememberDiscoveries();
   }
@@ -1096,6 +1107,39 @@ export class BedrockAdapter {
     return view;
   }
 
+  // Proprietà di stato di un blocco in una posizione (leva aperta, repeater
+  // alimentato, delay, facing…): `null` quando il blocco o lo stato non sono
+  // leggibili, così un valore ignoto non viene mai scambiato per "spento".
+  _blockProps (position) {
+    if (!position || typeof this.world?.blockAt !== 'function') return null;
+    return blockProperties(this.world.blockAt(position));
+  }
+
+  // Censimento redstone (R0): una sola scansione per l'intero vocabolario
+  // (minerali + componenti + TNT) invece di una per nome, con lo stesso
+  // accorgimento dei fluidi: un mondo senza colonne caricate non è un mondo senza
+  // redstone, quindi non si mette in cache e si dichiara `ready: false`.
+  _redstoneCensus ({ force = false } = {}) {
+    const now = Date.now();
+    if (!force && this._redstoneScan && now - this._redstoneScanAt < REDSTONE_RESCAN_MS) return this._redstoneScan;
+    let blocks = [];
+    if (this.position && typeof this.world?.findBlocks === 'function') {
+      blocks = this.world.findBlocks(REDSTONE_NEARBY_NAMES, this.position, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT) ?? [];
+    }
+    const loaded = this.world?.loaded?.size ?? null;
+    const ready = loaded !== 0;
+    const view = redstoneView(blocks, { from: this._feet ?? this.position, limit: REDSTONE_SCAN_LIMIT });
+    const census = { ...view, found: blocks.length, loaded, ready, at: now };
+    if (!ready) return census;
+    this._redstoneScan = census;
+    this._redstoneScanAt = now;
+    return this._redstoneScan;
+  }
+
+  _redstoneView ({ force = false } = {}) {
+    return { ...this._redstoneCensus({ force }) };
+  }
+
   // La lava entro `LAVA_AVOID_RANGE`: la cella più vicina (motivo per `avoid_lava`).
   _lavaThreat () {
     const census = this._fluidCensus();
@@ -1196,6 +1240,7 @@ export class BedrockAdapter {
       structures: this.structures.slice(0, 8),
       structureSurvey: this._structureSurvey,
       fluids: this._fluidsView(),
+      redstone: this._redstoneView(),
       ores: (this.valuableOres ?? []).slice(0, 8),
       recent: this.recent.slice(-8),
       status: this.status,

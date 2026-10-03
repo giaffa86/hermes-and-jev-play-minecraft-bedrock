@@ -6,16 +6,22 @@ hopper item transport, dispensers and (stretch) crafters. It builds on the
 verified primitives (placement, `click_block` interaction, containers, crafting,
 digging) while never breaking the base's own circuits.
 
-Status: **spec only — not implemented** (tracked in [roadmap](roadmap.md) and
+Status: **R0 implemented, unit-tested and collaudato live (03/10/2026); R1–R6
+spec only** (tracked in [roadmap](roadmap.md) and
 [open-questions](open-questions.md)). Full raw source:
 [`docs/raw/REDSTONE_ROADMAP.md`](../raw/REDSTONE_ROADMAP.md).
 
 Sources: `bedrock-adapter.mjs` (placement, interaction, digging, `DIG_PROTECTED`),
-`bedrock-world.mjs` (block-state decoding), `BEDROCK.md` (action status),
-[survival-intelligence](survival-intelligence.md) (skills/verifier/progression),
-[fishing](fishing.md), [fluids](fluids.md) (water streams for harvesters).
+`bedrock-redstone.mjs` (R0: component vocabulary, `powerOf`, `redstoneView`),
+`bedrock-world.mjs` (block-state decoding, `findBlocksByState`), `BEDROCK.md`
+(action status), [survival-intelligence](survival-intelligence.md)
+(skills/verifier/progression), [fishing](fishing.md), [fluids](fluids.md) (water
+streams for harvesters).
 
 ## Current state (from the code and registry)
+
+> Baseline **before R0** (kept for reference; the bullets marked below are the
+gaps R0 closed).
 
 - **No redstone support at all** — no block, action or rule mentions redstone.
 - **The world model already exposes component state.** `bedrock-world.mjs`
@@ -61,6 +67,56 @@ Sources: `bedrock-adapter.mjs` (placement, interaction, digging, `DIG_PROTECTED`
 - **Crafting is generic** (`craft_<item>` reads `crafting_data`); components
   craft if the recipe and materials exist.
 
+## R0 — Awareness and protection (implemented, live 03/10/2026)
+
+The bot now *sees* redstone and refuses to dig through it; it still does not build
+circuits (that is R1+).
+
+- **Pure vocabulary** — `bedrock-redstone.mjs` (no I/O): `REDSTONE_ORES`,
+  `REDSTONE_COMPONENTS`, `REDSTONE_SOURCES` / `REDSTONE_OUTPUTS`,
+  `REDSTONE_HAZARDS` (`tnt`), `isRedstoneOre`, `isRedstoneComponent`, `isHazard`,
+  `blockProperties` (tolerant: `getProperties()` / `properties` / `_properties` /
+  `states` + `computedStates`), `powerOf` → 0..15 **or `null` when the state is
+  unreadable** (a component we cannot read must never look switched off),
+  `isPowered`, `facingOf`, `isSource`, `isOutput`, `componentState` and
+  `redstoneView` (`components` / `ore` / `power` / `hazards` / `counts`).
+  `lit_*`/`powered_*` are **distinct blocks** in Bedrock, so the name already
+  carries the signal (= 15); a repeater with no readable properties stays `null`.
+- **`DIG_PROTECTED` covers the components** (wire, block, lever, buttons, plates,
+  repeaters, comparators, observer, pistons, dispenser, dropper, lamps, daylight
+  detector, tripwire hook, target, crafter, sculk sensor). The **ore stays
+  mineable**: it is a resource, not a circuit — and it was already covered by
+  `_scanValuableOres` / `VALUABLE_ORE_NAMES` (`ore-value.mjs`), so R0 does not
+  duplicate that scan.
+- **Perception** — `_redstoneCensus()` runs **one** `world.findBlocks(...)` for
+  the whole vocabulary (`REDSTONE_NEARBY_NAMES`, radius `REDSTONE_SCAN_RADIUS` =
+  16, limit `REDSTONE_SCAN_LIMIT` = 24) with a `REDSTONE_RESCAN_MS` (5 s) TTL,
+  called from `_refreshNearby()`; a world with no loaded column is *not* cached
+  and reports `ready: false`. `GET /observe.redstone` (and `observe().redstone`)
+  exposes `{components, ore, power, hazards, tntNearby, counts, found, loaded,
+  ready, at}`; `?force=1` refetches.
+- **State-aware search** — `bedrock-world.mjs` now shares one scan engine
+  (`_scanBlocks`, whose `accept` predicate runs *before* the `count` budget is
+  spent) between `findBlocks` (by name) and the new
+  `findBlocksByState(names, predicate, point, radius, count)` ("a powered
+  repeater", "an open lever"); `_blockProps(position)` reads a single cell.
+- **Tests**: `tests/bedrock-redstone.test.mjs` (pure),
+  `tests/bedrock-redstone-adapter.test.mjs` (census, TTL, no-columns guard,
+  `_blockProps`), plus a redstone refusal case in `tests/bedrock-dig.test.mjs`
+  (`protected_step` / `protected_front` / `protected_head`, and the ore still
+  minable).
+- **Live round (03/10/2026)**: `GET /observe.redstone` → `components: []`,
+  `ore: []`, `tntNearby: false`, `found: 0`, `loaded: 125`, `ready: true`; the
+  same object is inside `GET /observe`; `dig_down` → `protected_front` and
+  `dig_up` → `protected_head` (the protection path is live-active — the bot's
+  room is planks, so the refusal fires before any redstone). The census is bounded
+  and never fabricates a pericolo on a clean world.
+- **Known limits (R0)**: the bot's room has no redstone component, so a live
+  read of `powerOf` on a real circuit was impossible; the ore mining round was not
+  exercised (no iron pickaxe, so the option correctly stays absent); the census
+  radius is 16 blocks — a circuit further out is invisible until the bot walks
+  closer.
+
 ## Proposed vocabulary
 
 - **Actions**: `build_circuit_<id>`, `use_redstone`, `set_repeater_delay`,
@@ -74,7 +130,7 @@ Sources: `bedrock-adapter.mjs` (placement, interaction, digging, `DIG_PROTECTED`
 
 | # | Milestone | Content | Status |
 |---|---|---|---|
-| R0 | Awareness & protection | Add redstone to `DIG_PROTECTED`; extend `_refreshNearby` (ore + components); `/observe.redstone`; state-aware `findBlocksByState`; pure `bedrock-redstone.mjs` (`powerOf`, `isSource/isOutput`, `tnt` hazard). | ❌ not implemented |
+| R0 | Awareness & protection | Add redstone to `DIG_PROTECTED`; extend `_refreshNearby` (ore + components); `/observe.redstone`; state-aware `findBlocksByState`; pure `bedrock-redstone.mjs` (`powerOf`, `isSource/isOutput`, `tnt` hazard). | ◑ implemented + live: awareness, census and dig protection done; circuit *building* is R1+ |
 | R1 | Oriented placement | Extend `_placeAtCell` with desired state/facing and side faces; confirm name+properties; place→read→correct retry; packet-capture task for placement orientation; repeater delay via interaction. | ❌ not implemented |
 | R2 | Interaction & sensing | `use_redstone` (lever/button) with state + downstream verification; redstone cache in `/observe`; `sense_redstone`; verifier criteria. | ❌ not implemented |
 | R3 | Primitive circuits | Declarative `circuits/*.json` blueprints (`lamp_switch`, `delay_line`, `auto_lamp`, `auto_door`, `auto_harvest`, `auto_dispense`, `hopper_chain`, `crafter_pulse`) + `build_circuit_<id>` bounded action. | ❌ not implemented |
@@ -84,8 +140,7 @@ Sources: `bedrock-adapter.mjs` (placement, interaction, digging, `DIG_PROTECTED`
 
 ## Key risks / open questions
 
-- **Oriented placement is the blocker (R1)**: how the BDS derives block state from
-  player yaw/pitch, clicked face and `click_pos` needs a packet capture.
+- **Oriented placement is the blocker (R1)**: how the BDS derives block state from  player yaw/pitch, clicked face and `click_pos` needs a packet capture.
   Fallback: a deterministic place → read → correct loop.
 - Some blocks (`note_block`, generic `pressure_plate`, `tripwire`) are absent from
   the `bedrock_1.26.51` registry — confirm the correct names or drop them.

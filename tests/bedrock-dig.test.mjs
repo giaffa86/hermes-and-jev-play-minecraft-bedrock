@@ -113,6 +113,21 @@ test('dig targets refuse missing support and fluids, and treat unknown blocks as
   assert.equal(plan.targets[0].raw, true);
 });
 
+test('dig targets refuse redstone components, but not the ore itself (R0)', () => {
+  // Prima di R0 `DIG_PROTECTED` ignorava la redstone: una torcia o un repeater
+  // potevano finire sotto `dig_down`. Il minerale resta invece scavabile.
+  const step = digAdapter({ '92,71,149': solid('unpowered_repeater') });
+  assert.equal(step.adapter._digTargets().error, 'protected_step');
+  const front = digAdapter({ '92,72,149': solid('redstone_lamp') });
+  assert.equal(front.adapter._digTargets().error, 'protected_front');
+  const head = digAdapter({ '92,73,149': solid('redstone_torch') });
+  assert.equal(head.adapter._digTargets().error, 'protected_head');
+  const ore = digAdapter({ '92,72,149': solid('redstone_ore', { material: 'mineable/pickaxe' }) });
+  const plan = ore.adapter._digTargets();
+  assert.equal(plan.error, undefined);
+  assert.equal(plan.targets[0].block.name, 'redstone_ore');
+});
+
 test('dig_down mines head/front/step in order then descends the stair', async () => {
   const { adapter } = digAdapter();
   const mined = [];

@@ -2037,3 +2037,58 @@ del server che vince). Suite completa **698 test verdi**. Doc: `fluids.md`
 con la deviazione verso Redstone R0), `open-questions.md`,
 `survival-intelligence.md` (conteggio 698 + bullet M1), `index.md`, `AGENTS.md`
 (env `WADE_SPEED_FACTOR`).
+
+## [2026-10-03] feat | Redstone R0: consapevolezza e protezione dei componenti
+
+Prima slice della macro-area Redstone (`docs/wiki/redstone.md`, spec in
+`docs/raw/REDSTONE_ROADMAP.md`): il bot *vede* la redstone e smette di scavarla,
+ma non costruisce ancora circuiti (R1+).
+
+Implementazione. Nuovo modulo puro `bedrock-redstone.mjs`: vocabolario chiuso
+(`REDSTONE_ORES`, `REDSTONE_COMPONENTS`, `REDSTONE_SOURCES`/`REDSTONE_OUTPUTS`,
+`REDSTONE_HAZARDS` = `tnt`) e lettura di stato (`blockProperties` tollerante a
+`getProperties()`/`properties`/`_properties`/`states`+`computedStates`,
+`powerOf` → 0..15 **o `null` quando lo stato non è leggibile** — un componente
+illeggibile non deve sembrare spento —, `isPowered`, `facingOf`, `isSource`,
+`isOutput`, `isHazard`, `componentState`, `redstoneView`). I nomi `lit_*`/
+`powered_*` sono blocchi distinti e valgono 15; il minerale è nella lista di
+censimento ma **resta minabile** (non è un circuito) e non entra negli output.
+
+`DIG_PROTECTED` ora copre i componenti (wire, block, leva, pulsanti, piastre,
+repeater, comparator, observer, pistoni, dispenser, dropper, lampade, daylight
+detector, tripwire hook, target, crafter, sculk sensor): `dig_down`/`dig_up` non
+possono più distruggere un circuito. In `bedrock-adapter.mjs` arrivano
+`REDSTONE_RESCAN_MS` (default 5000), `REDSTONE_NEARBY_NAMES`, `_redstoneScan`/
+`_redstoneScanAt`, `_blockProps(position)`, `_redstoneCensus({force})` (una sola
+`world.findBlocks` per l'intero vocabolario, TTL, e `ready: false` senza cache su
+un mondo senza colonne caricate) e `_redstoneView({force})`, chiamati da
+`_refreshNearby()` e esposti in `observe().redstone` e `GET /observe.redstone`
+(`?force=1` rifà il censimento). In `bedrock-world.mjs` la scansione è stata
+estratta in `_scanBlocks(names, point, radius, count, accept)` — il predicato
+gira **prima** che il budget di `count` venga speso, quindi le celle rifiutate
+non consumano il tetto — e nasce `findBlocksByState(names, predicate, point,
+radius, count)`: cercare per stato ("un repeater alimentato", "una leva aperta")
+non è esprimibile per nome.
+
+Collaudo live (container `hermes-jev-bedrock`, BDS 1.26.52). `GET
+/observe.redstone` → `{components: [], ore: [], power: [], hazards: [],
+tntNearby: false, counts: {0,0,0}, found: 0, loaded: 125, ready: true}`; lo
+stesso oggetto è dentro `GET /observe`; `POST /act {dig_down}` → `protected_front`
+e `POST /act {dig_up}` → `protected_head` (la protezione è viva — la stanza del
+bot è in assi, quindi il rifiuto scatta prima di qualunque redstone). Limite
+dichiarato del round live: nella stanza non c'è alcun componente redstone (né un
+piccone di ferro per il minerale), quindi la lettura di un `redstone_signal`
+reale e lo scavo dell'ore non sono stati esercitati dal vivo.
+
+Test: `tests/bedrock-redstone.test.mjs` (pure: potenza per famiglia, `null` su
+stato ignoto, blocco spalmato, `facingOf`, sorgenti/output, pericolo TNT,
+`redstoneView` con ordine/troncamento/conteggi), `tests/bedrock-redstone-adapter
+.test.mjs` (censimento con potenza e distanza dai piedi, nessun falso pericolo,
+cache + `force`, guardia del mondo non caricato, `_blockProps`) e il caso
+redstone in `tests/bedrock-dig.test.mjs` (`protected_step`/`protected_front`/
+`protected_head`, ore ancora scavabile). Suite completa **714 test verdi**.
+
+Doc: `redstone.md` (stato, sezione R0, tabella milestone R0 → ◑, limiti),
+`verification.md` (nuova riga 47.2 + riga 46 "Redstone sensing" → ◑),
+`roadmap.md` (voce Redstone + prossimi passi), `open-questions.md` (bullet
+redstone + voce spec-only), `AGENTS.md` (env `REDSTONE_RESCAN_MS`), `index.md`.
