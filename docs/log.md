@@ -3,6 +3,21 @@
 Append-only record of wiki operations. Prefix: `## [YYYY-MM-DD] <type> | <title>`
 where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
 
+## [2026-10-03] lint | Deployment parity between HEAD and the live container
+
+`md5sum` of every git-tracked file outside `docs/` and `tests/` compared against
+`/app` inside the live container (`hermes-jev-bedrock`, VM 100): 119 local paths,
+114 present in the container, **no differing file**. The five local-only paths are
+build inputs and local drivers (`Dockerfile`, `docker-compose.yml`, `.gitignore`,
+`explore-find.mjs`, `tools/respawn-capture.mjs`). Six files were stale in the
+container before this check (`.env.example`, `AGENTS.md`, `BEDROCK.md`,
+`README.md`, `skills/gameplay/progression/{beat_the_dragon,enter_nether}.json` —
+`notes`/formatting only, semantically identical); they were copied in and the
+container restarted. Conclusion: the live evidence recorded in
+[verification](wiki/verification.md) was produced by the code at HEAD.
+[Final report](wiki/final-report.md) updated with the three later fronts (semantic
+recall, hit to waypoint, both retention layers) and this parity check.
+
 ## [2026-10-02] doc | LLM-wiki scaffolded and docs translated to English
 
 - Restructured `docs/` into an LLM wiki (manifest `llm-wiki.md`, `index.md`,

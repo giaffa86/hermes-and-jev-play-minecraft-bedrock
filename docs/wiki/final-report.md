@@ -24,6 +24,10 @@ environmental blocker.
 | **P7** redstone R0 → R6 | `3fe52b2`, `768e0eb`, `3312061`, `55c73a5`, `b144557`, `cb61f62`, `df0c52a` | censuses, typed refusals, `CURRICULUM=redstone_automation` forwarded to the BDS |
 | **P7** nether/End N0 → N7 | `c761ae4`, `985f783`, `7ae4717`, `bda3d4f`, `d62f6c6`, `ff6b31b`, `6962101`, `9d2a32d` | projectile captured in flight, gaze/mask/pearl probes, fortress search, six endgame actions refused in 19–21 ms |
 | **P2** harness reliability | `23c25c0`, `3fad8e1`, `ddf6426`, `068b64c`, `db8e9fa`, `5c88d4c` | reachability turned a 30.4 s hang into a 19 ms `container_unreachable`; the action lock now always releases (`action_timeout`) |
+| **P6** semantic recall in the planner | `9400f45` | `semantic_recall` live: query built from the goal, three hits, `error: null`, planner prompt carrying the lines |
+| **P6** hit → real waypoint | `937244c` | live refusal, honestly: all three hits came back `reachability_unknown`, so `semantic_waypoint_skipped` and no destination was invented |
+| **P6** episodic retention (dry-run first) | `8b5d2e6` | `POST /memory/prune` live: dry-run lists 40 candidates, a real run with `keepMissions: 50` deletes nothing and every count stays identical |
+| **P6** observation-log retention (dedupe + prune) | `cd5d4f9` | live 5654 rows → **32 facts / 131 rows**, same search hits and scores before/after, then **0 growth in 180 s** with the write-side dedupe on (was ~280 rows/min) |
 
 ## 2. Improved but not complete
 
@@ -35,6 +39,10 @@ environmental blocker.
   `attack_<animal>` answer typed refusals live (`missing_feed`, `missing_shears`,
   `need_2_feed`, `cannot_reach_target`); no sheep/bone/iron/rod is available and
   the animals sit outside the walkable component.
+- **Everything that needs walking** (companion happy paths, fishing, containers,
+  trade, mounting, crop harvesting): the bot's walkable component is **one cell**
+  (see the blocker below), so `path_failed`/`target_not_found` is the honest
+  answer until the room is addressed.
 - **Fishing**: bite detection rewritten from the `fish_hook_hook` event (the cast
   descent used to be read as a bite); live only `missing_fishing_rod`.
 - **Trading (`p2-trade-timeout`)**: the budget defect is fixed and tested
@@ -51,16 +59,16 @@ environmental blocker.
 ## 3. Blockers (root cause, attempts, next action)
 
 | Blocker | Root cause | Attempts | Next action |
-|------|------|------|---|
+|------|------|------|------|
 | No human player ever joins the BDS | Environmental (user-declared, m01312) | Chat order flow, allowlist, stale-inbox and self-echo handling all fixed and live-verified with the bot's own echo | Keep the multiplayer/social items documented as blocked; a real player would unblock chat orders, escort and the mount/trade captures at once |
-| Entities and containers outside the walkable component | The bot lives in a sealed room; the walkable BFS component is 10 cells | Reachability filters, typed errors, `movement timeout` findings | Answer the room question (m01403) or accept the room and stop claiming those live rounds |
+| Entities and containers outside the walkable component | The bot lives in a sealed room; the walkable BFS component is now **one cell** — east/west are the room's beds, north/south are the two blocks the P5 probes placed (`place_crafting_table`, `build_hut`) | Reachability filters, typed errors, `movement timeout` findings, `placeReach` per-neighbour diagnostic | Answer the room question (m01403): remove the two probe blocks from the console (and, if needed, the two carpets closing the corridor), or ship a bot-owned cleanup action — or accept the room and stop claiming those live rounds |
 | BDS 1.26.52 ignores `player_action respawn` | Server-side bug (health never restored) | `respawn` packet state 2, `PACKET_DEBUG=1` packet dump | Mitigated by the auto-reconnect watchdog; a clean in-place respawn stays impossible |
 | Mounting and the trade window are never confirmed | The server wants a trigger the vanilla client produces; no capture available | M0+ two packet shapes for the mount, `npc_open` + `item_interact` for the trade | Capture a real client mounting a saddled donkey and opening a trade |
 | Live crop growth was `null` | `findBlocks` spread the prismarine Block, losing `getProperties()` | Added `_properties` fallback, then stopped spreading | Resolved (`growth 7/7/6/6` live); kept as a regression test |
 
 ## 4. Tests
 
-- `node --test tests/*.test.mjs` → **987 pass / 0 fail** (75 files). One known
+- `node --test tests/*.test.mjs` → **1019 pass / 0 fail** (79 files). One known
   flake under full-suite load: `tests/bedrock-circuits.test.mjs` ("a different
   delay is an error") measures real tick timing; it passes in isolation.
 - Purely unit-tested modules added: consolidation, observation log, vector index,
@@ -70,8 +78,17 @@ environmental blocker.
 - Live rounds performed (each in [verification](verification.md)): goal→mission,
   curriculum `first_night`, consolidation idempotence, mining/pickup, chat M5,
   crops, milk, shield, travel kit, exploration M2/M4/M5/M6, fluids M0–M6, redstone
-  R0–R6, nether N0–N7, P2 refusals.
-- `npm run wiki:lint` → no errors (38 files, 389 relative links).
+  R0–R6, nether N0–N7, P2 refusals, semantic recall and waypoint, both retention
+  fronts.
+- `npm run wiki:lint` → no errors (39 files, 400 relative links).
+- **Deployment parity re-checked** after the last front: `md5sum` of every
+  git-tracked file outside `docs/` and `tests/` compared against the live
+  container's `/app` → **119 local / 114 in the container, no differing file**;
+  the five local-only paths are build inputs and local drivers (`Dockerfile`,
+  `docker-compose.yml`, `.gitignore`, `explore-find.mjs`,
+  `tools/respawn-capture.mjs`). So the live evidence in
+  [verification](verification.md) was produced by the code at HEAD, not by a
+  stale copy.
 
 ## 5. Main changes
 
@@ -94,16 +111,20 @@ environmental blocker.
   and rows in `memory.md`, `exploration.md`, `fluids.md`, `redstone.md`,
   `nether.md`, `companions.md`, `control-flow.md`, `roadmap.md`,
   `open-questions.md`, `survival-intelligence.md`, `verification.md` (rows 42.x
-  and 47.1–47.22) plus a `log.md` entry per front.
+  and 47.1–47.25) plus a `log.md` entry per front.
 - The separate private homelab wiki (outside this repository) got one section per
   front on its Minecraft page, plus a summary bullet, an open-questions row and a
   log entry for each front; both wikis are kept in sync at the end of every front.
 
 ## 7. Next five tasks, ordered by technical dependency
 
-1. **Unblock the live environment** (m01403): answer A/B/C on the room. Almost
-   every remaining live-only item (companion, fishing, containers, redstone,
-   ores) sits behind it or behind a supply run.
+1. **Unblock the live environment** (m01403): answer A/B/C on the room. The
+   cheapest version is removing **only the two blocks our own probes placed**
+   (`setblock 115 73 160 air`, `setblock 115 74 158 air`); if that is not enough,
+   the two carpets that close the corridor to the door. Almost every remaining
+   live-only item (companion, fishing, containers, trade, mounting, crops) sits
+   behind it. The no-console variant is a bot-owned cleanup action, which needs
+   the R4 placement registry to become persistent first.
 2. **Packet capture from a real client** (mount, trade, swim): one capture unblocks
    `p2-riding`, `p2-trade-timeout` and fluids M1 with the same work.
 3. **`p2-companion` / `p2-fishing` happy paths**: need iron ingots (shears, bucket,
