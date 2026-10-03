@@ -13,7 +13,7 @@ import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
 import { detectStructures } from './structures.mjs';
 import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT } from './bedrock-fluids.mjs';
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
-import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
+import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -200,6 +200,10 @@ export class BedrockAdapter {
     this.air = MAX_AIR;
     this._redstoneScan = null;
     this._redstoneScanAt = 0;
+    // R2: i blocchi dell'ultima scansione e l'ultimo cambio osservato, così un
+    // `update_block` aggiorna la cache senza rifare la scansione.
+    this._redstoneBlocks = null;
+    this._redstoneChange = null;
     this.dimension = 'overworld';
     this.standingOn = null;
     this.plan = null;
@@ -1129,18 +1133,71 @@ export class BedrockAdapter {
     if (this.position && typeof this.world?.findBlocks === 'function') {
       blocks = this.world.findBlocks(REDSTONE_NEARBY_NAMES, this.position, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT) ?? [];
     }
-    const loaded = this.world?.loaded?.size ?? null;
-    const ready = loaded !== 0;
-    const view = redstoneView(blocks, { from: this._feet ?? this.position, limit: REDSTONE_SCAN_LIMIT });
-    const census = { ...view, found: blocks.length, loaded, ready, at: now };
-    if (!ready) return census;
+    const census = this._buildRedstoneView(blocks);
+    if (!census.ready) {
+      this._redstoneBlocks = null;
+      return census;
+    }
+    this._redstoneBlocks = blocks;
     this._redstoneScan = census;
     this._redstoneScanAt = now;
     return this._redstoneScan;
   }
 
+  // Assemblaggio puro della vista dai blocchi trovati: usato dalla scansione e
+  // dalle patch di `update_block` (che riusano la stessa funzione, quindi non
+  // possono divergere dalla vista "vera").
+  _buildRedstoneView (blocks) {
+    const loaded = this.world?.loaded?.size ?? null;
+    const view = redstoneView(blocks, { from: this._feet ?? this.position, limit: REDSTONE_SCAN_LIMIT });
+    return { ...view, found: blocks.length, loaded, ready: loaded !== 0, at: Date.now() };
+  }
+
+  // R2 — sensing continuo. Il server manda `update_block` a ogni cambio (leva
+  // azionata, pistone esteso, lampada accesa): se la cella è redstone la cache
+  // del censimento viene aggiornata **in place** (niente nuova scansione, che
+  // costerebbe un findBlocks per ogni blocco scavato) e il cambio resta in
+  // `_redstoneChange` per la diagnostica. Una cella non redstone non tocca nulla.
+  _noteRedstoneUpdate (position) {
+    if (!position) return;
+    const cell = { x: position.x, y: position.y, z: position.z };
+    const before = componentAt(this._redstoneScan, cell);
+    const block = this.world?.blockAt?.(cell);
+    const name = String(block?.name ?? '').replace(/^minecraft:/i, '').toLowerCase();
+    const relevant = REDSTONE_COMPONENTS.has(name) || REDSTONE_HAZARDS.has(name) || isRedstoneOre(name);
+    if (!before && !relevant) return;
+    const state = relevant ? this._buildRedstoneView([block]) : null;
+    const row = state ? (state.components[0] ?? state.hazards[0] ?? state.ore[0] ?? null) : null;
+    this._redstoneChange = {
+      position: cell,
+      name: name || before?.name || null,
+      previous: before?.power ?? null,
+      power: row?.power ?? null,
+      powerKnown: row != null ? row.power != null : null,
+      at: Date.now(),
+    };
+    if (this._redstoneBlocks) {
+      const index = this._redstoneBlocks.findIndex(b => b?.position
+        && b.position.x === cell.x && b.position.y === cell.y && b.position.z === cell.z);
+      if (index >= 0) this._redstoneBlocks.splice(index, 1);
+      if (relevant) this._redstoneBlocks.push(block);
+      this._redstoneScan = this._buildRedstoneView(this._redstoneBlocks);
+      this._redstoneScanAt = Date.now();
+    }
+  }
+
   _redstoneView ({ force = false } = {}) {
-    return { ...this._redstoneCensus({ force }) };
+    const census = this._redstoneCensus({ force });
+    return { ...census, ...summarizeRedstone(census), lastChange: this._redstoneChange };
+  }
+
+  // R2: leva o pulsante più vicino (fra i componenti a portata). Gli input sono
+  // gli unici che un click può azionare: una torcia o una piastra si leggono ma
+  // non si comandano.
+  _pickRedstoneInput () {
+    const rows = (this._redstoneCensus()?.components ?? []).filter(row => isRedstoneInput(row));
+    const usable = this._reachabilityUsable();
+    return rows.find(row => !usable || this.approachReachable(row.position, { range: 3.5, dy: 2 })) ?? null;
   }
 
   // La lava entro `LAVA_AVOID_RANGE`: la cella più vicina (motivo per `avoid_lava`).
@@ -1566,6 +1623,19 @@ export class BedrockAdapter {
         o.push({ key: 'set_repeater_delay', description: `Advance the repeater at ${JSON.stringify(repeater)} to the next delay${delay == null ? '' : ` (now ${delay})`}` });
       }
     }
+    // Redstone (R2): azionare un input a portata e leggere l'effetto a valle.
+    // `sense_redstone` è diagnostica, quindi si offre solo se c'è qualcosa da
+    // leggere (un censimento vuoto non merita un turno).
+    {
+      const input = this._pickRedstoneInput();
+      if (input) {
+        o.push({ key: 'use_redstone', description: `Toggle the ${input.name.replace(/_/g, ' ')} at ${JSON.stringify(input.position)}${input.distance == null ? '' : ` (${input.distance} blocks away)`} and read the effect back` });
+      }
+      const census = this._redstoneCensus();
+      if (census.ready && census.found > 0) {
+        o.push({ key: 'sense_redstone', description: `Read the ${census.counts.components} redstone component(s) and ${census.power.length} signal(s) in range` });
+      }
+    }
     // Fusione: stazione adatta (altoforno per i minerali, affumicatore per il
     // cibo, altrimenti fornace) + materiale + combustibile.
     {
@@ -1818,6 +1888,14 @@ export class BedrockAdapter {
         result = wanted === null || (Number.isFinite(wanted) && wanted >= 0 && wanted <= 3)
           ? await this._setRepeaterDelay(wanted)
           : { ok: false, error: 'bad_delay', key, wanted };
+      } else if (key === 'use_redstone') {
+        result = await this._useRedstone();
+      } else if (key === 'sense_redstone') {
+        // Diagnostica pura: legge e riporta, non può fallire se il mondo è noto.
+        const view = this._redstoneView({ force: true });
+        result = view.ready
+          ? { ok: true, power: view.power, maxPower: view.maxPower, active: view.active, activeOutputs: view.activeOutputs, counts: view.counts, found: view.found, lastChange: view.lastChange }
+          : { ok: false, error: 'redstone_unknown' };
       } else if (key === 'open_trade') {
         result = await this._openTrade();
       } else if (key === 'close_trade') {
@@ -3716,6 +3794,63 @@ export class BedrockAdapter {
     return { ok: true, position: cell, before: current, delay: res.delay, clicks: res.clicks, wanted: target };
   }
 
+  // R2: aziona la leva/pulsante più vicino (o una cella data) e **verifica** il
+  // cambio di stato sullo stato del mondo, non sul pacchetto inviato. Dopo il
+  // click rilegge il censimento (forzato) per riportare quali output si sono
+  // accesi: un input che non muove nulla resta un successo, ma si vede che gli
+  // effetti sono vuoti.
+  async _useRedstone ({ position = null, restore = true, timeoutMs = 2500 } = {}) {
+    const census = this._redstoneCensus();
+    if (!census.ready) return { ok: false, error: 'redstone_unknown' };
+    const row = position ? componentAt(census, position) : this._pickRedstoneInput();
+    if (!row) return { ok: false, error: 'no_redstone_input', position: position ?? null };
+    if (!isRedstoneInput(row)) return { ok: false, error: 'not_an_input', name: row.name, position: row.position };
+    if (this._reachabilityUsable() && !this.approachReachable(row.position, { range: 3.5, dy: 2 })) {
+      return { ok: false, error: 'input_unreachable', name: row.name, position: row.position, distance: row.distance };
+    }
+    const before = inputOn(this.world.blockAt(row.position));
+    // Senza stato leggibile non si aziona: "cambiato" non sarebbe verificabile.
+    if (before == null) return { ok: false, error: 'redstone_state_unreadable', name: row.name, position: row.position };
+    const flipped = await this._clickRedstoneInput(row.position, !before, { timeoutMs });
+    if (!flipped.ok) return { ...flipped, name: row.name, before };
+    const effects = activeOutputs(this._redstoneView({ force: true }));
+    let restored = null;
+    if (restore) {
+      const back = await this._clickRedstoneInput(row.position, before, { timeoutMs });
+      restored = back.ok === true;
+      if (restored) this._redstoneView({ force: true });
+    }
+    this.log('use_redstone', {
+      name: row.name, position: row.position, before, after: !before,
+      effects: effects.map(e => e.name), restored,
+    });
+    return {
+      ok: true, name: row.name, position: row.position, before, after: !before,
+      effects, active: effects.length > 0, restored,
+    };
+  }
+
+  // Un click su una cella, poi attesa che lo stato letto dal mondo sia quello
+  // voluto: `redstone_not_toggled` è un fallimento tipizzato, non un timeout muto.
+  async _clickRedstoneInput (cell, wanted, { timeoutMs = 2500 } = {}) {
+    const before = inputOn(this.world.blockAt(cell));
+    const yaw = this._yawTo(this._feet, { x: cell.x + 0.5, z: cell.z + 0.5 });
+    const pitch = this._lookAt({ x: cell.x + 0.5, y: cell.y + 0.5, z: cell.z + 0.5 }).pitch;
+    await this._queueAuthInput({ yaw, pitch, transaction: this._blockUseTransaction(cell) });
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const state = inputOn(this.world.blockAt(cell));
+      if (state === wanted) return { ok: true, state };
+      await delay(80);
+    }
+    const state = inputOn(this.world.blockAt(cell));
+    return {
+      ok: false,
+      error: state == null ? 'redstone_state_unreadable' : 'redstone_not_toggled',
+      position: cell, state, wanted, before,
+    };
+  }
+
   // ---- mining ------------------------------------------------------------------------
 
   // ---- scelta dell'utensile e del bersaglio di scavo ---------------------------------
@@ -4422,6 +4557,7 @@ export class BedrockAdapter {
       this._doorWatchers.delete(key);
       this.log('door_opened', { key });
     }
+    this._noteRedstoneUpdate(position);
   }
 
   _solidAt (x, y, z) {

@@ -14,6 +14,9 @@ export const INTENTS = [
   'escape', 'fight', 'eat', 'heal', 'sleep', 'shelter', 'recover', 'collect',
   'travel', 'mine', 'craft', 'smelt', 'build', 'wait',
   'swim', 'surface', 'descend', 'ascend', 'fluid',
+  // Redstone (R2): `toggle` aziona un input, `sense` legge lo stato di un
+  // circuito, `redstone` marca il dominio (piazzamento e costruzione).
+  'redstone', 'toggle', 'sense',
 ];
 
 const KEY_INTENTS = {
@@ -37,6 +40,10 @@ const KEY_INTENTS = {
   surface: ['surface', 'swim'],
   swim_to: ['swim', 'travel'],
   dive: ['descend', 'swim'],
+  // Redstone (R2): azionare un input e leggere lo stato di un circuito.
+  use_redstone: ['toggle', 'redstone'],
+  sense_redstone: ['sense', 'redstone'],
+  set_repeater_delay: ['toggle', 'redstone'],
 };
 
 const PREFIX_INTENTS = [
@@ -45,6 +52,7 @@ const PREFIX_INTENTS = [
   [/^craft_/, ['craft']],
   [/^smelt_/, ['smelt']],
   [/^place_/, ['build']],
+  [/^set_repeater_delay_/, ['toggle', 'redstone']],
 ];
 
 // Intenti associati a una key offerta da /options. Una key sconosciuta

@@ -222,7 +222,18 @@ server = createServer(async (req, res) => {
         ? resolveMilestone(progressionGraph, { goal: PROGRESSION_GOAL, observation: obs, completed: new Set() })
         : null;
       const active = resolveActiveSkill({ skills: gameplaySkills, plan: obs.plan, governor: survival, milestone, observation: obs });
-      response = [200, { survival, activeSkill: active.skill?.id ?? null, activeSkillSource: active.source, milestone, progressionGoal: PROGRESSION_GOAL }];
+      // Redstone (R2): il controller riceve potenza massima e output attivi senza
+      // dover rileggere l'intero censimento.
+      const redstone = obs.redstone?.ready
+        ? {
+          maxPower: obs.redstone.maxPower ?? null,
+          active: obs.redstone.active === true,
+          activeOutputs: obs.redstone.activeOutputs ?? [],
+          counts: obs.redstone.counts ?? null,
+          lastChange: obs.redstone.lastChange ?? null,
+        }
+        : null;
+      response = [200, { survival, activeSkill: active.skill?.id ?? null, activeSkillSource: active.source, milestone, progressionGoal: PROGRESSION_GOAL, redstone }];
     } else if (process.env.BEDROCK_DEBUG && req.method === 'GET' && req.url === '/debug/geom') response = [200, geometryReport(adapter)];
     else if (process.env.BEDROCK_DEBUG && req.method === 'GET' && req.url.startsWith('/debug/reach')) {
       // Componente calpestabile raggiungibile attorno al bot: diagnosi dei

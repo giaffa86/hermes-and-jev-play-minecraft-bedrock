@@ -6,9 +6,9 @@ hopper item transport, dispensers and (stretch) crafters. It builds on the
 verified primitives (placement, `click_block` interaction, containers, crafting,
 digging) while never breaking the base's own circuits.
 
-Status: **R0 and R1 implemented and unit-tested (R0 also collaudato live); the
-R1 live component round is blocked by the standing "no base edits" rule
-(03/10/2026); R2–R6 spec only** (tracked in [roadmap](roadmap.md) and
+Status: **R0, R1 and R2 implemented and unit-tested (R0 also collaudato live);
+the live component round is blocked by the standing "no base edits" rule
+(03/10/2026); R3–R6 spec only** (tracked in [roadmap](roadmap.md) and
 [open-questions](open-questions.md)). Full raw source:
 [`docs/raw/REDSTONE_ROADMAP.md`](../raw/REDSTONE_ROADMAP.md).
 
@@ -208,14 +208,110 @@ packet shape.
   not change the state threw `TypeError: delay is not a function` instead of
   reporting `repeater_delay_not_confirmed`; the local is now named `current`.
 
+## R2 — Interaction and sensing (implemented, unit-tested 03/10/2026)
+
+The bot can now **command** redstone and **sense** it continuously.
+
+- **Only the inputs are commanded** (`bedrock-redstone.mjs`): `REDSTONE_INPUTS` is
+  the closed set a click can act on — `lever`, `stone_button`, `wooden_button`,
+  `polished_blackstone_button`. Torches, blocks of redstone, pressure plates and
+  observers are *sources*, not switches: clicking them is not a way to change a
+  circuit, so `isRedstoneInput` keeps them out.
+- **State reading never guesses**: `inputOn(block)` returns `true`/`false` from
+  `open_bit`/`button_pressed_bit` (falling back to the readable signal), and
+  **`null` when the state cannot be read**. A component whose state is unknown is
+  never treated as "off". Same rule for `summarizeRedstone`, where `maxPower` is
+  `null` — not `0` — when no signal is readable.
+- **`use_redstone`** (`_useRedstone({position, restore, timeoutMs})`) toggles the
+  nearest reachable input, verifies **its own state change** *and* the downstream
+  effect (the census is re-read so `effects` lists the outputs that moved to
+  `lit_*`/`powered_*`/`extended_*`), then — `restore: true` by default —
+  **puts the input back at rest**, so a probe never leaves a clock running.
+  Returns `{ok, name, position, before, after, effects, active, restored}` and
+  logs `use_redstone`. Typed failures: `redstone_unknown` (census not ready),
+  `no_redstone_input`, `not_an_input` (an output was asked for),
+  `input_unreachable` (only reachable via an explicit position: `_pickRedstoneInput`
+  already drops the unreachable ones), `redstone_state_unreadable` (nothing to
+  verify against), `redstone_not_toggled` (the click changed nothing).
+- **`use_redstone` is a click, not a packet shape**: `_clickRedstoneInput(cell,
+  wanted, {timeoutMs})` sends one `click_block` with yaw/pitch aimed at the cell
+  and waits for the world to report the wanted state — so a wrong click is an
+  error, never a success.
+- **Continuous sensing** (`_noteRedstoneUpdate`, called from `_onBlockUpdate`): a
+  server block update patches the cached census **in place** — no new
+  `findBlocks` — and records `_redstoneChange = {position, name, previous,
+  power, powerKnown, at}`. A non-redstone update leaves the cache alone. The
+  view (`_redstoneView`, exposed as `GET /observe.redstone` and as the `redstone`
+  key of `GET /observe`) merges the census with `summarizeRedstone` and
+  `lastChange`.
+- **`sense_redstone`** is the diagnostic action (`{ok, power, maxPower, active,
+  activeOutputs, counts, found, lastChange}`, `{ok: false, error:
+  'redstone_unknown'}` on a cold world) and it is offered **only when the census
+  is ready and has found something** — a diagnostic on an empty census is not
+  worth a turn. `use_redstone` is offered only when an input is actually at
+  reach. `GET /survival` gained a `redstone: {maxPower, active, activeOutputs,
+  counts, lastChange}` section (`null` while the census is not ready).
+- **Intents** (`survival/intents.mjs`): `redstone`, `toggle`, `sense` are new;
+  `use_redstone`/`set_repeater_delay` → `['toggle','redstone']`, `sense_redstone`
+  → `['sense','redstone']`, `set_repeater_delay_<n>` via a prefix rule (a plain
+  `place_*` keeps mapping to `build`).
+- **Verifier criteria** (`survival/verify.mjs`, both in `CRITERIA_KEYS`):
+  **`blockPoweredAt`** `{x,y,z,atLeast=1}` fails on a missing cell and on an
+  unreadable power — evidence `redstoneAt = {name, power}`; **`circuitActive`**
+  accepts `true`, `{atLeast}` or `false` and passes on an active output or on a
+  sufficient `maxPower` (with `false` it requires no active output *and* a
+  signal below the threshold); a missing `redstone` section is `redstone state
+  unknown`, never a pass.
+- **Tests**: `tests/bedrock-redstone.test.mjs` (18 cases now) covers the pure
+  layer — the input set, `inputOn` in all four shapes, `isActiveOutput` (TNT is a
+  hazard, not an output; an unreadable power is not "off"), `activeOutputs`,
+  `componentAt` and `summarizeRedstone`. `tests/bedrock-redstone-use.test.mjs`
+  (10 cases) drives the **real census** over a fake world that models the server
+  (a click flips `open_bit`/`button_pressed_bit` and lights the linked lamp), so
+  the toggle/effect/restore path, the four typed failures, the in-place cache
+  update (one `findBlocks` before *and* after an `update_block`), the option
+  gating and `executeAction` are all exercised. `tests/bedrock-redstone-criteria.test.mjs`
+  (4 cases) pins `blockPoweredAt`/`circuitActive` and their place in the criteria
+  vocabulary.
+- **Live round (03/10/2026, VM 100, BDS 1.26.52, bot in its room — no component
+  in reach)**: `GET /observe.redstone` returns the R2 keys with honest values
+  (`maxPower: null`, `active: false`, `activeOutputs: []`, `sourceCount: 0`,
+  `outputCount: 0`, `componentCount: 0`, `lastChange: null`, `ready: true`,
+  `loaded: 125`); `GET /survival` carries `redstone: {maxPower: null, active:
+  false, activeOutputs: [], counts: {components: 0, ore: 0, hazards: 0},
+  lastChange: null}`; `POST /act {"key":"use_redstone"}` →
+  `{ok: false, error: 'no_redstone_input', position: null}` (typed, no burn) and
+  `POST /act {"key":"sense_redstone"}` → `{ok: true, power: [], maxPower: null,
+  active: false, activeOutputs: [], counts: {…0…}, found: 0, lastChange: null}`;
+  `/options` offers no redstone key while the census is empty (the gating works
+  live). The toggle/effect path cannot be exercised live for the same reason as
+  R1 — the only redstone input reachable would have to be crafted from the
+  base's own cobblestone (plan C, no base edits) — so it stays covered by the
+  unit tests with the modelled server.
+- **Bugs found by the tests**: `_noteRedstoneUpdate` used `REDSTONE_ORES.has(...)`
+  but `REDSTONE_ORES` is an **array** (→ `TypeError: REDSTONE_ORES.has is not a
+  function`); it now goes through `isRedstoneOre(name)`. And `_pickRedstoneInput`
+  already filters by reachability, so `input_unreachable` is only reachable with
+  an explicit position (the test was wrong, not the code).
+- **Known limits (R2)**: `effects` are read from the census right after the click
+  (a delay line or a long piston animation is not waited for — a `delay_line`
+  circuit needs R4's verifier); a `sense_redstone` snapshot is only as fresh as
+  the cache TTL unless an `update_block` arrived; buttons have no "press" timing
+  (a click is instantaneous, so a wooden button's pulse is observed, not held);
+  the `circuitActive` criterion is a summary, not a topology check.
+
 ## Proposed vocabulary
 
 - **Actions**: `build_circuit_<id>`, `use_redstone`, `set_repeater_delay`,
   `sense_redstone`, `teardown_circuit`, `mine_redstone_ore` (via `_refreshNearby`).
+  Implemented: `use_redstone`, `sense_redstone`, `set_repeater_delay`,
+  `mine_redstone_ore`; still missing: `build_circuit_<id>` (R3) and
+  `teardown_circuit` (R4).
 - **Intents**: `redstone`, `toggle`, `sense`.
 - **Item tags**: `redstone_dust`, `redstone_components`, `pistons`, `hoppers`.
 - **Conditions/criteria**: `redstoneNearby`, `tntNearby`, `blockPoweredAt` /
-  `circuitActive`.
+  `circuitActive` (implemented in `survival/verify.mjs`; `redstoneNearby` and
+  `tntNearby` are not yet wired into a skill).
 
 ## Milestones
 
@@ -223,7 +319,7 @@ packet shape.
 |---|---|---|---|
 | R0 | Awareness & protection | Add redstone to `DIG_PROTECTED`; extend `_refreshNearby` (ore + components); `/observe.redstone`; state-aware `findBlocksByState`; pure `bedrock-redstone.mjs` (`powerOf`, `isSource/isOutput`, `tnt` hazard). | ◑ implemented + live: awareness, census and dig protection done; circuit *building* is R1+ |
 | R1 | Oriented placement | Extend `_placeAtCell` with desired state/facing and side faces; confirm name+properties; place→read→correct retry; packet-capture task for placement orientation; repeater delay via interaction. | ◑ place→read→correct + repeater delay implemented and unit-tested; packet capture **not needed**; the live component round is blocked by plan C (no base edits) |
-| R2 | Interaction & sensing | `use_redstone` (lever/button) with state + downstream verification; redstone cache in `/observe`; `sense_redstone`; verifier criteria. | ❌ not implemented |
+| R2 | Interaction & sensing | `use_redstone` (lever/button) with state + downstream verification; redstone cache in `/observe`; `sense_redstone`; verifier criteria. | ◑ implemented + unit-tested and live-sensed (in-place cache, `use_redstone`, `sense_redstone`, `blockPoweredAt`/`circuitActive`); the live toggle is blocked by plan C |
 | R3 | Primitive circuits | Declarative `circuits/*.json` blueprints (`lamp_switch`, `delay_line`, `auto_lamp`, `auto_door`, `auto_harvest`, `auto_dispense`, `hopper_chain`, `crafter_pulse`) + `build_circuit_<id>` bounded action. | ❌ not implemented |
 | R4 | Verify, teardown, guardrails | Deterministic circuit verifier; `teardown_circuit` limited to bot-built blocks; rollback on partial failure; no redstone edits outside owned circuits. | ❌ not implemented |
 | R5 | Automation & integration | Gameplay skills `skills/gameplay/redstone/`; progression milestones `redstone_ore`/`redstone_basics`/`redstone_automation`; integrate farming (`auto_harvest`), storage (`hopper_chain`), defense (`auto_lamp`), fluids (water stream). | ❌ not implemented |

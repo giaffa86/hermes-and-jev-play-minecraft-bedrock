@@ -2178,3 +2178,61 @@ Doc: `redstone.md` (status, sezione R1, tabella milestone R1 → ◑, "Key risks
 riscritti — la cattura pacchetti non serve più), `verification.md` (nuova riga
 47.3 + riga 47 "Oriented placement" → ◑), `roadmap.md` (voce Redstone + voce 7 dei
 prossimi passi → R2), `open-questions.md` (bullet redstone + voce spec-only).
+
+## [2026-10-03] feat | Redstone R2: azionare e sentire un circuito (interazione + sensing)
+
+Implementata la seconda slice della redstone (`docs/wiki/redstone.md`, riga R2
+della tabella milestone → ◑): il bot non solo *vede* la redstone (R0) e la
+*piazza orientata* (R1), ma la **comanda** e la **sente** in continuo.
+
+- `bedrock-redstone.mjs`: `REDSTONE_INPUTS` (chiuso: leva, pulsanti di pietra,
+  legno, blackstone) perché un click aziona solo un input, non una sorgente;
+  `isRedstoneInput`, `inputOn` (`true`/`false` da `open_bit`/`button_pressed_bit`
+  o dal segnale, **`null` se illeggibile**), `isActiveOutput` (i pericoli — TNT —
+  sono esclusi; un output con potenza ignota non è "acceso"), `activeOutputs`,
+  `componentAt`, `summarizeRedstone` (`maxPower: null` quando non c'è nulla di
+  leggibile — la fusione con la vista R0 non perde campi).
+- `bedrock-adapter.mjs`: `_buildRedstoneView`, `_noteRedstoneUpdate` (l'update del
+  server corregge la cache **in place**, niente nuova `findBlocks`, e registra
+  `_redstoneChange`), `_pickRedstoneInput` (input più vicino e raggiungibile),
+  `_useRedstone` (click → verifica stato **ed effetto a valle** → **ripristino**,
+  nessun clock lasciato attivo; errori tipizzati `no_redstone_input`,
+  `not_an_input`, `input_unreachable`, `redstone_state_unreadable`,
+  `redstone_not_toggled`), `_clickRedstoneInput` (un solo `click_block` e attesa
+  della conferma dal mondo), opzioni `use_redstone`/`sense_redstone` (la seconda
+  solo con un censimento non vuoto), rami `executeAction`, `observe().redstone`.
+- `bedrock-harness.mjs`: `GET /survival` espone `redstone: {maxPower, active,
+  activeOutputs, counts, lastChange}`. `survival/intents.mjs`: intents `redstone`/
+  `toggle`/`sense` + mapping. `survival/verify.mjs`: criteri `blockPoweredAt` e
+  `circuitActive` (falliscono rumorosamente su un dato mancante).
+- Test: 18 casi puri in `tests/bedrock-redstone.test.mjs`, 10 in
+  `tests/bedrock-redstone-use.test.mjs` (censimento vero su mondo finto che
+  *modella il server*: il click inverte `open_bit` e accende la lampada collegata;
+  verifica anche l'aggiornamento in place della cache con **una sola** `findBlocks`
+  prima e dopo l'`update_block`), 4 in `tests/bedrock-redstone-criteria.test.mjs`.
+  Suite completa: **748 test, 748 pass, 0 fail**. Due bug trovati dai test:
+  `REDSTONE_ORES.has(...)` su un array (`TypeError`, risolto con
+  `isRedstoneOre`) e `input_unreachable` irraggiungibile via `_pickRedstoneInput`
+  (che già scarta gli input non raggiungibili ⇒ il test è stato corretto).
+- Round live (VM 100, container `hermes-jev-bedrock`, BDS 1.26.52, bot nella sua
+  stanza senza componenti): `GET /observe.redstone` con le chiavi R2 e valori
+  onesti (`maxPower: null`, `active: false`, `sourceCount/outputCount/
+  componentCount: 0`, `lastChange: null`, `ready: true`, `loaded: 125`);
+  `GET /survival` con la sezione `redstone`; `POST /act {"key":"use_redstone"}` →
+  `{ok:false,error:'no_redstone_input',position:null}` (tipizzato, nessun burn);
+  `POST /act {"key":"sense_redstone"}` → `{ok:true,power:[],maxPower:null,
+  active:false,...}`; `/options` non offre nulla di redstone a censimento vuoto.
+  Il percorso click → effetto → ripristino non è esercitabile live per lo stesso
+  blocker ambientale di R1 (l'unica cobblestone a portata è il muro della base) e
+  resta coperto dai test con il server modellato.
+- Limiti noti: gli `effects` si leggono subito dopo il click (una linea di ritardo
+  o un pistone lento richiedono il verifier di R4), un pulsante è un impulso e non
+  si tiene premuto, `circuitActive` è un riassunto e non un controllo di topologia.
+
+File: `bedrock-redstone.mjs`, `bedrock-adapter.mjs`, `bedrock-harness.mjs`,
+`survival/intents.mjs`, `survival/verify.mjs`, `tests/bedrock-redstone.test.mjs`,
+`tests/bedrock-redstone-use.test.mjs`, `tests/bedrock-redstone-criteria.test.mjs`,
+`docs/wiki/redstone.md`, `docs/wiki/verification.md` (nuova riga 47.4 + riga 48
+→ ◑), `docs/wiki/roadmap.md` (macro-area + voce 7 → R3),
+`docs/wiki/open-questions.md` (bullet redstone + voce spec-only),
+`docs/wiki/survival-intelligence.md` (748 test + bullet R2).

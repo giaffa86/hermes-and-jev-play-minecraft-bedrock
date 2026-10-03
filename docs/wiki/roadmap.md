@@ -213,7 +213,10 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   `DIG_PROTECTED`, `_redstoneCensus`/`GET /observe.redstone`,
   `findBlocksByState`); **R1 (oriented placement + repeater delay) implemented and
   unit-tested 03/10** (`place_<component>` via `_placeOriented` place → read →
-  correct, `set_repeater_delay[_n]`) — the packet capture the roadmap predicted
+  correct, `set_repeater_delay[_n]`); **R2 (interaction + sensing) implemented and
+  unit-tested, live-sensed 03/10** (`use_redstone` toggle → verify the input *and*
+  the downstream outputs → restore, `sense_redstone`, in-place cache on
+  `update_block`, `blockPoweredAt`/`circuitActive`) — the packet capture the roadmap predicted
   was **not** needed, the state is read back from the world instead. Building and
   using circuits is R2+; the full live R1 round is one permission away (mining the
   only cobblestone in reach edits the base).
@@ -272,14 +275,15 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    milestones are therefore parked with a documented blocker; the next
    macro-area is **Redstone R0** (below), a deviation to record in the final
    report.
-7. **Redstone** (R0+R1 done 03/10, spec in [redstone](redstone.md)): R0 (protect
+7. **Redstone** (R0+R1+R2 done 03/10, spec in [redstone](redstone.md)): R0 (protect
    redstone in `DIG_PROTECTED`, `/observe.redstone`, state-aware search) is
    implemented, unit-tested and collaudato live (see [verification](verification.md)
    row 47.2); **R1** oriented placement + repeater delay is implemented and
-   unit-tested (row 47.3) — place → read → correct, no packet capture needed. Next
-   is **R2** (`use_redstone` + `sense_redstone` + verifier criteria), which shares
-   R1's live blocker: no component is obtainable in the base room without editing
-   the base (cobblestone = the room's own wall).
+   unit-tested (row 47.3) — place → read → correct, no packet capture needed;
+   **R2** interaction + sensing is implemented, unit-tested and live-sensed
+   (row 47.4). Next is **R3** (declarative `circuits/*.json` + `build_circuit_<id>`),
+   which shares the live blocker of R1/R2: no component is obtainable in the base
+   room without editing the base (cobblestone = the room's own wall).
 8. **Goal Contract** (proposal in [goal-achievement](goal-achievement.md)):
    schema + status machine over the existing progression graph, then the 5
    progressive benchmarks (16 logs → shelter+night → iron pickaxe → 5 diamonds

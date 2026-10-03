@@ -258,8 +258,8 @@ Still missing (the rest of the original gap):
   player on the BDS) and the *deep* side of M6 (following a cave system beyond
   the loaded radius, Deep Dark/Ancient City never observed live).
 - **Placement** only on a top face adjacent to the bot; no scaling/orientation.
-- **Redstone awareness done (R0) and oriented placement done (R1, 03/10); use
-  and circuits still missing.**
+- **Redstone awareness (R0), oriented placement (R1) and interaction/sensing
+  (R2) done (03/10); circuit blueprints still missing.**
   `bedrock-redstone.mjs` now owns the vocabulary (components, sources, outputs,
   `tnt` hazard) and reads state through `powerOf`/`facingOf`/`blockProperties`
   (`null` when unreadable — never "off" by assumption); the component list is in
@@ -272,13 +272,20 @@ Still missing (the rest of the original gap):
   plus `set_repeater_delay[_n]` via repeated `click_block` with a state re-read
   after every click and `facingMatches` tolerant of compound values
   (`lever_direction = down_east_west`). The packet capture the roadmap expected
-  turned out to be unnecessary. Still open: using a component (`use_redstone`,
-  R2) and building circuits (R3+); the **live** component round (R1 and R2 share
-  it) is blocked only by the standing "no base edits" rule — the single cobblestone
-  in reach is the room's own wall, so `mine_cobblestone → craft_lever → place_lever`
-  was not run. The ore was already mineable from the opportunity scan
-  (`ore-value.mjs`) when an iron pickaxe is held. Roadmap in
-  [redstone](redstone.md).
+  turned out to be unnecessary. **R2** closes the *use* side: `use_redstone`
+  toggles the nearest reachable input, verifies its state **and** the downstream
+  outputs and then restores it (no clock left running), `_noteRedstoneUpdate`
+  patches the census in place on every `update_block` (no extra `findBlocks`),
+  `sense_redstone` and the `redstone` section of `GET /survival` expose the
+  verdict, and the verifier gained `blockPoweredAt`/`circuitActive` (a missing or
+  unreadable state is a failure, never a pass). Still open: building circuits
+  (R3+) and a teardown that is limited to bot-built blocks (R4); the **live**
+  component round (R1 and R2 share it) is blocked only by the standing
+  "no base edits" rule — the single cobblestone in reach is the room's own wall,
+  so `mine_cobblestone → craft_lever → place_lever → use_redstone` was not run. The
+  ore was already mineable from the opportunity scan (`ore-value.mjs`) when an
+  iron pickaxe is held; the live round of R2 did verify the sensing keys, the
+  typed routes and the option gating. Roadmap in [redstone](redstone.md).
 - **Barricade** (`.private/DEFENSE-TASK.md`): `_barricadeGap` only checks the
   four cells adjacent to the bot, so the bot must already stand next to the 1×2
   opening; it does not search ahead or walk to a gap. Fine for a corridor, hard
@@ -451,9 +458,10 @@ Still missing (the rest of the original gap):
   piglins, endermen), fortress/blaze, stronghold, End and dragon. Roadmap in
   [nether](nether.md); the progression chain is already in the graph.
 - **Redstone and primitive automation** — R0 done (awareness + protection, live
-  03/10) and R1 done (oriented placement + repeater delay, unit-tested 03/10),
-  R2–R6 spec only. Roadmap in [redstone](redstone.md); next is R2 (`use_redstone`
-  + `sense_redstone`), whose live round shares R1's "no base edits" blocker.
+  03/10), R1 done (oriented placement + repeater delay, unit-tested 03/10) and R2
+  done (interaction + sensing, unit-tested and live-sensed 03/10), R3–R6 spec
+  only. Roadmap in [redstone](redstone.md); next is R3 (`circuits/*.json` +
+  `build_circuit_<id>`), whose live round shares the "no base edits" blocker.
 
 ## Known code defects (not fixed)
 

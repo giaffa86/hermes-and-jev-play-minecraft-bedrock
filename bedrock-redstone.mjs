@@ -311,3 +311,74 @@ export function redstoneView (blocks = [], { from = null, limit = REDSTONE_SCAN_
     counts: { components: components.length, ore: ore.length, hazards: hazards.length },
   };
 }
+
+// --- R2: interazione e sensing -------------------------------------------
+
+// Gli unici componenti che un click *azziona*: leva e pulsanti. Torce, blocchi,
+// piastre, osservatori e sensori sono sorgenti ma non si comandano da remoto,
+// quindi non entrano in `use_redstone`.
+export const REDSTONE_INPUTS = new Set([
+  'lever',
+  'stone_button',
+  'wooden_button',
+  'polished_blackstone_button',
+]);
+
+export function isRedstoneInput (block) {
+  return REDSTONE_INPUTS.has(normalizeName(block?.name ?? block));
+}
+
+// Stato di un input: `true`/`false` quando è leggibile, **`null` quando non lo
+// è** (mai "spento" per assunzione — stessa regola di `powerOf`).
+export function inputOn (block) {
+  const props = blockProperties(block);
+  const power = powerOf(block);
+  if (props?.open_bit === true || props?.button_pressed_bit === true) return true;
+  if (props?.open_bit === false && props?.button_pressed_bit === false) return false;
+  if (props?.button_pressed_bit === null && power == null) return null;
+  return power == null ? null : power > 0;
+}
+
+// Un output è "attivo" se il segnale lo ha azionato: la potenza lo dice per il
+// filo, il nome per le famiglie che cambiano blocco (`lit_*`, `powered_*`,
+// `extended_*`). La TNT è esclusa: è un pericolo, non un output da verificare.
+export function isActiveOutput (row) {
+  if (!row?.name) return false;
+  if (REDSTONE_HAZARDS.has(row.name)) return false;
+  if (/^(lit|powered|extended)_/.test(row.name)) return true;
+  if (!REDSTONE_OUTPUTS.has(row.name)) return false;
+  return row.power != null && row.power > 0;
+}
+
+// Output azionati dalla vista corrente, con la potenza dove è nota.
+export function activeOutputs (view) {
+  return (view?.components ?? [])
+    .filter(isActiveOutput)
+    .map(row => ({ name: row.name, position: row.position, distance: row.distance, power: row.power }));
+}
+
+// Riga del censimento su una cella esatta (`null` se lì non c'è un componente).
+export function componentAt (view, position) {
+  if (!position) return null;
+  return (view?.components ?? []).find(row => row.position
+    && row.position.x === position.x && row.position.y === position.y && row.position.z === position.z)
+    ?? null;
+}
+
+// Sintesi per il controller: potenza massima letta, output attivi, conteggi.
+// I nomi non collidono con quelli della vista (`power`/`components` lì sono
+// array), quindi le due strutture possono essere fuse senza perdere dati.
+// `maxPower: null` quando nessun componente è leggibile: un circuito illeggibile
+// non deve sembrare spento.
+export function summarizeRedstone (view) {
+  const signals = (view?.power ?? []).map(row => row.signal).filter(value => value != null);
+  const active = activeOutputs(view);
+  return {
+    maxPower: signals.length ? Math.max(...signals) : null,
+    activeOutputs: active,
+    active: active.length > 0,
+    sourceCount: (view?.components ?? []).filter(row => REDSTONE_SOURCES.has(row.name)).length,
+    outputCount: (view?.components ?? []).filter(row => REDSTONE_OUTPUTS.has(row.name)).length,
+    componentCount: view?.counts?.components ?? 0,
+  };
+}

@@ -204,6 +204,42 @@ export function evaluateCriteria (criteria, observation, { before = null, contex
       ? { ok: true, evidence }
       : fail(`air ${air} < ${criteria.airAtLeast}`);
   }
+  if ('blockPoweredAt' in criteria) {
+    const want = criteria.blockPoweredAt;
+    const atLeast = Number.isFinite(want?.atLeast) ? want.atLeast : 1;
+    const rows = [
+      ...(after.redstone?.components ?? []),
+      ...(after.redstone?.ore ?? []),
+      ...(after.redstone?.hazards ?? []),
+    ];
+    const row = rows.find(r => r.position && r.position.x === want.x && r.position.y === want.y && r.position.z === want.z);
+    if (!row) return fail(`no redstone component at ${want.x},${want.y},${want.z}`);
+    evidence.redstoneAt = { name: row.name, power: row.power ?? null };
+    // Come per la lava: uno stato illeggibile non è un successo.
+    if (row.power == null) return fail(`power unknown at ${want.x},${want.y},${want.z}`);
+    return row.power >= atLeast
+      ? { ok: true, evidence }
+      : fail(`power ${row.power} < ${atLeast} at ${want.x},${want.y},${want.z}`);
+  }
+  if ('circuitActive' in criteria) {
+    const want = criteria.circuitActive;
+    const atLeast = Number.isFinite(want?.atLeast) ? want.atLeast : 1;
+    const redstone = after.redstone;
+    if (redstone == null) return fail('redstone state unknown');
+    const signals = (redstone.power ?? []).map(r => r.signal).filter(v => v != null);
+    const maxPower = signals.length ? Math.max(...signals) : null;
+    const outputs = redstone.activeOutputs ?? [];
+    evidence.redstoneMaxPower = maxPower;
+    evidence.redstoneActiveOutputs = outputs.map(o => o.name);
+    if (want === false) {
+      return (maxPower ?? 0) < atLeast && outputs.length === 0
+        ? { ok: true, evidence }
+        : fail(`circuit still active (power=${maxPower}, outputs=${outputs.length})`);
+    }
+    if (outputs.length > 0) return { ok: true, evidence };
+    if (maxPower == null) return fail('no readable redstone signal');
+    return maxPower >= atLeast ? { ok: true, evidence } : fail(`max power ${maxPower} < ${atLeast}`);
+  }
   return fail(`unknown success criterion: ${Object.keys(criteria).join(', ')}`);
 }
 
@@ -240,6 +276,7 @@ export const CRITERIA_KEYS = [
   'dimension', 'nearbyBlock', 'foodIncreased', 'healthIncreased', 'noHostileWithin',
   'threatDistanceIncreasedBy', 'nightSurvived', 'deathsAtLeast', 'itemPreserved',
   'inWater', 'notInLava', 'airAtLeast',
+  'blockPoweredAt', 'circuitActive',
   'allOf', 'anyOf',
 ];
 

@@ -75,7 +75,7 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**698 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**748 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
 
 - **Fluids in the survival layer (M0, 2026-10-03)**: the governor vocabulary grew
@@ -94,6 +94,22 @@ Live 03/10: a dry bot produces no fluid need and no fluid risk reason
 (`GET /survival` unchanged); the air budget is now **simulated**
 (`bedrock-air.mjs`, see below), so `drowning`/`surface` have a source and stay
 inert only while the bot is dry ([fluids](fluids.md), row 47 of
+[verification](verification.md)).
+
+- **Redstone in the survival layer (R2, 2026-10-03)**: the governor vocabulary
+gained the intents `redstone`, `toggle` and `sense` — `use_redstone` and
+`set_repeater_delay[_n]` map to `[toggle, redstone]`, `sense_redstone` to
+`[sense, redstone]`, and a plain `place_*` keeps mapping to `build` — and the
+verifier gained two criteria that **fail loudly instead of passing on a
+missing datum**: `blockPoweredAt {x,y,z,atLeast}` (a cell that is absent or a
+power that is unreadable is a failure) and `circuitActive` (`true`,
+`{atLeast}` or `false`; with `false` it requires no active output *and* a
+signal below the threshold). A missing `redstone` section in the observation
+is `redstone state unknown`. The adapter side reads `inputOn` as `true`/
+`false`/**`null`** (a lever of unknown state is never "off") and
+`summarizeRedstone` reports `maxPower: null` — not `0` — when nothing is
+readable; `use_redstone` restores the input after probing, so no clock is
+left running ([redstone](redstone.md), row 47.4 of
 [verification](verification.md)).
 
 - **Wading and the simulated air budget (M1 partial, 2026-10-03)**: shallow water

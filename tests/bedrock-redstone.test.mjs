@@ -10,6 +10,8 @@ import {
   blockProperties, powerOf, isPowered, facingOf, isSource, isOutput,
   componentState, redstoneView,
   normalizeFacing, facingMatches, isRepeater, repeaterDelay, PLACEMENT_YAW_STEPS,
+  REDSTONE_INPUTS, isRedstoneInput, inputOn, isActiveOutput, activeOutputs,
+  componentAt, summarizeRedstone,
 } from '../bedrock-redstone.mjs';
 
 const at = (x, y, z) => ({ x, y, z });
@@ -197,4 +199,71 @@ test('isRepeater e repeaterDelay leggono le due varianti di nome', () => {
 
 test('PLACEMENT_YAW_STEPS copre il giro cardinale', () => {
   assert.deepEqual(PLACEMENT_YAW_STEPS, [0, 90, 180, 270]);
+});
+
+test('isRedstoneInput riconosce solo leva e pulsanti (ciò che un click aziona)', () => {
+  assert.equal(isRedstoneInput({ name: 'lever' }), true);
+  assert.equal(isRedstoneInput({ name: 'minecraft:stone_button' }), true);
+  assert.equal(isRedstoneInput({ name: 'wooden_button' }), true);
+  assert.equal(isRedstoneInput({ name: 'polished_blackstone_button' }), true);
+  assert.equal(isRedstoneInput('lever'), true);
+  // Sorgenti ma non azionabili da remoto: si leggono, non si comandano.
+  assert.equal(isRedstoneInput({ name: 'redstone_torch' }), false);
+  assert.equal(isRedstoneInput({ name: 'stone_pressure_plate' }), false);
+  assert.equal(isRedstoneInput({ name: 'unpowered_repeater' }), false);
+  assert.deepEqual([...REDSTONE_INPUTS].sort(), ['lever', 'polished_blackstone_button', 'stone_button', 'wooden_button']);
+});
+
+test('inputOn legge open_bit/button_pressed_bit e non inventa uno stato spento', () => {
+  assert.equal(inputOn({ name: 'lever', ...props({ open_bit: true }) }), true);
+  assert.equal(inputOn({ name: 'lever', ...props({ open_bit: false }) }), false);
+  assert.equal(inputOn({ name: 'stone_button', ...props({ button_pressed_bit: true }) }), true);
+  assert.equal(inputOn({ name: 'stone_button', ...props({ button_pressed_bit: false }) }), false);
+  // Potenza senza i bit: vale il segnale.
+  assert.equal(inputOn({ name: 'lever', ...props({ redstone_signal: 12 }) }), true);
+  assert.equal(inputOn({ name: 'lever', ...props({ redstone_signal: 0 }) }), false);
+  // Stato illeggibile: null, mai false.
+  assert.equal(inputOn({ name: 'lever' }), null);
+  assert.equal(inputOn({ name: 'stone' }), null);
+});
+
+test('isActiveOutput distingue un output azionato da uno spento, e la TNT non è un output', () => {
+  const row = (name, power) => ({ name, position: null, distance: null, power });
+  assert.equal(isActiveOutput(row('lit_redstone_lamp', 15)), true);
+  assert.equal(isActiveOutput(row('powered_repeater', 0)), true, 'il nome dice acceso');
+  assert.equal(isActiveOutput(row('redstone_lamp', 0)), false);
+  assert.equal(isActiveOutput(row('redstone_lamp', 15)), true);
+  assert.equal(isActiveOutput(row('redstone_lamp', null)), false, 'potenza ignota: non attivo');
+  assert.equal(isActiveOutput(row('tnt', 15)), false, 'la TNT è un pericolo, non un output');
+  assert.equal(isActiveOutput(row('redstone_wire', 9)), false, 'il filo non è un output');
+  assert.equal(isActiveOutput(null), false);
+});
+
+test('activeOutputs, componentAt e summarizeRedstone riassumono la vista', () => {
+  const view = {
+    components: [
+      { name: 'lever', position: { x: 1, y: 71, z: 0 }, distance: 1.5, power: 15 },
+      { name: 'redstone_lamp', position: { x: 2, y: 71, z: 0 }, distance: 2.5, power: 0 },
+      { name: 'lit_redstone_lamp', position: { x: 3, y: 71, z: 0 }, distance: 3.5, power: 15 },
+      { name: 'redstone_wire', position: { x: 4, y: 71, z: 0 }, distance: 4.5, power: null },
+    ],
+    power: [{ name: 'lever', position: { x: 1, y: 71, z: 0 }, distance: 1.5, signal: 15 }],
+    counts: { components: 4, ore: 0, hazards: 0 },
+  };
+  assert.deepEqual(activeOutputs(view).map(o => o.name), ['lit_redstone_lamp']);
+  assert.equal(componentAt(view, { x: 1, y: 71, z: 0 }).name, 'lever');
+  assert.equal(componentAt(view, { x: 9, y: 71, z: 0 }), null);
+  assert.equal(componentAt(view, null), null);
+  const summary = summarizeRedstone(view);
+  assert.equal(summary.maxPower, 15);
+  assert.equal(summary.active, true);
+  assert.deepEqual(summary.activeOutputs.map(o => o.name), ['lit_redstone_lamp']);
+  assert.equal(summary.sourceCount, 1, 'sorgenti: la leva (la lampada è output, il filo nessuno dei due)');
+  assert.equal(summary.outputCount, 2);
+  assert.equal(summary.componentCount, 4);
+  // Nessun segnale leggibile ⇒ `maxPower: null`, mai 0 per assunzione.
+  const dark = summarizeRedstone({ components: [], power: [], counts: { components: 0 } });
+  assert.equal(dark.maxPower, null);
+  assert.equal(dark.active, false);
+  assert.deepEqual(dark.activeOutputs, []);
 });
