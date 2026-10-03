@@ -3110,3 +3110,49 @@ JEV_MODEL=jev-latest` ha prodotto
 `CANCELLED (exhausted) after 2 actions`, `exit=0` — nessuna regressione sul
 percorso normale. Resta aperto: trasformare un hit in un **waypoint reale**
 quando il goal è libero ("la grotta ricca").
+
+## [2026-10-03] feat | Retention dell'episodico: potatura a dry-run di missioni, azioni e checkpoint (P6)
+
+Chiuso l'ultimo item dichiarato aperto di `memory.md`/`roadmap.md` ("missions,
+action events and checkpoints only grow today"). Nuovo
+`WorldMemory.pruneEpisodic({keepMissions = 50, keepActions = null,
+keepCheckpoints = null, minAgeMs = 0, dryRun = true})` e rotta
+`POST /memory/prune`; nuovo `removeAction(id)` in entrambi i repository
+(`memory-store.mjs`, `sqlite-memory.mjs`, con statement preparato).
+
+Tre regole rendono la potatura sicura: il **dry-run e il default** (senza
+`{"dryRun": false}` esplicito non si cancella niente), si potano **solo missioni
+terminali gia consolidate** (la relazione `consolidated_into` e il watermark:
+l'hint di produttivita sul nodo e la copia dell'episodio — una missione non
+consolidata finisce in `skipped.unconsolidated` e una in corso non e nemmeno una
+candidata), e `minAgeMs` protegge il passato recente (`skipped.tooYoung`). La
+finestra `keepMissions` e ordinata per tempo di chiusura con l'id come tie-break
+(niente scelte arbitrarie); dentro la finestra la missione resta intera salvo
+`keepActions`/`keepCheckpoints`, che tagliano gli episodi piu vecchi. La potatura
+porta via action event, checkpoint, archi di goal e il record della missione; gli
+hint semantici restano (i loro `sources` possono puntare a missioni non piu
+esistenti, ed e esattamente il motivo per cui devono sopravvivere) e l'indice
+vettoriale viene invalidato dopo una potatura reale che ha rimosso qualcosa.
+
+Test: `tests/memory-prune.test.mjs`, **13 casi x 2 backend** (dry-run che non
+tocca niente, potatura reale solo fuori finestra, la conoscenza semantica che
+sopravvive agli episodi, non consolidata/in corso/troppo giovane mai potate,
+`keepActions`/`keepCheckpoints`, report serializzabile). Suite completa: **1002
+test, 1002 pass** (era 989).
+
+Collaudo live sul container `hermes-jev-bedrock` (deploy di `world-memory.mjs`,
+`memory-store.mjs`, `sqlite-memory.mjs`, `bedrock-harness.mjs` + restart, md5
+identici, bot `spawned`): `POST /memory/prune {}` →
+`{dryRun: true, candidates: 40, kept: 40, deleted: {missions: 0, actions: 0,
+checkpoints: 0, relations: 0}}`; `{"keepMissions": 0}` → `{deleted: {missions: 8,
+actions: 59, checkpoints: 8, relations: 13}, skipped: {unconsolidated: 32}}`
+(solo le 8 consolidate sono eleggibili); poi una chiamata **reale**
+`{"dryRun": false, "keepMissions": 50}` → 0 cancellazioni con i conteggi
+identici prima/dopo (44 missioni, 95 action event, 36 checkpoint, 34 mission
+relation, 5372 osservazioni) e `GET /memory/hints` che continua a restituire
+`carrots` (found 2, confidence 1) e `potatoes` (found 1). Per la regola
+dell'obiettivo "non eliminare dati" il ramo distruttivo e stato verificato live
+solo con una finestra che non cancella nulla; le cancellazioni sono coperte dai
+13 test unitari sui due backend. Limiti noti: il **log delle osservazioni**
+(5372 righe) non viene potato e un backlog non consolidato blocca la potatura per
+progetto (`POST /memory/consolidate` prima).

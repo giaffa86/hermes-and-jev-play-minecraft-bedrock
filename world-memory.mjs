@@ -1083,6 +1083,72 @@ export class WorldMemory {
     };
   }
 
+  // Retention (P6 follow-up): la memoria episodica non cresce all'infinito.
+  // Due regole di sicurezza: si potano solo missioni **terminali e già
+  // consolidate** (la relazione `consolidated_into` è il watermark: l'episodio è
+  // già diventato conoscenza) e il **dry-run è il default** — niente viene
+  // cancellato senza `dryRun: false` esplicito. Le `keepMissions` più recenti
+  // restano intatte; con `keepActions`/`keepCheckpoints` si possono sfoltire
+  // anche quelle, tenendone gli episodi più recenti. In dry-run i campi
+  // `deleted` contano ciò che *verrebbe* rimosso.
+  pruneEpisodic ({ keepMissions = 50, keepActions = null, keepCheckpoints = null, minAgeMs = 0, dryRun = true, now = Date.now() } = {}) {
+    const missions = this.missions({ limit: null }).filter(m => this._isTerminal(m));
+    // Ordine deterministico: tempo di chiusura decrescente e, a parità di
+    // millisecondo, id decrescente — senza tie-break la scelta di chi resta
+    // dipenderebbe dall'ordine di lettura del repository.
+    missions.sort((a, b) => (b.completedAt ?? b.startedAt ?? 0) - (a.completedAt ?? a.startedAt ?? 0)
+      || String(b.id).localeCompare(String(a.id)));
+    const keep = new Set(missions.slice(0, Math.max(0, keepMissions)).map(m => m.id));
+    const report = {
+      ok: true, dryRun, at: now, keepMissions, keepActions, keepCheckpoints, minAgeMs,
+      candidates: missions.length, kept: keep.size,
+      deleted: { missions: 0, actions: 0, checkpoints: 0, relations: 0 },
+      skipped: { kept: 0, unconsolidated: 0, tooYoung: 0 },
+      details: [],
+    };
+    const byNewest = (key) => (a, b) => (b[key] ?? 0) - (a[key] ?? 0) || String(b.id).localeCompare(String(a.id));
+    for (const mission of missions) {
+      const endedAt = mission.completedAt ?? mission.startedAt ?? 0;
+      const relations = this.missionRelations(mission.id);
+      const actions = this.missionActions(mission.id);
+      const checkpoints = this.missionCheckpoints(mission.id);
+      if (keep.has(mission.id)) {
+        const trimActions = keepActions == null ? [] : [...actions].sort(byNewest('startedAt')).slice(Math.max(0, keepActions));
+        const trimCheckpoints = keepCheckpoints == null
+          ? [] : [...checkpoints].sort((a, b) => (b.seq ?? 0) - (a.seq ?? 0)).slice(Math.max(0, keepCheckpoints));
+        if (!trimActions.length && !trimCheckpoints.length) { report.skipped.kept += 1; continue; }
+        for (const e of trimActions) if (dryRun || this.repo.removeAction(e.id)) report.deleted.actions += 1;
+        for (const c of trimCheckpoints) if (dryRun || this.repo.remove(c.id)) report.deleted.checkpoints += 1;
+        report.details.push({ mission: mission.id, kept: true, actions: trimActions.length, checkpoints: trimCheckpoints.length });
+        continue;
+      }
+      // Solo una missione già trasformata in hint può essere dimenticata: senza
+      // la relazione di consolidamento la potatura perderebbe l'unica copia.
+      if (!relations.some(r => r.relationType === 'consolidated_into')) { report.skipped.unconsolidated += 1; continue; }
+      if (minAgeMs > 0 && now - endedAt < minAgeMs) { report.skipped.tooYoung += 1; continue; }
+      if (dryRun) {
+        report.deleted.actions += actions.length;
+        report.deleted.checkpoints += checkpoints.length;
+        report.deleted.relations += relations.length;
+      } else {
+        for (const e of actions) if (this.repo.removeAction(e.id)) report.deleted.actions += 1;
+        for (const c of checkpoints) if (this.repo.remove(c.id)) report.deleted.checkpoints += 1;
+        for (const r of relations) if (this.repo.unlinkMission({ id: r.id })) report.deleted.relations += 1;
+        this.repo.remove(mission.id);
+      }
+      report.deleted.missions += 1;
+      report.details.push({
+        mission: mission.id, state: mission.state, outcome: mission.outcome ?? null, endedAt,
+        actions: actions.length, checkpoints: checkpoints.length, relations: relations.length,
+      });
+    }
+    if (!dryRun && (report.deleted.missions || report.deleted.actions || report.deleted.checkpoints)) {
+      this._touchVector();
+      if (typeof this.repo.flush === 'function') this.repo.flush();
+    }
+    return report;
+  }
+
   // Vista semantica: hint di produttività per risorsa/nodo, ordinati per punteggio.
   productivityHints ({ resource = null, node = null, near = null, radius = null, includeContradicted = true, limit = null } = {}) {
     const single = node ? this.repo.get(node) : null;

@@ -288,7 +288,9 @@ module, so the mission lifecycle can call it without an import cycle).
   unless the mission declares counts, and the *score* caps that bonus at 10 even
   though `found` stores the observed value; hints are per node, not per
   biome/dimension; consolidation never deletes the episodic record, so a
-  retention/pruning policy is still open (see next slices).
+  retention/pruning policy exists for missions, action events and checkpoints
+  (`pruneEpisodic`: dry-run by default, only consolidated terminal missions);
+  the observation log itself is still unbounded (see next slices).
 
 ## Observation log
 
@@ -368,12 +370,50 @@ L2-normalized bag-of-words vector (2048 dims), `cosine()`, `documentText()` and
   planner prompt next to the P0 hints; the call is fail-open (a broken route logs
   `semantic_recall` with the error and the plan runs without hints).
 
+## Retention (pruning the episodic layer)
+
+Missions, action events and checkpoints only grow: every goal writes a mission,
+every action writes an event, every route writes a checkpoint, and nothing ever
+removes them. `pruneEpisodic({ keepMissions, keepActions, keepCheckpoints,
+minAgeMs, dryRun })` is the bounded way out, plus `POST /memory/prune`.
+
+Three rules make it safe:
+
+- **Dry-run is the default.** The report counts what *would* go, and nothing is
+  deleted unless the caller passes `dryRun: false` explicitly.
+- **Only terminal, already consolidated missions.** The `consolidated_into`
+  mission relation is the watermark: once it exists, the productivity hint on
+  the spatial node *is* the copy of that episode. A mission with no such
+  relation is never pruned (it is reported under `skipped.unconsolidated`), and
+  neither is a running one (it is not even a candidate).
+- **`minAgeMs` protects the recent past** (`skipped.tooYoung`).
+
+The window is `keepMissions` (newest first, ordered by completion time with the
+id as a tie-break so the choice is never arbitrary). Missions inside the window
+stay whole unless `keepActions`/`keepCheckpoints` ask for a per-mission trim of
+the oldest episodes — the newest ones are kept, and the route of a trimmed
+mission is no longer replayable, which is the accepted cost. Pruning a mission
+drops its action events, its checkpoints, its goal relations and the mission
+record itself; the world graph edges of a removed checkpoint disappear with it.
+
+The semantic layer is untouched by design: `productivityHints` keeps returning
+the consolidated knowledge of a site after the episodes it came from are gone
+(`sources` may then point to missions that no longer exist, which is exactly why
+the hint must survive). The vector index is invalidated (`_touchVector`) after a
+real prune that removed something.
+
+Known limits: the **observation log is not pruned** (5 372 rows live on
+03/10/2026 — it is the raw log the projection replays, so pruning it needs its
+own watermark analysis), and an unconsolidated backlog blocks pruning by design
+(run `POST /memory/consolidate` first).
+
 ## Next slices
 
 - ~~**Episodic → semantic consolidation**~~: implemented — see the
   "Episodic → semantic consolidation" section above.
-- **Retention / pruning policy** for the episodic layer (missions, action events
-  and checkpoints only grow today).
+- ~~**Retention / pruning policy**~~: implemented — see the "Retention" section
+  above (`pruneEpisodic` + `POST /memory/prune`, dry-run by default, only
+  consolidated terminal missions; the observation log is still untouched).
 - ~~**Structures**~~ (`kind: structure`): implemented — `rememberStructure()`
   writes a `structure_<type>_x_y_z` landmark linked `is_a` to the
   `structure:<type>` concept node with the detector evidence, and the detector

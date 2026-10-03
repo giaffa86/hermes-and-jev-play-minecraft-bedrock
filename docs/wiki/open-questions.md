@@ -539,7 +539,14 @@ Still missing (the rest of the original gap):
   `?q=productive%20dirt%20site` ranking the consolidated `resource_site_7_9`
   first; the comparative test shows the keyword path returning nothing for *"the
   iron rich cave near the mountain"* while the vector path returns the right cave
-  first. Still open: retention/pruning policy for the episodic layer; the
+  first. **Retention done (03/10/2026)**: `pruneEpisodic` (and `POST
+  /memory/prune`) prunes only terminal missions that already carry the
+  `consolidated_into` relation, never a running or unconsolidated one, with
+  `minAgeMs` for the recent past — and **dry-run by default**. Live: 40 terminal
+  missions, 8 consolidated (the only eligible ones), 32 protected; a real call
+  with the default window deleted nothing and the counts plus the productivity
+  hints were unchanged. Still open: the **observation log** (5372 rows) is not
+  pruned, and an unconsolidated backlog blocks pruning by design. The
   consolidation write happens on every terminal patch (cheap but unconditional);
   recall is lexical-semantic, so a query must use the game's vocabulary (`iron` ≠
   `iron_ore`). The planner now consumes it (03/10/2026): the controller derives a

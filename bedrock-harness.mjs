@@ -10,6 +10,7 @@
 //   POST /memory/materialize {limit} -> riproietta il log nel grafo (idempotente)
 //   GET  /memory/search?q=<testo>&limit=N -> recall semantico (indice vettoriale derivato)
 //   POST /memory/reindex {limit} -> ricostruisce l'indice vettoriale
+//   POST /memory/prune {keepMissions, keepActions, keepCheckpoints, minAgeMs, dryRun} -> retention
 // Il controller sceglie solo chiavi restituite da /options; la validità è qui.
 import { createServer } from 'node:http';
 import { appendFileSync, mkdirSync } from 'node:fs';
@@ -562,6 +563,18 @@ server = createServer(async (req, res) => {
       const payload = body ? JSON.parse(body) : {};
       const index = worldMemory.buildVectorIndex({ limit: payload.limit ?? undefined });
       response = [200, { ok: true, documents: index.size, dims: index.dims }];
+    }
+    // Retention dell'episodico: dry-run per default, cancella solo con
+    // `{"dryRun": false}` esplicito e solo missioni terminali già consolidate.
+    else if (req.method === 'POST' && req.url === '/memory/prune') {
+      const payload = body ? JSON.parse(body) : {};
+      response = [200, worldMemory.pruneEpisodic({
+        keepMissions: payload.keepMissions ?? undefined,
+        keepActions: payload.keepActions ?? undefined,
+        keepCheckpoints: payload.keepCheckpoints ?? undefined,
+        minAgeMs: payload.minAgeMs ?? undefined,
+        dryRun: payload.dryRun !== false,
+      })];
     }
     else if (req.method === 'POST' && req.url === '/plan') { adapter.setPlan(JSON.parse(body)); response = [200, { ok: true, plan: adapter.plan }]; }
     else if (req.method === 'POST' && req.url === '/say') {

@@ -223,6 +223,7 @@ export class SqliteMemoryRepository {
       ON CONFLICT(id) DO UPDATE SET
         outcome=excluded.outcome, completed_at=excluded.completed_at, data=excluded.data`);
     this._missionActions = this.db.prepare('SELECT * FROM action_event WHERE mission_id = ?');
+    this._removeAction = this.db.prepare('DELETE FROM action_event WHERE id = ?');
     this._recordObservation = this.db.prepare(`INSERT INTO observation
       (id, subject, predicate, object, confidence, observed_at, source, data)
       VALUES (?,?,?,?,?,?,?,?)
@@ -526,6 +527,13 @@ export class SqliteMemoryRepository {
 
   missionActions (missionId) {
     return this._missionActions.all(missionId).map(SqliteMemoryRepository.rowToActionEvent);
+  }
+
+  // Retention (P6 follow-up): rimuove un singolo evento d'azione. Serve alla
+  // potatura dell'episodico, dove gli eventi vecchi di una missione tenuta
+  // vengono scartati senza toccare la missione.
+  removeAction (id) {
+    return this._removeAction.run(id).changes > 0;
   }
 
   flush () {

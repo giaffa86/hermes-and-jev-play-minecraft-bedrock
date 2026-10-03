@@ -255,6 +255,13 @@ export class JsonMemoryRepository {
     return [...this.actionEvents.values()].filter(e => e.missionId === missionId);
   }
 
+  // Retention (P6 follow-up): rimuove un singolo evento d'azione.
+  removeAction (id) {
+    const removed = this.actionEvents.delete(id);
+    if (removed) this.dirty = true;
+    return removed;
+  }
+
   // ---- observation log (subject/predicate/object) ----------------------------------
 
   recordObservation ({ id = null, subject, predicate, object, confidence = 1, observedAt = null, source = null, data = {} }) {
