@@ -7,14 +7,16 @@ resistance, bridging). It also covers every fluid-related skill: buckets, boats,
 bubble columns, potions, underwater mining/fishing.
 
 Status: **M0 (fluid awareness) + M1 partial (wading and simulated air budget) +.
-M2 (breathing and dive budget) implemented, unit-tested and collaudato live**
-(03/10/2026); the swimming *physics* of M1 (ballistic flags, water A*, `swim_to`)
-is **blocked** by a missing packet capture — see the M1 section. M3–M6 still spec
-only (tracked in [roadmap](roadmap.md) and [open-questions](open-questions.md)).
+M2 (breathing and dive budget) + M3 (waterfalls and bubble columns) implemented,
+unit-tested and collaudato live** (03/10/2026); the swimming *physics* of M1
+(ballistic flags, water A*, `swim_to`) is **blocked** by a missing packet capture —
+see the M1 section, and M3's column **actions** inherit that same blocker while
+their detection and verdicts work. M4–M6 still spec only (tracked in
+[roadmap](roadmap.md) and [open-questions](open-questions.md)).
 Full raw source: [`docs/raw/FLUIDS_ROADMAP.md`](../raw/FLUIDS_ROADMAP.md).
 
 Sources: `bedrock-adapter.mjs` (movement, physics, digging, fishing),
-`bedrock-dive.mjs` (M2 decision), `BEDROCK.md`
+`bedrock-dive.mjs` (M2 decision), `bedrock-waterfall.mjs` (M3 columns), `BEDROCK.md`
 (action status), [headless-client](headless-client.md) (perception/action model),
 [survival-intelligence](survival-intelligence.md) (governor/skills/verifier),
 [fishing](fishing.md), [companions](companions.md) (boats/riding).
@@ -315,6 +317,103 @@ suite 920 tests, 0 failures.
   inventory would arrive the same way (`mob_effect`), but that path has not been
   observed live.
 
+## M3 — Waterfalls and bubble columns (implemented, live partial 03/10/2026)
+
+M3 turns a drop and a column of bubbles into **routes**: a waterfall is a free
+(and safe) descent, a bubble column is an elevator. The detection, the decisions
+and the typed refusals are implemented and unit-tested; the descent itself is
+blocked by the same missing swimming motion as M1, so the live round exercises
+the refusals rather than the ride.
+
+**`bedrock-waterfall.mjs` (pure, no I/O)**
+
+- `findWaterfalls(blocks, {from, minHeight, limit, includeUnsafe, blockAt})`
+  groups the water cells of the census by column, keeps the vertical runs of at
+  least `WATERFALL_MIN_HEIGHT` (3) and looks at the block **under** the bottom with
+  `landingVerdict`: water and solid ground are safe, `lava`/`magma`/`fire`/
+  `cactus`/… are hazards, `air` is a fall onto nothing, and an unreadable block is
+  **unknown** (`safe: null`). Only safe landings make the list; distance is
+  measured from the bot to the **top** of the column.
+- `findBubbleColumns(blocks, …)` finds water above `soul_sand` (pushes up, and
+  `airRefill: true`) or above `magma` (pushes down).
+- `columnTactic({kind, column, feet, air, waterBreathing, swimSupported})` is the
+  single decision used by the actions, `/observe.waterfall` and `dig_down`. Its
+  precedence is deliberate: `no_column` → `already_inside` (descending while
+  already in the column is a no-op) → `too_far` → `sneak_not_supported` (a magma
+  column: without a sneak flag the bot would burn) → `unsafe_landing` →
+  `unknown_landing` → **`swimming_unavailable`** → the M2 dive budget
+  (`divePlan`, depth = column height, `workSeconds: 0`). A column up is free: it
+  refills the air instead of costing it.
+
+**Adapter**
+
+- `_fluidCensus()` now also builds `waterfalls`/`bubbles` from the same water
+  cells (cached with the census, `FLUID_RESCAN_MS`), and `_fluidsView()` exposes
+  `waterfall`, `bubbleColumn` and `onWaterfall` (feet inside a column).
+- `swimSupported` is a **declared** flag that is `false` today: it is the honest
+  name of the M1 blocker. Every column action goes through `columnTactic`, so the
+  missing swimming motion is expressed once instead of being sprinkled around.
+- `descend_waterfall` / `climb_waterfall` / `use_bubble_column` → `_useColumn()`:
+  verdict, approach to the column top (`_moveTo`), then `_waitColumnTraversal()`
+  which waits for **the server** to bring the feet to the landing (down) or to the
+top (up). It never simulates water physics and never claims success it cannot
+  see: if the feet do not move it returns `column_not_traversed` with `deltaY`.
+  The report is stored in `_waterfallLast` and logged (`column_refused`,
+  `column_used`, `column_not_traversed`, `column_approach_failed`).
+- `dig_down` now prefers a **usable** waterfall (same verdict as the action) and
+  otherwise performs exactly the old stair dig — the acceptance "`dig_*`
+  unchanged without water" holds by construction, because the tactic refuses
+  before anything else when there is no column.
+- `GET /observe.waterfall[?force=1]` reports counts, the compact waterfall and
+  bubble rows, `onWaterfall` and the three verdicts **without executing them** —
+  so the live round can read the reason of a refusal.
+
+**Survival layer**: new boolean condition `onWaterfall` (unknown = `false`), a
+contextual rule `ride_waterfall` (priority 54: stay in the column until the
+landing pool, then leave the water) and the intents
+`descend_waterfall: [descend, travel]`, `climb_waterfall: [ascend, travel]`,
+`use_bubble_column: [fluid, ascend, descend, travel]`.
+
+**Tests**: `tests/bedrock-waterfall.test.mjs` (8, pure: landings, runs, ordering,
+all the tactic branches), `tests/bedrock-fluids-adapter.test.mjs` (32, +9 for M3),
+`tests/survival-governor.test.mjs` (+1). Full suite 938 tests, 0 failures.
+
+**Live round (03/10/2026, container `hermes-jev-bedrock`, BDS 1.26.52)**
+
+| Probe | Result |
+|---|---|
+| `GET /observe.waterfall?force=1` | `swimSupported: false`, counts 0/0, `onWaterfall: false`, all three verdicts `no_column` — the census ran on the real world (259 cells) without inventing a column |
+| `GET /observe.fluids?force=1` | `waterfall: null`, `bubbleColumn: null`, `onWaterfall: false`, `ready: true`, `water: 8`, `lava: 251`, `waterDistance: 20.6` |
+| The only water in range | a **2×2×2 pool** at `x=116..117, z=180..181, y=70..71` — two blocks high, i.e. below `WATERFALL_MIN_HEIGHT` (3), and the columns have no bubble source |
+| `POST /act {"key":"descend_waterfall"}` | `{ok: false, error: 'no_column', kind: 'descend', column: null}` in **10.6 ms** (no movement, no burn) |
+| `POST /act {"key":"climb_waterfall"}` / `{"key":"use_bubble_column"}` | `no_column` in **3.7 ms** each |
+| `GET /options` | 28 keys, **none** of the three column actions (the gate agrees with the verdict) |
+| `GET /survival` | rule `night_with_bed`, `matchedRules: [night_with_bed]` — `ride_waterfall` does **not** fire on a dry bot |
+| Rules loaded in the container | `loadSurvivalRules` shows `ride_waterfall {when: {onWaterfall: true}}` and `keyMatchesIntents('descend_waterfall', ['descend']) === true` |
+| Regression | `/observe` gained `fluids.waterfall`/`bubbleColumn`/`onWaterfall`; `/observe.dive` unchanged (`depth 0`, `plan null`, `waterBreathing {active: false}`) |
+
+**Known limits (M3)**
+
+- **No waterfall exists in the loaded area**, so live evidence is the refusal
+  (`no_column`) and the fact that the census does not hallucinate a column. The
+  `swimming_unavailable` branch, the approach and the traversal verification are
+  **unit-tested only**. A real ride needs the M1 swimming motion — the same
+  missing packet capture of a real player swimming (`m01312`).
+- No column was fabricated for the test: that would mean placing water in the
+  shared world (the base plan forbids touching it), and leaving flowing water
+  behind changes the world permanently.
+- **Pathfinding column edges were deliberately not added.** A descent edge into
+  water the bot cannot swim out of is a trap, not an optimisation: the edges must
+  land with M1's swimming, which is what makes the landing survivable. Until then
+  a waterfall is used as a *route* only through the explicit action.
+- `WATERFALL_MIN_HEIGHT = 3` is a judgment call (3 blocks is a real drop, 2 is a
+  step), and the bonus of a waterfall over a stair dig is not yet measured.
+- The landing check reads the block under the column from the loaded chunk: if the
+  landing is not loaded the column is ignored (prudent, but on a long fall the
+  interesting part is exactly the chunk that is not loaded).
+- Fall damage is still not modelled (see the risks): a waterfall is safe *because*
+  the landing is water, not because the bot understands the fall.
+
 ## Milestones
 
 | # | Milestone | Content | Status |
@@ -322,7 +421,7 @@ suite 920 tests, 0 failures.
 | M0 | Fluid awareness | Pure `bedrock-fluids.mjs`; `/observe.fluids`; scan water/lava; perception + governor rules (`drowning`, `lava_contact`, `lava_near`); pathfinding forbids/repels lava; dig adjacency check; generalized `avoid_lava`. | ◑ implemented + live 03/10/2026 (awareness, census, option gate and rule inertness collaudati live; the escape move and the emergency rules stay unit-tested — no reachable lava from the base room) |
 | M1 | Swimming physics & navigation | Water becomes passable; buoyancy/drag/swim speed in `_physicsStep`; correct `input_data` flags (packet-capture task); A* water nodes; air budget + auto-`surface`; `surface`/`swim_to`. | ◑ partial 03/10/2026: **wading** (shallow water traversal + slower local speed) and the **simulated air budget** (`bedrock-air.mjs`, `airSource`) are implemented and unit-tested; the live crossing round is blocked (only deep water within 20.6 blocks, bot sealed in the base room) and the swimming motion/water A*/`surface`/`swim_to` stay unimplemented pending a packet capture of a real player swimming |
 | M2 | Breathing & controlled dives | `dive` with air budget; underwater `mine_*`/`collect_drop`; Water Breathing detection; governor `drowning` + `breathe` need. | ◑ implemented + live 03/10/2026: the **decision** (budget, `waterBreathing`, the gate on `mine_*`/`collect_drop`) is implemented, unit-tested and collaudato live (effect detected and counted down by the real server; the gate transparent on a dry bot). The underwater *move* stays blocked by M1: from the base room the head never gets under water, so the refusal path is unit-tested only. |
-| M3 | Waterfalls & bubble columns | `findWaterfalls`/`findBubbleColumns`; `descend_waterfall`, `climb_waterfall`, `use_bubble_column`; pathfinding edges; `dig_down` prefers a nearby waterfall. | ❌ not implemented |
+| M3 | Waterfalls & bubble columns | `findWaterfalls`/`findBubbleColumns`; `descend_waterfall`, `climb_waterfall`, `use_bubble_column`; pathfinding edges; `dig_down` prefers a nearby waterfall. | ◑ implemented + live partial 03/10/2026: detection (`findWaterfalls`/`findBubbleColumns` on the real census), the three actions with typed verdicts, the `onWaterfall` governor condition and the `dig_down` preference are implemented and unit-tested; live only the **refusal** path was observable (no waterfall exists in the loaded area: the only water is a 2-high pool), so the descent/climb themselves stay blocked by the M1 swimming blocker. Pathfinding column edges were deliberately **not** added yet (see the M3 section). |
 | M4 | Lava: avoid (cross later) | Absolute obstacle + repulsion; `move_to_safe`; lava-death marking; never mine into lava; bucket bridging (`place_water` → obsidian); Nether crossing gated behind `fire_resistance` + bridging. | ❌ not implemented |
 | M5 | Buckets, boats, potions | `craft_bucket`/`craft_boat`; `fill_bucket`/`empty_bucket`/`place_water`; boat travel on open water via `mount_*`/`_rideToward`; brewing. | ❌ not implemented |
 | M6 | Survival Intelligence integration | Gameplay skills in `skills/gameplay/fluids/`; progression milestones `bucket`, `water_travel`, gated `nether_cross_lava`; docs + tests. | ❌ not implemented |
@@ -349,6 +448,9 @@ suite 920 tests, 0 failures.
   not consult the tool yet, so a slow block can outlast the work budget it claims.
 - Fall damage is not modelled today: waterfalls solve descent into water, not
   drops onto land. Add `_fallStartY` + a safe-landing predicate.
+- A waterfall is only a route once the bot can **leave** the water: the M3 column
+  actions, the pathfinding edges and the `ride_waterfall` rule all wait on M1's
+  swimming motion (`swimSupported` is `false` by declaration, not by accident).
 - Deep-water air budgeting and large-ocean scan performance must be bounded.
 - Family-base water features (wells, irrigation, waterfalls) must not be broken
   or redirected without consent.

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "comment": "Regole di sopravvivenza deterministiche. Condizioni disponibili (AND): healthMax, healthBelow, foodMax, foodBelow, phase, night, timeKnown, bedAvailable, hasFood, weaponInInventory, pickaxeInInventory, sleeping, dead, lootNearby, hostileWithin, hostileSeverityAtLeast, hostileTypeWithin, inWater, headInWater, inLava, lavaWithin, airBelow, waterBreathing, inFire, fireWithin, magmaWithin, projectileIncoming, gazedAtEnderman, inNether, inEnd, spawnerWithin. Vedi docs/SURVIVAL-INTELLIGENCE.md.",
+  "comment": "Regole di sopravvivenza deterministiche. Condizioni disponibili (AND): healthMax, healthBelow, foodMax, foodBelow, phase, night, timeKnown, bedAvailable, hasFood, weaponInInventory, pickaxeInInventory, sleeping, dead, lootNearby, hostileWithin, hostileSeverityAtLeast, hostileTypeWithin, inWater, headInWater, inLava, lavaWithin, airBelow, waterBreathing, onWaterfall, inFire, fireWithin, magmaWithin, projectileIncoming, gazedAtEnderman, inNether, inEnd, spawnerWithin. Vedi docs/SURVIVAL-INTELLIGENCE.md.",
   "rules": [
     {
       "id": "on_fire",
@@ -120,6 +120,14 @@
       "when": { "headInWater": true, "airBelow": 8, "waterBreathing": false },
       "intents": ["surface"],
       "objective": "Surface for air before the air budget runs out.",
+      "preferredSkills": ["surface_for_air"]
+    },
+    {
+      "id": "ride_waterfall",
+      "priority": 54,
+      "when": { "onWaterfall": true },
+      "intents": ["descend", "surface"],
+      "objective": "Riding the waterfall: stay inside the column until the landing pool, then step out of the water before mining or digging",
       "preferredSkills": ["surface_for_air"]
     },
     {

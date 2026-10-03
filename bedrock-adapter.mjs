@@ -14,6 +14,7 @@ import { detectStructures } from './structures.mjs';
 import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT } from './bedrock-fluids.mjs';
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
 import { normalizeEffectName, waterBreathingSources, divePlan, underwaterWork, CONDUIT_BLOCK, CONDUIT_RANGE } from './bedrock-dive.mjs';
+import { findWaterfalls, findBubbleColumns, columnTactic, summarizeColumn, withinColumn } from './bedrock-waterfall.mjs';
 import { loadCircuits, planCircuit, circuitSiteBlocked, circuitSafety, forbiddenBlock, checkCircuitSuccess, circuitAnchor, expectedDelayTicks, measureCircuitDelay, TICK_MS, MAX_CIRCUIT_STEPS, MAX_CIRCUIT_COMPONENTS, MIN_CLOCK_TICKS } from './circuits.mjs';
 import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
 import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, isNetherLike, landingHazard, maxFallDepth, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, projectileVelocity, dodgeCandidates, breaksLine, isPiglinType, goldArmorWorn, piglinNeutral, barterTarget, isBarterReward, BARTER_INGOT, BARTER_RANGE, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName, endermanAimPoint, isPumpkinMask, pumpkinMaskWorn, isEnderPearl, ENDERMAN_GAZE_TOLERANCE_DEG, isBlazeType, coverCandidates, blazeTactics, blazeRodProgress, BLAZE_RANGE, BLAZE_RETREAT_HEALTH, BLAZE_ROD, COVER_RADIUS } from './bedrock-nether.mjs';
@@ -234,6 +235,12 @@ export class BedrockAdapter {
     this._conduitScan = null;
     this._conduitScanAt = 0;
     this._diveLast = null;
+    // M3: cascate e colonne di bolle. `swimSupported` è la dichiarazione onesta
+    // del limite di M1 (il movimento in acqua non esiste): tutte le azioni di
+    // colonna passano da `columnTactic`, che senza nuoto risponde
+    // `swimming_unavailable` invece di provare una fisica che non c'è.
+    this.swimSupported = false;
+    this._waterfallLast = null;
     this._redstoneScan = null;
     this._redstoneScanAt = 0;
     // R2: i blocchi dell'ultima scansione e l'ultimo cambio osservato, così un
@@ -1141,13 +1148,20 @@ export class BedrockAdapter {
       }
     }
     const summary = summarizeFluids(found, this._feet ?? this.position);
+    // M3: cascate e colonne di bolle nascono dalle stesse celle d'acqua. Il
+    // verdetto sull'atterraggio guarda il mondo *sotto* la colonna: se il chunk
+    // non è caricato l'atterraggio resta ignoto e la colonna non si usa.
+    const from = this._feet ?? this.position;
+    const blockAt = typeof this.world?.blockAt === 'function' ? (position => this.world.blockAt(position) ?? null) : null;
+    const waterfalls = findWaterfalls(found, { from, blockAt });
+    const bubbles = findBubbleColumns(found, { from, blockAt });
     // Appena connessi il mondo può non avere ancora nessuna colonna caricata: un
     // censimento vuoto in quel momento direbbe "nessuna lava" per un mondo che non
     // abbiamo ancora guardato. Non si mette in cache e si dichiara `ready: false`,
     // così la consapevolezza si recupera al primo tick con i chunk caricati.
     const loaded = this.world?.loaded?.size ?? null;
     const ready = loaded !== 0;
-    const census = { ...summary, cells: fluidCells(found), scanned: found.length, loaded, ready, at: now };
+    const census = { ...summary, cells: fluidCells(found), waterfalls, bubbles, scanned: found.length, loaded, ready, at: now };
     if (!ready) return census;
     this._fluidScan = census;
     this._fluidScanAt = now;
@@ -1180,6 +1194,11 @@ export class BedrockAdapter {
       lava: census.lava,
       waterDistance: census.waterDistance,
       lavaDistance: census.lavaDistance,
+      // M3: cascata e colonna di bolle più vicine (forma compatta) e se il bot è
+      // già dentro una cascata (`onWaterfall`, condizione del governor).
+      waterfall: summarizeColumn(census.waterfalls?.[0] ?? null, this._feet ?? null),
+      bubbleColumn: summarizeColumn(census.bubbles?.[0] ?? null, this._feet ?? null),
+      onWaterfall: withinColumn(census.waterfalls?.[0] ?? null, this._feet ?? null),
       hazard: fluidHazard({ inWater, headInWater, inLava, lavaDistance: census.lavaDistance, air }),
       scanned: census.scanned,
       ready: census.ready !== false,
@@ -1316,6 +1335,137 @@ export class BedrockAdapter {
       this.log('underwater_work_refused', { reason: verdict.reason, depth, air: this.air, workSeconds });
     }
     return verdict;
+  }
+
+  // ---- M3: cascate e colonne di bolle ----------------------------------------
+  // Una cascata trasforma un dirupo in una discesa sicura; una colonna di bolle
+  // è un ascensore. Nessuna delle due si improvvisa: la decisione è di
+  // `columnTactic` (budget d'aria di M2 incluso) e l'esito si *verifica* — non
+  // si simula l'acqua, si guarda se i piedi sono davvero cambiati di quota.
+  _swimSupported () {
+    return this.swimSupported === true;
+  }
+
+  _waterfalls ({ force = false } = {}) {
+    return this._fluidCensus({ force }).waterfalls ?? [];
+  }
+
+  _bubbles ({ force = false } = {}) {
+    return this._fluidCensus({ force }).bubbles ?? [];
+  }
+
+  _nearestColumn (kind = 'descend') {
+    return (kind === 'bubble' ? this._bubbles() : this._waterfalls())[0] ?? null;
+  }
+
+  _columnTactic (kind = 'descend', { column = null, distance = null } = {}) {
+    const target = column ?? this._nearestColumn(kind);
+    const verdict = columnTactic({
+      kind,
+      column: target,
+      feet: this._feet ?? null,
+      air: Number.isFinite(this.air) ? this.air : null,
+      waterBreathing: this._waterBreathing().active,
+      swimSupported: this._swimSupported(),
+      distance,
+    });
+    if (target) verdict.summary = summarizeColumn(target, this._feet ?? null);
+    return verdict;
+  }
+
+  // Diagnostica compatta per `/observe.waterfall`: cosa vede il bot e cosa
+  // risponderebbe ciascuna delle tre azioni (senza eseguirle).
+  _columnView ({ force = false } = {}) {
+    this._fluidCensus({ force });
+    const feet = this._feet ?? null;
+    const waterfall = this._waterfalls()[0] ?? null;
+    const bubble = this._bubbles()[0] ?? null;
+    return {
+      swimSupported: this._swimSupported(),
+      onWaterfall: withinColumn(waterfall, feet),
+      waterfall: summarizeColumn(waterfall, feet),
+      bubbleColumn: summarizeColumn(bubble, feet),
+      waterfallCount: this._waterfalls().length,
+      bubbleCount: this._bubbles().length,
+      descend: this._columnTactic('descend', { column: waterfall }),
+      climb: this._columnTactic('climb', { column: waterfall }),
+      bubble: this._columnTactic('bubble', { column: bubble }),
+      last: this._waterfallLast,
+    };
+  }
+
+  // L'azione di colonna: verdetto, avvicinamento all'ingresso, verifica della
+  // traversata. Il percorso `ok` esiste solo quando il nuoto c'è; il rifiuto
+  // tipizzato (`swimming_unavailable`, `too_far`, `unsafe_landing`, …) è il
+  // percorso che si può collaudare oggi.
+  async _useColumn (kind = 'descend', { timeoutMs = 20000, approachMs = 15000 } = {}) {
+    const tactic = this._columnTactic(kind);
+    const column = tactic.column ?? null;
+    const summary = tactic.summary ?? summarizeColumn(column, this._feet ?? null);
+    if (!tactic.ok) {
+      this.log('column_refused', { kind, error: tactic.error, column: summary });
+      return {
+        ok: false,
+        error: tactic.error,
+        kind,
+        column: summary,
+        distance: tactic.distance ?? null,
+        landing: summary?.landing ?? null,
+      };
+    }
+    const from = this._feet ? { ...this._feet } : null;
+    if (tactic.reason === 'already_inside') {
+      this._waterfallLast = { at: Date.now(), kind, reason: 'already_inside', column: summary };
+      return { ok: true, kind, column: summary, entered: false, from, to: this.pos(), deltaY: 0 };
+    }
+    const entry = { x: column.top.x + 0.5, y: column.top.y, z: column.top.z + 0.5 };
+    try {
+      if (this._feet && Math.hypot(this._feet.x - entry.x, this._feet.z - entry.z) > 1.5) {
+        await this._moveTo(entry, 1.0, approachMs);
+      }
+    } catch (error) {
+      this.log('column_approach_failed', { kind, error: error.message, column: summary });
+      return { ok: false, error: `column_approach_failed: ${error.message}`, kind, column: summary };
+    }
+    const traversal = await this._waitColumnTraversal(kind, column, { timeoutMs, fromY: from?.y ?? null });
+    const report = {
+      ok: traversal.ok,
+      kind,
+      column: summary,
+      from,
+      to: this.pos(),
+      deltaY: traversal.deltaY ?? null,
+      ...(traversal.ok ? {} : { error: traversal.error }),
+    };
+    this._waterfallLast = { at: Date.now(), kind, reason: traversal.ok ? 'traversed' : traversal.error, column: summary };
+    if (traversal.ok) this.log('column_used', { kind, column: summary, to: report.to, deltaY: report.deltaY });
+    else this.log('column_not_traversed', { kind, column: summary, deltaY: report.deltaY });
+    return report;
+  }
+
+  // La fisica dell'acqua non è modellata: si aspetta che *il server* porti i
+  // piedi alla quota giusta (atterraggio in discesa, cima in salita/bolle).
+  async _waitColumnTraversal (kind, column, { timeoutMs = 20000, pollMs = 250, fromY = null } = {}) {
+    const startY = fromY ?? this._feet?.y ?? null;
+    const upwards = kind === 'climb' || (kind === 'bubble' && column.direction === 'up');
+    const targetY = upwards ? column.top.y + 1 : column.landing.position.y;
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const feet = this._feet;
+      if (feet) {
+        const reached = upwards ? feet.y >= targetY - 0.1 : feet.y <= targetY + 0.1;
+        if (reached) {
+          return { ok: true, deltaY: startY == null ? null : +(feet.y - startY).toFixed(2) };
+        }
+      }
+      await delay(pollMs);
+    }
+    const feet = this._feet;
+    return {
+      ok: false,
+      error: 'column_not_traversed',
+      deltaY: startY == null || !feet ? null : +(feet.y - startY).toFixed(2),
+    };
   }
 
   // ---- Nether/End: portali, pericoli, proiettili e sguardo (N0) ---------------
@@ -2717,6 +2867,23 @@ export class BedrockAdapter {
     if (lavaThreat) {
       o.push({ key: 'avoid_lava', description: `Move away from the lava at ${JSON.stringify({ x: Math.round(lavaThreat.position.x), y: Math.round(lavaThreat.position.y), z: Math.round(lavaThreat.position.z) })} (${lavaThreat.distance} blocks away)` });
     }
+    // M3: cascate e colonne di bolle. L'opzione compare solo quando l'azione
+    // corrispondente non verrebbe rifiutata (stesso verdetto di `columnTactic`),
+    // così non si offre mai una discesa senza il movimento in acqua.
+    const waterfall = this._waterfalls()[0] ?? null;
+    if (waterfall) {
+      const at = JSON.stringify({ x: waterfall.top.x, y: waterfall.top.y, z: waterfall.top.z });
+      if (this._columnTactic('descend', { column: waterfall }).ok) {
+        o.push({ key: 'descend_waterfall', description: `Ride the waterfall at ${at} down ${waterfall.height} blocks to the landing at ${JSON.stringify(waterfall.landing.position)}` });
+      }
+      if (this._columnTactic('climb', { column: waterfall }).ok) {
+        o.push({ key: 'climb_waterfall', description: `Climb the water column at ${at} (${waterfall.height} blocks up)` });
+      }
+    }
+    const bubble = this._bubbles()[0] ?? null;
+    if (bubble && this._columnTactic('bubble', { column: bubble }).ok) {
+      o.push({ key: 'use_bubble_column', description: `Ride the ${bubble.direction} bubble column at ${JSON.stringify({ x: bubble.x, y: bubble.bottom.y, z: bubble.z })} (${bubble.height} blocks, ${bubble.source})` });
+    }
     // N3: un proiettile in arrivo si evita *uscendo dalla linea di tiro* (la
     // perpendicolare della traiettoria), non correndo via — e solo verso una
     // cella raggiungibile e lontana dalla lava.
@@ -3351,6 +3518,10 @@ export class BedrockAdapter {
         result = await this._enterPortal({ kind: 'end' });
       } else if (key === 'avoid_lava') {
         result = await this._avoidLava();
+      } else if (key === 'descend_waterfall' || key === 'climb_waterfall') {
+        result = await this._useColumn(key === 'climb_waterfall' ? 'climb' : 'descend');
+      } else if (key === 'use_bubble_column') {
+        result = await this._useColumn('bubble');
       } else if (key === 'goto_portal') {
         result = await this._gotoPortal({});
       } else if (key === 'enter_portal') {
@@ -6210,6 +6381,16 @@ export class BedrockAdapter {
   }
 
   async _digDown (timeoutMs = 30000) {
+    // M3: se una cascata utilizzabile è a portata, scendere da lì costa meno che
+    // scavarsi una scala e non buca il terreno. Il verdetto è lo stesso di
+    // `descend_waterfall`: senza il movimento in acqua (M1) non si usa, e lo
+    // scavo resta identico a prima — che è l'accettazione "dig_* invariato
+    // senza acqua".
+    const fall = this._columnTactic('descend');
+    if (fall.ok && fall.column) {
+      const used = await this._useColumn('descend', { timeoutMs });
+      if (used.ok) return { ok: true, via: 'waterfall', dug: [], moved: used.to, position: this.pos(), column: used.column };
+    }
     const plan = this._digTargets();
     if (plan.error) return { ok: false, error: plan.error };
     const dug = [];

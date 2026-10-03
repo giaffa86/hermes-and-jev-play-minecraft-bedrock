@@ -45,6 +45,11 @@ const KEY_INTENTS = {
   surface: ['surface', 'swim'],
   swim_to: ['swim', 'travel'],
   dive: ['descend', 'swim'],
+  // Fluidi (M3): scendere da una cascata è una discesa controllata, risalire la
+  // colonna d'acqua è una salita, e una colonna di bolle è una manovra fluida.
+  descend_waterfall: ['descend', 'travel'],
+  climb_waterfall: ['ascend', 'travel'],
+  use_bubble_column: ['fluid', 'ascend', 'descend', 'travel'],
   // Redstone (R2): azionare un input e leggere lo stato di un circuito.
   use_redstone: ['toggle', 'redstone'],
   sense_redstone: ['sense', 'redstone'],

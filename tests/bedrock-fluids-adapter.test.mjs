@@ -421,3 +421,186 @@ test('_mineBlock e _collectDrop passano dal cancello del respiro', async () => {
   }
   assert.notEqual(beyond?.error, 'air_too_low');
 });
+
+// ---------------------------------------------------------------------------
+// M3: cascate e colonne di bolle. Il movimento in acqua non esiste ancora
+// (`swimSupported = false`): il percorso che si collauda è il **rifiuto
+// tipizzato** e il fatto che l'avvicinamento non parta mai. I percorsi `ok` si
+// provano dichiarando il nuoto disponibile.
+// ---------------------------------------------------------------------------
+
+const soulSand = { name: 'soul_sand', boundingBox: 'block', diggable: true, hardness: 0.5 };
+const magma = { name: 'magma', boundingBox: 'block', diggable: true, hardness: 0.5 };
+
+test('M3: il censimento riconosce una cascata con atterraggio sicuro', () => {
+  const { adapter } = fluidAdapter({ '3,71,0': water, '3,72,0': water, '3,73,0': water });
+  const census = adapter._fluidCensus();
+  assert.equal(census.waterfalls.length, 1);
+  const fall = census.waterfalls[0];
+  assert.deepEqual(fall.top, { x: 3, y: 73, z: 0 });
+  assert.deepEqual(fall.bottom, { x: 3, y: 71, z: 0 });
+  assert.equal(fall.height, 3);
+  assert.equal(fall.source, 'water', 'il nome del blocco in cima alla colonna');
+  assert.equal(fall.landing.safe, true, 'la pietra sotto la pozza è un atterraggio sicuro');
+  assert.equal(fall.landing.name, 'stone');
+  assert.equal(fall.distance, 3.2, 'distanza 3D dai piedi alla cima');
+  assert.equal(adapter._columnView().bubbleCount, 0);
+
+  // I piedi fuori dalla colonna: nessuna condizione di cascata.
+  assert.equal(adapter._fluidsView().onWaterfall, false);
+  assert.equal(adapter._fluidsView().waterfall.height, 3);
+  // Dentro la colonna (stessa x,z e quota compresa fra fondo e cima).
+  adapter._feet = { x: 3.5, y: 72, z: 0.5 };
+  assert.equal(adapter._fluidsView().onWaterfall, true);
+  assert.equal(adapter._fluidsView().waterfall.top.y, 73);
+});
+
+test('M3: una cascata con atterraggio pericoloso o ignoto non entra nel censimento', () => {
+  const unsafe = fluidAdapter({ '3,71,0': water, '3,72,0': water, '3,73,0': water, '3,70,0': lava }).adapter;
+  assert.deepEqual(unsafe._waterfalls(), [], 'la lava in fondo scarta la cascata');
+  assert.equal(unsafe._columnTactic('descend').error, 'no_column');
+
+  // Mondo senza chunk caricati: l'atterraggio è ignoto, non "sicuro per caso".
+  const blind = fluidAdapter({ '3,71,0': water, '3,72,0': water, '3,73,0': water }).adapter;
+  blind.world.blockAt = () => null;
+  assert.deepEqual(blind._waterfalls(), []);
+  const unknown = blind._fluidCensus({ force: true }).waterfalls;
+  assert.deepEqual(unknown, [], 'senza `blockAt` non si dichiara un atterraggio');
+});
+
+test('M3: _columnView dichiara il limite del nuoto e i tre verdetti', () => {
+  const { adapter } = fluidAdapter({ '3,71,0': water, '3,72,0': water, '3,73,0': water });
+  const view = adapter._columnView();
+  assert.equal(view.swimSupported, false);
+  assert.equal(view.waterfallCount, 1);
+  assert.equal(view.descend.error, 'swimming_unavailable');
+  assert.equal(view.descend.distance, 3.2);
+  assert.equal(view.climb.error, 'swimming_unavailable');
+  assert.equal(view.bubble.error, 'no_column');
+  assert.equal(view.last, null);
+});
+
+test('M3: le opzioni di colonna compaiono solo quando il nuoto c\'è', () => {
+  const dry = fluidAdapter({ '3,71,0': water, '3,72,0': water, '3,73,0': water }).adapter;
+  const dryKeys = dry.options().map(o => o.key);
+  assert.ok(!dryKeys.includes('descend_waterfall'), 'senza nuoto non si offre la discesa');
+  assert.ok(!dryKeys.includes('climb_waterfall'));
+  assert.ok(!dryKeys.includes('use_bubble_column'));
+
+  const swimmer = fluidAdapter({ '3,71,0': water, '3,72,0': water, '3,73,0': water }).adapter;
+  swimmer.swimSupported = true;
+  const keys = swimmer.options().map(o => o.key);
+  assert.ok(keys.includes('descend_waterfall'), 'con il nuoto la discesa è offerta');
+  assert.ok(keys.includes('climb_waterfall'));
+  const describe = swimmer.options().find(o => o.key === 'descend_waterfall').description;
+  assert.match(describe, /Ride the waterfall at \{"x":3,"y":73,"z":0\} down 3 blocks to the landing at \{"x":3,"y":70,"z":0\}/);
+});
+
+test('M3: le bolle verso l\'alto ripagano l\'aria, quelle di magma chiedono lo sneak', () => {
+  const up = fluidAdapter({ '4,70,0': soulSand, '4,71,0': water, '4,72,0': water }).adapter;
+  assert.equal(up._bubbles()[0].direction, 'up');
+  assert.equal(up._bubbles()[0].airRefill, true);
+  assert.equal(up._columnTactic('bubble').error, 'swimming_unavailable', 'serve comunque il nuoto');
+  up.swimSupported = true;
+  const ride = up._columnTactic('bubble');
+  assert.equal(ride.ok, true);
+  assert.equal(ride.reason, 'bubble_column');
+  assert.equal(ride.plan, null, 'la colonna verso l\'alto non consuma budget');
+  assert.ok(up.options().map(o => o.key).includes('use_bubble_column'));
+
+  const down = fluidAdapter({ '5,70,0': magma, '5,71,0': water, '5,72,0': water }).adapter;
+  down.swimSupported = true;
+  const verdict = down._columnTactic('bubble');
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.error, 'sneak_not_supported', 'il magma fa danno senza sneak');
+  assert.ok(!down.options().map(o => o.key).includes('use_bubble_column'));
+});
+
+test('M3: _useColumn rifiuta senza nuoto e non muove il bot', async () => {
+  const { adapter } = fluidAdapter({ '3,71,0': water, '3,72,0': water, '3,73,0': water });
+  const logs = [];
+  adapter.log = (type, data) => logs.push({ type, ...data });
+  let moves = 0;
+  adapter._moveTo = async () => { moves++; };
+
+  const refused = await adapter._useColumn('descend');
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error, 'swimming_unavailable');
+  assert.equal(refused.kind, 'descend');
+  assert.equal(moves, 0, 'nessun avvicinamento quando il verdetto rifiuta');
+  assert.equal(logs.filter(l => l.type === 'column_refused').length, 1);
+  assert.equal(adapter._waterfallLast, null, 'un rifiuto non scrive l\'ultimo esito');
+
+  const missing = await adapter._useColumn('climb');
+  assert.equal(missing.error, 'swimming_unavailable');
+
+  const bubble = await adapter._useColumn('bubble');
+  assert.equal(bubble.error, 'no_column');
+  assert.equal(moves, 0);
+});
+
+test('M3: con il nuoto _useColumn avvicina, attende e verifica dal mondo', async () => {
+  const { adapter } = fluidAdapter({ '3,71,0': water, '3,72,0': water, '3,73,0': water });
+  adapter.swimSupported = true;
+  const logs = [];
+  adapter.log = (type, data) => logs.push({ type, ...data });
+  let moves = 0;
+  adapter._moveTo = async () => {
+    moves++;
+    // Il server porta i piedi nella pozza in fondo alla cascata.
+    adapter._feet = { x: 3.5, y: 70, z: 0.5 };
+    adapter.position = { x: 3.5, y: 71.62, z: 0.5 };
+  };
+
+  const report = await adapter._useColumn('descend');
+  assert.equal(report.ok, true);
+  assert.equal(report.kind, 'descend');
+  assert.equal(moves, 1);
+  assert.equal(report.deltaY, -1);
+  assert.deepEqual(report.from, { x: 0.5, y: 71, z: 0.5 });
+  assert.equal(report.column.landing.position.y, 70);
+  assert.equal(logs.filter(l => l.type === 'column_used').length, 1);
+  assert.equal(adapter._waterfallLast.reason, 'traversed');
+});
+
+test('M3: dentro la colonna l\'azione è già conclusa e la traversata può fallire', async () => {
+  const { adapter } = fluidAdapter({ '3,71,0': water, '3,72,0': water, '3,73,0': water });
+  adapter.swimSupported = true;
+  adapter._feet = { x: 3.5, y: 72, z: 0.5 };
+  let moves = 0;
+  adapter._moveTo = async () => { moves++; };
+  const inside = await adapter._useColumn('descend');
+  assert.equal(inside.ok, true);
+  assert.equal(inside.entered, false);
+  assert.equal(inside.deltaY, 0);
+  assert.equal(moves, 0, 'già dentro: nessun avvicinamento');
+
+  // I piedi non si muovono: niente atterraggio ⇒ fallimento esplicito.
+  const stuck = await adapter._waitColumnTraversal('descend', adapter._waterfalls()[0], { timeoutMs: 120, pollMs: 40 });
+  assert.equal(stuck.ok, false);
+  assert.equal(stuck.error, 'column_not_traversed');
+  assert.equal(stuck.deltaY, 0);
+});
+
+test('M3: dig_down usa la cascata quando è utilizzabile, altrimenti scava come prima', async () => {
+  const { adapter } = fluidAdapter({ '3,71,0': water, '3,72,0': water, '3,73,0': water });
+  let dug = 0;
+  adapter._digTargets = () => { dug++; return { error: 'no_support_ahead' }; };
+  adapter._useColumn = async () => ({ ok: true, kind: 'descend', to: { x: 3.5, y: 70, z: 0.5 }, column: { height: 3 } });
+  adapter.swimSupported = true;
+
+  const viaWater = await adapter._digDown();
+  assert.equal(viaWater.ok, true);
+  assert.equal(viaWater.via, 'waterfall');
+  assert.equal(dug, 0, 'con la cascata non si scava');
+  assert.equal(viaWater.column.height, 3);
+
+  // Senza nuoto il verdetto rifiuta: lo scavo resta identico a prima.
+  const dry = fluidAdapter({ '3,71,0': water, '3,72,0': water, '3,73,0': water }).adapter;
+  let dryDug = 0;
+  dry._digTargets = () => { dryDug++; return { error: 'no_support_ahead' }; };
+  const viaStairs = await dry._digDown();
+  assert.equal(viaStairs.ok, false);
+  assert.equal(viaStairs.error, 'no_support_ahead');
+  assert.equal(dryDug, 1, 'senza cascata utilizzabile si torna alla scala');
+});

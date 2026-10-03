@@ -2809,3 +2809,64 @@ offline — il bot non riesce a mettere la testa sotto (stanza chiusa, e nuotare
 blocker di M1); l'elmo di tartaruga non è disponibile in partita; `DIVE_WORK_SECONDS
 (3 s)` è una stima per un blocco a mano, il cancello non consulta ancora il
 piccone.
+
+## [2026-10-03] feat | Fluidi M3: cascate e colonne di bolle (rilevamento, verdetti tipizzati, rifiuti live)
+
+**Obiettivo**: M3 della roadmap fluidi — trasformare un salto d'acqua e una colonna
+di bolle in *rotte*, senza fabbricare fisica che il bot non ha (il nuoto di M1 è
+ancora bloccato).
+
+**Implementazione**:
+- `bedrock-waterfall.mjs` (puro): `landingVerdict` (acqua e terreno solido sicuri,
+  `lava`/`magma`/`fire`/`cactus`/… pericolosi, `air` = caduta nel vuoto, blocco
+  illeggibile = **unknown**, mai trattato come sicuro); `findWaterfalls` (run
+  verticali di almeno `WATERFALL_MIN_HEIGHT` = 3 celle d'acqua, atterraggio letto
+  **sotto** il fondo, ordinamento per distanza dalla cima); `findBubbleColumns`
+  (`soul_sand` verso l'alto con `airRefill`, `magma` verso il basso);
+  `withinColumn`; `columnTactic` come **unica** decisione con precedenza
+  `no_column` → `already_inside` → `too_far` → `sneak_not_supported` → `unsafe_landing`
+  → `unknown_landing` → **`swimming_unavailable`** → `bubble_column` (se ripristina
+  l'aria) → il budget di discesa di M2 (`divePlan`, profondità = altezza della
+  colonna, `workSeconds: 0`); `summarizeColumn` per le viste.
+- `bedrock-adapter.mjs`: il censimento fluidi costruisce anche `waterfalls`/`bubbles`;
+  `_fluidsView` espone `waterfall`/`bubbleColumn`/`onWaterfall`; `swimSupported` è
+  `false` per dichiarazione (è il nome onesto del blocker M1, così il motivo è
+  scritto una volta sola e non sparso nei call site); `_useColumn` (verdetto,
+  avvicinamento alla cima, attesa della traversata) verifica la **realtà del server**
+  — se i piedi non si muovono risponde `column_not_traversed` con `deltaY` invece di
+  fingere un successo — e le azioni `descend_waterfall`/`climb_waterfall`/
+  `use_bubble_column` sono offerte solo con verdetto positivo; `_digDown` preferisce
+  una cascata utilizzabile e altrimenti esegue esattamente la scalinata di prima.
+- `bedrock-harness.mjs`: `GET /observe.waterfall[?force=1]` pubblica conteggi,
+  righe compatte e i tre verdetti **senza eseguirli**.
+- Layer sopravvivenza: condizione `onWaterfall` (ignoto = `false`), regola
+  contestuale `ride_waterfall` (priorità 54: restare nella colonna fino alla pozza
+  d'atterraggio) e intenti `descend_waterfall`/`climb_waterfall`/`use_bubble_column`.
+
+**Test**: `tests/bedrock-waterfall.test.mjs` (8, puri: atterraggi, run, ordinamenti,
+tutti i rami della tattica) + `tests/bedrock-fluids-adapter.test.mjs` (32, +9) +
+`tests/survival-governor.test.mjs` (+1). Suite completa **938 test, 0 failure**. Un
+bug reale trovato dai test puri: la lunghezza del run in `runsOf` era calcolata al
+contrario e nessuna cascata veniva riconosciuta.
+
+**Collaudo live (03/10/2026, container `hermes-jev-bedrock`, BDS 1.26.52)**:
+`GET /observe.waterfall?force=1` → `swimSupported: false`, `waterfallCount: 0`,
+`bubbleCount: 0`, i tre verdetti `no_column`, `last: null`; l'unica acqua nel raggio
+è una **pozza 2×2×2** (`x 116..117, z 180..181, y 70..71`, due blocchi: sotto la
+soglia di 3) e non esiste alcuna colonna di bolle. Le tre azioni rifiutano in
+millisecondi (`descend_waterfall` 10,6 ms; `climb_waterfall`/`use_bubble_column`
+3,7 ms) senza inviare pacchetti né bruciare percorsi; `/options` (28 chiavi) non le
+offre; `/survival` resta `night_with_bed` (la regola `ride_waterfall` non scatta su
+un bot asciutto). Nel container `loadSurvivalRules` mostra la regola e
+`keyMatchesIntents('descend_waterfall', ['descend'])` è vero.
+
+**Decisioni**: nessuna cascata fabbricata con `setblock`/secchi (modificherebbe il
+mondo condiviso della base e lascerebbe acqua corrente); gli **edge di pathfinding
+per le colonne non sono stati aggiunti** — una discesa in acqua da cui non si può
+risalire è una trappola: atterreranno con il nuoto di M1.
+
+**Limiti**: la cavalcata reale (e il ramo `swimming_unavailable`) resta coperta solo
+dai test unitari, perché serve il nuoto; `WATERFALL_MIN_HEIGHT = 3` è una scelta di
+giudizio; l'atterraggio si legge dal chunk caricato (una cascata che finisce fuori
+dal caricato viene ignorata); il danno da caduta non è ancora modellato, quindi una
+cascata è sicura *perché* atterra in acqua, non perché il bot capisca la caduta.

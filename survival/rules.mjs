@@ -13,8 +13,9 @@ export const CONDITION_KEYS = [
   'bedAvailable', 'hasFood', 'weaponInInventory', 'pickaxeInInventory',
   'sleeping', 'dead', 'lootNearby',
   'hostileWithin', 'hostileSeverityAtLeast', 'hostileTypeWithin',
-  // Fluidi (M0 di docs/wiki/fluids.md) + respiro (M2).
+  // Fluidi (M0 di docs/wiki/fluids.md) + respiro (M2) + cascate (M3).
   'inWater', 'headInWater', 'inLava', 'lavaWithin', 'airBelow', 'waterBreathing',
+  'onWaterfall',
   // Nether/End (N0 di docs/wiki/nether.md).
   'inFire', 'fireWithin', 'magmaWithin', 'projectileIncoming', 'gazedAtEnderman',
   'inNether', 'inEnd', 'spawnerWithin',
@@ -23,7 +24,7 @@ export const CONDITION_KEYS = [
 const BOOLEAN_KEYS = new Set([
   'night', 'timeKnown', 'bedAvailable', 'hasFood', 'weaponInInventory',
   'pickaxeInInventory', 'sleeping', 'dead', 'lootNearby',
-  'inWater', 'headInWater', 'inLava', 'waterBreathing',
+  'inWater', 'headInWater', 'inLava', 'waterBreathing', 'onWaterfall',
   // Nether/End (N0).
   'inFire', 'projectileIncoming', 'gazedAtEnderman', 'inNether', 'inEnd',
 ]);
@@ -159,6 +160,9 @@ export function evaluateCondition (key, value, perception = {}) {
     // `water_breathing`). La condizione è booleana e vale `false` se ignota.
     case 'waterBreathing':
       return perception.fluids?.waterBreathing === value;
+    // M3: "dentro una cascata". Anche qui ignoto = `false`.
+    case 'onWaterfall':
+      return perception.fluids?.onWaterfall === value;
     default:
       throw new Error(`unknown survival condition: ${key}`);
   }

@@ -72,8 +72,8 @@ Last lint: 2026-10-03.
   refusals (`no_portal_known`, `missing_materials`, `missing_flint_and_steel`)
   were observed. No deliberate portal *search* either (the census radius is 32).
 - **Fluids** — **M0 (fluid awareness), M1 partial (wading + simulated air
-  budget) and M2 (breathing + dive budget) implemented and collaudati live
-  03/10**: the bot knows where water and
+  budget), M2 (breathing + dive budget) and M3 (waterfalls + bubble columns)
+  implemented and collaudati live 03/10**: the bot knows where water and
   lava are (`GET /observe.fluids`, census + hazard ladder), refuses digs that
   would open into a fluid, repels lava in `_standable` and can `avoid_lava` when
   lava is within range; the governor gained the
@@ -88,7 +88,18 @@ Last lint: 2026-10-03.
   work + ascent must fit the air minus a 3 s reserve, otherwise `_mineBlock` and
   `_collectDrop` refuse with `air_too_low`/`work_too_long` **before** any packet,
   and while breathing is active the `drowning` rule and the `surface` need stand
-  down. Still missing: swimming itself — `_passable()` treats `water|lava` as
+  down. M3 added `bedrock-waterfall.mjs` (waterfall detection with a **landing
+  verdict** — water or solid ground safe, lava/magma/fire/cactus hazards, `air` a
+  fall onto nothing, unreadable = unknown — and `soul_sand`/`magma` bubble
+  columns), the single decision `columnTactic` behind
+  `descend_waterfall`/`climb_waterfall`/`use_bubble_column` and behind the
+  `dig_down` water preference, the `onWaterfall` governor condition with the
+  `ride_waterfall` rule, and `GET /observe.waterfall` for the verdicts; the live
+  round could only observe the refusals (`no_column`: the only water in reach is
+  a two-block pool, no column anywhere in 24 blocks) because riding a waterfall
+  needs swimming, and the pathfinding column edges are deliberately left out (a
+  descent into water the bot cannot leave would be a trap).
+  Still missing: swimming itself — `_passable()` treats `water|lava` as
   walls, so deep water, `surface`, `swim_to` and the water A* nodes wait for the
   Bedrock water-movement `input_data` flags/`delta` semantics, which need a
   packet capture of a real player swimming (no human is connected during
@@ -539,8 +550,9 @@ Still missing (the rest of the original gap):
   whether the BDS really sends that event.
   Roadmap in [fishing](fishing.md).
 - **Fluids** (swimming, drowning/breathing, waterfalls, lava avoidance, buckets/
-  boats/potions) — M0 + M1 partial (wading + simulated air) + M2 (breathing) implemented and live
-  03/10; swimming motion and M3–M6 still spec. Roadmap in [fluids](fluids.md);
+  boats/potions) — M0 + M1 partial (wading + simulated air) + M2 (breathing) + M3
+  (waterfalls/bubble columns, detection and verdicts) implemented and live
+  03/10; swimming motion and M4–M6 still spec. Roadmap in [fluids](fluids.md);
   the blocker is the missing packet capture of a real player swimming.
 - **Goal-driven gameplay** — Goal Contract + task graph + 5 progressive
   benchmarks (16 logs, shelter+night, iron pickaxe, 5 diamonds, Nether portal).

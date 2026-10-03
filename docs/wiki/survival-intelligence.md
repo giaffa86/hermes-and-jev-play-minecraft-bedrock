@@ -75,7 +75,7 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**920 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**938 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
 
 - **Fluids in the survival layer (M0, 2026-10-03)**: the governor vocabulary grew
@@ -202,6 +202,28 @@ console was picked up as `{kind: 'effect', seconds: 600}` and counted down acros
 probes (493 → 481 → 469 → 461 s), proving the tick→second math against the real
 server. The refusal path itself stays unit-tested: the bot cannot submerge from
 the base room (M1's swimming blocker).
+
+- **Waterfall and bubble-column tactics (M3, 2026-10-03)**: `bedrock-waterfall.mjs`
+turns a drop into a *route with a verdict*. A waterfall is a vertical run of at
+least three water cells whose **landing** is read under the bottom:
+`landingVerdict` says safe for water and solid ground, hazard for
+`lava`/`magma`/`fire`/`cactus`/..., `safe: null` (unknown) when the block cannot be
+read, and `air` is a fall onto nothing — an unknown landing is **not** treated as
+safe. `columnTactic()` is the one decision behind `descend_waterfall`,
+`climb_waterfall`, `use_bubble_column` and the `dig_down` water preference, and
+its order is deliberate: `no_column` → `already_inside` → `too_far` →
+`sneak_not_supported` (a magma column would burn without a sneak flag) →
+`unsafe_landing` → `unknown_landing` → **`swimming_unavailable`** → the M2 dive
+budget (a column *up* refills the air instead of costing it). The governor gained
+the `onWaterfall` condition and the contextual `ride_waterfall` rule (priority 54:
+stay in the column until the landing pool), which by design never enters
+`allowedIntents` in an emergency. Live the census found **no column at all** in 24
+blocks (the only water is a two-block pool: below the threshold), so the round
+documents the refusal — `no_column` in 3.7–10.6 ms for all three actions, none of
+them offered by `/options`, `ride_waterfall` not firing on a dry bot — while the
+ride itself waits on M1's swimming. The pathfinding column edges were left out on
+purpose: a descent into water the bot cannot leave is a trap, not an
+optimisation.
 
 - **Mature-crop detection (2026-10-03)**: `cropMaturity()`/`seedForCrop()` live in
 `bedrock-survival.mjs` (`growth` 0..7 for wheat/carrots/potatoes/beetroots/melon

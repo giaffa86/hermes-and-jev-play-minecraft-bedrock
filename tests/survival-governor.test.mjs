@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   perceive, threatSeverity, assessRisk, deriveNeeds, evaluateSurvival, summarizeSurvival,
-  loadSurvivalRules, validateRules, evaluateCondition, ruleMatches,
+  loadSurvivalRules, validateRules, evaluateCondition, ruleMatches, keyMatchesIntents,
 } from '../survival/index.mjs';
 
 const RULES_URL = new URL('../knowledge/survival-rules.json', import.meta.url);
@@ -279,4 +279,53 @@ test('il governor non dichiara annegamento quando il respiro è attivo', () => {
   // Un'osservazione senza il campo resta prudente: ignoto = non respira.
   const unknown = evaluateSurvival(observation({ fluids: { inWater: true, headInWater: true, air: 4 } }), { rules });
   assert.equal(unknown.rule, 'drowning');
+});
+
+// ---- M3: dentro una cascata ---------------------------------------------------------
+
+test('il governor riconosce di essere dentro una cascata e la tiene fra gli intenti utili', () => {
+  const inFall = (onWaterfall, extra = {}) => evaluateSurvival(observation({
+    fluids: {
+      inWater: true, headInWater: false, air: 300, airSeconds: 15, waterBreathing: false,
+      onWaterfall,
+      water: { count: 4 }, lava: { count: 0 }, lavaDistance: null,
+    },
+    ...extra,
+  }), { rules });
+
+  const ride = inFall(true);
+  assert.equal(ride.rule, 'ride_waterfall');
+  assert.ok(ride.matchedRules.includes('ride_waterfall'));
+  assert.ok(ride.preferredSkills.includes('surface_for_air'));
+  // La regola è di contesto, non di pericolo: non alza la modalità e non
+  // sostituisce l'obiettivo (l'obiettivo arriva solo in cautela/emergenza).
+  assert.equal(ride.mode, 'normal');
+  assert.equal(ride.overrideObjective, null);
+
+  // Fuori dalla colonna la regola non esiste: nessun contesto inventato.
+  const dry = inFall(false);
+  assert.notEqual(dry.rule, 'ride_waterfall');
+  assert.ok(!dry.matchedRules.includes('ride_waterfall'));
+
+  // La regola è di contesto (priorità 54): non entra mai fra quelle di
+  // emergenza, quindi non allarga `allowedIntents` — le azioni di colonna
+  // arrivano al planner perché fuori dall'emergenza gli intenti non sono
+  // ristretti. Il vocabolario però c'è: se un domani una regola di emergenza
+  // chiedesse `descend`, `descend_waterfall` sarebbe una chiave coerente.
+  const emergency = inFall(true, { health: 2 });
+  assert.equal(emergency.mode, 'emergency');
+  assert.equal(emergency.allowedIntents.includes('descend'), false);
+  assert.equal(keyMatchesIntents('descend_waterfall', ['descend', 'travel']), true);
+  assert.equal(keyMatchesIntents('climb_waterfall', ['ascend']), true);
+  assert.equal(keyMatchesIntents('use_bubble_column', ['fluid']), true);
+  assert.equal(keyMatchesIntents('mine_dirt', ['descend', 'travel']), false);
+
+  // Un'osservazione senza il campo non accende la regola (ignoto = no).
+  const unknown = evaluateSurvival(observation({ fluids: { inWater: true, headInWater: false } }), { rules });
+  assert.notEqual(unknown.rule, 'ride_waterfall');
+
+  // La condizione è nel vocabolario chiuso e si può usare da una regola nuova.
+  assert.equal(evaluateCondition('onWaterfall', true, perceive(observation({ fluids: { onWaterfall: true } }))), true);
+  assert.equal(evaluateCondition('onWaterfall', true, perceive(observation({ fluids: {} }))), false);
+  assert.equal(evaluateCondition('onWaterfall', false, perceive(observation({}))), true, 'ignoto = non dentro una cascata');
 });

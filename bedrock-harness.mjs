@@ -207,6 +207,15 @@ server = createServer(async (req, res) => {
       const raw = u.searchParams.get('workSeconds');
       const workSeconds = raw == null || raw === '' ? undefined : Number(raw);
       response = [200, adapter._diveView(Number.isFinite(workSeconds) ? { workSeconds } : {})];
+    } else if (req.method === 'GET' && req.url.startsWith('/observe.waterfall')) {
+      // Cascate e colonne di bolle (M3 di docs/wiki/fluids.md): cosa vede il bot
+      // nell'area caricata e cosa risponderebbe ciascuna delle tre azioni. Il
+      // verdetto è lo stesso di `descend_waterfall`/`climb_waterfall`/
+      // `use_bubble_column`, quindi qui si legge il motivo del rifiuto senza
+      // eseguire l'azione. `?force=1` rifà il censimento.
+      const u = new URL(req.url, 'http://x');
+      const force = /^(1|true|on)$/i.test(u.searchParams.get('force') ?? '');
+      response = [200, adapter._columnView({ force })];
     } else if (req.method === 'GET' && req.url.startsWith('/observe.redstone')) {
       // Redstone (R0 di docs/wiki/redstone.md): componenti vicini con potenza e
       // direzione, minerali di redstone e TNT. Come per i fluidi il censimento è

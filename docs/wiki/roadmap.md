@@ -199,14 +199,17 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   avoidance, buckets/boats/bubble columns/potions. Roadmap (M0–M6) in
   [fluids](fluids.md) / [`raw/FLUIDS_ROADMAP.md`](../raw/FLUIDS_ROADMAP.md);
   **M0 (fluid awareness) + M1 partial (wading + simulated air budget) + M2
-  (Water Breathing detection and the dive/work budget) implemented, unit-tested
-  and collaudato live 03/10** (`/observe.fluids` census, hazard ladder,
-  `avoid_lava`, dig-neighbour refusal, lava repulsion in `_standable`, `airSource`
-  with the simulated `AirMeter`; `/observe.dive` with the descent/work/ascent
-  budget and `_underwaterWorkAllowed` gating `_mineBlock`/`_collectDrop`). Deep
-  water is still a wall (`_passable` rejects `water|lava`) and the swimming
-  motion/`surface`/`swim_to` remain unimplemented because their Bedrock flags need
-  a packet capture of a real player swimming.
+  (Water Breathing detection and the dive/work budget) + M3 (waterfalls and bubble
+  columns) implemented, unit-tested and collaudato live 03/10** (`/observe.fluids`
+  census, hazard ladder, `avoid_lava`, dig-neighbour refusal, lava repulsion in
+  `_standable`, `airSource` with the simulated `AirMeter`; `/observe.dive` with the
+  descent/work/ascent budget and `_underwaterWorkAllowed` gating
+  `_mineBlock`/`_collectDrop`; `/observe.waterfall` with the column detection and
+  the typed verdicts behind `descend_waterfall`/`climb_waterfall`/
+  `use_bubble_column`). Deep water is still a wall (`_passable` rejects
+  `water|lava`) and the swimming motion/`surface`/`swim_to` remain unimplemented
+  because their Bedrock flags need a packet capture of a real player swimming, so
+  M3's column **actions** are refused with `swimming_unavailable` for now.
 - **Redstone and primitive automation** — switches, delay lines, observers/
   pistons, hoppers, dispensers. Roadmap (R0–R6) in [redstone](redstone.md) /
   [`raw/REDSTONE_ROADMAP.md`](../raw/REDSTONE_ROADMAP.md); **R0 (awareness and
@@ -322,7 +325,7 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    offline-verified since 03/10 (`fish_hook_hook` + dip fallback); the live round
    still has to confirm the bobber entity name and that the server really sends
    the event.
-6. **Fluids** (spec in [fluids](fluids.md)): **M0 + M1 partial + M2 done** (03/10 —
+6. **Fluids** (spec in [fluids](fluids.md)): **M0 + M1 partial + M2 + M3 done** (03/10 —
    fluid awareness: `/observe.fluids`, hazard ladder, `avoid_lava`, dig
    adjacency, lava repulsion; live round documented in [verification](verification.md)
    rows 47/47.1). M1's wading (shallow water traversal at `WADE_SPEED_FACTOR`)
@@ -331,7 +334,14 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    effects with tick→second countdown) and the dive decision
    (`bedrock-dive.mjs`: descent/work/ascent against the air minus a 3 s reserve),
    which gates `_mineBlock` and `_collectDrop` under water and releases the
-   `drowning` rule while breathing. The underwater refusal is unit-tested only:
+   `drowning` rule while breathing; M3 adds `bedrock-waterfall.mjs` (waterfall and
+   bubble-column detection with a landing verdict, `columnTactic` as the single
+   decision, the `onWaterfall` governor condition and the `ride_waterfall` rule)
+   plus the `dig_down` preference for a usable waterfall — its live round could
+   only observe the refusals (`no_column`: the only water in reach is a 2-high
+   pool), and the pathfinding column edges are deliberately **not** there because a
+   descent into water the bot cannot leave would be a trap. The underwater refusal
+   is unit-tested only:
    the swimming motion (`surface`/`swim_to`, water A* nodes, buoyancy/`delta`
    flags) stays unimplemented because it needs a packet capture of a real player
    swimming, which requires a human on the BDS during a run. The remaining fluid

@@ -44,6 +44,7 @@ export function perceiveFluids (fluids = null) {
       known: false, inWater: false, headInWater: false, inLava: false,
       lavaDistance: null, lavaWithin: null, waterDistance: null, waterWithin: null,
       lavaCount: 0, waterCount: 0, air: null, waterBreathing: false,
+      onWaterfall: false,
     };
   }
   const num = (value) => (Number.isFinite(value) ? value : null);
@@ -65,6 +66,9 @@ export function perceiveFluids (fluids = null) {
     // M2: l'adapter risponde con la forma di `waterBreathingSources`; una fixture
     // vecchia può anche dichiarare solo il booleano. Ignoto = non respira.
     waterBreathing: fluids.waterBreathing === true || fluids.waterBreathing?.active === true,
+    // M3: "sto scendendo dentro una cascata". Ignoto = no (nessun allarme
+    // inventato: una fixture senza il campo non accende una regola).
+    onWaterfall: fluids.onWaterfall === true,
   };
 }
 
