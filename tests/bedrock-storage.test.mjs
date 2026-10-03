@@ -32,6 +32,32 @@ function seedContainer (adapter, { x = 2, y = 64, z = 0, type = 'chest', content
   return { type, position: { x, y, z }, contents };
 }
 
+test('take options rotate across containers instead of filling the nearest one', () => {
+  const adapter = storageAdapter();
+  // Forma reale del villaggio (03/10): due scrigni di patate piu vicini, uno di
+  // scorte e lo scrigno del pesce piu lontano. Con il riempimento per contenitore
+  // il pesce non compariva mai fra le opzioni.
+  seedContainer(adapter, { x: 2, contents: { poisonous_potato: 43, potato: 2216, baked_potato: 240 } });
+  seedContainer(adapter, { x: 3, contents: { poisonous_potato: 43, potato: 2216, baked_potato: 240 } });
+  seedContainer(adapter, { x: 4, contents: { bone_meal: 128, porkchop: 28 } });
+  seedContainer(adapter, { x: 5, contents: { tropical_fish: 3, waterlily: 1, kelp: 12, salmon: 9, pufferfish: 7, cod: 6 } });
+  const keys = adapter.options().filter((o) => o.key.startsWith('take_')).map((o) => o.key);
+  assert.equal(keys.length, 8);
+  assert.ok(keys.includes('take_tropical_fish'), `il quarto contenitore deve essere rappresentato: ${keys.join(', ')}`);
+  // La rotazione porta prima gli item all'indice 0 di ogni contenitore.
+  assert.deepEqual(keys.slice(0, 4), ['take_poisonous_potato', 'take_poisonous_potato', 'take_bone_meal', 'take_tropical_fish']);
+});
+
+test('an item named in the plan targets comes first, even from the farthest container', () => {
+  const adapter = storageAdapter();
+  seedContainer(adapter, { x: 2, contents: { poisonous_potato: 43, potato: 2216, baked_potato: 240 } });
+  seedContainer(adapter, { x: 5, contents: { tropical_fish: 3, salmon: 9, pufferfish: 7, cod: 6 } });
+  adapter.setPlan({ objective: 'tame a cat', targets: { salmon: 1 } });
+  const keys = adapter.options().filter((o) => o.key.startsWith('take_')).map((o) => o.key);
+  assert.equal(keys[0], 'take_salmon', `il bersaglio del piano va per primo: ${keys.join(', ')}`);
+  assert.ok(keys.includes('take_cod'), `la rotazione rappresenta comunque lo scrigno del pesce: ${keys.join(', ')}`);
+});
+
 test('storage container slot types map chest/barrel/shulker', () => {
   const adapter = storageAdapter();
   assert.equal(adapter._storageContainerSlotType('chest'), 'container');

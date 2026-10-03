@@ -3778,15 +3778,26 @@ export class BedrockAdapter {
         o.push({ key: 'read_container', description: `Open and inventory ${reachableStorage.length} nearby storage container(s) (${names})` });
       }
     }
-    // Prelievo: solo item presenti in un contenitore noto e non scaduto.
-    let takeOffered = 0;
+    // Prelievo: solo item presenti in un contenitore noto e non scaduto. I posti
+    // (8) si assegnano a rotazione fra i contenitori (ordine per posizione
+    // dell'item dentro il contenitore), non riempiendo il primo: con il
+    // riempimento per contenitore uno scrigno ricco (2216 patate) saturava la
+    // lista e il pesce crudo dello scrigno piu lontano non veniva mai proposto,
+    // quindi il planner non poteva chiederlo (round compagni, 03/10). Gli item
+    // nominati in `plan.targets` passano comunque per primi.
+    const wantedItems = new Set(Object.keys(this.plan?.targets || {}));
+    const takeEntries = [];
     for (const c of cached) {
+      let index = 0;
       for (const [item, count] of Object.entries(c.contents)) {
         if (!count) continue;
-        o.push({ key: `take_${item}`, description: `Take ${count} ${item} from the ${c.type} at ${JSON.stringify(c.position)} (container has ${count})` });
-        if (++takeOffered >= 8) break;
+        takeEntries.push({ c, item, count, index: index++ });
       }
-      if (takeOffered >= 8) break;
+    }
+    takeEntries.sort((a, b) =>
+      (Number(wantedItems.has(b.item)) - Number(wantedItems.has(a.item))) || (a.index - b.index));
+    for (const e of takeEntries.slice(0, 8)) {
+      o.push({ key: `take_${e.item}`, description: `Take ${e.count} ${e.item} from the ${e.c.type} at ${JSON.stringify(e.c.position)} (container has ${e.count})` });
     }
     // Deposito: oggetti di valore verso il contenitore noto (o vicino) più prossimo.
     const depositTarget = cached.find(c => !this._reachabilityUsable() || this.approachReachable(c.position)) || reachableStorage[0];

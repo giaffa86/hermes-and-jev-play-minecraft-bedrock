@@ -3438,3 +3438,27 @@ implementation; suite 466 → 1055. Residual limit: arrival is accepted inside t
 vertical tolerance, so the action can return while the bot is still a couple of
 blocks in the air. Docs: [headless-client](wiki/headless-client.md) §4.1,
 [verification](wiki/verification.md) row 47.29.
+
+## [2026-10-03] fix | Take options rotate across containers, so a rich chest can't hide the one item a goal needs
+
+The companion round needs raw fish for the tame, but `/options` never offered it: the
+take options were capped at **8 globally** and filled container by container, so two
+potato chests (2216 potatoes each) plus a bone-meal chest used up every slot and the
+fish chest two blocks away — `cod`, the food a cat is tamed with — was never offered.
+The planner could not ask for an item it could not see.
+
+Fix in the option generation (`options ()` in `bedrock-adapter.mjs`): the take entries
+are ordered by their index **inside** the container, so the eight slots rotate across
+every cached container instead of draining the first one, and the items named in
+`plan.targets` pass first (a goal that needs one item gets it even from the farthest
+chest). The cap stays 8.
+
+Live with `POST /plan {targets:{cod:1}}` after a `read_container`: `take_cod` first,
+then `take_poisonous_potato`, `take_bone_meal`, `take_tropical_fish` (the fish chest,
+which the old order never reached), `take_honeycomb`, … — and `take_cod` answered
+`{ok:true, item:'cod', count:6, from:'chest', inventoryDelta:6}` (row 15 of
+[verification](wiki/verification.md) is now live for the take side).
+
+Tests: 2 new in `tests/bedrock-storage.test.mjs` (the village's real cache shape, and a
+plan target coming from the farthest container), both checked to fail against the
+previous loop; suite 466 → 1057.
