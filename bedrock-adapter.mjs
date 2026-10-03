@@ -12,6 +12,7 @@ import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, FIS
 import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
 import { detectStructures } from './structures.mjs';
 import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT } from './bedrock-fluids.mjs';
+import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -28,6 +29,9 @@ const CONNECT_TIMEOUT = +(process.env.BEDROCK_CONNECT_TIMEOUT || 30000);
 // player_auth_input; il tick deve restare nella finestra di rewind del server.
 const EYE_HEIGHT = 1.62;        // gli occhi stanno 1,62 sopra i piedi
 const WALK_SPEED = 0.2158;      // blocchi per tick (4,317 m/s / 20 tick)
+// In acqua bassa il server muove il giocatore più lentamente: la fisica locale
+// cammina piano per non farsi correggere dal server (rubber-band) a ogni tick.
+const WADE_SPEED_FACTOR = +(process.env.WADE_SPEED_FACTOR || 0.5);
 const GRAVITY = 0.08;           // blocchi per tick^2
 const JUMP_VELOCITY = 0.42;     // impulso verticale di un salto
 const MAX_SIM_STEPS = 8;        // tick di fisica massimi per singolo invio
@@ -178,7 +182,13 @@ export class BedrockAdapter {
     this._structureSurveyAt = 0;
     this._fluidScan = null;        // censimento acqua/lava nell'area caricata (M0)
     this._fluidScanAt = 0;
-    this.air = null;               // budget d'aria, se il server lo espone (M2 lo userà)
+    // Aria (M1): il server non espone l'attributo, quindi il budget è *simulato*
+    // tick per tick (`airSource: 'simulated'`). Se un giorno arrivasse, la verità
+    // del server vince e la sorgente diventa 'server'.
+    this._airMeter = new AirMeter();
+    this._serverAir = null;
+    this.airSource = 'simulated';
+    this.air = MAX_AIR;
     this.dimension = 'overworld';
     this.standingOn = null;
     this.plan = null;
@@ -1067,7 +1077,10 @@ export class BedrockAdapter {
       inWater,
       headInWater,
       inLava,
+      wading: this._wading(),
       air,
+      airSource: this.airSource,
+      airSeconds: airSeconds(air),
       water: census.water,
       lava: census.lava,
       waterDistance: census.waterDistance,
@@ -4258,6 +4271,22 @@ export class BedrockAdapter {
     return name === 'air' || name === 'cave_air' || name === 'void_air';
   }
 
+  // La cella della testa contiene acqua: alimenta il contatore d'aria (simulato).
+  _headInWater () {
+    const feet = this._feet;
+    if (!feet) return false;
+    const x = Math.floor(feet.x), y = Math.floor(feet.y + 0.1) + 1, z = Math.floor(feet.z);
+    return this._fluidKindAt(x, y, z) === 'water';
+  }
+
+  // Un tick del budget d'aria. Fuori dall'acqua si recupera, con la testa
+  // sott'acqua si consuma: nessun danno viene simulato (la salute è del server),
+  // il contatore serve solo alle decisioni di sopravvivenza.
+  _airTick () {
+    this._airMeter.update({ headInWater: this._headInWater(), ticks: 1 });
+    this.air = this._serverAir == null ? this._airMeter.air : this._serverAir;
+  }
+
   _passable (block) {
     if (!block) return false;
     // Un hash non risolto (server più recente del registro) è conservativo:
@@ -4267,6 +4296,22 @@ export class BedrockAdapter {
     if (block.name === 'air') return true;
     if (/water|lava/.test(block.name)) return false; // il bot non nuota
     return block.boundingBox === 'empty';
+  }
+
+  // Acqua di guado: la cella contiene acqua, quindi `_passable` la rifiuta (il
+  // bot non nuota), ma se la cella sopra è libera il bot cammina sul fondo con
+  // la testa fuori — nessun nuoto e nessun flag di protocollo da indovinare.
+  _wadeable (block) {
+    return fluidKind(block?.name) === 'water';
+  }
+
+  // Il bot sta guadando adesso: piedi in acqua e testa fuori.
+  _wading () {
+    const feet = this._feet;
+    if (!feet) return false;
+    const x = Math.floor(feet.x), y = Math.floor(feet.y + 0.1), z = Math.floor(feet.z);
+    if (this._fluidKindAt(x, y, z) !== 'water') return false;
+    return this._fluidKindAt(x, y + 1, z) !== 'water';
   }
 
   // Per il pathfinding una porta chiusa è percorribile: il movimento la apre
@@ -4283,8 +4328,13 @@ export class BedrockAdapter {
   }
 
   _standable (x, y, z) {
-    if (!this._passableForPath(this._blockForPath(x, y, z))) return false;
-    if (!this._passableForPath(this._blockForPath(x, y + 1, z))) return false;
+    const feet = this._blockForPath(x, y, z);
+    const head = this._blockForPath(x, y + 1, z);
+    // Un guado è calpestabile, il nuoto no: la cella dei piedi può contenere
+    // acqua *solo* se quella della testa è libera (acqua profonda resta un muro,
+    // M1 la renderà percorribile col nuoto).
+    if (!this._passableForPath(feet) && !this._wadeable(feet)) return false;
+    if (!this._passableForPath(head)) return false;
     // Una cella con lava in orizzontale ai piedi non è una destinazione: il bot
     // non è equipaggiato per attraversarla (M4 la renderà una scelta gated).
     if (this._lavaAdjacent(x, y, z)) return false;
@@ -4353,6 +4403,7 @@ export class BedrockAdapter {
 
   _physicsStep () {
     if (!this._feet) return;
+    this._airTick();
     const motion = this._motion;
     if (this._freeJump?.heldTicks > 0) this._freeJump.heldTicks--;
     const freeJump = !!this._freeJump?.queued;
@@ -4367,7 +4418,8 @@ export class BedrockAdapter {
     const beforeX = this._feet.x, beforeZ = this._feet.z;
     if (motion?.active && motion.forward) {
       const yawRad = motion.yaw * Math.PI / 180;
-      this._moveHorizontal(-Math.sin(yawRad) * WALK_SPEED, Math.cos(yawRad) * WALK_SPEED);
+      const speed = this._wading() ? WALK_SPEED * WADE_SPEED_FACTOR : WALK_SPEED;
+      this._moveHorizontal(-Math.sin(yawRad) * speed, Math.cos(yawRad) * speed);
     }
     this._velocity.x = this._feet.x - beforeX;
     this._velocity.z = this._feet.z - beforeZ;
@@ -5086,8 +5138,14 @@ export class BedrockAdapter {
       if (attr.name === 'minecraft:player.level') this.experienceLevel = value;
       if (attr.name === 'minecraft:player.experience') this.experienceProgress = value;
       // Il budget d'aria non è ancora stato osservato in live su BDS 1.26: se il
-      // server non lo manda resta null e la regola `drowning` non scatta (M2).
-      if (/air$/.test(attr.name)) this.air = value;
+      // server lo mandasse, la sua verità vincerebbe sul contatore simulato
+      // (`airSource: 'server'`) e il contatore resterebbe allineato.
+      if (/air$/.test(attr.name)) {
+        this.air = value;
+        this._serverAir = value;
+        this.airSource = 'server';
+        this._airMeter.set(value);
+      }
     }
   }
 

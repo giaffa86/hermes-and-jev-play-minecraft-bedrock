@@ -6,9 +6,11 @@ descend and ascend, and **avoid lava** until it is equipped (bucket, fire
 resistance, bridging). It also covers every fluid-related skill: buckets, boats,
 bubble columns, potions, underwater mining/fishing.
 
-Status: **M0 (fluid awareness) implemented, unit-tested and collaudato live**
-(03/10/2026); M1–M6 still spec only (tracked in [roadmap](roadmap.md) and
-[open-questions](open-questions.md)). Full raw source:
+Status: **M0 (fluid awareness) + M1 partial (wading and simulated air budget)
+implemented, unit-tested and collaudato live** (03/10/2026); the swimming
+*physics* of M1 (ballistic flags, water A*, `swim_to`) is **blocked** by a
+missing packet capture — see the M1 section. M2–M6 still spec only (tracked in
+[roadmap](roadmap.md) and [open-questions](open-questions.md)). Full raw source:
 [`docs/raw/FLUIDS_ROADMAP.md`](../raw/FLUIDS_ROADMAP.md).
 
 Sources: `bedrock-adapter.mjs` (movement, physics, digging, fishing), `BEDROCK.md`
@@ -118,7 +120,8 @@ refusing the moves that would end in lava.
   `rankEscapeCells`, filters by reachability and moves once. Typed errors:
   `no_position`, `no_lava_nearby`, `no_safe_cell`, `avoid_lava_failed`.
 - `_applyOwnAttributes` now also stores an air/breathing attribute in
-  `this.air` **if the server sends one**.
+  `this.air` **if the server sends one** (M1 adds the simulated meter when it
+  does not).
 
 **Survival layer** — the closed vocabularies were extended, not bypassed:
 
@@ -141,7 +144,7 @@ refusing the moves that would end in lava.
 | Probe | Result |
 |---|---|
 | `GET /observe.fluids?force=1` | `ready: true`, 259 fluid cells within 24 blocks: `water 8` (nearest 20.6, a pond), `lava 251` (nearest 15.4 at y=59) |
-| `observe().fluids` on a dry bot | `hazard {level: none, reasons: []}`, `air: null` |
+| `observe().fluids` on a dry bot | `hazard {level: none, reasons: []}`, `air: null` (pre-M1: the M1 section below adds the simulated budget) |
 | `GET /options` (23 keys) | no `avoid_lava`: the nearest lava is 15.4 blocks away, beyond `LAVA_AVOID_RANGE` |
 | `POST /act {avoid_lava}` | `{ok: true, moved: false, reason: 'no_lava_nearby'}` — typed, no movement, no burn |
 | `GET /survival` | governor unaffected by the new rules: `night_with_bed`, risk `low`, needs `[sleep, continue_progression]` — no fluid noise on a dry bot |
@@ -154,21 +157,93 @@ refusing the moves that would end in lava.
   room the nearest lava (15.4 blocks below, y=59) is unreachable and the option
   gate correctly stays closed. Rank/move/typed failures are covered by unit
   tests.
-- `air` is still unknown live (`null`): the `drowning` rule and the `surface`
-  need stay inert until a server attribute or the M1 air simulation provides a
-  budget.
+- `air` was unknown live (`null`) in the first round; the M1 section below adds a
+  **simulated** budget, so the `drowning` rule and the `surface` need now have a
+  source (they remain inert only while the bot stays dry).
 - Refusing a dig next to **water** is a deliberate M0 conservatism (a flooded
-  shaft is not survivable without swimming). M1 relaxes it.
+  shaft is not survivable without swimming). M1 was meant to relax it, but the
+  wading round could not be run live, so the refusal is still in place.
 - The census is bounded: `FLUID_SCAN_LIMIT` cells, radius 24 by default, and a
   large ocean will hit the limit — the nearest cells are what matters, but the
   counts saturate.
+
+## M1 — Swimming: partial (wading + simulated air, 03/10/2026)
+
+M1 asks for three things: water becomes traversable, the movement flags match
+what the server expects, and the air budget is known. The first and third are
+implemented and unit-tested; the second is **blocked** (see below).
+
+**Wading (`_standable`, `_wadeable`, `_wading`)**
+
+- `_passable()` still refuses `water|lava` — the bot does not swim — but
+  `_standable()` now accepts a cell whose **feet** hold water **when the cell
+  above is free**: that is wading, i.e. walking on the bottom with the head out.
+  Deep water (water in the head cell too) stays a wall, so the invariant "no
+  swimming yet" is preserved by construction; lava never qualifies.
+- A* picks this up automatically (`_neighbors` is gated by `_standable`), so
+  `goto_waypoint`/`_moveTo` cross a one-block stream, and `_reachableCells`
+  includes the wadeable cells while deep water stays outside the component.
+- `_physicsStep` walks at `WALK_SPEED * WADE_SPEED_FACTOR` (default `0.5`) while
+  `_wading()`: the server moves players slower in water and a faster local
+  prediction is corrected (rubber-band).
+- `observe().fluids.wading` and `GET /observe.fluids` expose the state.
+
+**Simulated air budget (`bedrock-air.mjs`, pure)**
+
+- The server never sent a `minecraft:air` attribute in the live round, so the
+  budget is simulated with the vanilla model: `MAX_AIR = 300` ticks (15 s) with
+  the head under water, `AIR_RECOVER_PER_TICK = 4` out of it. `AirMeter` holds
+  the counter; `_airTick()` advances it once per simulated tick inside
+  `_physicsStep`, and `observe().fluids` reports `air`, `airSeconds` and
+  **`airSource: 'simulated' | 'server'`** (if the attribute ever arrives, the
+  server value wins and the counter is aligned to it).
+- Deliberately **no damage is simulated** (health belongs to the server): the
+  meter only drives decisions — the `drowning` rule, the `surface` need and the
+  `fluidHazard` ladder.
+
+**Tests**: `tests/bedrock-fluids.test.mjs` (8), `tests/bedrock-fluids-adapter.test.mjs`
+(15: census/hazard/dig/lava gate + 5 wading + 3 air), `tests/bedrock-air.test.mjs`
+(5). Full suite 698 tests, 0 failures.
+
+**Live round (03/10/2026, container `hermes-jev-bedrock`, BDS 1.26.52)**
+
+- `GET /observe.fluids?force=1` → `ready: true`, `scanned: 259`, `lavaCells 251`
+  (nearest 15.4, y=59), `waterCells 8` (nearest 20.6, cells `(116,71,180)` **and**
+  `(116,70,180)`); `wading: false`, `air: 300`, `airSeconds: 15`,
+  `airSource: 'simulated'`, `hazard {level: 'none'}`.
+- `GET /survival` → `mode: normal`, `risk none`, needs `[continue_progression]`,
+  **no** drowning/surface rule on a dry bot: the simulated budget does not invent
+  an emergency.
+- `GET /options` (19 keys) unchanged in kind; `POST /plan {waypoint:{x:116,z:180}}`
+  + `goto_waypoint` → `path_failed` (fresh evidence of the cage).
+
+**Known limits / blocker (M1)**
+
+- The live acceptance of M1 — *cross a river/lake to the opposite shore* —
+  **cannot be run**: the only water the census knows is a **two-cell-deep** pool
+  (`y=70` + `y=71`) 20.6 blocks away, i.e. deep water that needs swimming, and the
+  bot is sealed in a furnished base room (waypoints → `path_failed` /
+  `target_not_found`). Wading is therefore verified by unit tests only, and the
+  option was **not** exercised live.
+- Swimming **motion** is not implemented and must not be guessed: the Bedrock
+  `input_data` flags honest to confirm are `start_swimming`/`stop_swimming`
+  (29/30), `want_up`/`want_down` (16/17) and `auto_jumping_in_water` (7), plus the
+  `delta` model and the buoyancy/drag constants. The discovery task — capture the
+  traffic of a **real player swimming** in this BDS — needs a real client
+  connected while it swims (no human joins the server during autonomous runs,
+  `m01312`), so M1's `surface`/`swim_to`, water A* nodes and buoyancy stay
+  unimplemented rather than shipped unverified.
+- Digging next to water is still refused (the M0 conservatism): relaxing it
+  requires knowing whether the shaft floods, which needs the same live round.
+- `WADE_SPEED_FACTOR` is a conservative guess (half of the land speed); the first
+  live wade will tell whether it should be tuned.
 
 ## Milestones
 
 | # | Milestone | Content | Status |
 |---|---|---|---|
 | M0 | Fluid awareness | Pure `bedrock-fluids.mjs`; `/observe.fluids`; scan water/lava; perception + governor rules (`drowning`, `lava_contact`, `lava_near`); pathfinding forbids/repels lava; dig adjacency check; generalized `avoid_lava`. | ◑ implemented + live 03/10/2026 (awareness, census, option gate and rule inertness collaudati live; the escape move and the emergency rules stay unit-tested — no reachable lava from the base room) |
-| M1 | Swimming physics & navigation | Water becomes passable; buoyancy/drag/swim speed in `_physicsStep`; correct `input_data` flags (packet-capture task); A* water nodes; air budget + auto-`surface`; `surface`/`swim_to`. | ❌ not implemented |
+| M1 | Swimming physics & navigation | Water becomes passable; buoyancy/drag/swim speed in `_physicsStep`; correct `input_data` flags (packet-capture task); A* water nodes; air budget + auto-`surface`; `surface`/`swim_to`. | ◑ partial 03/10/2026: **wading** (shallow water traversal + slower local speed) and the **simulated air budget** (`bedrock-air.mjs`, `airSource`) are implemented and unit-tested; the live crossing round is blocked (only deep water within 20.6 blocks, bot sealed in the base room) and the swimming motion/water A*/`surface`/`swim_to` stay unimplemented pending a packet capture of a real player swimming |
 | M2 | Breathing & controlled dives | `dive` with air budget; underwater `mine_*`/`collect_drop`; Water Breathing detection; governor `drowning` + `breathe` need. | ❌ not implemented |
 | M3 | Waterfalls & bubble columns | `findWaterfalls`/`findBubbleColumns`; `descend_waterfall`, `climb_waterfall`, `use_bubble_column`; pathfinding edges; `dig_down` prefers a nearby waterfall. | ❌ not implemented |
 | M4 | Lava: avoid (cross later) | Absolute obstacle + repulsion; `move_to_safe`; lava-death marking; never mine into lava; bucket bridging (`place_water` → obsidian); Nether crossing gated behind `fire_resistance` + bridging. | ❌ not implemented |
@@ -178,11 +253,13 @@ refusing the moves that would end in lava.
 ## Key risks / open questions
 
 - The exact Bedrock water movement flags and `delta` semantics are unknown until a
-  packet capture of a real player swimming confirms them.
-- The air budget is still unknown live: `_applyOwnAttributes` stores an air
-  attribute *if the server sends one*, and it never did in the live round, so
-  `drowning` and `surface` are inert. M1 must either find the metadata or
-  simulate the budget (water cells + timer).
+  packet capture of a real player swimming confirms them (M1's blocker: the
+  candidates are `start_swimming`/`stop_swimming` 29/30, `want_up`/`want_down`
+  16/17, `auto_jumping_in_water` 7).
+- The air budget was never sent by the server, so it is **simulated**
+  (`bedrock-air.mjs`, 300 ticks + 4/tick recovery, `airSource: 'simulated'`):
+  correct for decisions, still unverified against server truth, and it cannot be
+  exercised until the bot can submerge.
 - Fall damage is not modelled today: waterfalls solve descent into water, not
   drops onto land. Add `_fallStartY` + a safe-landing predicate.
 - Deep-water air budgeting and large-ocean scan performance must be bounded.

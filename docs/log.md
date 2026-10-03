@@ -1973,3 +1973,67 @@ sezione M0 + limiti + tabella milestone), `verification.md` (riga 47),
 `roadmap.md` (voce Fluids e prossimi passi), `open-questions.md`,
 `survival-intelligence.md` (vocabolario + conteggio test), `AGENTS.md` (env
 `FLUID_RESCAN_MS`/`FLUID_SCAN_RADIUS`/`FLUID_SCAN_LIMIT`/`LAVA_AVOID_RANGE`).
+
+## [2026-10-03] feat | Fluidi M1 parziale: guado dell'acqua bassa + budget d'aria simulato
+
+M1 (fisica e navigazione in acqua) è implementato solo per la parte verificabile
+offline; il nuoto vero resta bloccato e documentato, non "indovinato".
+
+**Guado.** `_passable()` continua a rifiutare `water|lava` (il bot non nuota), ma
+`_standable()` accetta una cella con **acqua ai piedi e cella sopra libera** —
+cioè camminare sul fondo con la testa fuori. L'acqua profonda (acqua anche nella
+cella della testa) resta un muro, quindi l'invariante "niente nuoto" è
+preservata per costruzione; la lava non è mai guadabile. L'A* lo eredita gratis
+perché `_neighbors` è gated da `_standable`, e `_reachableCells` include le celle
+di guado mentre l'acqua profonda resta fuori dal componente. In acqua bassa
+`_physicsStep` cammina a `WALK_SPEED * WADE_SPEED_FACTOR` (default `0.5`): il
+server rallenta il giocatore in acqua e una previsione locale più veloce viene
+corretta (rubber-band). `observe().fluids.wading` espone lo stato.
+
+**Aria simulata** (`bedrock-air.mjs`, modulo puro): il server non ha mai mandato
+un attributo `minecraft:air`, quindi il budget è simulato col modello vanilla —
+`MAX_AIR = 300` tick (15 s) con la testa sott'acqua, recupero `4` per tick fuori.
+`AirMeter` tiene il contatore, `_airTick()` lo avanza una volta per tick simulato
+dentro `_physicsStep`, e `observe().fluids` riporta `air`, `airSeconds` e
+**`airSource: 'simulated' | 'server'`** (se l'attributo arriva, vince il server e
+il contatore si riallinea). **Nessun danno simulato**: la salute resta del
+server, il contatore serve solo alle decisioni (`drowning`, bisogno `surface`,
+scala `fluidHazard`).
+
+**Round live** (VM 100, container `hermes-jev-bedrock`, BDS 1.26.52):
+`GET /observe.fluids?force=1` → `ready:true`, `scanned:259`, `lavaCells 251`
+(nearest 15.4, y=59), `waterCells 8` (nearest 20.6: `(116,71,180)`,
+`(117,71,180)`, `(116,70,180)`), `wading:false`, `air:300`, `airSeconds:15`,
+`airSource:'simulated'`, `hazard {level:'none'}`; `GET /survival` → `mode
+normal`, `risk none`, bisogni `[continue_progression]` (**nessun annegamento
+inventato** su un bot asciutto); `GET /options` 19 chiavi invariate nel tipo;
+`POST /plan {waypoint:{x:116,z:180}}` + `goto_waypoint` → `path_failed`.
+
+**Blocker documentato (M1).** L'accettazione live di M1 — attraversare un
+fiume/lago fino alla sponda opposta — **non è eseguibile**: l'unica acqua nota
+dal censimento è una pozza profonda **due celle** (y=70 e y=71) a 20.6 blocchi,
+cioè acqua profonda che richiede il nuoto, e il bot è sigillato nella stanza
+della base (waypoint → `path_failed`/`target_not_found`). Il guado è quindi
+verificato solo dagli unit test e l'opzione non è stata esercitata live. Il
+movimento di nuoto non viene implementato a intuito: i flag `input_data` da
+confermare sono `start_swimming`/`stop_swimming` (29/30), `want_up`/`want_down`
+(16/17), `auto_jumping_in_water` (7), oltre al modello di `delta` e alle
+costanti di galleggiamento/drag; il task di scoperta — catturare il traffico di
+un **giocatore reale che nuota** in questo BDS — richiede un client umano
+collegato mentre nuota (nessun umano si collega durante i run autonomi).
+Conseguentemente `surface`/`swim_to`, i nodi d'acqua nell'A* e la fisica di
+galleggiamento restano non implementati; anche lo scavo accanto all'acqua resta
+rifiutato (la prudenza di M0) e `WADE_SPEED_FACTOR` è una stima da tarare al
+primo guado reale.
+
+Test: `tests/bedrock-air.test.mjs` (5 casi) e
+`tests/bedrock-fluids-adapter.test.mjs` portato a 15 (5 di guado — standable
+basso/profondo, `wading`, componente raggiungibile, lava non guadabile,
+`_neighbors`, velocità `0.1079` contro `0.2158` — e 3 d'aria: 292 tick → air 8
+con `hazard.critical` e `airSeconds 0.4`, recupero fuori dall'acqua, attributo
+del server che vince). Suite completa **698 test verdi**. Doc: `fluids.md`
+(stato, sezione M1, limiti/blocker, tabella milestone M1 → ◑, key risks),
+`verification.md` (righe 47 e 47.1), `roadmap.md` (voce Fluids + prossimi passi,
+con la deviazione verso Redstone R0), `open-questions.md`,
+`survival-intelligence.md` (conteggio 698 + bullet M1), `index.md`, `AGENTS.md`
+(env `WADE_SPEED_FACTOR`).

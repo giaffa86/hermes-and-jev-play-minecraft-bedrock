@@ -65,18 +65,22 @@ Last lint: 2026-10-03.
   counter and a way to fight from range. Nothing is implemented yet.
 - **Advanced shelter** — no wall/shelter building actions.
 - **Nether portal** — not implemented.
-- **Fluids** — **M0 (fluid awareness) implemented and collaudato live 03/10**: the
-  bot knows where water and lava are (`GET /observe.fluids`, census + hazard
-  ladder), refuses digs that would open into a fluid, repels lava in `_standable`
-  and can `avoid_lava` when lava is within range; the governor gained the
-  `lava_contact`/`drowning`/`lava_near` rules. Swimming itself is still missing:
-  `_passable()` treats `water|lava` as walls (`bedrock-adapter.mjs`), so M1
-  (physics, pathfinding, air budget) is the next slice in [fluids](fluids.md).
-  Two discovery items block M1: the exact Bedrock water-movement `input_data`
-  flags/`delta` semantics (needs a packet capture of a real player swimming) and
-  whether self metadata exposes `breathing`/air or the air budget must be
-  simulated (the attribute was never seen live in the M0 round, so the `drowning`
-  rule stays inert).
+- **Fluids** — **M0 (fluid awareness) and M1 partial (wading + simulated air
+  budget) implemented and collaudati live 03/10**: the bot knows where water and
+  lava are (`GET /observe.fluids`, census + hazard ladder), refuses digs that
+  would open into a fluid, repels lava in `_standable` and can `avoid_lava` when
+  lava is within range; the governor gained the
+  `lava_contact`/`drowning`/`lava_near` rules. M1 added **wading** (shallow water
+  is traversable: `_standable` accepts a water feet-cell with a free head cell,
+  A* picks it up automatically, `WADE_SPEED_FACTOR` slows the local prediction)
+  and a **simulated air budget** (`bedrock-air.mjs`: 300 ticks, 4/tick recovery,
+  exposed as `air`/`airSeconds` with `airSource: 'simulated'`, no simulated
+  damage). Still missing: swimming itself — `_passable()` treats `water|lava` as
+  walls, so deep water, `surface`, `swim_to` and the water A* nodes wait for the
+  Bedrock water-movement `input_data` flags/`delta` semantics, which need a
+  packet capture of a real player swimming (no human is connected during
+  autonomous runs); the air budget also stays unverified against server truth.
+  Roadmap and limits in [fluids](fluids.md).
 
 ## Exploration travel kit (multi-day expeditions)
 
@@ -425,8 +429,9 @@ Still missing (the rest of the original gap):
   whether the BDS really sends that event.
   Roadmap in [fishing](fishing.md).
 - **Fluids** (swimming, drowning/breathing, waterfalls, lava avoidance, buckets/
-  boats/potions) — M0 (awareness) implemented and live 03/10; M1–M6 still spec.
-  Roadmap in [fluids](fluids.md); next is M1 (swimming physics + air budget).
+  boats/potions) — M0 + M1 partial (wading + simulated air) implemented and live
+  03/10; swimming motion and M2–M6 still spec. Roadmap in [fluids](fluids.md);
+  the blocker is the missing packet capture of a real player swimming.
 - **Goal-driven gameplay** — Goal Contract + task graph + 5 progressive
   benchmarks (16 logs, shelter+night, iron pickaxe, 5 diamonds, Nether portal).
   Proposal in [goal-achievement](goal-achievement.md); the 5 benchmarks have

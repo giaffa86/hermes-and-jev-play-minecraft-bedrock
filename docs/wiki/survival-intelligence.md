@@ -75,7 +75,7 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**685 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**698 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
 
 - **Fluids in the survival layer (M0, 2026-10-03)**: the governor vocabulary grew
@@ -91,9 +91,27 @@ only with a known air budget, the intents `swim`/`surface`/`descend`/`ascend`/
 `fluid` were added, and the verifier gained `inWater`/`notInLava`/`airAtLeast`
 (the last two **fail loudly** when the state is unknown instead of passing).
 Live 03/10: a dry bot produces no fluid need and no fluid risk reason
-(`GET /survival` unchanged); `air` was never sent by the server, so `drowning`
-and `surface` are inert until M1 finds or simulates the budget
-([fluids](fluids.md), [verification](verification.md) row 47).
+(`GET /survival` unchanged); the air budget is now **simulated**
+(`bedrock-air.mjs`, see below), so `drowning`/`surface` have a source and stay
+inert only while the bot is dry ([fluids](fluids.md), row 47 of
+[verification](verification.md)).
+
+- **Wading and the simulated air budget (M1 partial, 2026-10-03)**: shallow water
+is now traversable — `_standable` accepts a feet cell holding water **when the
+cell above is free** (deep water still a wall, lava never) — and A* picks it up
+for free because `_neighbors` is gated by `_standable`; `_physicsStep` walks at
+`WALK_SPEED * WADE_SPEED_FACTOR` (default `0.5`) while `_wading()`, and
+`observe().fluids.wading` exposes the state. The air budget is modelled in the
+pure module `bedrock-air.mjs` (`MAX_AIR = 300` ticks, `AIR_RECOVER_PER_TICK = 4`,
+`airStep`, `airSeconds`, `class AirMeter`): `_airTick()` advances it once per
+simulated tick in `_physicsStep`, `observe().fluids` reports `air`,
+`airSeconds` and **`airSource: 'simulated' | 'server'`** (a server attribute,
+if it ever arrives, wins and re-aligns the meter), and **no damage is
+simulated** — health stays the server's, the meter only drives the `drowning`
+rule, the `surface` need and the hazard ladder. Live: `air: 300`,
+`airSeconds: 15`, `airSource: 'simulated'`, no invented emergency on a dry bot;
+the swimming motion (`surface`/`swim_to`) is blocked by the missing packet
+capture of a real player swimming.
 
 - **Mature-crop detection (2026-10-03)**: `cropMaturity()`/`seedForCrop()` live in
 `bedrock-survival.mjs` (`growth` 0..7 for wheat/carrots/potatoes/beetroots/melon

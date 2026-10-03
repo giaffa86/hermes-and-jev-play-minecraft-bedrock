@@ -198,10 +198,13 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 - **Fluids** — swimming, drowning/breathing, waterfalls (descent/ascent), lava
   avoidance, buckets/boats/bubble columns/potions. Roadmap (M0–M6) in
   [fluids](fluids.md) / [`raw/FLUIDS_ROADMAP.md`](../raw/FLUIDS_ROADMAP.md);
-  **M0 (fluid awareness) implemented, unit-tested and collaudato live 03/10**
-  (`/observe.fluids` census, hazard ladder, `avoid_lava`, dig-neighbour refusal,
-  lava repulsion in `_standable`), M1 onward pending — fluids are still walls
-  (`_passable` rejects `water|lava`).
+  **M0 (fluid awareness) and M1 partial (wading + simulated air budget)
+  implemented, unit-tested and collaudato live 03/10** (`/observe.fluids`
+  census, hazard ladder, `avoid_lava`, dig-neighbour refusal, lava repulsion in
+  `_standable`, `airSource` with the simulated `AirMeter`). Deep water is still a
+  wall (`_passable` rejects `water|lava`) and the swimming motion/`surface`/
+  `swim_to` remain unimplemented because their Bedrock flags need a packet
+  capture of a real player swimming.
 - **Redstone and primitive automation** — switches, delay lines, observers/
   pistons, hoppers, dispensers. Roadmap (R0–R6) in [redstone](redstone.md) /
   [`raw/REDSTONE_ROADMAP.md`](../raw/REDSTONE_ROADMAP.md); no redstone support
@@ -250,13 +253,17 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    offline-verified since 03/10 (`fish_hook_hook` + dip fallback); the live round
    still has to confirm the bobber entity name and that the server really sends
    the event.
-6. **Fluids** (spec in [fluids](fluids.md)): **M0 done** (03/10 — fluid
-   awareness: `/observe.fluids`, hazard ladder, `avoid_lava`, dig adjacency,
-   lava repulsion; live round documented in [verification](verification.md) row
-   47), next M1 (swimming physics + air budget, which also relaxes the M0
-   conservatism of refusing digs next to water). Requires a packet capture of a
-   real player swimming to confirm the Bedrock water movement flags/`delta`
-   semantics, and an answer on the air budget (server attribute or simulation).
+6. **Fluids** (spec in [fluids](fluids.md)): **M0 + M1 partial done** (03/10 —
+   fluid awareness: `/observe.fluids`, hazard ladder, `avoid_lava`, dig
+   adjacency, lava repulsion; live round documented in [verification](verification.md)
+   rows 47/47.1). M1's wading (shallow water traversal at `WADE_SPEED_FACTOR`)
+   and the **simulated** air budget (`bedrock-air.mjs`, `airSource`) are done;
+   the swimming motion (`surface`/`swim_to`, water A* nodes, buoyancy/`delta`
+   flags) stays unimplemented because it needs a packet capture of a real player
+   swimming, which requires a human on the BDS during a run. The remaining fluid
+   milestones are therefore parked with a documented blocker; the next
+   macro-area is **Redstone R0** (below), a deviation to record in the final
+   report.
 7. **Redstone** (spec in [redstone](redstone.md)): start with R0 (protect
    redstone in `DIG_PROTECTED`, `/observe.redstone`, state-aware search) and R1
    (oriented placement — needs a packet capture of a real placement to confirm

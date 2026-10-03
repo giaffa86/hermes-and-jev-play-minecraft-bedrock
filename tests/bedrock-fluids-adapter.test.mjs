@@ -62,7 +62,8 @@ test('_fluidsView legge le celle del bot e il censimento, senza inventare l\'ann
   assert.equal(view.water.count, 2);
   assert.equal(view.lava.count, 1);
   assert.equal(view.lavaDistance, 5.5, 'distanza dai piedi del bot');
-  assert.equal(view.air, null, 'il budget d\'aria non è ancora osservato');
+  assert.equal(view.air, 300, 'il budget d\'aria è simulato: il server non lo espone');
+  assert.equal(view.airSource, 'simulated');
   assert.equal(view.hazard.level, 'medium', 'la lava a 6 blocchi pesa più dell\'essere bagnati');
   assert.deepEqual(view.hazard.reasons, ['lava_in_range', 'head_underwater', 'in_water']);
 });
@@ -207,4 +208,100 @@ test('/observe espone i fluidi e un mondo senza findBlocks non fa lanciare nulla
   assert.equal(view.hazard.level, 'low');
   // Lo scavo resta possibile: senza censimento nessun fluido risulta adiacente.
   assert.doesNotMatch(adapter._digTargets().error ?? '', /unsafe_/);
+});
+
+// ---- guado dell'acqua bassa (M1a) ------------------------------------------------
+// In una cella con acqua e la testa fuori si cammina sul fondo: nessun nuoto,
+// nessun flag di protocollo da indovinare. L'acqua profonda resta un muro.
+
+test('_standable calpesta un guado e la vista lo dichiara', () => {
+  const { adapter } = fluidAdapter({ '0,71,0': water });
+  assert.equal(adapter._standable(0, 71, 0), true, 'acqua bassa: si cammina sul fondo');
+  assert.equal(adapter._standable(0, 72, 0), false, 'sopra l\'acqua non c\'è piano d\'appoggio');
+  assert.equal(adapter._wading(), true, 'i piedi sono in acqua e la testa fuori');
+  assert.equal(adapter.observe().fluids.wading, true);
+  assert.equal(adapter._fluidsView().hazard.level, 'low');
+});
+
+test('l\'acqua profonda (testa sommersa) non è calpestabile né raggiungibile', () => {
+  const shallow = fluidAdapter({ '0,71,-1': water });
+  assert.equal(shallow.adapter._standable(0, 71, -1), true);
+  assert.equal(shallow.adapter._wading(), false, 'i piedi del bot sono sulla terraferma');
+
+  const deep = fluidAdapter({ '0,71,-1': water, '0,72,-1': water });
+  assert.equal(deep.adapter._standable(0, 71, -1), false, 'nuotare non è ancora supportato (M1)');
+  const cells = deep.adapter.reachableCells().cells;
+  assert.equal(cells.has('0,71,-1'), false, 'la cella profonda resta fuori dal componente raggiungibile');
+  const wadeCells = shallow.adapter.reachableCells().cells;
+  assert.equal(wadeCells.has('0,71,-1'), true, 'la cella di guado entra nel componente');
+});
+
+test('lava ai piedi non è un guado', () => {
+  const { adapter } = fluidAdapter({ '0,71,-1': lava });
+  assert.equal(adapter._standable(0, 71, -1), false);
+});
+
+test('_neighbors attraversa un guado ma non l\'acqua profonda', () => {
+  const shallow = fluidAdapter({ '0,71,-1': water });
+  const names = [...shallow.adapter._neighbors({ x: 0, y: 71, z: 0 })].map(n => `${n.x},${n.y},${n.z}`);
+  assert.ok(names.includes('0,71,-1'), 'il guado è un vicino');
+
+  const deep = fluidAdapter({ '0,71,-1': water, '0,72,-1': water });
+  const deepNames = [...deep.adapter._neighbors({ x: 0, y: 71, z: 0 })].map(n => `${n.x},${n.y},${n.z}`);
+  assert.equal(deepNames.includes('0,71,-1'), false);
+});
+
+test('_physicsStep cammina più piano mentre guada', () => {
+  const { adapter } = fluidAdapter({ '0,71,0': water });
+  adapter._motion = { active: true, forward: true, yaw: 0, jumpQueued: false, jumpHeldTicks: 0 };
+  adapter._physicsStep();
+  const wet = adapter._feet.z - 0.5;
+
+  const dry = fluidAdapter({});
+  dry.adapter._motion = { active: true, forward: true, yaw: 0, jumpQueued: false, jumpHeldTicks: 0 };
+  dry.adapter._physicsStep();
+  const land = dry.adapter._feet.z - 0.5;
+
+  assert.ok(Math.abs(wet - 0.1079) < 1e-3, `passo in acqua ${wet}`);
+  assert.ok(Math.abs(land - 0.2158) < 1e-3, `passo a terra ${land}`);
+});
+
+// ---- aria simulata (M1b parziale) ------------------------------------------------
+// Il server non manda l'attributo `minecraft:air`, quindi il budget è simulato:
+// etichettato `airSource: 'simulated'` e usato dalle regole, senza mai fingere
+// danno (la salute resta del server).
+
+test('con la testa sott\'acqua il contatore d\'aria scende fino all\'allarme', () => {
+  const { adapter } = fluidAdapter({ '0,71,0': water, '0,72,0': water });
+  const view = adapter._fluidsView();
+  assert.equal(view.headInWater, true);
+  assert.equal(view.air, 300);
+  assert.equal(view.airSource, 'simulated');
+  assert.equal(view.hazard.level, 'low', 'aria piena: ancora nessun annegamento');
+
+  for (let i = 0; i < 292; i++) adapter._airTick();
+  assert.equal(adapter.air, 8);
+  const critical = adapter._fluidsView();
+  assert.equal(critical.hazard.level, 'critical');
+  assert.ok(critical.hazard.reasons.includes('drowning'));
+  assert.equal(critical.airSeconds, 0.4);
+});
+
+test('fuori dall\'acqua l\'aria si recupera e la vista non segnala nulla', () => {
+  const { adapter } = fluidAdapter({});
+  adapter.air = 40;
+  adapter._airMeter.set(40);
+  adapter._airTick();
+  assert.equal(adapter.air, 44, 'quattro tick di recupero per tick');
+  assert.equal(adapter._fluidsView().hazard.level, 'none');
+});
+
+test('un attributo del server vince sul contatore simulato', () => {
+  const { adapter } = fluidAdapter({ '0,71,0': water, '0,72,0': water });
+  adapter._applyOwnAttributes({ attributes: [{ name: 'minecraft:air', current: 123 }] });
+  assert.equal(adapter.air, 123);
+  assert.equal(adapter.airSource, 'server');
+  adapter._airTick();
+  assert.equal(adapter.air, 123, 'la verità del server resta');
+  assert.equal(adapter._airMeter.value, 122, 'il contatore resta allineato');
 });
