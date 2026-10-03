@@ -15,6 +15,8 @@ import {
   maxFallDepth, OVERWORLD_MAX_FALL, NETHER_LIKE_MAX_FALL,
   landingHazard, safeLanding, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan,
   projectileVelocity, perpendicularDirs, lateralOffset, breaksLine, dodgeCandidates, DODGE_DISTANCE,
+  isPiglinType, isBarterPayment, isGoldArmorPiece, goldArmorWorn, piglinNeutral,
+  isBarterReward, barterTarget, BARTER_INGOT, PIGLIN_TYPES,
 } from '../bedrock-nether.mjs';
 
 const at = (x, y, z) => ({ x, y, z });
@@ -502,4 +504,58 @@ test('dodgeCandidates picks both sides at the feet cell, never the bot column', 
   assert.equal(far.length, 4);
   assert.ok(far.every(c => !(c.x === 0 && c.z === 0)));
   assert.deepEqual(dodgeCandidates({ from: null, projectile: shot }), []);
+});
+
+// --- N4: i piglin ----------------------------------------------------------
+
+test('piglin classification and the gold vocabulary', () => {
+  assert.equal(isPiglinType('piglin'), true);
+  assert.equal(isPiglinType('minecraft:piglin_brute'), true);
+  assert.equal(isPiglinType('zombified_piglin'), false, 'un piglin zombificato non baratta');
+  assert.equal(isPiglinType(null), false);
+  assert.deepEqual([...PIGLIN_TYPES], ['piglin', 'piglin_brute']);
+  assert.equal(isBarterPayment('minecraft:gold_ingot'), true);
+  assert.equal(isBarterPayment('gold_nugget'), false);
+  assert.equal(isBarterPayment('golden_apple'), false);
+  assert.equal(isBarterReward('minecraft:ender_pearl'), true);
+  assert.equal(isBarterReward('obsidian'), true);
+  assert.equal(isBarterReward('dirt'), false);
+});
+
+test('any gold armour piece makes the piglins neutral', () => {
+  assert.equal(isGoldArmorPiece('golden_helmet'), true);
+  assert.equal(isGoldArmorPiece('minecraft:golden_boots'), true);
+  assert.equal(isGoldArmorPiece('iron_boots'), false);
+  assert.deepEqual(goldArmorWorn(['iron_boots', 'golden_boots', null]), ['golden_boots']);
+  assert.deepEqual(goldArmorWorn([]), []);
+  assert.equal(piglinNeutral({ worn: ['golden_leggings'] }), true);
+  assert.equal(piglinNeutral({ worn: ['diamond_chestplate'] }), false);
+  assert.equal(piglinNeutral({}), false);
+});
+
+test('barterTarget picks the nearest adult piglin and reports why it cannot barter', () => {
+  const from = at(0, 70, 0);
+  const piglins = [
+    { type: 'minecraft:piglin', position: at(6, 70, 0) },
+    { type: 'minecraft:piglin', position: at(2, 70, 0), baby: true },
+    { type: 'minecraft:piglin_brute', position: at(1, 70, 0) },
+  ];
+  const { target, nearest } = barterTarget({ piglins, from });
+  // Il bruto è il più vicino in assoluto ma non baratta: il bersaglio è il
+  // primo adulto utile (a 6 blocchi), e `nearest` dice perché non è quello.
+  assert.equal(target.type, 'minecraft:piglin', 'il nome resta quello di arrivo');
+  assert.equal(target.distance, 6);
+  assert.equal(target.baby, false);
+  assert.equal(target.brute, false);
+  assert.equal(nearest.brute, true);
+  assert.equal(nearest.distance, 1);
+  // Fuori raggio o assenti: nessun bersaglio, nessun più vicino.
+  assert.deepEqual(barterTarget({ piglins: [{ type: 'piglin', position: at(40, 70, 0) }], from }), { target: null, nearest: null });
+  assert.deepEqual(barterTarget({ piglins: [{ type: 'cow', position: at(1, 70, 0) }], from }), { target: null, nearest: null });
+  assert.deepEqual(barterTarget({ piglins: [], from: null }), { target: null, nearest: null });
+  // Riga senza posizione: scartata senza far fallire il resto.
+  const mixed = barterTarget({ piglins: [{ type: 'piglin' }, { type: 'piglin', position: at(3, 70, 0), runtimeId: '42' }], from });
+  assert.equal(mixed.target.distance, 3);
+  assert.equal(mixed.target.runtimeId, '42', 'i campi extra della riga viaggiano con essa');
+  assert.equal(BARTER_INGOT, 'gold_ingot');
 });

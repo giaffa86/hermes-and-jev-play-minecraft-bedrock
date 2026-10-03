@@ -75,7 +75,7 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**851 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**859 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
 
 - **Fluids in the survival layer (M0, 2026-10-03)**: the governor vocabulary grew
@@ -193,6 +193,11 @@ off. Live: `/observe.nearby` now reports `potatoes growth 7/7/6/6, mature true/f
 `carrots growth 7`; `harvest_potatoes` fails in 0.01 s with `drop_unreachable`
 (the only fields are outside the bot's walkable component), `harvest_wheat` with
 `no_crop_found`.
+- **Bartering (N4, 2026-10-03)**: a new `barter` intent in the vocabulary and
+  `barter_piglin → ['barter', 'collect']`. No rule was needed: the value here is
+  the *removal* of a temptation — `piglin` and `piglin_brute` are in
+  `HOSTILE_TYPES`, so the adapter used to offer `attack_piglin`; hitting one
+  closes the barter forever, and the option list no longer contains it.
 - **Projectile dodge (N3, 2026-10-03)**: the `projectile_incoming` rule already
   asked for `escape`/`shelter` and the only action carrying `escape` was `flee`
   (run away from the nearest *entity*), which is the wrong answer to something

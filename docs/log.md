@@ -2691,3 +2691,45 @@ veloce del bot.
   dai test unitari (stesso limite dichiarato di N1/N2), e la geometria della
   schivata e rettilinea in pianta con passo costante (`DODGE_DISTANCE` 3) — la
   calibrazione contro la velocita reale del fireball richiede un ghast vivo.
+
+## [2026-10-03] feat | Nether N4: bartering con un piglin (e mai colpirlo)
+
+Quarta milestone del Nether (`docs/wiki/nether.md`): l'oro è l'unica valuta che il
+Nether accetta e i piglin sono l'unica banca.
+
+- **Primitive pure** (`bedrock-nether.mjs`): `PIGLIN_TYPES`/`isPiglinType`,
+  `BARTER_INGOT`/`isBarterPayment`, il vocabolario dell'oro addosso
+  (`GOLD_ARMOR_PIECES`, `goldArmorWorn`, `piglinNeutral` — in Bedrock *qualsiasi*
+  pezzo d'oro rende neutrali), `BARTER_REWARDS`/`isBarterReward` (loot table usata
+  **solo per il resoconto**: la conferma è un drop nuovo, non una whitelist, così
+  un aggiornamento del gioco non trasforma la verifica in un falso negativo) e
+  `barterTarget` → `{target, nearest}` (il più vicino fra gli adulti non bruti +
+  il più vicino in assoluto, per poter dire *perché* si rifiuta).
+- **`_equipItemInHotbar`**: il preambolo "tieni l'item in mano e interagisci"
+  (resync una volta, spostamento in hotbar, selezione, chiusura del container
+  aperto) è stato estratto da `_feedEntity` ed è ora condiviso da nutrimento,
+  addomesticamento e bartering.
+- **Azione `barter_piglin`**: rifiuti tipizzati `no_piglin_nearby`,
+  `piglin_brute_not_barterable`, `piglin_baby_not_barterable`,
+  `missing_gold_ingot`, `piglin_gone`, `piglin_unreachable`; poi sguardo al
+  piglin e `item_use_on_entity` con **`interact`** (mai `attack`) ogni secondo, e
+  **verifica dall'osservazione**: successo = un drop *nuovo* entro 8 blocchi dal
+  piglin, raccolto con la primitiva `_collectDrop` già esistente. Il timeout
+  riporta `barter_not_confirmed` **con** `gaveIngot`, cioè distingue "il piglin ha
+  preso l'oro e non ha gettato nulla" da "il passaggio non è mai avvenuto".
+- **Un piglin non è mai un bersaglio**: `piglin` e `piglin_brute` sono in
+  `HOSTILE_TYPES`, quindi l'adapter offriva `attack_piglin`; colpirlo chiude il
+  bartering per sempre. L'opzione non esiste più (test dedicato).
+- **Test**: 859 verdi (3 casi puri + 5 sull'adapter, di cui uno esegue la
+  `_interactEntity` vera e controlla che **ogni** transazione catturata sia
+  `item_use_on_entity`/`interact`, il lingotto speso e il pegno raccolto).
+- **Collaudo live (03/10/2026, BDS 1.26.52)**: `/observe.portals` espone
+  `piglin: null`, `goldArmor {worn: [], neutral: false}`, `barter: null`;
+  `POST /act barter_piglin` → `{ok:false, error:'no_piglin_nearby', range:16}`
+  (immediato, zero pacchetti); `/options` 22 chiavi senza piglin/barter mentre
+  `attack_zombie` resta invariato (nessuna regressione sul percorso di attacco);
+  entità vicine: villager, gatto, asino, mercante — **nessun piglin** (nell'
+  Overworld i piglin si zombificano); `wait` ok, armatura vuota, salute 20.
+  **Nessun piglin incontrato live**: il percorso felice resta coperto solo dai test
+  unitari (come N1–N3) e l'accettazione del roadmap ("un barter live completato")
+  non è soddisfatta.

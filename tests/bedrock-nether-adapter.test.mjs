@@ -576,3 +576,170 @@ test('the dodge option appears only with an inbound projectile and a safe cell',
   inboundFireball(walled);
   assert.ok(!walled.options().some(o => o.key === 'dodge_projectile'));
 });
+
+// ---- N4: bartering con i piglin ------------------------------------------
+
+// Un adapter con piglin, oro in inventario e i pacchetti catturati: la
+// `inventory_transaction` vera parte (nessuno stub di `_interactEntity`), così
+// il test vede esattamente cosa il bot direbbe al server.
+function barterAdapter ({ piglins = [], inventory = {}, armor = {}, cells = {} } = {}) {
+  const adapter = netherAdapter(cells);
+  adapter.inventory = { ...inventory };
+  adapter.inventorySlots = Object.entries(adapter.inventory).map(([name, count], i) => ({ network_id: 100 + i, name, count, stack_id: i }));
+  adapter.selectedHotbar = 0;
+  adapter.armor = { helmet: null, chestplate: null, leggings: null, boots: null, ...armor };
+  adapter.drops = [];
+  adapter.writes = [];
+  adapter.client = {
+    write (name, packet) {
+      adapter.writes.push({ name, packet });
+      const data = packet?.transaction?.transaction_data;
+      if (name === 'inventory_transaction' && data?.action_type === 'interact') {
+        // Il piglin prende il lingotto e getta il pegno accanto a sé.
+        adapter.inventory.gold_ingot = Math.max(0, (adapter.inventory.gold_ingot || 0) - 1);
+        adapter.drops.push({ item: 'ender_pearl', position: { x: 3.5, y: 71, z: 0.5 } });
+      }
+    },
+  };
+  piglins.forEach((piglin, i) => {
+    adapter.entities.set(String(20 + i), {
+      runtimeId: String(20 + i),
+      type: piglin.type,
+      kind: 'mob',
+      position: { ...piglin.position },
+      baby: piglin.baby,
+      lastAt: Date.now(),
+    });
+  });
+  adapter._lookAt = () => ({ yaw: 0, pitch: 0 });
+  adapter._queueAuthInput = async () => {};
+  adapter._closeContainer = async () => {};
+  adapter.events = { logs: [] };
+  adapter.log = (type, data) => { adapter.events.logs.push({ type, data }); };
+  return adapter;
+}
+
+test('_barterPiglin refuses without a piglin, with a brute or with a baby', async () => {
+  const empty = barterAdapter({ inventory: { gold_ingot: 2 } });
+  assert.equal((await empty._barterPiglin({})).error, 'no_piglin_nearby');
+
+  const brute = barterAdapter({ piglins: [{ type: 'minecraft:piglin_brute', position: { x: 3, y: 71, z: 0 } }], inventory: { gold_ingot: 2 } });
+  const bruteResult = await brute._barterPiglin({});
+  assert.equal(bruteResult.error, 'piglin_brute_not_barterable');
+  assert.equal(bruteResult.piglin.type, 'minecraft:piglin_brute');
+  assert.equal(brute.writes.length, 0, 'nessun pacchetto verso un bruto');
+
+  const baby = barterAdapter({ piglins: [{ type: 'minecraft:piglin', position: { x: 3, y: 71, z: 0 }, baby: true }], inventory: { gold_ingot: 2 } });
+  assert.equal((await baby._barterPiglin({})).error, 'piglin_baby_not_barterable');
+
+  const broke = barterAdapter({ piglins: [{ type: 'minecraft:piglin', position: { x: 3, y: 71, z: 0 } }] });
+  const brokeResult = await broke._barterPiglin({});
+  assert.equal(brokeResult.error, 'missing_gold_ingot');
+  assert.equal(brokeResult.item, 'gold_ingot');
+  assert.equal(broke.writes.length, 0);
+});
+
+test('_barterPiglin hands over the ingot with interact, collects the drop and never attacks', async () => {
+  const adapter = barterAdapter({
+    piglins: [{ type: 'minecraft:piglin', position: { x: 3, y: 71, z: 0 } }],
+    inventory: { gold_ingot: 2 },
+  });
+  let collected = 0;
+  adapter._collectDrop = async () => {
+    collected++;
+    adapter.inventory.ender_pearl = (adapter.inventory.ender_pearl || 0) + 1;
+    adapter.drops = [];
+    return { ok: true, picked: [{ item: 'ender_pearl', count: 1 }] };
+  };
+  const result = await adapter._barterPiglin({ timeoutMs: 4000 });
+  assert.equal(result.ok, true);
+  assert.equal(result.bartered, true);
+  assert.equal(result.gave, 'gold_ingot');
+  assert.equal(result.gaveIngot, true);
+  assert.equal(result.neutral, false, 'senza oro addosso il resoconto lo dice');
+  assert.deepEqual(result.drops, ['ender_pearl']);
+  assert.deepEqual(result.rewards, ['ender_pearl']);
+  assert.equal(result.collected[0].item, 'ender_pearl');
+  assert.equal(result.collected[0].ok, true);
+  assert.equal(adapter.inventory.gold_ingot, 1, 'un lingotto pagato');
+  assert.equal(collected, 1);
+  // Il pacchetto è `item_use_on_entity` con `interact`: mai `attack`.
+  const transactions = adapter.writes.filter(w => w.name === 'inventory_transaction');
+  assert.ok(transactions.length >= 1);
+  for (const write of transactions) {
+    assert.equal(write.packet.transaction.transaction_type, 'item_use_on_entity');
+    assert.equal(write.packet.transaction.transaction_data.action_type, 'interact');
+  }
+  // Nessun pacchetto contiene un'azione di attacco: il bartering è solo `interact`.
+  const attackActions = adapter.writes.filter(w => {
+    const data = w.packet?.transaction?.transaction_data;
+    return data && data.action_type !== 'interact';
+  });
+  assert.deepEqual(attackActions, []);
+  assert.equal(adapter._barterLast.ok, true);
+  assert.ok(adapter.events.logs.some(e => e.type === 'barter_piglin'));
+});
+
+test('_barterPiglin reports an unconfirmed trade instead of a false success', async () => {
+  const adapter = barterAdapter({
+    piglins: [{ type: 'minecraft:piglin', position: { x: 3, y: 71, z: 0 } }],
+    inventory: { gold_ingot: 1 },
+  });
+  adapter.client.write = (name, packet) => { adapter.writes.push({ name, packet }); }; // niente pegno
+  const result = await adapter._barterPiglin({ timeoutMs: 300 });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'barter_not_confirmed');
+  assert.equal(result.bartered, false);
+  assert.equal(result.gaveIngot, false);
+  assert.equal(adapter.inventory.gold_ingot, 1, 'nessun lingotto consumato');
+  assert.equal(adapter._barterLast.error, 'barter_not_confirmed');
+  assert.ok(adapter.events.logs.some(e => e.type === 'barter_not_confirmed'));
+});
+
+test('a piglin is never an attack target and bartering is offered only when it can work', () => {
+  const adapter = barterAdapter({
+    piglins: [{ type: 'minecraft:piglin', position: { x: 4, y: 71, z: 0 } }],
+    inventory: { gold_ingot: 1 },
+  });
+  const keys = adapter.options().map(o => o.key);
+  assert.ok(!keys.some(k => k.startsWith('attack_')), `un piglin non è mai un bersaglio: ${keys.filter(k => k.startsWith('attack_'))}`);
+  const option = adapter.options().find(o => o.key === 'barter_piglin');
+  assert.ok(option, 'con oro e un piglin a tiro il bartering è offerto');
+  assert.match(option.description, /handing it a gold_ingot/);
+  assert.match(option.description, /no gold armour worn/);
+
+  // Con l'oro addosso la descrizione non avverte più.
+  const armored = barterAdapter({
+    piglins: [{ type: 'minecraft:piglin', position: { x: 4, y: 71, z: 0 } }],
+    inventory: { gold_ingot: 1 },
+    armor: { helmet: 'golden_helmet' },
+  });
+  assert.ok(!/no gold armour worn/.test(armored.options().find(o => o.key === 'barter_piglin').description));
+  assert.equal(armored._netherView().goldArmor.neutral, true);
+  assert.deepEqual(armored._netherView().goldArmor.worn, ['golden_helmet']);
+
+  // Senza lingotti l'opzione non esiste.
+  const broke = barterAdapter({ piglins: [{ type: 'minecraft:piglin', position: { x: 4, y: 71, z: 0 } }], inventory: {} });
+  assert.ok(!broke.options().some(o => o.key === 'barter_piglin'));
+  // Un bruto non è un candidato: nessuna offerta di bartering.
+  const brute = barterAdapter({ piglins: [{ type: 'minecraft:piglin_brute', position: { x: 4, y: 71, z: 0 } }], inventory: { gold_ingot: 1 } });
+  assert.ok(!brute.options().some(o => o.key === 'barter_piglin'));
+});
+
+test('_netherView reports the piglin and the last barter', async () => {
+  const adapter = barterAdapter({
+    piglins: [{ type: 'minecraft:piglin', position: { x: 3, y: 71, z: 0 } }],
+    inventory: { gold_ingot: 2 },
+  });
+  adapter._collectDrop = async () => ({ ok: true, picked: [{ item: 'ender_pearl', count: 1 }] });
+  const before = adapter._netherView();
+  assert.equal(before.piglin.type, 'minecraft:piglin');
+  assert.equal(before.piglin.barterable, true);
+  assert.equal(before.piglin.brute, false);
+  assert.equal(before.barter, null);
+  await adapter._barterPiglin({ timeoutMs: 4000 });
+  const after = adapter._netherView();
+  assert.equal(after.barter.ok, true);
+  assert.deepEqual(after.barter.drops, ['ender_pearl']);
+  assert.ok(after.barter.at, 'il resoconto è timbrato');
+});

@@ -7,11 +7,12 @@ gaze**, collect **blaze rods** and **ender pearls**, craft eyes of ender, find t
 stronghold, open the End portal, and (stretch) defeat the **Ender Dragon**.
 
 Status: **N0 (awareness and hazards), N1 (portal reach/build/light/enter), N2
-(nether survival: non-flammable hub, dimension-aware fall, hazardous landings)
-and N3 (dodging an incoming projectile sideways, never into lava) implemented and
-unit-tested; all four have a live round (03/10/2026), N1–N3 partial because the
-live world is an Overworld room with no obsidian, no loaded portal and no
-gun-armed mob; N4–N7 still spec only**.
+(nether survival: non-flammable hub, dimension-aware fall, hazardous landings),
+N3 (dodging an incoming projectile sideways, never into lava) and N4 (bartering
+with a piglin, never hitting one) implemented and unit-tested; all five have a
+live round (03/10/2026), N1–N4 partial because the live world is an Overworld
+room with no obsidian, no loaded portal, no gun-armed mob and no piglin; N5–N7
+still spec only**.
 `knowledge/progression.json` now has the full chain and the
 `beat_the_dragon → enter_nether` contradiction is fixed: `beat_the_dragon` is a
 real milestone requiring `enter_end`. Full raw source:
@@ -77,7 +78,7 @@ New item tags: `gold_ingots`, `obsidian`, `blaze_rods`, `blaze_powder`,
 | N1 | Portal locate/build/light/enter | `goto_portal`, `build_portal`, `light_portal`, `enter_portal`; prefer reusing a nearby portal; verify `portal` block then `dimension: nether`. | ◑ implemented + live partial (03/10/2026), see below |
 | N2 | Nether survival | fire/lava avoidance (fluids), minimal nether hub, fall handling (no water), never sleep/place water. | ◑ implemented + live partial (03/10/2026), see below |
 | N3 | Ghast avoidance | track fireballs, dodge perpendicular to the trajectory (or deflect), never flee into lava. | ◑ implemented + live partial (03/10/2026), see below |
-| N4 | Piglin bartering | wear gold armour for neutrality; `barter_piglin` (gold in hand → `item_use_on_entity` → collect drops); never hit piglins. | ❌ not implemented |
+| N4 | Piglin bartering | wear gold armour for neutrality; `barter_piglin` (gold in hand → `item_use_on_entity` → collect drops); never hit piglins. | ◑ implemented + live partial (03/10/2026), see below |
 | N5 | Ender gaze & pearls | never aim at enderman eyes; pumpkin option; kill at body/feet; collect pearls. | ❌ not implemented |
 | N6 | Fortress & blaze rods | find the fortress (exploration), fight blazes with cover, collect 7 rods. | ❌ not implemented |
 | N7 | Endgame | eyes of ender, stronghold via thrown eyes, fill/enter the portal, (stretch) dragon. | ❌ not implemented |
@@ -412,6 +413,91 @@ tests** in the whole suite. The adapter fixture now gives blocks a `boundingBox`
   with an ETA shorter than a pathfinding step can still arrive first, which is
   why the geometry prefers the *closest* lateral cell with the greatest lateral
   growth rather than the safest one further away.
+
+## N4 — Bartering with a piglin (implemented, live partial 03/10/2026)
+
+Gold is the only currency the Nether accepts, and the piglins are the only bank:
+`barter_piglin` hands an ingot to an **adult** piglin and collects what it throws
+back. Two rules are not preferences but game mechanics — a **brute** never
+barters, and a **hit** makes every piglin in the area hostile for good — so both
+are enforced before any packet leaves the bot.
+
+### Implementation
+
+- **`bedrock-nether.mjs`** (pure): `PIGLIN_TYPES`/`isPiglinType` (`piglin`,
+  `piglin_brute`); `BARTER_INGOT` (`gold_ingot`) + `isBarterPayment`; the gold-armour
+  vocabulary (`GOLD_ARMOR_PIECES`, `isGoldArmorPiece`, `goldArmorWorn`,
+  `piglinNeutral({worn})` — in Bedrock *any* gold piece makes the piglins neutral);
+  `BARTER_REWARDS`/`isBarterReward` (the loot table, kept for the **report** only:
+  the success criterion is a fresh drop, not a whitelist, so a future game update
+  cannot turn verification into a false negative); `barterTarget({piglins, from,
+  range})` → `{target, nearest}` — the nearest adult non-brute plus the nearest
+  piglin overall, so the caller can say *why* it refused (a brute or a baby).
+- **`_equipItemInHotbar(name)`**: the “hold the item, then interact” prelude
+  (resync once when the slot is not found, move it into the hotbar, select it,
+  close an open container) was extracted from `_feedEntity` and is now shared by
+  feeding, taming and bartering — one definition of a step every interaction
+  needs.
+- **`_barterPiglin`** (action `barter_piglin`): refuses `no_piglin_nearby`
+  (with the range), `piglin_brute_not_barterable`, `piglin_baby_not_barterable`,
+  `missing_gold_ingot`, `piglin_gone`, `piglin_unreachable` (the same
+  reachability gate as feeding); then looks at the piglin and sends
+  `item_use_on_entity` with **`interact`** (never `attack`) every second, and
+  **verifies by observation**: success is a *fresh drop* within 8 blocks of the
+  piglin, which is then collected with the existing `_collectDrop` primitive.
+  Timeout → `barter_not_confirmed` **with** `gaveIngot` (the difference between
+  “the piglin took the gold and threw nothing” and “the hand-over never
+  happened”), never a success on an unverified trade.
+- **A piglin is never an attack target**: `options()` skips piglins in the
+  hostile loop, so `attack_piglin`/`attack_piglin_brute` can no longer be offered
+  even though both are in `HOSTILE_TYPES` (they *are* dangerous — the point is
+  that the only profitable answer is neutrality or flight).
+- **Sensing**: `/observe.portals` now carries `piglin` (`{type, distance, baby,
+  brute, barterable, position}` or `null`), `goldArmor` (`{worn, neutral}`) and
+  the last `barter` report. The option is offered only when a barterable piglin
+  is in range **and** the bot owns a gold ingot, and its description warns
+  `(no gold armour worn: it may turn hostile)` when the bot is not neutral.
+
+### Tests
+
+`tests/bedrock-nether.test.mjs` (3 pure cases: piglin classification + the gold
+vocabulary, gold-armour neutrality, `barterTarget` with a brute/baby/out-of-range
+and a row without a position), `tests/bedrock-nether-adapter.test.mjs` (5 cases:
+the four typed refusals with **zero packets**, a full barter where the real
+`_interactEntity` runs and every captured `inventory_transaction` is
+`item_use_on_entity`/`interact` (never `attack`) with the ingot spent, the drop
+collected and `_barterLast` written, an unconfirmed trade that reports
+`gaveIngot: false` instead of a false success, the option gating + the
+`attack_piglin` absence + the neutrality warning, and `_netherView` carrying the
+piglin and the last barter) and the `barter_piglin` intent assertion — **859
+tests** in the whole suite.
+
+### Live round (03/10/2026, BDS 1.26.52)
+
+| Probe | Result |
+| --- | --- |
+| `GET /observe.portals` | `piglin: null`, `goldArmor: {worn: [], neutral: false}`, `barter: null` (new sensing exposed) |
+| `POST /act {"key":"barter_piglin"}` | `{ok: false, error: no_piglin_nearby, range: 16}` — immediate, zero packets |
+| `GET /options` | 22 keys, **none** about piglins or bartering (`attack_zombie` still offered for the zombie villager: the attack path is unchanged) |
+| `GET /observe` (entities) | villagers, cat, donkey, wandering trader, leash knot — **no piglin** (piglins zombify in the Overworld) |
+| `POST /act {"key":"wait"}` | `{ok: true}` — dispatch healthy after the new branch |
+
+### Known limits (N4)
+
+- **No piglin was ever met live**: the base room is an Overworld room and
+  piglins zombify outside the Nether, so the happy path (hand over the ingot, see
+  the drop appear, collect it) is covered by unit tests only — the live round
+  proves the typed refusal, the new sensing and that the attack path did not
+  regress. The live acceptance of the raw roadmap (“a live barter completes and
+  no piglin is hostile at the end”) is **not** satisfied.
+- The barter is one ingot per action: no batching, no waiting out a piglin that is
+  busy with another ingot, and no “recover the ingot if the piglin despawns”.
+- **`_equipItemInHotbar` now owns the resync path for feeding too**: the refactor
+  keeps the previous error vocabulary (`missing_feed`, `feed_equip_failed: …`) but
+  the message text for a failed hotbar move is the shared one.
+- Gold armour is only *reported*, not equipped automatically: `equip_armor`
+  already equips any armour in the inventory, and the survival layer decides
+  whether spending gold on armour is worth it.
 
 ## Dependencies and risks
 

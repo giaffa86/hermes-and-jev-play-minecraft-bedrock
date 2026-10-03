@@ -17,6 +17,9 @@ export const INTENTS = [
   // Redstone (R2): `toggle` aziona un input, `sense` legge lo stato di un
   // circuito, `redstone` marca il dominio (piazzamento e costruzione).
   'redstone', 'toggle', 'sense',
+  // Nether (N4): `barter` è lo scambio con un piglin — non è `collect` (il
+  // pegno arriva dal mondo) né `craft`, e la sua neutralità non è negoziabile.
+  'barter',
 ];
 
 const KEY_INTENTS = {
@@ -55,6 +58,8 @@ const KEY_INTENTS = {
   light_portal: ['build'],
   // Nether (N2): un hub e un rifugio *e* un punto di rientro (`home`).
   build_nether_hub: ['build', 'shelter'],
+  // Nether (N4): pagare un piglin con l'oro in mano e raccogliere il pegno.
+  barter_piglin: ['barter', 'collect'],
 };
 
 const PREFIX_INTENTS = [

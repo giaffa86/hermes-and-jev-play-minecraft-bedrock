@@ -710,3 +710,82 @@ export function dodgeCandidates ({ from = null, projectile = null, distances = [
   }
   return cells.sort((a, b) => b.lateral - a.lateral);
 }
+
+// --- N4: i piglin ----------------------------------------------------------
+// Il bartering è l'unico modo ragionevole di ottenere perle e blaze rod senza
+// combattere, e ha due regole non negoziabili: si paga con un lingotto d'oro
+// (in mano, mai un colpo) e con un piglin **adulto**; un bruto non baratta, e
+// un colpo a un piglin lo rende ostile per sempre.
+
+export const PIGLIN_TYPES = new Set(['piglin', 'piglin_brute']);
+export const PIGLIN_BRUTE = 'piglin_brute';
+export const PIGLIN_BARTER_TYPE = 'piglin';
+export const BARTER_INGOT = 'gold_ingot';
+export const BARTER_RANGE = 16;
+
+// Qualsiasi pezzo d'oro addosso rende i piglin neutrali (Bedrock): è la ragione
+// per cui `barter_piglin` non richiede l'armatura, ma la *riporta*.
+export const GOLD_ARMOR_PIECES = ['golden_helmet', 'golden_chestplate', 'golden_leggings', 'golden_boots'];
+
+export function isPiglinType (type) {
+  const name = normalizeNetherName(type);
+  return name != null && PIGLIN_TYPES.has(name);
+}
+
+export function isBarterPayment (name) {
+  return normalizeNetherName(name) === BARTER_INGOT;
+}
+
+export function isGoldArmorPiece (name) {
+  const normalized = normalizeNetherName(name);
+  return normalized != null && GOLD_ARMOR_PIECES.includes(normalized);
+}
+
+export function goldArmorWorn (worn = []) {
+  return (worn ?? []).filter(isGoldArmorPiece);
+}
+
+// Con un pezzo d'oro addosso un piglin è neutrale; senza, resta un estraneo
+// armato (non attacca da solo, ma non lo si vuole provocare).
+export function piglinNeutral ({ worn = [] } = {}) {
+  return goldArmorWorn(worn).length > 0;
+}
+
+// Il bottino del bartering (loot table Bedrock), tenuto come *riferimento per il
+// resoconto*: la conferma di un bartering è "un drop nuovo vicino al piglin",
+// non l'appartenenza a questa lista — così una versione futura del gioco non
+// trasforma la verifica in un falso negativo.
+export const BARTER_REWARDS = new Set([
+  'ender_pearl', 'string', 'fire_charge', 'gravel', 'leather', 'soul_sand',
+  'nether_brick', 'obsidian', 'crying_obsidian', 'arrow', 'spectral_arrow',
+  'book', 'enchanted_book', 'iron_boots', 'potion', 'splash_potion', 'pufferfish',
+]);
+
+export function isBarterReward (name) {
+  const normalized = normalizeNetherName(name);
+  return normalized != null && BARTER_REWARDS.has(normalized);
+}
+
+// Il piglin giusto per un bartering: il più vicino fra gli adulti **non bruti**
+// entro il raggio, più il piglin più vicino in assoluto (per poter dire *perché*
+// non si baratta: un bruto o un cucciolo non scambiano mai).
+export function barterTarget ({ piglins = [], from = null, range = BARTER_RANGE } = {}) {
+  if (!from) return { target: null, nearest: null };
+  let target = null;
+  let nearest = null;
+  for (const piglin of piglins) {
+    if (!piglin?.position) continue;
+    // Il nome resta quello di arrivo (per il resoconto), la classificazione usa
+    // la forma normalizzata; i campi extra della riga (per esempio il runtime id
+    // con cui l'adapter ritrova l'entità) viaggiano con essa.
+    const type = piglin.type;
+    if (!isPiglinType(type)) continue;
+    const distance = Math.hypot(piglin.position.x - from.x, piglin.position.y - from.y, piglin.position.z - from.z);
+    if (distance > range) continue;
+    const row = { ...piglin, type, position: { ...piglin.position }, baby: !!piglin.baby, brute: normalizeNetherName(type) === PIGLIN_BRUTE, distance: +distance.toFixed(2) };
+    if (!nearest || row.distance < nearest.distance) nearest = row;
+    if (row.brute || row.baby) continue;
+    if (!target || row.distance < target.distance) target = row;
+  }
+  return { target, nearest };
+}

@@ -15,7 +15,7 @@ import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, d
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
 import { loadCircuits, planCircuit, circuitSiteBlocked, circuitSafety, forbiddenBlock, checkCircuitSuccess, circuitAnchor, expectedDelayTicks, measureCircuitDelay, TICK_MS, MAX_CIRCUIT_STEPS, MAX_CIRCUIT_COMPONENTS, MIN_CLOCK_TICKS } from './circuits.mjs';
 import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
-import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, isNetherLike, landingHazard, maxFallDepth, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, projectileVelocity, dodgeCandidates, breaksLine, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName } from './bedrock-nether.mjs';
+import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, isNetherLike, landingHazard, maxFallDepth, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, projectileVelocity, dodgeCandidates, breaksLine, isPiglinType, isBarterPayment, isGoldArmorPiece, goldArmorWorn, piglinNeutral, barterTarget, isBarterReward, BARTER_INGOT, BARTER_RANGE, PIGLIN_BRUTE, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName } from './bedrock-nether.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -136,6 +136,10 @@ const LAVA_AVOID_RANGE = +(process.env.LAVA_AVOID_RANGE || 8);
 const NETHER_RESCAN_MS = +(process.env.NETHER_RESCAN_MS || 10000);
 const NETHER_SCAN_RADIUS = +(process.env.NETHER_SCAN_RADIUS || DEFAULT_NETHER_RADIUS);
 const NETHER_SCAN_LIMIT = +(process.env.NETHER_SCAN_LIMIT || DEFAULT_NETHER_LIMIT);
+// N4: bartering. Il piglin prende il lingotto e getta il pegno dopo qualche
+// secondo: la finestra è il tempo che si concede al *drop* di comparire, non al
+// pacchetto di partire.
+const BARTER_WAIT_MS = +(process.env.BARTER_WAIT_MS || 15000);
 // N1: azioni sul portale. Entrare in un portale è un movimento, non un
 // teletrasporto: si cammina dentro la colonna e si aspetta che sia il server a
 // cambiare dimensione (la conferma è `this.dimension`, mai una sensazione).
@@ -232,6 +236,9 @@ export class BedrockAdapter {
     // Ultimo hub del Nether costruito (N2): posizione, materiale, se chiuso.
     // Il campo non può chiamarsi `_netherHub`: ombreggerebbe il metodo.
     this._netherHubLast = null;
+    // Ultimo bartering (N4): il campo non può chiamarsi `_barter`, che è un
+    // verbo già usato per il metodo.
+    this._barterLast = null;
     // R4: registro dei blocchi che il bot ha piazzato lui (chiave "x,y,z"),
     // con la sorgente e, per i cantieri, l'id del circuito. Serve al teardown
     // per non toccare mai un blocco che non è suo.
@@ -1268,6 +1275,9 @@ export class BedrockAdapter {
       // magma/fuoco non è mai una destinazione (vedi `_neighbors`/`_standable`).
       maxFall: maxFallDepth(dimension),
       hub: this._netherHubLast ?? null,
+      piglin: this._barterPiglinView(),
+      goldArmor: (() => { const worn = this._wornArmor(); return { worn: goldArmorWorn(worn), neutral: piglinNeutral({ worn }) }; })(),
+      barter: this._barterLast ?? null,
       scanned: census.scanned,
       ready: census.ready !== false,
       at: census.at,
@@ -1688,6 +1698,107 @@ export class BedrockAdapter {
     return { ok: false, error: 'dodge_failed', reason: lastError ?? 'timeout', from, threat: summary };
   }
 
+  // I piglin vicini, nella forma che serve alla selezione pura.
+  _piglinRows ({ range = BARTER_RANGE } = {}) {
+    const from = this._feet ?? this.position;
+    if (!from || !this.spawned) return [];
+    const rows = [];
+    for (const entity of this.entities.values()) {
+      if (!entity?.position || !isPiglinType(entity.type)) continue;
+      const distance = this._entityDistance(entity);
+      if (distance > range) continue;
+      rows.push({ type: entity.type, position: entity.position, baby: !!entity.baby, distance, runtimeId: entity.runtimeId });
+    }
+    return rows;
+  }
+
+  _barterPiglinNearby ({ range = BARTER_RANGE } = {}) {
+    const from = this._feet ?? this.position;
+    return barterTarget({ piglins: this._piglinRows({ range }), from, range });
+  }
+
+  _barterPiglinView () {
+    const { target, nearest } = this._barterPiglinNearby();
+    const row = target ?? nearest;
+    if (!row) return null;
+    return {
+      type: row.type,
+      distance: row.distance,
+      baby: row.baby,
+      brute: row.brute,
+      barterable: !!target,
+      position: { x: +row.position.x.toFixed(1), y: +row.position.y.toFixed(1), z: +row.position.z.toFixed(1) },
+    };
+  }
+
+  // N4: bartering. Il piglin prende il lingotto *dalla mano* (`item_use_on_entity`
+  // con `interact`, mai un colpo: un `attack` lo rende ostile per sempre) e dopo
+  // qualche secondo getta a terra il suo pegno. La conferma è osservativa: un
+  // drop nuovo comparso vicino al piglin (poi raccolto con la primitiva di
+  // raccolta già esistente) — non il fatto che il pacchetto sia partito.
+  async _barterPiglin ({ timeoutMs = BARTER_WAIT_MS } = {}) {
+    if (!this.spawned || !this._feet) return { ok: false, error: 'not_ready' };
+    const { target, nearest } = this._barterPiglinNearby();
+    if (!target) {
+      if (!nearest) return { ok: false, error: 'no_piglin_nearby', range: BARTER_RANGE };
+      return { ok: false, error: nearest.brute ? 'piglin_brute_not_barterable' : 'piglin_baby_not_barterable', piglin: { type: nearest.type, position: nearest.position, distance: nearest.distance } };
+    }
+    if ((this.inventory[BARTER_INGOT] || 0) < 1) {
+      return { ok: false, error: 'missing_gold_ingot', item: BARTER_INGOT, piglin: { type: target.type, position: target.position, distance: target.distance } };
+    }
+    // La riga porta il runtime id: nessun match per distanza (che sarebbe fragile
+    // appena il piglin si muove).
+    const entity = target.runtimeId != null ? this.entities.get(String(target.runtimeId)) : null;
+    if (!entity) return { ok: false, error: 'piglin_gone' };
+    if (!this.entityApproachable(entity, { range: 3.5, dy: 2 })) {
+      return { ok: false, error: 'piglin_unreachable', piglin: { type: target.type, position: target.position, distance: target.distance } };
+    }
+    const equipped = await this._equipItemInHotbar(BARTER_INGOT);
+    if (!equipped.ok) return { ok: false, error: `barter_equip_failed: ${equipped.error.replace(/^equip_failed: /, '')}`, item: BARTER_INGOT };
+    if (this._entityDistance(entity) > 4.5) {
+      try { await this._moveTo(entity.position, 2.0, 25000); } catch (error) { this.log('piglin_approach_failed', { message: error.message }); }
+    }
+    const before = {
+      ingots: this.inventory[BARTER_INGOT] || 0,
+      drops: new Set(this.drops.map(d => `${d.item}|${Math.round(d.position.x)}|${Math.round(d.position.y)}|${Math.round(d.position.z)}`)),
+    };
+    const neutral = piglinNeutral({ worn: this._wornArmor() });
+    const deadline = Date.now() + timeoutMs;
+    let last = null;
+    while (Date.now() < deadline) {
+      const live = this.entities.get(String(entity.runtimeId));
+      if (!live) return { ok: false, error: 'piglin_gone', bartered: false };
+      if (this._entityDistance(live) > 6) return { ok: false, error: 'piglin_unreachable', bartered: false };
+      const look = this._lookAt({ x: live.position.x, y: live.position.y + entityHeight(live.type) * 0.5, z: live.position.z });
+      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+      await delay(120);
+      this._interactEntity(live);
+      last = { at: Date.now(), distance: +this._entityDistance(live).toFixed(2) };
+      const gave = (this.inventory[BARTER_INGOT] || 0) < before.ingots;
+      const fresh = this.drops.filter(d => {
+        const key = `${d.item}|${Math.round(d.position.x)}|${Math.round(d.position.y)}|${Math.round(d.position.z)}`;
+        return !before.drops.has(key) && Math.hypot(d.position.x - live.position.x, d.position.z - live.position.z) <= 8;
+      });
+      if (fresh.length) {
+        const collected = [];
+        for (const drop of fresh) {
+          const pickup = await this._collectDrop();
+          collected.push({ item: drop.item, ok: !!pickup?.ok, picked: pickup?.picked ?? null });
+        }
+        const rewards = fresh.map(d => d.item).filter(isBarterReward);
+        const report = { ok: true, bartered: true, piglin: { type: target.type, position: target.position, distance: target.distance }, gave: BARTER_INGOT, gaveIngot: gave, neutral, drops: fresh.map(d => d.item), rewards, collected, lastInteract: last };
+        this._barterLast = { ...report, at: Date.now() };
+        this.log('barter_piglin', { piglin: report.piglin, drops: report.drops, rewards, gave, neutral });
+        return report;
+      }
+      await delay(900);
+    }
+    const gaveIngot = (this.inventory[BARTER_INGOT] || 0) < before.ingots;
+    this._barterLast = { ok: false, error: 'barter_not_confirmed', piglin: { type: target.type, position: target.position, distance: target.distance }, neutral, gaveIngot, at: Date.now() };
+    this.log('barter_not_confirmed', { piglin: target.position, distance: target.distance, neutral, last });
+    return { ok: false, error: 'barter_not_confirmed', bartered: false, gaveIngot, piglin: { type: target.type, position: target.position, distance: target.distance }, neutral, lastInteract: last };
+  }
+
   observe () {
     const heldSlot = this.inventorySlots[this.selectedHotbar];
     const heldInfo = heldSlot?.network_id ? this.world.registry?.items[heldSlot.network_id] : null;
@@ -1797,6 +1908,10 @@ export class BedrockAdapter {
     for (const threat of threats) {
       if (attackTypes.has(threat.type)) continue;
       if (!this.entityApproachable(threat, { range: 3.5, dy: 2 })) continue;
+      // N4: un piglin non è mai un bersaglio. Colpirlo lo rende ostile per
+      // sempre e chiude il bartering: la neutralità (o la fuga) è l'unica
+      // risposta, e il vocabolario delle opzioni non deve nemmeno offrirla.
+      if (isPiglinType(threat.type)) continue;
       attackTypes.add(threat.type);
       o.push({ key: `attack_${threat.type}`, description: `Attack the ${threat.type} (${threat.distance.toFixed(1)} blocks away, ${threat.health != null ? `health ${threat.health}` : 'health unknown'})` });
       if (attackTypes.size >= 3) break;
@@ -1860,6 +1975,14 @@ export class BedrockAdapter {
     // non è "è tardi" ma "siamo nel Nether".
     if (isNetherLike(this.dimension) && pickHubBlock(Object.entries(this.inventory).map(([name, count]) => ({ name, count })))) {
       o.push({ key: 'build_nether_hub', description: 'Seal a nether hub around you with non-flammable blocks (walls + roof, remembered as a place to come back to)' });
+    }
+    // N4: bartering. L'oro in mano e un piglin adulto a tiro sono entrambi
+    // necessari, e un bruto non è un candidato: l'opzione esiste solo quando una
+    // trattativa è davvero possibile.
+    const barter = this._barterPiglinNearby();
+    if (barter.target && (this.inventory[BARTER_INGOT] || 0) > 0) {
+      const neutral = piglinNeutral({ worn: this._wornArmor() });
+      o.push({ key: 'barter_piglin', description: `Barter with the piglin at ${JSON.stringify({ x: Math.round(barter.target.position.x), y: Math.round(barter.target.position.y), z: Math.round(barter.target.position.z) })} (${barter.target.distance} blocks away) handing it a ${BARTER_INGOT}${neutral ? '' : ' (no gold armour worn: it may turn hostile)'}` });
     }
     const food = this._bestFoodItem();
     if (food && (this.food < 18 || (this.health < 20 && this.food < 20))) {
@@ -2405,6 +2528,8 @@ export class BedrockAdapter {
         result = await this._buildHut({});
       } else if (key === 'build_nether_hub') {
         result = await this._netherHub({});
+      } else if (key === 'barter_piglin') {
+        result = await this._barterPiglin({});
       } else if (key === 'sleep') {
         result = await this._sleepInBed();
       } else if (key === 'recover_loot') {
@@ -6975,6 +7100,12 @@ export class BedrockAdapter {
 
   // ---- armatura e porte (difesa) -------------------------------------------------------
 
+  // I pezzi d'armatura addosso, nella forma che serve alla neutralità dei piglin
+  // (N4): l'armatura è già tracciata da `mob_equipment`, qui si legge e basta.
+  _wornArmor () {
+    return Object.values(this.armor ?? {}).filter(Boolean);
+  }
+
   _armorSlotFor (name) {
     if (!name) return -1;
     if (name === 'turtle_helmet' || /_helmet$/.test(name)) return 0;
@@ -7573,20 +7704,34 @@ export class BedrockAdapter {
   // Nutre un'entità specifica (per runtime id): equipaggia il cibo, si avvicina
   // e invia item_use_on_entity `interact`. Conferma dallo stato `inlove`/`tamed`
   // o dal consumo dell'item. Base comune di feed/breed/tame.
-  async _feedEntity (runtimeId, feed, timeoutMs = 8000) {
-    if ((this.inventory[feed] || 0) < 1) return { ok: false, error: 'missing_feed', feed };
-    let slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === feed && s.count > 0);
-    if (slotIndex < 0) {
+  // Porta un item nella hotbar e lo seleziona (con un resync una volta sola se
+  // lo slot non si trova): è il preambolo comune di ogni interazione "con la
+  // cosa in mano" — nutrire, addomesticare, barattare. Chiudere un container
+  // aperto fa parte del preambolo: con l'inventario aperto il pacchetto di
+  // interazione non parte.
+  async _equipItemInHotbar (name, { resync = true } = {}) {
+    let slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === name && s.count > 0);
+    if (slotIndex < 0 && resync) {
       try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
-      slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === feed && s.count > 0);
-      if (slotIndex < 0) return { ok: false, error: 'missing_feed', feed };
+      slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === name && s.count > 0);
     }
+    if (slotIndex < 0) return { ok: false, error: 'missing_item', item: name };
     if (slotIndex > 8) {
       try { slotIndex = await this._moveSlotToHotbar(slotIndex); }
-      catch (error) { return { ok: false, error: `feed_equip_failed: ${error.message}` }; }
+      catch (error) { return { ok: false, error: `equip_failed: ${error.message}`, item: name }; }
     }
     this._selectHotbarSlot(slotIndex);
     if (this._openContainer) await this._closeContainer();
+    return { ok: true, slot: slotIndex };
+  }
+
+  async _feedEntity (runtimeId, feed, timeoutMs = 8000) {
+    if ((this.inventory[feed] || 0) < 1) return { ok: false, error: 'missing_feed', feed };
+    const equipped = await this._equipItemInHotbar(feed);
+    if (!equipped.ok) {
+      if (equipped.error === 'missing_item') return { ok: false, error: 'missing_feed', feed };
+      return { ok: false, error: `feed_equip_failed: ${equipped.error.replace(/^equip_failed: /, '')}` };
+    }
     const entity = this.entities.get(String(runtimeId));
     if (!entity) return { ok: false, error: 'animal_gone' };
     if (this._entityDistance(entity) > 4.5) {
