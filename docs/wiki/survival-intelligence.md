@@ -75,7 +75,7 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**774 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**780 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
 
 - **Fluids in the survival layer (M0, 2026-10-03)**: the governor vocabulary grew
@@ -145,6 +145,23 @@ are declared and refused with a reason ([redstone](redstone.md), row 47.5 of
   `circuit_verify_failed` → `circuit_delay_not_confirmed` →
   `circuit_delay_unmeasured` → `circuit_delay_mismatch` ([redstone](redstone.md),
   row 47.6 of [verification](verification.md)).
+
+- **Circuits as a progression goal (R5, 2026-10-03)**: redstone is no longer a
+  catalogue of actions next to the game — it is *inside* the game. Three chained
+  milestones (`redstone_ore` → `redstone_basics` → `redstone_automation`) hang
+  below `iron_age`, with the alias `goals.redstone`, and six declarative skills
+  in `skills/gameplay/redstone/` describe them; the final one has **no**
+  `satisfiedWhen`, so an inventory full of lamps and levers closes nothing — only
+  a verified build does. That verification is the new criterion `circuitBuilt`,
+  which reads the builder's own report and refuses a circuit that was already
+  standing before the skill started. Between resources and blueprints sits a
+  bridge: a blueprint with missing materials publishes `craft_<item>` for the
+  first material that is craftable *now* (`_craftableNow`: recipe + ingredients,
+  plus a crafting table within 32 blocks when the recipe is bigger than 2×2)
+  instead of a dead end, and `build_circuit_<id>` appears when nothing is
+  missing. Two of the six skills declare a blueprint that is still
+  `buildable: false` on purpose: the gap is visible in the graph, not hidden in a
+  document ([redstone](redstone.md), row 47.7 of [verification](verification.md)).
 
 - **Wading and the simulated air budget (M1 partial, 2026-10-03)**: shallow water
 is now traversable — `_standable` accepts a feet cell holding water **when the

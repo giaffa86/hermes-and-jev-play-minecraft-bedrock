@@ -2375,3 +2375,68 @@ onesta è `circuit_delay_unmeasured`. La tolleranza ±60 ms assorbe il tick da
 50 ms ma non distingue "6 tick di ritardo" da "1 tick ripetuto sette volte".
 `teardown_circuit` non verifica se la cella è ancora alimentata da altro: rimuove
 il blocco posseduto e lascia stare il filo del vicino.
+
+## [2026-10-03] feat | Redstone R5: i circuiti entrano nella progressione (skill, milestone, bridge dei materiali)
+
+R5 collega i circuiti R3/R4 al gioco invece di lasciarli come catalogo di azioni
+accanto. Tre milestone concatenate sotto `iron_age` — `redstone_ore` (requires
+`iron_age`, skill `redstone_basics`, `inventoryTagGte {redstone_dust: 1}`) →
+`redstone_basics` (skill `craft_redstone_part`, `inventoryTagGte {redstone_parts: 1}`)
+→ `redstone_automation` (skill `build_lamp_switch`, **nessun** `satisfiedWhen`) —
+con l'alias `goals.redstone`, quindi `CURRICULUM=redstone_automation` funziona
+come `CURRICULUM=first_night`. L'ultima milestone non ha scorciatoia di
+inventario di proposito: un baule pieno di leve e lampade non è automazione, si
+chiude solo con la verifica reale (`completedMilestones`, come `first_night`).
+
+Sei skill dichiarative in `skills/gameplay/redstone/`: `redstone_basics`
+(preconditions `iron_tools` — la redstone ore vuole il piccone di ferro),
+`craft_redstone_part`, e le quattro integrazioni nominate dalla roadmap
+(`build_lamp_switch`, `build_auto_lamp`, `build_auto_harvest`,
+`build_hopper_chain`), tutte con success `{circuitBuilt: {id: <blueprint>}}`. Le
+due skill che dichiarano un blueprint ancora `buildable: false` restano nel grafo
+con il motivo e la nota "NON raggiungibile oggi": il buco si vede nel grafo
+invece di sparire in un documento.
+
+Nuovi tag in `survival/item-tags.mjs`: `redstone_dust`, `redstone_parts`
+(17 componenti), `hoppers`. Nuovo criterio `circuitBuilt` in `survival/verify.mjs`:
+legge `after.circuits.last` (il report che `_buildCircuit` ora timbra con `at`) e
+fallisce senza report, con l'id sbagliato, con `ok: false` e — non secondario —
+quando `before.circuits.last.at === after.circuits.last.at`, perché un circuito
+già in piedi **non** è il successo della skill. Evidenza:
+`{circuitBuilt, circuitAt, circuitSteps, circuitDelay}`.
+
+Ponte materiali↔blueprint in `bedrock-adapter.mjs`: quando `plan.missing` non è
+vuoto, `_circuitOptionFor` pubblica `craft_<item>` per il primo materiale
+mancante **fabbricabile adesso** (`_craftableNow`: ricetta nota + ingredienti +
+tavolo entro 32 blocchi se la ricetta è più grande di 2×2), con descrizione
+`Craft <item> for the <id> circuit (missing …)`; quando non manca nulla pubblica
+`build_circuit_<id>` dopo il controllo del sito. Così `/options` non mostra mai un
+cantiere che il bot non può pagare e non lascia un vicolo cieco al posto del passo
+successivo.
+
+Test: `progression` (tag + le tre milestone, incluso che un inventario pieno di
+lamp/lever non chiude `redstone_automation`), `bedrock-redstone-criteria`
+(`circuitBuilt` in tutte le forme), `gameplay-skills` (le sei skill e il success
+esatto di ogni builder), `controller-curriculum` (scenario a stadi con fake
+harness e finto `hermes`: `GOAL MET after 3 actions`, milestone e skill in ordine,
+evidenza `circuitBuilt` in `skills.jsonl`), `bedrock-circuits` (il ponte: ricetta
+2×3 che vuole il tavolo, materiale non fabbricabile che non offre nulla,
+inventario completo che offre il sito). Suite: **780 test, 780 pass**.
+
+Round live (VM 100, container `hermes-jev-bedrock`, BDS 1.26.52): il grafo esteso
+si carica e risolve sul server — 26 skill caricate (6 redstone),
+`resolveMilestone` → `{status:'next', milestone:'redstone_automation', skill:
+'build_lamp_switch'}`, piano finale `targets {redstone_lamp: 1, lever: 1}` con
+success `{circuitBuilt: {id: 'lamp_switch'}}`; `CURRICULUM=redstone_automation`
+avanzata fino a un prerequisito reale (`stone_age`, 3× `mine_cobblestone`
+confermati dal server) prima di esaurire il budget. `GET /observe.circuits` → 8
+blueprint, 4 costruibili, `owned: 0`, `last: null`; `/options` senza
+`build_circuit_*` né `craft_lever`, cioè il ponte risponde correttamente "con
+questo inventario non è fabbricabile niente".
+
+La *build* end-to-end live resta bloccata da tre cause indipendenti: i drop della
+stanza cadono nella cavità sotto il pavimento e riportano `reachable: false` (il
+blocker di pickup già noto), l'unico cobblestone a tiro **è** il muro della base,
+e una `redstone_lamp` richiede glowstone del Nether. Limiti dichiarati anche su
+`_craftableNow`, che vede solo il crafting (non la fusione: cobblestone → stone,
+che `auto_door` chiede) e offre solo il primo materiale mancante.

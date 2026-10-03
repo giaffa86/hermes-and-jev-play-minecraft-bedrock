@@ -1,0 +1,14 @@
+{
+  "id": "redstone_basics",
+  "description": "Mine redstone ore with an iron pickaxe or better and keep the dust.",
+  "category": "redstone",
+  "preconditions": {
+    "allOf": [
+      { "inventoryTagGte": { "iron_tools": 1 } }
+    ]
+  },
+  "success": { "inventoryTagGte": { "redstone_dust": 1 } },
+  "intents": ["mine", "collect", "redstone"],
+  "planTargets": { "redstone_dust": 1 },
+  "notes": "In Bedrock la redstone ore richiede un piccone di ferro o migliore: senza iron_tools il drop non arriva e la skill non può chiudersi. Il criterio legge l'inventario osservato, non l'opinione del modello."
+}

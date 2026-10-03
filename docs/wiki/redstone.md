@@ -6,15 +6,17 @@ hopper item transport, dispensers and (stretch) crafters. It builds on the
 verified primitives (placement, `click_block` interaction, containers, crafting,
 digging) while never breaking the base's own circuits.
 
-Status: **R0, R1, R2, R3 and R4 implemented and unit-tested (R0 also collaudato
-live); the live component round is blocked by the standing "no base edits" rule
-(03/10/2026); R5–R6 spec only** (tracked in [roadmap](roadmap.md) and
+Status: **R0, R1, R2, R3, R4 and R5 implemented and unit-tested (R0 also
+collaudato live); the live component round is blocked by the standing "no base
+edits" rule (03/10/2026); R6 spec only** (tracked in [roadmap](roadmap.md) and
 [open-questions](open-questions.md)). Full raw source:
 [`docs/raw/REDSTONE_ROADMAP.md`](../raw/REDSTONE_ROADMAP.md).
 
 Sources: `bedrock-adapter.mjs` (placement, interaction, digging, `DIG_PROTECTED`),
 `bedrock-redstone.mjs` (R0: component vocabulary, `powerOf`, `redstoneView`),
 `circuits.mjs` + `circuits/*.json` (R3: declarative blueprints and their builder),
+`skills/gameplay/redstone/*.json` + `knowledge/progression.json` (R5: the
+milestones and the declarative skills),
 `bedrock-world.mjs` (block-state decoding, `findBlocksByState`), `BEDROCK.md`
 (action status), [survival-intelligence](survival-intelligence.md)
 (skills/verifier/progression), [fishing](fishing.md), [fluids](fluids.md) (water
@@ -494,10 +496,119 @@ nothing else.
   something else; it removes the owned block and leaves the neighbour's wire
   alone.
 
+## R5 — Automation and integration (implemented, unit-tested 03/10/2026)
+
+R5 is what turns the R3/R4 builder from a catalogue of actions into something the
+*progression* can reach. Two halves:
+
+**1. The milestones and their skills are data.**
+
+`knowledge/progression.json` gains three chained nodes below `iron_age`:
+
+| milestone | requires | skill | closes when |
+|---|---|---|---|
+| `redstone_ore` | `iron_age` | `redstone_basics` | `inventoryTagGte {redstone_dust: 1}` |
+| `redstone_basics` | `redstone_ore` | `craft_redstone_part` | `inventoryTagGte {redstone_parts: 1}` |
+| `redstone_automation` | `redstone_basics` | `build_lamp_switch` | no `satisfiedWhen`: only a *verified* circuit |
+
+`goals.redstone` is an alias of `redstone_automation`, so
+`CURRICULUM=redstone` works like `CURRICULUM=first_night`. The last node has **no**
+`satisfiedWhen` on purpose: an inventory full of levers and lamps is not
+automation, so it closes only through the real verification (the
+`completedMilestones` path, as `first_night` does).
+
+The six skills in `skills/gameplay/redstone/`:
+
+- `redstone_basics` — preconditions `inventoryTagGte {iron_tools: 1}` (redstone ore
+  needs an iron pickaxe); success `inventoryTagGte {redstone_dust: 1}`.
+- `craft_redstone_part` — success `inventoryTagGte {redstone_parts: 1}`
+  (repeater/comparator/piston/observer/dispenser/dropper/lever/torch/detector/…).
+- `build_lamp_switch`, `build_auto_lamp`, `build_auto_harvest`, `build_hopper_chain`
+  — one per integration named by the roadmap (defense/light → `auto_lamp`,
+  farming → `auto_harvest`, storage → `hopper_chain`), each with success
+  `{circuitBuilt: {id: <blueprint>}}`. The two blueprints that are still
+  `buildable: false` are declared anyway, with the reason and a note that they are
+  **not reachable today**; the skill exists so the gap is visible in the graph
+  instead of hidden in a doc.
+
+Two new tags in `survival/item-tags.mjs` feed those criteria: `redstone_dust`
+(`redstone`/`redstone_dust`) and `redstone_parts` (`REDSTONE_PART_NAMES`, 17
+items), plus `hoppers`.
+
+**2. The verifier can trust a circuit (new criterion `circuitBuilt`).**
+
+`verifySkill` could already check an *inventory*, not a *build*. `circuitBuilt`
+reads `after.circuits.last` (the report `_buildCircuit` now stamps with `at`) and
+fails when there is no report, when the id is not the one the skill asks for,
+when `ok` is false, and — this matters — when `before.circuits.last.at` equals
+`after.circuits.last.at`: a circuit that was already there does **not** count as
+the skill's success. Evidence: `{circuitBuilt, circuitAt, circuitSteps,
+circuitDelay}`.
+
+**3. The materials bridge.**
+
+A blueprint asks for blocks; the bot has resources. `_circuitOptionFor(def)`
+closes the gap: when `plan.missing` is not empty it publishes
+`craft_<item>` — *only* if that item is craftable **right now**
+(`_craftableNow`: known recipe + ingredients held + a crafting table within 32
+blocks when the recipe is bigger than 2×2) — with the description `Craft
+<item> for the <id> circuit (missing …)`. Only the first craftable missing
+material is offered, so the option list does not explode. When nothing is
+missing the same function publishes `build_circuit_<id>` after the site check.
+The result: `/options` never shows a workshop the bot cannot pay for, and it
+shows the next step *towards* one (craft the lever → build the door) instead of
+a dead end.
+
+**Tests.** `tests/progression.test.mjs` (tags + the three milestones, including
+that a full lamp/lever inventory does **not** close `redstone_automation`),
+`tests/bedrock-redstone-criteria.test.mjs` (`circuitBuilt` in all its forms,
+`CRITERIA_KEYS`), `tests/gameplay-skills.test.mjs` (the six skills and the exact
+`circuitBuilt` success of each builder), `tests/controller-curriculum.test.mjs`
+(`CURRICULUM=redstone_automation` driven by a staged fake harness with a fake
+`hermes` on PATH: three skills, `GOAL MET after 3 actions`, the evidence in
+`skills.jsonl`), `tests/bedrock-circuits.test.mjs` (the materials bridge: a
+2×3 recipe needs the table, an uncraftable material offers nothing, a complete
+inventory offers the site).
+
+**Live round (03/10/2026).** The extended graph loads and resolves on the BDS:
+in the container `resolveMilestone` returns
+`{status:'next', milestone:'redstone_automation', skill:'build_lamp_switch'}`,
+26 skills load (6 redstone), and `CURRICULUM=redstone_automation` drives a real
+prerequisite (`stone_age` → 3× `mine_cobblestone` confirmed by the server) before
+the action budget runs out; the final plan resolves to targets
+`{redstone_lamp: 1, lever: 1}` with success `{circuitBuilt: {id: 'lamp_switch'}}`.
+`GET /observe.circuits` reports the 8 blueprints (4 buildable, `owned: 0`,
+`last: null`) and `/options` offers neither `build_circuit_*` nor `craft_lever`:
+with the bot's real inventory the bridge correctly says *nothing is craftable
+yet*.
+
+**Known limits (R5).**
+
+- The end-to-end live build (mine ore → craft → build → verify → teardown) is
+  still not reachable in this base and for three independent reasons: the room's
+  drops fall into the cavity under its floor and report `reachable: false`
+  (the known pickup blocker), the only cobblestone in reach *is* the base wall,
+  and a `redstone_lamp` needs Nether glowstone. Everything between
+  `craft_<item>` and `circuitBuilt` is covered by the fake-server tests.
+- `_craftableNow` sees **crafting** only: a material obtained by *smelting*
+  (cobblestone → stone, which `auto_door` needs) is not offered as a bridge step.
+  The manual path (`mine_cobblestone`, then `smelt_cobblestone` when a furnace and
+  fuel are in reach) is in `/options` when the materials exist.
+- Only the **first** craftable missing material is offered per blueprint: for
+  `auto_door` the order is the blueprint's `requires` order, so the lever comes
+  before the fence gate. It is a hint, not a plan.
+- The two `buildable: false` skills (`build_auto_harvest`, `build_hopper_chain`)
+  are declared and will fail the milestone: this is intentional (the gap is
+  documented), but it also means `CURRICULUM=redstone_automation` cannot be
+  closed through them.
+
 ## Proposed vocabulary
 
 - **Actions**: `build_circuit_<id>`, `use_redstone`, `set_repeater_delay`,
   `sense_redstone`, `teardown_circuit`, `mine_redstone_ore` (via `_refreshNearby`).
+  `craft_<item>` (R5) is not a redstone action of its own: it is published by the
+  circuit option when a blueprint's first craftable missing material can be made
+  now.
   Implemented: `use_redstone`, `sense_redstone`, `set_repeater_delay`,
   `mine_redstone_ore`, `build_circuit_<id>`, `teardown_circuit` (and its
   `teardown_circuit_<id>` variant).
@@ -516,7 +627,7 @@ nothing else.
 | R2 | Interaction & sensing | `use_redstone` (lever/button) with state + downstream verification; redstone cache in `/observe`; `sense_redstone`; verifier criteria. | ◑ implemented + unit-tested and live-sensed (in-place cache, `use_redstone`, `sense_redstone`, `blockPoweredAt`/`circuitActive`); the live toggle is blocked by plan C |
 | R3 | Primitive circuits | Declarative `circuits/*.json` blueprints (`lamp_switch`, `delay_line`, `auto_lamp`, `auto_door`, `auto_harvest`, `auto_dispense`, `hopper_chain`, `crafter_pulse`) + `build_circuit_<id>` bounded action. | ◑ `circuits.mjs` + 8 blueprints (4 buildable, 4 declared with a reason) + `build_circuit_<id>` implemented, unit-tested (19 cases) and live-refused (catalogue, gating, `circuits.jsonl`); the acceptance *build* needs a redstone lamp (Nether) and is blocked by plan C |
 | R4 | Verify, teardown, guardrails | Deterministic circuit verifier; `teardown_circuit` limited to bot-built blocks; rollback on partial failure; no redstone edits outside owned circuits. | ◑ measured delay (`measureCircuitDelay` from the `_redstoneTrace`, `required`/`toleranceMs` per blueprint), placed-block ledger, `teardown_circuit[_<id>]` limited to circuit cells the bot placed (a cell someone else changed is skipped), rollback of a half-built site; unit-tested (24 + 21 cases) and live-verified on the empty/refused paths |
-| R5 | Automation & integration | Gameplay skills `skills/gameplay/redstone/`; progression milestones `redstone_ore`/`redstone_basics`/`redstone_automation`; integrate farming (`auto_harvest`), storage (`hopper_chain`), defense (`auto_lamp`), fluids (water stream). | ❌ not implemented |
+| R5 | Automation & integration | Gameplay skills `skills/gameplay/redstone/`; progression milestones `redstone_ore`/`redstone_basics`/`redstone_automation`; integrate farming (`auto_harvest`), storage (`hopper_chain`), defense (`auto_lamp`), fluids (water stream). | ◑ 6 declarative skills + the 3 chained milestones + goal alias `redstone` + the `circuitBuilt` verifier criterion + the materials bridge (`craft_<item>` for a blueprint's first craftable missing material, `build_circuit_<id>` when nothing is missing); unit-tested (progression, criteria, skills, curriculum scenario, materials bridge) and live-resolved on the BDS (graph loads, `CURRICULUM=redstone_automation` drives `stone_age`); the live *build* is blocked by the room (unreachable drops, base wall, Nether glowstone) |
 | R6 | Limits & docs | No command blocks, no TNT/traps, lag/size caps, bot-safety, runbook/wiki updates. | ❌ not implemented |
 
 ## Key risks / open questions

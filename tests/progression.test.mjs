@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   loadProgression, validateProgression, resolveMilestone, progressionSnapshot,
+  isKnownTag, itemMatchesTag, tagCount, tagItems,
 } from '../survival/index.mjs';
 
 const PROGRESSION_URL = new URL('../knowledge/progression.json', import.meta.url);
@@ -18,9 +19,57 @@ test('the shipped progression graph is valid and covers the early chain', () => 
     'iron_age', 'diamonds', 'nether_portal', 'enter_nether', 'nether_survival',
     'piglin_barter', 'obtain_blaze_rods', 'obtain_ender_pearls',
     'craft_eyes_of_ender', 'find_stronghold', 'enter_end', 'beat_the_dragon',
+    'redstone_ore', 'redstone_basics', 'redstone_automation',
   ]) {
     assert.ok(graph.milestones[id], `milestone ${id}`);
   }
+});
+
+test('the redstone tags group the dust, the parts and the hoppers', () => {
+  for (const tag of ['redstone_dust', 'redstone_parts', 'hoppers']) assert.equal(isKnownTag(tag), true, tag);
+  assert.equal(itemMatchesTag('redstone', 'redstone_dust'), true);
+  assert.equal(itemMatchesTag('minecraft:redstone', 'redstone_dust'), true);
+  assert.equal(itemMatchesTag('redstone_ore', 'redstone_dust'), false, 'il blocco non è la polvere');
+  assert.equal(itemMatchesTag('deepslate_redstone_ore', 'redstone_dust'), false);
+  const inventory = { redstone: 4, repeater: 1, lever: 2, hopper: 1, obsidian: 9 };
+  assert.equal(tagCount(inventory, 'redstone_dust'), 4);
+  assert.equal(tagCount(inventory, 'redstone_parts'), 4);
+  assert.equal(tagCount(inventory, 'hoppers'), 1);
+  assert.deepEqual(tagItems(inventory, 'redstone_parts'), ['hopper', 'lever', 'repeater'], 'anche la hopper è una parte redstone');
+});
+
+test('the redstone chain hangs off iron_age and its last node is skill-verified', () => {
+  assert.equal(graph.goals.redstone, 'redstone_automation');
+  assert.deepEqual(graph.milestones.redstone_ore.requires, ['iron_age']);
+  assert.deepEqual(graph.milestones.redstone_ore.satisfiedWhen, { inventoryTagGte: { redstone_dust: 1 } });
+  assert.deepEqual(graph.milestones.redstone_basics.requires, ['redstone_ore']);
+  assert.deepEqual(graph.milestones.redstone_basics.satisfiedWhen, { inventoryTagGte: { redstone_parts: 1 } });
+  assert.equal(graph.milestones.redstone_automation.satisfiedWhen, undefined, 'automation si chiude solo con la skill verificata');
+  assert.equal(graph.milestones.redstone_automation.skill, 'build_lamp_switch');
+
+  const milestones = ['wood', 'crafting_table', 'stone_tools', 'iron_age'];
+  const base = { inventory: { oak_log: 8, crafting_table: 1, stone_pickaxe: 1, iron_pickaxe: 1 }, nearby: {}, time: { phase: 'day' } };
+  const toOre = resolveMilestone(graph, { goal: 'redstone', observation: base, completed: new Set(milestones) });
+  assert.equal(toOre.status, 'next');
+  assert.equal(toOre.milestone, 'redstone_ore');
+  assert.equal(toOre.skill, 'redstone_basics');
+
+  const withDust = { ...base, inventory: { ...base.inventory, redstone: 4 } };
+  const toParts = resolveMilestone(graph, { goal: 'redstone', observation: withDust, completed: new Set(milestones) });
+  assert.equal(toParts.milestone, 'redstone_basics');
+  assert.equal(toParts.skill, 'craft_redstone_part');
+
+  const withParts = { ...base, inventory: { ...base.inventory, redstone: 4, repeater: 1 } };
+  const toAutomation = resolveMilestone(graph, { goal: 'redstone', observation: withParts, completed: new Set(milestones) });
+  assert.equal(toAutomation.milestone, 'redstone_automation');
+  assert.equal(toAutomation.skill, 'build_lamp_switch');
+
+  // La milestone finale non si chiude da sola: l'inventario pieno non basta.
+  const stillNext = resolveMilestone(graph, { goal: 'redstone', observation: { ...withParts, inventory: { ...withParts.inventory, redstone_lamp: 3, lever: 3 } }, completed: new Set(milestones) });
+  assert.equal(stillNext.status, 'next');
+  assert.equal(stillNext.milestone, 'redstone_automation');
+  const done = resolveMilestone(graph, { goal: 'redstone', observation: withParts, completed: new Set([...milestones, 'redstone_ore', 'redstone_basics', 'redstone_automation']) });
+  assert.equal(done.status, 'met');
 });
 
 test('beat_the_dragon is a real milestone, no longer aliased to enter_nether', () => {

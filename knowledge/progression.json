@@ -5,7 +5,8 @@
     "first_night": "first_night",
     "enter_nether": "enter_nether",
     "find_stronghold": "find_stronghold",
-    "beat_the_dragon": "beat_the_dragon"
+    "beat_the_dragon": "beat_the_dragon",
+    "redstone": "redstone_automation"
   },
   "milestones": {
     "wood": {
@@ -52,6 +53,24 @@
           { "inventoryTagGte": { "iron_ingots": 3 } }
         ]
       }
+    },
+    "redstone_ore": {
+      "requires": ["iron_age"],
+      "skill": "redstone_basics",
+      "description": "Mine redstone ore with an iron pickaxe or better and keep the dust.",
+      "satisfiedWhen": { "inventoryTagGte": { "redstone_dust": 1 } }
+    },
+    "redstone_basics": {
+      "requires": ["redstone_ore"],
+      "skill": "craft_redstone_part",
+      "description": "Craft a repeater or a piston from the dust.",
+      "satisfiedWhen": { "inventoryTagGte": { "redstone_parts": 1 } }
+    },
+    "redstone_automation": {
+      "requires": ["redstone_basics"],
+      "skill": "build_lamp_switch",
+      "description": "Build and verify at least one circuit from a declared blueprint.",
+      "notes": "Senza satisfiedWhen, come first_night: si chiude solo quando il controller verifica davvero la skill (il report del cantiere), non perché l'inventario contiene qualcosa."
     },
     "diamonds": {
       "requires": ["iron_age"],

@@ -1,0 +1,14 @@
+{
+  "id": "build_auto_lamp",
+  "description": "Build a daylight-detector lamp that lights up when the sun goes down.",
+  "category": "redstone",
+  "preconditions": {
+    "allOf": [
+      { "inventoryTagGte": { "redstone_parts": 1 } }
+    ]
+  },
+  "success": { "circuitBuilt": { "id": "auto_lamp" } },
+  "intents": ["build", "redstone", "shelter"],
+  "planTargets": { "daylight_detector": 1, "redstone_lamp": 1 },
+  "notes": "Il blueprint `auto_lamp` non ha un success check sullo stato (la lampada segue l'ora del giorno): il verifier del cantiere lo dichiara con `success: null` e `verifyNote`, e il criterio circuitBuilt guarda solo l'esito del cantiere. Il daylight detector richiede quarzo, quindi la skill è raggiungibile solo dopo il Nether."
+}

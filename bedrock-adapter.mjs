@@ -3879,15 +3879,77 @@ export class BedrockAdapter {
     return planCircuit(def, { origin: circuitAnchor(this._feet, dir), facing: dir, available: this.inventory ?? {} });
   }
 
+  // R5: le ricette arrivano dal crafting_data del server, quindi un blueprint
+  // nuovo non richiede un ramo nuovo qui: se un materiale mancante ha una
+  // ricetta e gli ingredienti sono in inventario, il passo successivo compare.
+  _recipeIngredientCounts (recipe, table) {
+    const counts = new Map();
+    for (const { ingredient } of this._planGrid(recipe, table)) {
+      const key = `${ingredient.descriptor_type}:${ingredient.name ?? ingredient.tag ?? ''}`;
+      const entry = counts.get(key);
+      if (entry) entry.count++;
+      else counts.set(key, { ingredient, count: 1 });
+    }
+    return [...counts.values()];
+  }
+
+  _heldMatching (ingredient) {
+    let total = 0;
+    for (const [name, count] of Object.entries(this.inventory)) {
+      if ((count || 0) > 0 && this._ingredientMatches(ingredient, name)) total += count;
+    }
+    return total;
+  }
+
+  // Un item che il bot può fabbricare adesso: ricetta nota, ingredienti in
+  // inventario e, per le ricette 3x3, un tavolo da lavoro a portata.
+  _craftableNow (item) {
+    for (const entry of this.recipes?.get(item) ?? []) {
+      const recipe = this._recipeBody(entry);
+      if (!recipe) continue;
+      if ((recipe.width || 1) > 2 || (recipe.height || 1) > 2) {
+        if (!this.world.findBlocks('crafting_table', this.position, 32, 1).length) continue;
+      }
+      const needs = this._recipeIngredientCounts(recipe, true);
+      if (!needs.length) continue;
+      if (needs.every(({ ingredient, count }) => this._heldMatching(ingredient) >= count)) return true;
+    }
+    return false;
+  }
+
+  // R5: il ponte fra un blueprint e i suoi materiali. Un circuito con i
+  // materiali mancanti non offre il cantiere (resterebbe un'azione che non può
+  // riuscire), ma se quei materiali sono fabbricabili offre **quelli**, che è il
+  // passo che manca davvero.
+  _circuitOptionFor (def) {
+    const plan = this._circuitPlan(def);
+    if (!plan.ok) {
+      const craftable = plan.missing.filter(need => this._craftableNow(need.item));
+      if (!craftable.length) return null;
+      const first = craftable[0];
+      const list = craftable.map(need => `${need.need - need.have} ${need.item}`).join(', ');
+      return {
+        key: `craft_${first.item}`,
+        description: `Craft ${first.item} for the ${def.id} circuit (missing ${list})`,
+      };
+    }
+    if (circuitSiteBlocked(plan, cell => this.world.blockAt(cell)).length) return null;
+    const needs = Object.entries(def.requires).map(([item, qty]) => `${qty} ${item}`).join(', ');
+    return {
+      key: `build_circuit_${def.id}`,
+      description: `Build the ${def.id} circuit at ${JSON.stringify(plan.anchor)} (needs ${needs}): ${def.description}`,
+    };
+  }
+
   _circuitOptions () {
     const out = [];
+    const seen = new Set();
     for (const def of this._circuitCatalogue().values()) {
       if (!def.buildable) continue;
-      const plan = this._circuitPlan(def);
-      if (!plan.ok) continue;
-      if (circuitSiteBlocked(plan, cell => this.world.blockAt(cell)).length) continue;
-      const needs = Object.entries(def.requires).map(([item, qty]) => `${qty} ${item}`).join(', ');
-      out.push({ key: `build_circuit_${def.id}`, description: `Build the ${def.id} circuit at ${JSON.stringify(plan.anchor)} (needs ${needs}): ${def.description}` });
+      const option = this._circuitOptionFor(def);
+      if (!option || seen.has(option.key)) continue;
+      seen.add(option.key);
+      out.push(option);
     }
     // R4: si smonta solo quello che il bot ha costruito lui.
     const owned = this._ownedCircuitCells();
@@ -4033,6 +4095,7 @@ export class BedrockAdapter {
         ok: false,
         error: 'circuit_incomplete',
         id,
+        at: Date.now(),
         origin: plan.origin,
         facing: dir,
         placed,
@@ -4120,6 +4183,9 @@ export class BedrockAdapter {
       ok: error == null,
       error,
       id,
+      // Il timestamp permette a un criterio di skill (`circuitBuilt`) di
+      // distinguere un cantiere fatto *durante* la skill da uno che c'era già.
+      at: Date.now(),
       origin: plan.origin,
       facing: dir,
       steps: placed.length,

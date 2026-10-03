@@ -1,0 +1,15 @@
+{
+  "id": "build_auto_harvest",
+  "description": "Build a piston harvester that pushes mature crops into a hopper.",
+  "category": "redstone",
+  "preconditions": {
+    "allOf": [
+      { "inventoryTagGte": { "hoppers": 1 } },
+      { "inventoryGte": { "bucket": 1 } }
+    ]
+  },
+  "success": { "circuitBuilt": { "id": "auto_harvest" } },
+  "intents": ["build", "redstone", "collect"],
+  "planTargets": { "piston": 1, "observer": 1 },
+  "notes": "Dichiarata ma NON raggiungibile oggi: il blueprint `auto_harvest` è marcato non costruibile perché il canale d'acqua richiede la milestone M1 dei fluidi e la direzione di uscita della hopper non ha ancora una strategia di piazzamento. La skill esiste come declarazione dell'obiettivo: diventa raggiungibile quando il blocker del blueprint cade, e il criterio circuitBuilt continuerà a decidere sul cantiere reale."
+}

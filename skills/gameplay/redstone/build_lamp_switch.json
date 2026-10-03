@@ -1,0 +1,14 @@
+{
+  "id": "build_lamp_switch",
+  "description": "Build a lever-controlled redstone lamp and verify that the switch works.",
+  "category": "redstone",
+  "preconditions": {
+    "allOf": [
+      { "inventoryTagGte": { "redstone_dust": 1 } }
+    ]
+  },
+  "success": { "circuitBuilt": { "id": "lamp_switch" } },
+  "intents": ["build", "redstone", "toggle"],
+  "planTargets": { "redstone_lamp": 1, "lever": 1 },
+  "notes": "Il successo lo decide il report del cantiere (`circuits.last`): il criterio circuitBuilt richiede che il circuito dichiarato sia stato costruito **durante** la skill e che il verifier del blueprint sia passato. Un circuito costruito prima non conta (`at` del report)."
+}

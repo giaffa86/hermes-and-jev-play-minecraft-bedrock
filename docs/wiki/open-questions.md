@@ -258,8 +258,10 @@ Still missing (the rest of the original gap):
   player on the BDS) and the *deep* side of M6 (following a cave system beyond
   the loaded radius, Deep Dark/Ancient City never observed live).
 - **Placement** only on a top face adjacent to the bot; no scaling/orientation.
-- **Redstone awareness (R0), oriented placement (R1), interaction/sensing (R2)
-  and primitive circuits (R3) done (03/10); R4 (verifier/teardown) still missing.**
+- **Redstone awareness (R0), oriented placement (R1), interaction/sensing (R2),
+  primitive circuits (R3), measured verification/teardown (R4) and the
+  progression integration (R5) done (03/10); R6 (limits, safety rules, runbook)
+  still missing.**
   `bedrock-redstone.mjs` now owns the vocabulary (components, sources, outputs,
   `tnt` hazard) and reads state through `powerOf`/`facingOf`/`blockProperties`
   (`null` when unreadable — never "off" by assumption); the component list is in
@@ -288,16 +290,36 @@ Still missing (the rest of the original gap):
   restores it; `GET /observe.circuits` exposes the catalogue and the last report,
   and every attempt lands in `runs/<run>/circuits.jsonl`. Four blueprints are
   buildable (`lamp_switch`, `delay_line`, `auto_lamp`, `auto_door`), four are
-  declared and refused with a reason. Still open: a deterministic verifier that
-  *measures* the timing, `teardown_circuit` limited to bot-built blocks and
-  rollback on a partial build (all R4); the **live** component round (R1, R2 and
-  R3's acceptance build share it) is blocked from two sides — the standing
-  "no base edits" rule (the single cobblestone in reach is the room's own wall,
-  so `mine_cobblestone → craft_lever → place_lever → use_redstone` was not run)
-  and the fact that a `redstone_lamp` needs glowstone from the Nether. The
+  declared and refused with a reason. **R4** makes the verification honest: the
+  six-tick delay is *measured* from the bot's own redstone trace
+  (`measureCircuitDelay`, `required`/`toleranceMs` per blueprint) instead of
+  being declared, a `required` measurement that never arrives is
+  `circuit_delay_unmeasured` and a late one `circuit_delay_mismatch`, a failed
+  step rolls back the cells already placed, and `teardown_circuit` removes only
+  circuit cells **the bot placed** (a cell someone else changed is skipped, not
+  mined). **R5** connects all of it to the progression: `redstone_ore` →
+  `redstone_basics` → `redstone_automation` in `knowledge/progression.json`
+  (alias `goals.redstone`), six declarative skills in
+  `skills/gameplay/redstone/` (two of which declare a blueprint that is still
+  `buildable: false`, so the gap is visible in the graph), the new verifier
+  criterion `circuitBuilt` (a circuit built *before* the skill started does not
+  count), and the materials bridge: a blueprint with missing materials publishes
+  `craft_<item>` for the first one that is craftable right now (`_craftableNow`:
+  recipe + ingredients + a table within 32 blocks for recipes bigger than 2×2),
+  and `build_circuit_<id>` only when nothing is missing. Still open: the **live**
+  component/build round (R1, R2, R3's acceptance build and R5's curriculum share
+  it) is blocked from three sides — the standing "no base edits" rule (the single
+  cobblestone in reach is the room's own wall, so `mine_cobblestone → craft_lever
+  → place_lever → use_redstone` was not run), the room's drops falling into the
+  cavity under its floor (`reachable: false`, the known pickup blocker) and the
+  fact that a `redstone_lamp` needs glowstone from the Nether. `_craftableNow`
+  also sees crafting only, not smelting (cobblestone → stone, which `auto_door`
+  needs). The
   ore was already mineable from the opportunity scan (`ore-value.mjs`) when an
-  iron pickaxe is held; the live rounds of R2 and R3 did verify the sensing keys,
-  the catalogue, the typed routes and the option gating. Roadmap in
+  iron pickaxe is held; the live rounds of R2, R3 and R5 did verify the sensing
+  keys, the catalogue, the typed routes, the option gating and that the extended
+  graph resolves on the BDS (`CURRICULUM=redstone_automation` → `stone_age`).
+  Roadmap in
   [redstone](redstone.md).
 - **Barricade** (`.private/DEFENSE-TASK.md`): `_barricadeGap` only checks the
   four cells adjacent to the bot, so the bot must already stand next to the 1×2
@@ -479,9 +501,13 @@ Still missing (the rest of the original gap):
   live-refused 03/10) and R4 done (the delay is *measured* from the block-update
   trace, `teardown_circuit` limited to the cells the bot placed itself, rollback
   of a half-built site, `measure.required`/tolerance per blueprint — unit-tested
-  03/10), R5–R6 spec only. Roadmap in [redstone](redstone.md); next
-  is R5, whose live round shares the "no base edits" blocker (and a
-  `redstone_lamp` needs Nether glowstone).
+  03/10), R5 done (six declarative skills, `redstone_ore` → `redstone_basics` →
+  `redstone_automation` in the progression with the alias `redstone`, the
+  `circuitBuilt` criterion and the materials bridge `craft_<item>` — unit-tested
+  and live-resolved on the BDS 03/10) and R6 spec only. Roadmap in
+  [redstone](redstone.md); next is R6, while the live build round still shares
+  the "no base edits" blocker (unreachable drops in the room's cavity, the base
+  wall as the only cobblestone, and a `redstone_lamp` needs Nether glowstone).
 
 ## Known code defects (not fixed)
 

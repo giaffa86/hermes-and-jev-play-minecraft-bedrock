@@ -5,6 +5,14 @@
 
 import { FOODS } from '../bedrock-survival.mjs';
 
+// Elenco chiuso dei blocchi/oggetti che compongono un circuito primitivo.
+const REDSTONE_PART_NAMES = new Set([
+  'repeater', 'comparator', 'piston', 'sticky_piston', 'observer', 'dispenser',
+  'dropper', 'hopper', 'lever', 'redstone_torch', 'daylight_detector',
+  'target', 'tripwire_hook', 'note_block', 'redstone_lamp',
+  'stone_button', 'wooden_button', 'polished_blackstone_button',
+]);
+
 // Ogni tag è un predicato sul nome item (senza prefisso minecraft:).
 const TAG_PREDICATES = {
   logs: name => /(_log|_stem|_hyphae)$/.test(name),
@@ -32,6 +40,11 @@ const TAG_PREDICATES = {
   axes: name => /_axe$/.test(name),
   swords_or_axes: name => /_(sword|axe)$/.test(name),
   armor: name => /_(helmet|chestplate|leggings|boots)$/.test(name),
+  // Redstone (R5): la polvere è l'item `redstone` in Bedrock, i "parti" sono
+  // tutto ciò che si piazza per costruire un circuito.
+  redstone_dust: name => name === 'redstone' || name === 'redstone_dust',
+  redstone_parts: name => REDSTONE_PART_NAMES.has(name),
+  hoppers: name => name === 'hopper',
 };
 
 export const ITEM_TAGS = Object.keys(TAG_PREDICATES).sort();

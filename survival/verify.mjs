@@ -221,6 +221,26 @@ export function evaluateCriteria (criteria, observation, { before = null, contex
       ? { ok: true, evidence }
       : fail(`power ${row.power} < ${atLeast} at ${want.x},${want.y},${want.z}`);
   }
+  if ('circuitBuilt' in criteria) {
+    const want = criteria.circuitBuilt;
+    const last = after.circuits?.last ?? null;
+    if (!last) return fail('no circuit report');
+    const wanted = typeof want === 'string' ? { id: want } : (want === true ? {} : (want ?? {}));
+    if (wanted.id && last.id !== wanted.id) {
+      return fail(`last circuit is ${last.id ?? 'unknown'}, not ${wanted.id}`);
+    }
+    if (last.ok !== true) return fail(`circuit ${last.id ?? '?'} reported ${last.error ?? 'failed'}`);
+    // Un cantiere riuscito *prima* che la skill iniziasse non è il risultato
+    // della skill: il report porta il suo timestamp, quindi si può distinguere.
+    if (last.at != null && before?.circuits?.last?.at === last.at) {
+      return fail('the circuit was already built before the skill started');
+    }
+    evidence.circuitBuilt = last.id ?? null;
+    evidence.circuitAt = last.at ?? null;
+    evidence.circuitSteps = last.steps ?? null;
+    evidence.circuitDelay = last.delay?.measuredMs ?? null;
+    return { ok: true, evidence };
+  }
   if ('circuitActive' in criteria) {
     const want = criteria.circuitActive;
     const atLeast = Number.isFinite(want?.atLeast) ? want.atLeast : 1;
@@ -276,7 +296,7 @@ export const CRITERIA_KEYS = [
   'dimension', 'nearbyBlock', 'foodIncreased', 'healthIncreased', 'noHostileWithin',
   'threatDistanceIncreasedBy', 'nightSurvived', 'deathsAtLeast', 'itemPreserved',
   'inWater', 'notInLava', 'airAtLeast',
-  'blockPoweredAt', 'circuitActive',
+  'blockPoweredAt', 'circuitActive', 'circuitBuilt',
   'allOf', 'anyOf',
 ];
 

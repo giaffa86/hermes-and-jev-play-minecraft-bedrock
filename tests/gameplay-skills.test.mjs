@@ -23,10 +23,29 @@ test('the shipped gameplay skill library loads and validates', () => {
     'nether_portal', 'nether_survival', 'piglin_barter', 'obtain_blaze_rods',
     'obtain_ender_pearls', 'craft_eyes_of_ender', 'find_stronghold', 'enter_end',
     'beat_the_dragon',
+    'redstone_basics', 'craft_redstone_part', 'build_lamp_switch',
+    'build_auto_lamp', 'build_auto_harvest', 'build_hopper_chain',
   ]) {
     assert.ok(skills.has(id), `skill ${id}`);
   }
   assert.equal(loadGameplaySkills().size, skills.size);
+});
+
+test('the redstone skills declare the circuit they build instead of trusting a step count', () => {
+  for (const [id, circuit] of [
+    ['build_lamp_switch', 'lamp_switch'],
+    ['build_auto_lamp', 'auto_lamp'],
+    ['build_auto_harvest', 'auto_harvest'],
+    ['build_hopper_chain', 'hopper_chain'],
+  ]) {
+    const def = skills.get(id);
+    assert.deepEqual(def.success, { circuitBuilt: { id: circuit } }, `${id} success`);
+    assert.ok(def.intents.includes('build'), `${id} intents`);
+  }
+  // Le skill dei blueprint bloccati lo dicono nel proprio notes: chi legge la
+  // libreria non deve dedurre la raggiungibilità dal solo nome.
+  assert.match(skills.get('build_auto_harvest').notes, /NON raggiungibile/);
+  assert.match(skills.get('build_hopper_chain').notes, /NON raggiungibile/);
 });
 
 test('validateSkill rejects unknown intents, unknown tags and missing fields', () => {

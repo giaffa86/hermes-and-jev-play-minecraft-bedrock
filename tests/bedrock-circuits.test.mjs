@@ -17,6 +17,7 @@ const YAW = { south: 0, west: 90, north: 180, east: 270 };
 function circuitAdapter ({
   cells = {}, inventory = {}, feet = { x: 0.5, y: 71, z: 0.5 }, facing = 'south',
   link = [], floor = true, refuse = null, serverFacing = () => 'south', linkDelayMs = 0, traceUpdates = true,
+  recipeData = null, tableNearby = false,
 } = {}) {
   const adapter = new BedrockAdapter({ logger: { log () {} } });
   adapter.spawned = true;
@@ -48,7 +49,21 @@ function circuitAdapter ({
   adapter.world.loaded = new Map([['0,0', {}]]);
   adapter.world.blockAt = ({ x, y, z }) => blocks.get(`${x},${y},${z}`) ?? null;
   adapter.world.runtimeIdAt = () => 1;
-  adapter.world.findBlocks = () => [];
+  adapter.world.findBlocks = (name) => (tableNearby && name === 'crafting_table' ? [{ name: 'crafting_table' }] : []);
+  // Ricette finte nel formato del crafting_data del server: `recipeData` è
+  // {item: {width, height, input}}, cioè esattamente ciò che serve al craft.
+  if (recipeData) {
+    const byOutput = new Map();
+    const bodies = [];
+    let networkId = 1;
+    for (const [item, recipe] of Object.entries(recipeData)) {
+      const entry = { network_id: networkId++ };
+      byOutput.set(item, [entry]);
+      bodies.push({ network_id: entry.network_id, ...recipe });
+    }
+    adapter.recipes = byOutput;
+    adapter.craftingData = { shaped_recipes: bodies, shapeless_recipes: [] };
+  }
   adapter._yawTo = () => 0;
   adapter._lookAt = () => ({ yaw: 0, pitch: 0 });
   adapter.log = (type, data) => events.logs.push({ type, data });
@@ -328,6 +343,41 @@ test('le opzioni offrono solo i circuiti che si possono davvero costruire', () =
 
   const occupied = circuitAdapter({ inventory: { ...LAMP_SWITCH }, cells: { '0,71,1': { name: 'stone' } } });
   assert.equal(occupied.adapter.options().map(o => o.key).includes('build_circuit_lamp_switch'), false);
+});
+
+test('R5: un circuito senza materiali offre il craft del materiale mancante, non il cantiere', () => {
+  const ingredient = name => ({ type: 'valid', descriptor_type: 'name', name });
+  const lever = { width: 2, height: 1, input: [ingredient('stick'), ingredient('cobblestone')] };
+  // Il cancello è 2x3: la ricetta chiede il tavolo da lavoro.
+  const gate = { width: 2, height: 3, input: [ingredient('stick'), ingredient('oak_planks'), ingredient('stick'), ingredient('oak_planks'), ingredient('stick'), ingredient('stick')] };
+
+  // Senza tavolo vicino, il cancello non è fabbricabile: resta solo la leva.
+  const near = circuitAdapter({ inventory: { stick: 5, cobblestone: 1, oak_planks: 4 }, recipeData: { lever, fence_gate: gate } });
+  const keys = near.adapter.options().map(o => o.key);
+  assert.equal(keys.includes('build_circuit_auto_door'), false, 'senza materiali il cantiere non si offre');
+  assert.equal(keys.includes('craft_lever'), true, 'la leva è fabbricabile con bastone + ciottolo');
+  assert.equal(keys.includes('craft_fence_gate'), false, 'una ricetta 3x3 senza tavolo non si offre');
+  const leverOption = near.adapter.options().find(o => o.key === 'craft_lever');
+  assert.match(leverOption.description, /for the auto_door circuit/);
+  assert.match(leverOption.description, /missing 1 lever/);
+  // L'ingrediente mancante: senza ciottoli nulla è fabbricabile e non si offre niente.
+  const bare = circuitAdapter({ inventory: { stick: 5, oak_planks: 4 }, recipeData: { lever, fence_gate: gate } });
+  assert.deepEqual(bare.adapter.options().filter(o => o.key.startsWith('craft_lever')), []);
+
+  // Con il tavolo il cancello diventa fabbricabile: la prima cosa mancante
+  // nell'ordine dei `requires` è la leva, e il cancello è il passo successivo.
+  const withTable = circuitAdapter({ inventory: { stick: 5, cobblestone: 1, oak_planks: 4 }, recipeData: { lever, fence_gate: gate }, tableNearby: true });
+  const tableKeys = withTable.adapter.options().map(o => o.key);
+  assert.equal(['craft_lever', 'craft_fence_gate'].some(k => tableKeys.includes(k)), true);
+  assert.equal(circuitAdapter({ inventory: { stick: 5, cobblestone: 1, oak_planks: 4 }, recipeData: { lever, fence_gate: gate }, tableNearby: true }).adapter._craftableNow('fence_gate'), true);
+  assert.equal(near.adapter._craftableNow('fence_gate'), false);
+
+  // Materiali completi: si offre il cantiere e non i craft.
+  const ready = circuitAdapter({ inventory: { stone: 1, lever: 1, fence_gate: 1 }, recipeData: { lever, fence_gate: gate } });
+  const readyKeys = ready.adapter.options().map(o => o.key);
+  assert.equal(readyKeys.includes('build_circuit_auto_door'), true);
+  assert.equal(readyKeys.includes('craft_lever'), false);
+  assert.equal(readyKeys.includes('craft_fence_gate'), false);
 });
 
 test('_facingFromYaw legge la direzione del cantiere dallo sguardo', () => {

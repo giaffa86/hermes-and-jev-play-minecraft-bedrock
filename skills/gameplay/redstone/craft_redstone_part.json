@@ -1,0 +1,14 @@
+{
+  "id": "craft_redstone_part",
+  "description": "Craft a repeater or a piston from the redstone dust and keep it.",
+  "category": "redstone",
+  "preconditions": {
+    "allOf": [
+      { "inventoryTagGte": { "redstone_dust": 1 } }
+    ]
+  },
+  "success": { "inventoryTagGte": { "redstone_parts": 1 } },
+  "intents": ["craft", "redstone"],
+  "planTargets": { "repeater": 1 },
+  "notes": "Il criterio accetta qualunque parte del vocabolario (repeater, comparator, piston, observer, ...): la skill chiede 'almeno un pezzo', non una ricetta specifica, così resta valida anche quando il planner sceglie un altro componente."
+}

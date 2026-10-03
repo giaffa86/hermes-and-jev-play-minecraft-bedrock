@@ -1,0 +1,14 @@
+{
+  "id": "build_hopper_chain",
+  "description": "Build a hopper chain that moves items from a chest into a container.",
+  "category": "redstone",
+  "preconditions": {
+    "allOf": [
+      { "inventoryTagGte": { "hoppers": 1 } }
+    ]
+  },
+  "success": { "circuitBuilt": { "id": "hopper_chain" } },
+  "intents": ["build", "redstone", "collect"],
+  "planTargets": { "hopper": 1, "chest": 1 },
+  "notes": "Dichiarata ma NON raggiungibile oggi: il blueprint `hopper_chain` è marcato non costruibile perché la hopper poggia sul baule e un baule è un `usable_block` per la primitiva di piazzamento (un click lo apre invece di appoggiarci un blocco). Serve una strategia di appoggio diversa, non un workaround nel singolo cantiere."
+}

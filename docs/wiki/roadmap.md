@@ -225,9 +225,16 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   was **not** needed, the state is read back from the world instead. Building and
   using circuits is R3-done, and **R4** (measured delay, placed-block ledger,
   `teardown_circuit`, rollback of a half-built site) is done as well: the timing
-  is now read from the bot's own redstone trace instead of being declared. The
-  full live build round is still blocked from two sides: mining
-  the only cobblestone in reach edits the base, and a `redstone_lamp` needs
+  is now read from the bot's own redstone trace instead of being declared. **R5**
+  closes the loop with the game itself: the three milestones
+  (`redstone_ore` → `redstone_basics` → `redstone_automation`, alias `redstone`)
+  and the six declarative skills make circuits *reachable* from the progression,
+  the new `circuitBuilt` criterion verifies a build instead of an inventory, and
+  the materials bridge turns "missing 1 lever" into the option `craft_lever`
+  when the bot can actually craft it. The
+  full live build round is still blocked from three sides: mining
+  the only cobblestone in reach edits the base, the room's drops fall into the
+  cavity under its floor (`reachable: false`), and a `redstone_lamp` needs
   glowstone from the Nether.
 - **Goal Contract** — thin slice implemented (`survival/goal-contract.mjs`,
   opt-in via `GOAL_CONTRACT`/`MAX_DEATHS`/`PRESERVE_ITEMS`; status logged). Still
@@ -284,7 +291,7 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    milestones are therefore parked with a documented blocker; the next
    macro-area is **Redstone R0** (below), a deviation to record in the final
    report.
-7. **Redstone** (R0+R1+R2+R3+R4 done 03/10, spec in [redstone](redstone.md)): R0 (protect
+7. **Redstone** (R0+R1+R2+R3+R4+R5 done 03/10, spec in [redstone](redstone.md)): R0 (protect
    redstone in `DIG_PROTECTED`, `/observe.redstone`, state-aware search) is
    implemented, unit-tested and collaudato live (see [verification](verification.md)
    row 47.2); **R1** oriented placement + repeater delay is implemented and
@@ -296,10 +303,14 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    on the BDS); **R4** (the verifier *measures* the delay from the block-update
    trace, a ledger of the blocks the bot placed, `teardown_circuit` limited to
    them, rollback of a half-built site) is implemented and unit-tested (row
-   47.6). Next is **R5** (the deterministic verifier for the remaining
-   components and the `crafter`), which shares the live blocker of R1/R2/R3/R4:
-   no component is obtainable in the base room without editing the base
-   (cobblestone = the room's own wall) and a `redstone_lamp` needs glowstone.
+   47.6). **R5** (6 declarative skills, the 3 chained milestones + alias
+   `redstone`, the `circuitBuilt` criterion, the materials bridge
+   `craft_<item>`) is implemented and unit-tested (row 47.7) and live-resolved
+   on the BDS; it shares the live blocker of R1/R2/R3/R4: no component is
+   obtainable in the base room without editing the base (cobblestone = the room's
+   own wall), the drops land in the cavity under its floor, and a
+   `redstone_lamp` needs glowstone. Next is **R6** (limits, safety rules and the
+   runbook: no command blocks, no TNT/traps, lag and size caps, bot safety).
 8. **Goal Contract** (proposal in [goal-achievement](goal-achievement.md)):
    schema + status machine over the existing progression graph, then the 5
    progressive benchmarks (16 logs → shelter+night → iron pickaxe → 5 diamonds

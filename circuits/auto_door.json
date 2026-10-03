@@ -14,5 +14,5 @@
     { "offset": [0, 1, 0], "property": "open_bit", "expected": true },
     { "offset": [0, 0, 1], "property": "open_bit", "expected": true }
   ],
-  "notes": "A fence gate opens on a redstone signal and exposes `open_bit`, so the check is on the world state and not on a block rename. The piston variant from the roadmap needs the head block name verified live (Bedrock uses `sticky_piston_arm_collision`), which is R4 work."
+  "notes": "A fence gate opens on a redstone signal and exposes `open_bit`, so the check is on the world state and not on a block rename. The piston variant from the roadmap needs the head block name verified live (Bedrock uses `sticky_piston_arm_collision`), which is still an open live check."
 }

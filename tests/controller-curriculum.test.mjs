@@ -110,6 +110,73 @@ function startCurriculumHarness (initial = {}) {
   });
 }
 
+// Scripted world for the redstone chain: the bot already has the early-game
+// gear (the graph's `wood`/`crafting_table`/`stone_tools`/`iron_age` nodes are
+// satisfied by the inventory), so the progression engine must resolve straight
+// to `redstone_ore -> redstone_basics -> redstone_automation`. The last stage
+// answers with a *circuit report*, because that is what the skill verifies.
+function startRedstoneHarness (initial = {}) {
+  return new Promise(resolve => {
+    const state = {
+      stage: 'ore',
+      inventory: { oak_log: 8, crafting_table: 1, stone_pickaxe: 1, iron_pickaxe: 1, ...(initial.inventory || {}) },
+      health: 20,
+      food: 20,
+      time: { ticks: 2000, night: false, phase: 'day', ...(initial.time || {}) },
+      circuits: { count: 8, buildable: ['lamp_switch'], declared: [], invalid: null, last: null, owned: 0, ...(initial.circuits || {}) },
+      acts: [],
+    };
+    const optionsFor = () => {
+      switch (state.stage) {
+        case 'ore': return [{ key: 'mine_redstone_ore', description: 'mine redstone ore for dust' }];
+        case 'parts': return [{ key: 'craft_repeater', description: 'craft a repeater' }];
+        case 'circuit': return [{ key: 'build_circuit_lamp_switch', description: 'build the lamp switch circuit' }];
+        default: return [{ key: 'wait', description: 'wait' }];
+      }
+    };
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (req.method === 'GET' && req.url === '/observe') {
+        res.end(JSON.stringify({
+          position: { x: 0, y: 64, z: 0 },
+          dimension: 'overworld',
+          inventory: { ...state.inventory },
+          health: state.health,
+          food: state.food,
+          dead: false,
+          time: { ...state.time },
+          entities: [],
+          chat: [],
+          drops: [],
+          containers: [],
+          circuits: { ...state.circuits },
+        }));
+      } else if (req.method === 'GET' && req.url === '/options') {
+        res.end(JSON.stringify({ options: optionsFor() }));
+      } else if (req.method === 'POST' && req.url === '/act') {
+        let body = '';
+        req.on('data', c => { body += c; });
+        req.on('end', () => {
+          let key = null;
+          try { key = JSON.parse(body || '{}').key; } catch { key = null; }
+          state.acts.push(key);
+          if (key === 'mine_redstone_ore' && state.stage === 'ore') { state.inventory.redstone = 4; state.stage = 'parts'; }
+          if (key === 'craft_repeater' && state.stage === 'parts') { state.inventory.repeater = 1; state.stage = 'circuit'; }
+          if (key === 'build_circuit_lamp_switch' && state.stage === 'circuit') {
+            state.circuits.last = { id: 'lamp_switch', ok: true, error: null, at: Date.now(), steps: 2 };
+            state.circuits.owned = 2;
+            state.stage = 'done';
+          }
+          res.end(JSON.stringify({ ok: true, ms: 1 }));
+        });
+      } else {
+        res.end('{}');
+      }
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, state }));
+  });
+}
+
 function runController (env) {
   return new Promise(resolve => {
     const child = spawn(process.execPath, ['controller.mjs'], { cwd: ROOT, env: { ...process.env, ...env } });
@@ -202,6 +269,70 @@ test('CURRICULUM=first_night: the progression engine drives the chain to the mil
       assert.equal(goal.status, 'completed');
       assert.equal(goal.goal.source, 'curriculum');
     }
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(hermes.dir, { recursive: true, force: true });
+  }
+});
+
+test('CURRICULUM=redstone_automation: the chain ends on a verified circuit, not on an inventory', async () => {
+  const { server, port, state } = await startRedstoneHarness();
+  const runId = `test-curriculum-redstone-${process.pid}-${Date.now()}`;
+  const dir = join(ROOT, 'runs', runId);
+  const hermes = fakeHermesQueue(['mine_redstone_ore', 'craft_repeater', 'build_circuit_lamp_switch']);
+  try {
+    const { code, stdout, stderr } = await runController({
+      HARNESS: `http://127.0.0.1:${port}`,
+      RUN_ID: runId,
+      CONTROLLER: 'hermes',
+      CURRICULUM: 'redstone_automation',
+      MAX_STEPS: '6',
+      TARGETS: '{}',
+      WAYPOINT: '{"x":380,"z":16}',
+      SESSION: '',
+      AUTONOMY: 'off',
+      OPENROUTER_API_KEY: '',
+      TYPESAFE_API_KEY: '',
+      CHAT_ALLOWLIST: '',
+      PATH: `${hermes.path}:${process.env.PATH}`,
+    });
+    assert.equal(code, 0, `unexpected exit code ${code}; stdout:\n${stdout}\nstderr:\n${stderr}`);
+    assert.match(stdout, /GOAL MET after 3 actions \(curriculum redstone_automation\)/);
+    for (const skill of ['redstone_basics', 'craft_redstone_part', 'build_lamp_switch']) {
+      assert.match(stdout, new RegExp(`SKILL ${skill} SUCCESS`), `${skill} was not verified`);
+    }
+    assert.deepEqual(state.acts, ['mine_redstone_ore', 'craft_repeater', 'build_circuit_lamp_switch'],
+      'the actions must follow the redstone chain');
+
+    const events = readFileSync(join(dir, 'controller.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const plans = events.filter(e => e.type === 'plan');
+    assert.deepEqual(
+      plans.map(e => e.plan.milestone),
+      ['redstone_ore', 'redstone_basics', 'redstone_automation'],
+      'plans must come from the progression graph, in prerequisite order',
+    );
+    assert.deepEqual(plans.map(e => e.plan.skill),
+      ['redstone_basics', 'craft_redstone_part', 'build_lamp_switch']);
+    assert.ok(plans.every(e => e.plan.waypoint === null), 'no ambient waypoint in a milestone plan');
+    assert.ok(!events.some(e => e.type === 'curriculum_fallback'), 'the planner must not be needed');
+
+    const skills = readFileSync(join(dir, 'skills.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    assert.deepEqual(
+      skills.map(s => [s.skill, s.status, s.context?.milestone]),
+      [
+        ['redstone_basics', 'success', 'redstone_ore'],
+        ['craft_redstone_part', 'success', 'redstone_basics'],
+        ['build_lamp_switch', 'success', 'redstone_automation'],
+      ],
+    );
+    // L'evidenza del circuito è quella del verifier, non una deduzione.
+    assert.equal(skills[2].context.evidence.circuitBuilt, 'lamp_switch');
+    const met = events.find(e => e.type === 'goal_met');
+    assert.equal(met.curriculum, 'redstone_automation');
+    assert.equal(met.steps, 3);
+    assert.deepEqual([...met.completedMilestones].sort(),
+      ['redstone_automation', 'redstone_basics', 'redstone_ore']);
   } finally {
     server.close();
     rmSync(dir, { recursive: true, force: true });
