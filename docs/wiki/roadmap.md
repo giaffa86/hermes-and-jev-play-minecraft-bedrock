@@ -211,8 +211,12 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   protection) implemented, unit-tested and collaudato live 03/10**
   (`bedrock-redstone.mjs` vocabulary + `powerOf`/`facingOf`, component list in
   `DIG_PROTECTED`, `_redstoneCensus`/`GET /observe.redstone`,
-  `findBlocksByState`). Building and using circuits is R1+ (oriented placement
-  needs a packet capture).
+  `findBlocksByState`); **R1 (oriented placement + repeater delay) implemented and
+  unit-tested 03/10** (`place_<component>` via `_placeOriented` place → read →
+  correct, `set_repeater_delay[_n]`) — the packet capture the roadmap predicted
+  was **not** needed, the state is read back from the world instead. Building and
+  using circuits is R2+; the full live R1 round is one permission away (mining the
+  only cobblestone in reach edits the base).
 - **Goal Contract** — thin slice implemented (`survival/goal-contract.mjs`,
   opt-in via `GOAL_CONTRACT`/`MAX_DEATHS`/`PRESERVE_ITEMS`; status logged). Still
   missing: the persistent Goal Manager/queue, a `target`-driven `obtain_item`
@@ -268,12 +272,14 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    milestones are therefore parked with a documented blocker; the next
    macro-area is **Redstone R0** (below), a deviation to record in the final
    report.
-7. **Redstone** (R0 done 03/10, spec in [redstone](redstone.md)): R0 (protect
+7. **Redstone** (R0+R1 done 03/10, spec in [redstone](redstone.md)): R0 (protect
    redstone in `DIG_PROTECTED`, `/observe.redstone`, state-aware search) is
    implemented, unit-tested and collaudato live (see [verification](verification.md)
-   row 47.2); next is **R1** oriented placement — needs a packet capture of a real
-   placement to confirm how the BDS derives block state from yaw/face/click
-   position; the deterministic fallback is a place → read → correct loop.
+   row 47.2); **R1** oriented placement + repeater delay is implemented and
+   unit-tested (row 47.3) — place → read → correct, no packet capture needed. Next
+   is **R2** (`use_redstone` + `sense_redstone` + verifier criteria), which shares
+   R1's live blocker: no component is obtainable in the base room without editing
+   the base (cobblestone = the room's own wall).
 8. **Goal Contract** (proposal in [goal-achievement](goal-achievement.md)):
    schema + status machine over the existing progression graph, then the 5
    progressive benchmarks (16 logs → shelter+night → iron pickaxe → 5 diamonds

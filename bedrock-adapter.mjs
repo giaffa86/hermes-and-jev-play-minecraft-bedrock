@@ -13,7 +13,7 @@ import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
 import { detectStructures } from './structures.mjs';
 import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT } from './bedrock-fluids.mjs';
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
-import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView } from './bedrock-redstone.mjs';
+import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -61,6 +61,9 @@ const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hop
 // con `mine_redstone_ore`), i componenti no.
 const REDSTONE_RESCAN_MS = +(process.env.REDSTONE_RESCAN_MS || 5000);
 const REDSTONE_NEARBY_NAMES = [...new Set([...REDSTONE_ORES, ...REDSTONE_COMPONENTS, ...REDSTONE_HAZARDS])];
+// Il nome dell'item non è sempre il nome del blocco: la polvere di redstone si
+// piazza come `redstone_wire`.
+const REDSTONE_ITEM_BLOCKS = { redstone: 'redstone_wire' };
 // Bit dei MetadataFlags (key 0) delle entità: servono per baby/tempted/inlove
 // degli animali e per il flag resting del bot stesso.
 // Bit dei MetadataFlags1 (protocol.json, bedrock 1.26.51): l'ordine esatto è
@@ -1547,6 +1550,22 @@ export class BedrockAdapter {
     if ((this.inventory.bed || 0) > 0 && !this.world.findBlocks('bed', this.position, 8, 1).length) {
       o.push({ key: 'place_bed', description: 'Place a bed to sleep and set the respawn point' });
     }
+    // Redstone (R1): i componenti in inventario si piazzano e lo stato (direzione,
+    // potenza) si legge dal mondo dopo il piazzamento; un ripetitore a portata si
+    // può ritardare. Il minerale non è un componente da piazzare.
+    for (const [itemName, count] of Object.entries(this.inventory || {})) {
+      if (!count) continue;
+      const blockName = REDSTONE_ITEM_BLOCKS[itemName] ?? itemName;
+      if (isRedstoneOre(blockName) || !isRedstoneComponent(blockName)) continue;
+      o.push({ key: `place_${itemName}`, description: `Place ${blockName.replace(/_/g, ' ')} next to the bot and read its state back` });
+    }
+    {
+      const repeater = this._pickRepeaterTarget();
+      if (repeater) {
+        const delay = repeaterDelay(this.world.blockAt(repeater));
+        o.push({ key: 'set_repeater_delay', description: `Advance the repeater at ${JSON.stringify(repeater)} to the next delay${delay == null ? '' : ` (now ${delay})`}` });
+      }
+    }
     // Fusione: stazione adatta (altoforno per i minerali, affumicatore per il
     // cibo, altrimenti fornace) + materiale + combustibile.
     {
@@ -1787,7 +1806,18 @@ export class BedrockAdapter {
         result = await this._depositItem(key.slice('deposit_'.length));
       } else if (key.startsWith('place_')) {
         const itemName = key.slice('place_'.length);
-        result = await this._placeBlock(itemName, itemName);
+        // R1: di un componente redstone fa parte dell'esito anche lo stato
+        // (direzione/potenza), quindi si legge dal mondo dopo il piazzamento.
+        const blockName = REDSTONE_ITEM_BLOCKS[itemName] ?? itemName;
+        result = isRedstoneComponent(blockName)
+          ? await this._placeOriented(itemName, blockName)
+          : await this._placeBlock(itemName, itemName);
+      } else if (key === 'set_repeater_delay' || key.startsWith('set_repeater_delay_')) {
+        const suffix = key.slice('set_repeater_delay'.length).replace(/^_/, '');
+        const wanted = suffix === '' ? null : Number(suffix);
+        result = wanted === null || (Number.isFinite(wanted) && wanted >= 0 && wanted <= 3)
+          ? await this._setRepeaterDelay(wanted)
+          : { ok: false, error: 'bad_delay', key, wanted };
       } else if (key === 'open_trade') {
         result = await this._openTrade();
       } else if (key === 'close_trade') {
@@ -3521,7 +3551,8 @@ export class BedrockAdapter {
 
   // Piazza `itemName` (blocco `blockName`) nella cella `target`, cliccando la faccia
   // `face` del blocco `support`. Generalizzazione di `_placeBlock` per barricade.
-  async _placeAtCell (itemName, blockName, target, support, face, clickPos = { x: 0.5, y: 1, z: 0.5 }) {
+  // `opts.yaw`/`opts.pitch` forzano l'orientamento (piazzamento orientato di R1).
+  async _placeAtCell (itemName, blockName, target, support, face, clickPos = { x: 0.5, y: 1, z: 0.5 }, opts = {}) {
     let slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && s.count > 0);
     if (slotIndex < 0) {
       try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
@@ -3536,8 +3567,8 @@ export class BedrockAdapter {
     this._selectHotbarSlot(slotIndex);
     const held = this.inventorySlots[slotIndex];
     const runtimeId = this.world.runtimeIdAt(support);
-    const yaw = this._yawTo(this._feet, { x: target.x + 0.5, z: target.z + 0.5 });
-    const pitch = this._lookAt({ x: target.x + 0.5, y: target.y + 0.5, z: target.z + 0.5 }).pitch;
+    const yaw = opts.yaw ?? this._yawTo(this._feet, { x: target.x + 0.5, z: target.z + 0.5 });
+    const pitch = opts.pitch ?? this._lookAt({ x: target.x + 0.5, y: target.y + 0.5, z: target.z + 0.5 }).pitch;
     // Diagnostica: l'esito di un piazzamento è altrimenti invisibile da fuori
     // (il server può ignorare la transazione senza rispondere nulla).
     const before = this.world.blockAt(target)?.name ?? null;
@@ -3590,6 +3621,99 @@ export class BedrockAdapter {
     const spot = this._findPlacementTarget(blockName);
     if (!spot) return { ok: false, error: 'no_place_spot' };
     return this._placeAtCell(itemName, blockName, spot.target, spot.support, spot.face, spot.clickPos);
+  }
+
+  // ---- redstone: piazzamento orientato e ritardo del ripetitore (R1) -----------------
+
+  // Piazzamento orientato con verifica dello stato: place → read → correct.
+  // Su Bedrock la direzione di un blocco direzionale la deriva il server dallo
+  // yaw del giocatore (più la faccia cliccata e il click_pos), e la regola non è
+  // documentata per famiglia: invece di indovinarla si prova, si rilegge lo
+  // stato dal mondo e, se non è quello voluto, si rimuove il blocco appena messo
+  // e si ritenta con lo yaw successivo. La verifica è quindi sullo stato reale,
+  // non sulla forma del pacchetto.
+  async _placeOriented (itemName, blockName, { facing = null, face = 1, tries = PLACEMENT_YAW_STEPS.length, timeoutMs = 8000 } = {}) {
+    const spot = this._findPlacementTarget(blockName);
+    if (!spot) return { ok: false, error: 'no_place_spot', block: blockName };
+    const baseYaw = this._yawTo(this._feet, { x: spot.target.x + 0.5, z: spot.target.z + 0.5 });
+    const pitch = this._lookAt({ x: spot.target.x + 0.5, y: spot.target.y + 0.5, z: spot.target.z + 0.5 }).pitch;
+    const tried = [];
+    for (let i = 0; i < Math.max(1, tries); i++) {
+      const yaw = (((baseYaw + PLACEMENT_YAW_STEPS[i % PLACEMENT_YAW_STEPS.length]) % 360) + 360) % 360;
+      const res = await this._placeAtCell(itemName, blockName, spot.target, spot.support, face, spot.clickPos, { yaw, pitch });
+      if (!res.ok) return { ...res, attempts: tried.length + 1, tried };
+      const block = this.world.blockAt(spot.target);
+      const actual = normalizeFacing(facingOf(block));
+      tried.push(actual);
+      if (!facing || facingMatches(actual, facing)) {
+        this.log('oriented_place', { block: blockName, position: spot.target, facing: actual, wanted: facing ?? null, attempts: tried.length });
+        return { ok: true, block: blockName, position: spot.target, face, facing: actual, wanted: facing ?? null, attempts: tried.length, corrected: tried.length > 1, tried };
+      }
+      if (i === Math.max(1, tries) - 1) break;
+      const removed = await this._mineBlock(block, timeoutMs);
+      if (!removed?.ok) {
+        this.log('oriented_place_stuck', { block: blockName, position: spot.target, facing: actual, wanted: facing, error: removed?.error ?? null });
+        return { ok: false, error: 'orientation_not_confirmed', block: blockName, position: spot.target, facing: actual, wanted: facing, attempts: tried.length, tried };
+      }
+      await delay(150);
+    }
+    const actual = normalizeFacing(facingOf(this.world.blockAt(spot.target)));
+    this.log('oriented_place_failed', { block: blockName, position: spot.target, facing: actual, wanted: facing, tried });
+    return { ok: false, error: 'orientation_not_confirmed', block: blockName, position: spot.target, facing: actual, wanted: facing, attempts: tried.length, tried };
+  }
+
+  _pickRepeaterTarget () {
+    const scans = this._redstoneCensus()?.components ?? [];
+    return scans.find(c => isRepeater(c.name))?.position ?? null;
+  }
+
+  // Il ritardo di un ripetitore si cambia con un click (cicla 0→1→2→3→0): dopo
+  // ogni click lo stato si rilegge dal mondo, quindi "cambiato" è un fatto
+  // osservato e non una speranza.
+  async _cycleRepeater (position, { clicks = 1, timeoutMs = 2500 } = {}) {
+    const cell = position ?? this._pickRepeaterTarget();
+    if (!cell) return { ok: false, error: 'no_repeater_nearby' };
+    const block = this.world.blockAt(cell);
+    if (!block || !isRepeater(block.name)) return { ok: false, error: 'not_a_repeater', position: cell, block: block?.name ?? null };
+    if (this._reachabilityUsable() && !this.approachReachable(cell)) return { ok: false, error: 'repeater_unreachable', position: cell };
+    const before = repeaterDelay(block);
+    // `delay` è la funzione importata da node:timers/promises: il valore corrente
+    // del ritardo ha bisogno di un nome proprio, altrimenti lo shadowing la rende
+    // non chiamabile.
+    let current = before;
+    const total = Math.max(1, clicks);
+    for (let i = 0; i < total; i++) {
+      const yaw = this._yawTo(this._feet, { x: cell.x + 0.5, z: cell.z + 0.5 });
+      const pitch = this._lookAt({ x: cell.x + 0.5, y: cell.y + 0.5, z: cell.z + 0.5 }).pitch;
+      await this._queueAuthInput({ yaw, pitch, transaction: this._blockUseTransaction(cell) });
+      const deadline = Date.now() + timeoutMs;
+      let next = current;
+      while (Date.now() < deadline) {
+        next = repeaterDelay(this.world.blockAt(cell));
+        if (next != null && next !== current) break;
+        await delay(80);
+      }
+      if (next == null) return { ok: false, error: 'repeater_state_unreadable', position: cell, before, delay: current };
+      if (next === current) return { ok: false, error: 'repeater_delay_not_confirmed', position: cell, before, delay: current, clicks: i + 1 };
+      current = next;
+    }
+    this._redstoneCensus({ force: true });
+    this.log('repeater_delay', { position: cell, before, delay: current, clicks: total });
+    return { ok: true, position: cell, before, delay: current, clicks: total };
+  }
+
+  // `wanted` null ⇒ valore successivo (0→1→2→3→0).
+  async _setRepeaterDelay (wanted = null, { position = null } = {}) {
+    const cell = position ?? this._pickRepeaterTarget();
+    if (!cell) return { ok: false, error: 'no_repeater_nearby' };
+    const current = repeaterDelay(this.world.blockAt(cell));
+    if (current == null) return { ok: false, error: 'repeater_state_unreadable', position: cell };
+    const target = wanted == null ? (current + 1) % 4 : Math.max(0, Math.min(3, Math.round(wanted)));
+    if (target === current) return { ok: true, already: true, position: cell, delay: current };
+    const res = await this._cycleRepeater(cell, { clicks: (target - current + 4) % 4 });
+    if (!res.ok) return res;
+    if (res.delay !== target) return { ok: false, error: 'repeater_delay_not_confirmed', position: cell, before: current, delay: res.delay, wanted: target };
+    return { ok: true, position: cell, before: current, delay: res.delay, clicks: res.clicks, wanted: target };
   }
 
   // ---- mining ------------------------------------------------------------------------

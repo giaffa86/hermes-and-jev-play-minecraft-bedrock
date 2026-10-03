@@ -2092,3 +2092,89 @@ Doc: `redstone.md` (stato, sezione R0, tabella milestone R0 → ◑, limiti),
 `verification.md` (nuova riga 47.2 + riga 46 "Redstone sensing" → ◑),
 `roadmap.md` (voce Redstone + prossimi passi), `open-questions.md` (bullet
 redstone + voce spec-only), `AGENTS.md` (env `REDSTONE_RESCAN_MS`), `index.md`.
+
+## [2026-10-03] feat | Redstone R1: piazzamento orientato e ritardo del repeater
+
+Seconda slice Redstone (`docs/wiki/redstone.md`): il bot piazza un componente
+*con una direzione voluta* e ne cambia il ritardo, verificando il risultato sullo
+stato del mondo invece di fidarsi della forma del pacchetto.
+
+Implementazione. In `bedrock-redstone.mjs` arrivano `normalizeFacing` (numeri
+0..5 → `down`/`up`/`north`/`south`/`west`/`east`), `facingMatches` — tollerante
+per progetto: uguaglianza dopo normalizzazione **oppure** token contenuto in un
+valore composto (una leva a pavimento è `lever_direction = down_east_west`, che
+conta come `east`/`west`) —, `isRepeater`, `repeaterDelay` (0..3, clampato,
+`null` se illeggibile) e `PLACEMENT_YAW_STEPS = [0, 90, 180, 270]`.
+
+Il punto chiave: **come il BDS derivi lo stato da yaw + faccia cliccata +
+`click_pos` non è documentato per famiglia, quindi R1 non lo indovina.** Il
+piazzamento orientato piazza, rilegge lo stato dal mondo e corregge sul
+candidato yaw successivo — la cattura pacchetti che la roadmap prevedeva si è
+rivelata **non necessaria**. Un tentativo sbagliato viene prima *rimosso*
+(`_mineBlock`, budget 8 s), quindi sul percorso di correzione non resta un
+blocco orfano; `tries` è limitato (4 yaw cardinali di default).
+
+In `bedrock-adapter.mjs`: `_placeAtCell(..., { yaw, pitch })` accetta un override
+di orientamento (i call-site esistenti non cambiano, il yaw resta puntato alla
+cella bersaglio quando non c'è override); `_placeOriented(itemName, blockName,
+{ facing, face, tries })` ritorna `{ok, block, position, face, facing, wanted,
+attempts, corrected, tried}` con `facing`/`tried` **normalizzati** e fallimenti
+tipizzati (`no_place_spot`, l'errore propagato di `_placeAtCell`,
+`orientation_not_confirmed` a tentativi esauriti, log `oriented_place_stuck`
+quando il blocco appena piazzato non è rimovibile — in quel caso il caller
+riceve la direzione reale). `_pickRepeaterTarget` prende il primo repeater dal
+censimento R0, `_cycleRepeater(position, { clicks, timeoutMs })` clicca
+`(target − current + 4) % 4` volte **rileggendo lo stato dopo ogni click** (un
+click che non cambia nulla è un errore, non un successo) e `_setRepeaterDelay`
+accetta `null` (valore successivo) o 0..3. Opzioni nuove: `place_<component>`
+per ogni componente in inventario (il **minerale è escluso** — è una risorsa, non
+un circuito — e la polvere mappa al suo blocco via `REDSTONE_ITEM_BLOCKS`, quindi
+`place_redstone` piazza `redstone_wire`) e `set_repeater_delay` quando un
+repeater è nel censimento; `executeAction` instrada un componente su
+`_placeOriented` (un non-componente resta sul `_placeBlock` semplice) e accetta
+`set_repeater_delay` / `set_repeater_delay_<0..3>` (altrimenti `bad_delay`).
+
+Bug reale trovato dai test: in `_cycleRepeater` il locale `let delay` **ombreggiava
+la funzione `delay` importata da `node:timers/promises`**, così il primo click che
+non cambiava lo stato lanciava `TypeError: delay is not a function` invece di
+riportare `repeater_delay_not_confirmed`; il locale è ora `current`.
+
+Test: 4 casi puri nuovi in `tests/bedrock-redstone.test.mjs` e
+`tests/bedrock-redstone-place.test.mjs` (12 casi) con un mondo finto che
+**modella il server** (la direzione del blocco piazzato deriva dal yaw, quindi il
+percorso di correzione è reale: 1 rimozione + 2 tentativi), direzione impossibile
+→ `orientation_not_confirmed` dopo 4 tentativi, rimozione fallita che ferma il
+loop, errore di piazzamento propagato, routing di `executeAction`, ritardo del
+repeater che avanza/fa wrap/rifiuta. Suite completa: **730 test, 730 pass, 0 fail**.
+
+Round live (VM 100, container `hermes-jev-bedrock`, BDS 1.26.52, bot nella sua
+stanza): `GET /observe.redstone` → `counts {components 0, ore 0, hazards 0}`,
+`ready: true`, `loaded: 125` (in stanza non c'è alcun componente). Le rotte R1
+sono vive e tipizzate: `place_lever` → `{ok:false, error:'missing_item', attempts:1,
+tried:[]}`, `set_repeater_delay` → `no_repeater_nearby`, `set_repeater_delay_9` →
+`bad_delay`. Percorso non-componente non regredito: `place_torch` →
+`{ok:true, block:'torch', position:{x:116,y:73,z:158}}` (piazzamento reale
+confermato dal server, torce 2→1). La catena verso un componente reale è stata
+percorsa fino all'ultimo passo consentito: `craft_lever` → `missing_ingredients`
+(il ramo generico `craft_*` esiste; manca la cobblestone), `craft_wooden_pickaxe`
+→ `{ok:true}` (consuma 3 assi + 2 bastoni) e **con il piccone `mine_cobblestone`
+compare in `/options`**.
+
+**Round live bloccato (ambientale, non lacuna di codice)**: i passi restanti sono
+`mine_cobblestone` → `craft_lever` → `place_lever` → rilettura dello stato, cioè
+la verifica live piena di R1; l'unica cobblestone a portata è il **muro della
+base** ((114–116, 73–74, 161), 1.7–2.3 blocchi) e scavarla modifica la base, cosa
+che il piano C in vigore (nessuna modifica alla base, dopo la domanda A/B/C
+m01403 senza risposta) vieta. Il drop sarebbe recuperabile e il blocco
+ripiazzabile: il round è **a una sola autorizzazione di distanza**.
+
+Limite osservato (non R1): durante le sonde il world view ha perso per qualche
+secondo la sezione sotto il bot (`standingOn` da `oak_planks` a `null`, `headroom`
+0, `place_redstone` → `no_place_spot`, `world.columns` 414 vs 417) pur senza
+movimento; il codice tratta `unknown` come solido, quindi il fallimento è
+tipizzato e conservativo, mai un piazzamento sbagliato.
+
+Doc: `redstone.md` (status, sezione R1, tabella milestone R1 → ◑, "Key risks"
+riscritti — la cattura pacchetti non serve più), `verification.md` (nuova riga
+47.3 + riga 47 "Oriented placement" → ◑), `roadmap.md` (voce Redstone + voce 7 dei
+prossimi passi → R2), `open-questions.md` (bullet redstone + voce spec-only).

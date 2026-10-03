@@ -197,6 +197,53 @@ export function facingOf (block) {
   return null;
 }
 
+// R1: il BDS deriva la direzione di un blocco direzionale dallo yaw del
+// giocatore, dalla faccia cliccata e dal `click_pos`; la regola cambia per
+// famiglia (`facing_direction` numerico, `cardinal_direction` stringa,
+// `lever_direction` composto) e non è documentata in modo affidabile. Il
+// confronto con la direzione voluta è quindi tollerante: uguaglianza dopo
+// normalizzazione, oppure token contenuto in un valore composto (una leva a
+// terra è `down_east_west`, che per l'asse est-ovest conta come `east`).
+const FACING_NUMBERS = { 0: 'down', 1: 'up', 2: 'north', 3: 'south', 4: 'west', 5: 'east' };
+
+export function normalizeFacing (facing) {
+  if (facing == null) return null;
+  if (typeof facing === 'number' && FACING_NUMBERS[facing]) return FACING_NUMBERS[facing];
+  const text = String(facing).replace(/^minecraft:/i, '').toLowerCase().replace(/[\s-]+/g, '_');
+  if (Object.hasOwn(FACING_NUMBERS, text)) return FACING_NUMBERS[text];
+  return text || null;
+}
+
+export function facingMatches (actual, wanted) {
+  const a = normalizeFacing(actual);
+  const w = normalizeFacing(wanted);
+  if (!a || !w) return false;
+  if (a === w) return true;
+  if (a.includes('_') && a.split('_').includes(w)) return true;
+  if (w.includes('_') && w.split('_').includes(a)) return true;
+  return false;
+}
+
+// Sequenza di rotazioni provate da un piazzamento orientato: lo yaw del
+// giocatore decide la direzione cardinale, quindi 90° alla volta coprono tutti i
+// casi (i valori intermedi danno direzioni diagonali non canoniche).
+export const PLACEMENT_YAW_STEPS = [0, 90, 180, 270];
+
+export function isRepeater (name) {
+  return /^(unpowered_|powered_)?repeater$/.test(normalizeName(name));
+}
+
+// Ritardo di un ripetitore (0..3) letto dallo stato del blocco, `null` se non
+// leggibile: è il valore che il ciclo dei click deve far combaciare.
+export function repeaterDelay (block) {
+  const props = blockProperties(block);
+  const raw = props?.repeater_delay;
+  if (raw == null) return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(3, Math.round(value)));
+}
+
 export function isSource (block) {
   return REDSTONE_SOURCES.has(normalizeName(block?.name));
 }

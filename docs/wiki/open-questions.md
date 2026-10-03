@@ -258,18 +258,26 @@ Still missing (the rest of the original gap):
   player on the BDS) and the *deep* side of M6 (following a cave system beyond
   the loaded radius, Deep Dark/Ancient City never observed live).
 - **Placement** only on a top face adjacent to the bot; no scaling/orientation.
-- **Redstone awareness done (R0, 03/10); placement/use still missing.**
+- **Redstone awareness done (R0) and oriented placement done (R1, 03/10); use
+  and circuits still missing.**
   `bedrock-redstone.mjs` now owns the vocabulary (components, sources, outputs,
   `tnt` hazard) and reads state through `powerOf`/`facingOf`/`blockProperties`
   (`null` when unreadable — never "off" by assumption); the component list is in
   `DIG_PROTECTED`, `_redstoneCensus` feeds `GET /observe.redstone` (one scan,
   `REDSTONE_RESCAN_MS` TTL, `ready: false` on an unloaded world) and
-  `findBlocksByState` can search by state ("a powered repeater"). Still open:
-  oriented placement (R1: `_placeAtCell` cannot set
-  `facing_direction`/`cardinal_direction` and confirms only the name), using a
-  component (`use_redstone`, R2) and building circuits (R3+) — a placement packet
-  capture is the declared blocker. The ore was already mineable from the
-  opportunity scan (`ore-value.mjs`) when an iron pickaxe is held. Roadmap in
+  `findBlocksByState` can search by state ("a powered repeater"). **R1** adds
+  `place_<component>` through `_placeOriented` — place, read the facing back from
+  the world, remove the wrong placement and retry on the next 90° yaw (bounded
+  tries, typed `orientation_not_confirmed`/`oriented_place_stuck`/`no_place_spot`) —
+  plus `set_repeater_delay[_n]` via repeated `click_block` with a state re-read
+  after every click and `facingMatches` tolerant of compound values
+  (`lever_direction = down_east_west`). The packet capture the roadmap expected
+  turned out to be unnecessary. Still open: using a component (`use_redstone`,
+  R2) and building circuits (R3+); the **live** component round (R1 and R2 share
+  it) is blocked only by the standing "no base edits" rule — the single cobblestone
+  in reach is the room's own wall, so `mine_cobblestone → craft_lever → place_lever`
+  was not run. The ore was already mineable from the opportunity scan
+  (`ore-value.mjs`) when an iron pickaxe is held. Roadmap in
   [redstone](redstone.md).
 - **Barricade** (`.private/DEFENSE-TASK.md`): `_barricadeGap` only checks the
   four cells adjacent to the bot, so the bot must already stand next to the 1×2
@@ -442,9 +450,10 @@ Still missing (the rest of the original gap):
 - **Nether / End** — portal locate/build/light/enter, Nether survival (ghasts,
   piglins, endermen), fortress/blaze, stronghold, End and dragon. Roadmap in
   [nether](nether.md); the progression chain is already in the graph.
-- **Redstone and primitive automation** — R0 done (awareness + protection,
-  live 03/10), R1–R6 spec only. Roadmap in [redstone](redstone.md); next is R1
-  oriented placement (needs a placement packet capture).
+- **Redstone and primitive automation** — R0 done (awareness + protection, live
+  03/10) and R1 done (oriented placement + repeater delay, unit-tested 03/10),
+  R2–R6 spec only. Roadmap in [redstone](redstone.md); next is R2 (`use_redstone`
+  + `sense_redstone`), whose live round shares R1's "no base edits" blocker.
 
 ## Known code defects (not fixed)
 

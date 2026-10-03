@@ -9,6 +9,7 @@ import {
   normalizeName, isRedstoneOre, isRedstoneComponent, isHazard,
   blockProperties, powerOf, isPowered, facingOf, isSource, isOutput,
   componentState, redstoneView,
+  normalizeFacing, facingMatches, isRepeater, repeaterDelay, PLACEMENT_YAW_STEPS,
 } from '../bedrock-redstone.mjs';
 
 const at = (x, y, z) => ({ x, y, z });
@@ -155,4 +156,45 @@ test('redstoneView tronca le liste ma conserva i conteggi reali', () => {
   assert.equal(view.counts.components, REDSTONE_SCAN_LIMIT + 5);
   // Restano i più vicini.
   assert.equal(view.components[0].distance, 1);
+});
+
+// ---- R1: confronto tollerante delle direzioni e ritardo del ripetitore -----------
+
+test('normalizeFacing normalizza numeri, stringhe e prefissi', () => {
+  assert.equal(normalizeFacing(0), 'down');
+  assert.equal(normalizeFacing(1), 'up');
+  assert.equal(normalizeFacing(2), 'north');
+  assert.equal(normalizeFacing(5), 'east');
+  assert.equal(normalizeFacing('MineCraft:North'), 'north');
+  assert.equal(normalizeFacing('east-west'), 'east_west');
+  assert.equal(normalizeFacing('down_east_west'), 'down_east_west');
+  assert.equal(normalizeFacing(null), null);
+  assert.equal(normalizeFacing(''), null);
+});
+
+test('facingMatches accetta l_uguaglianza e il token in un valore composto', () => {
+  assert.equal(facingMatches('north', 'north'), true);
+  assert.equal(facingMatches(2, 'north'), true, 'facing_direction numerico');
+  assert.equal(facingMatches('down_east_west', 'east'), true, 'leva a terra lungo est-ovest');
+  assert.equal(facingMatches('east', 'down_east_west'), true, 'anche nel verso opposto');
+  assert.equal(facingMatches('north', 'east'), false);
+  assert.equal(facingMatches('down_east_west', 'north'), false);
+  assert.equal(facingMatches(null, 'north'), false);
+  assert.equal(facingMatches('north', null), false);
+});
+
+test('isRepeater e repeaterDelay leggono le due varianti di nome', () => {
+  assert.equal(isRepeater('unpowered_repeater'), true);
+  assert.equal(isRepeater('minecraft:powered_repeater'), true);
+  assert.equal(isRepeater('repeater'), true);
+  assert.equal(isRepeater('comparator'), false);
+  assert.equal(repeaterDelay({ name: 'unpowered_repeater', ...props({ repeater_delay: 3 }) }), 3);
+  assert.equal(repeaterDelay({ name: 'powered_repeater', ...props({ repeater_delay: '1' }) }), 1);
+  assert.equal(repeaterDelay({ name: 'unpowered_repeater', ...props({}) }), null, 'stato non leggibile');
+  assert.equal(repeaterDelay({ name: 'stone', ...props({ repeater_delay: 2 }) }), 2, 'non decide sul nome');
+  assert.equal(repeaterDelay({ name: 'unpowered_repeater', ...props({ repeater_delay: 9 }) }), 3, 'clamp 0..3');
+});
+
+test('PLACEMENT_YAW_STEPS copre il giro cardinale', () => {
+  assert.deepEqual(PLACEMENT_YAW_STEPS, [0, 90, 180, 270]);
 });

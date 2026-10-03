@@ -6,8 +6,9 @@ hopper item transport, dispensers and (stretch) crafters. It builds on the
 verified primitives (placement, `click_block` interaction, containers, crafting,
 digging) while never breaking the base's own circuits.
 
-Status: **R0 implemented, unit-tested and collaudato live (03/10/2026); R1–R6
-spec only** (tracked in [roadmap](roadmap.md) and
+Status: **R0 and R1 implemented and unit-tested (R0 also collaudato live); the
+R1 live component round is blocked by the standing "no base edits" rule
+(03/10/2026); R2–R6 spec only** (tracked in [roadmap](roadmap.md) and
 [open-questions](open-questions.md)). Full raw source:
 [`docs/raw/REDSTONE_ROADMAP.md`](../raw/REDSTONE_ROADMAP.md).
 
@@ -117,6 +118,96 @@ circuits (that is R1+).
   radius is 16 blocks — a circuit further out is invisible until the bot walks
   closer.
 
+## R1 — Oriented placement and repeater delay (implemented, unit-tested 03/10/2026)
+
+The bot can now place a redstone component *with a wanted direction* and change a
+repeater's delay, verifying the result on the world state instead of trusting the
+packet shape.
+
+- **Pure helpers** (`bedrock-redstone.mjs`): `normalizeFacing` (numbers 0..5 →
+  `down`/`up`/`north`/`south`/`west`/`east`, `minecraft:` prefix stripped,
+  spaces/dashes folded), `facingMatches(actual, wanted)` — **tolerant by design**:
+  equality after normalisation, or one value being a token of a compound one (a
+  floor lever is `lever_direction = down_east_west`, which counts as `east`/`west`),
+  `isRepeater`, `repeaterDelay` (0..3, clamped, `null` when unreadable) and
+  `PLACEMENT_YAW_STEPS = [0, 90, 180, 270]`.
+- **The BDS derives, we observe.** How the server turns player yaw + clicked face
+  + `click_pos` into `facing_direction`/`cardinal_direction`/`lever_direction` is
+  still undocumented per family, so R1 does not guess it: it **places, reads the
+  state back from the world and corrects on the next candidate yaw** (the
+  packet-capture idea of the roadmap turned out to be unnecessary). A wrong
+  attempt is *removed* (`_mineBlock`, 8 s budget) before the next one, so no
+  orphan block is left behind on the correction path. `tries` is bounded (4
+  cardinal yaws by default).
+- **`_placeAtCell(itemName, blockName, target, support, face, clickPos, { yaw, pitch })`**
+  gained an explicit orientation override; every existing call site keeps the
+  previous behaviour (the yaw is still aimed at the target cell when no override
+  is given).
+- **`_placeOriented(itemName, blockName, { facing, face, tries })`** returns
+  `{ok, block, position, face, facing, wanted, attempts, corrected, tried}` —
+  `facing`/`tried` are the **normalised** values actually read back. Failures are
+  typed: `no_place_spot`, the propagated `_placeAtCell` error (`missing_item`,
+  `place_not_confirmed`, …), `orientation_not_confirmed` (bounded tries) and the
+  `oriented_place_stuck` log when the block just placed could not be removed (the
+  last placement stays in the world and the caller is told the real facing).
+- **Repeater delay via interaction** (`_cycleRepeater` / `_setRepeaterDelay`): the
+  delay cycles 0→1→2→3→0 on `click_block`, so the adapter clicks
+  `(target − current + 4) % 4` times and **re-reads the state after every click**;
+  a click that changes nothing is an error, not a success. Returns
+  `{ok, position, before, delay, clicks, wanted}` (or `{already: true}` when the
+  delay is the one wanted) and `no_repeater_nearby`, `not_a_repeater`,
+  `repeater_unreachable` (reachability gate), `repeater_state_unreadable`,
+  `repeater_delay_not_confirmed`.
+- **Options / actions**: `place_<component>` is offered for every redstone
+  component in the inventory (the **ore** is excluded — it is a resource, not a
+  component; dust maps to its block through `REDSTONE_ITEM_BLOCKS`, so
+  `place_redstone` places `redstone_wire`), and `set_repeater_delay` appears when
+  a repeater is in the R0 census. `executeAction` routes a component through
+  `_placeOriented` (a non-component keeps the plain `_placeBlock` path) and
+  accepts `set_repeater_delay` (next value) and `set_repeater_delay_<0..3>`
+  (anything else → `bad_delay`).
+- **Tests**: 4 new pure cases in `tests/bedrock-redstone.test.mjs`
+  (`normalizeFacing`, `facingMatches`, `isRepeater`/`repeaterDelay`,
+  `PLACEMENT_YAW_STEPS`) and `tests/bedrock-redstone-place.test.mjs` (12 cases)
+  with a fake world that **models the server**: the facing of the placed block is
+  derived from the yaw (so the correction path is real: 1 removal + 2 attempts),
+  an impossible facing ends `orientation_not_confirmed` after 4 attempts, a failed
+  removal stops the loop, the placement error propagates, `executeAction`
+  routes/does not route, and the repeater delay advances/wraps/refuses.
+- **Live round (03/10/2026, VM 100, BDS 1.26.52, bot in its room)**:
+  `GET /observe.redstone` → `counts {components: 0, ore: 0, hazards: 0}`,
+  `ready: true`, `loaded: 125` (the room has no component); the R1 route is live
+  and typed — `place_lever` → `{ok: false, error: 'missing_item', attempts: 1,
+  tried: []}`, `place_redstone` → **`no_place_spot`** (once, during a transient
+  world-view hiccup, see limits), `set_repeater_delay` → `no_repeater_nearby`,
+  `set_repeater_delay_9` → `bad_delay`; the non-component path is untouched —
+  `place_torch` → `{ok: true, block: 'torch', position: {x: 116, y: 73, z: 158}}`
+  (a real server-side placement, inventory torch 2→1). The chain towards a real
+  component was walked as far as the standing constraint allows: `craft_lever` →
+  `missing_ingredients` (the generic craft branch exists; the missing ingredient
+  is cobblestone), `craft_wooden_pickaxe` → `{ok: true, crafted: 'wooden_pickaxe'}`
+  (consumes 3 planks + 2 sticks) and **with the pickaxe `mine_cobblestone` appears
+  in `/options`** — the only cobblestone within reach is the base's own wall
+  ((114–116, 73–74, 161), 1.7–2.3 blocks).
+- **Blocked live round (environmental, not a code gap)**: the remaining steps are
+  `mine_cobblestone` → `craft_lever` → `place_lever` → read the state back, i.e. a
+  full live R1 verification. Mining those blocks edits the base, which the
+  standing **plan C** (no base edits, after the unanswered A/B/C question
+  m01403) forbids; the drop is recoverable and the block re-placeable, so the
+  round is *one permission away*.
+- **Known limits (R1)**: the per-family rule is still discovered, not documented
+  (by design), and only the 90° yaw dimension is explored — a family that reacts
+  to the *clicked face* (wall-mounted levers, torches) has `face` as a parameter
+  but no candidate sequence over faces yet; a correction costs one extra placement
+  plus one mining per wrong candidate (the block is recovered, never dropped); on
+  a total failure the last placement stays in the world and the caller gets the
+  actual facing; the delay change assumes clicks are delivered in order (no
+  batching).
+- **Bug found by the tests**: in `_cycleRepeater` the local `let delay` **shadowed
+  the imported `delay` from `node:timers/promises`**, so the first click that did
+  not change the state threw `TypeError: delay is not a function` instead of
+  reporting `repeater_delay_not_confirmed`; the local is now named `current`.
+
 ## Proposed vocabulary
 
 - **Actions**: `build_circuit_<id>`, `use_redstone`, `set_repeater_delay`,
@@ -131,7 +222,7 @@ circuits (that is R1+).
 | # | Milestone | Content | Status |
 |---|---|---|---|
 | R0 | Awareness & protection | Add redstone to `DIG_PROTECTED`; extend `_refreshNearby` (ore + components); `/observe.redstone`; state-aware `findBlocksByState`; pure `bedrock-redstone.mjs` (`powerOf`, `isSource/isOutput`, `tnt` hazard). | ◑ implemented + live: awareness, census and dig protection done; circuit *building* is R1+ |
-| R1 | Oriented placement | Extend `_placeAtCell` with desired state/facing and side faces; confirm name+properties; place→read→correct retry; packet-capture task for placement orientation; repeater delay via interaction. | ❌ not implemented |
+| R1 | Oriented placement | Extend `_placeAtCell` with desired state/facing and side faces; confirm name+properties; place→read→correct retry; packet-capture task for placement orientation; repeater delay via interaction. | ◑ place→read→correct + repeater delay implemented and unit-tested; packet capture **not needed**; the live component round is blocked by plan C (no base edits) |
 | R2 | Interaction & sensing | `use_redstone` (lever/button) with state + downstream verification; redstone cache in `/observe`; `sense_redstone`; verifier criteria. | ❌ not implemented |
 | R3 | Primitive circuits | Declarative `circuits/*.json` blueprints (`lamp_switch`, `delay_line`, `auto_lamp`, `auto_door`, `auto_harvest`, `auto_dispense`, `hopper_chain`, `crafter_pulse`) + `build_circuit_<id>` bounded action. | ❌ not implemented |
 | R4 | Verify, teardown, guardrails | Deterministic circuit verifier; `teardown_circuit` limited to bot-built blocks; rollback on partial failure; no redstone edits outside owned circuits. | ❌ not implemented |
@@ -140,8 +231,17 @@ circuits (that is R1+).
 
 ## Key risks / open questions
 
-- **Oriented placement is the blocker (R1)**: how the BDS derives block state from  player yaw/pitch, clicked face and `click_pos` needs a packet capture.
-  Fallback: a deterministic place → read → correct loop.
+- **Oriented placement (R1)**: resolved without a packet capture — the
+  deterministic place → read → correct loop reads the state the server actually
+  derived. What remains open is the **live component round** (plan C blocks the
+  only cobblestone in reach) and the face dimension (a family that reacts to the
+  clicked face).
+- **The world view can drop a section under the bot**: during the live round
+  `standingOn` went `oak_planks` → `null`, `headroom` → 0 and the placement search
+  answered `no_place_spot` (the ring requires *visible* air), while the bot had not
+  moved; a few seconds later the same call answered `missing_item` again. The
+  census/placement code treats `unknown` as solid on purpose, so this is a
+  conservative, typed failure rather than a wrong placement.
 - Some blocks (`note_block`, generic `pressure_plate`, `tripwire`) are absent from
   the `bedrock_1.26.51` registry — confirm the correct names or drop them.
 - Repeater delay is in ticks; live timing must calibrate the verifier.
