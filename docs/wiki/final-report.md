@@ -28,6 +28,7 @@ environmental blocker.
 | **P6** hit → real waypoint | `937244c` | live refusal, honestly: all three hits came back `reachability_unknown`, so `semantic_waypoint_skipped` and no destination was invented |
 | **P6** episodic retention (dry-run first) | `8b5d2e6` | `POST /memory/prune` live: dry-run lists 40 candidates, a real run with `keepMissions: 50` deletes nothing and every count stays identical |
 | **P6** observation-log retention (dedupe + prune) | `cd5d4f9` | live 5654 rows → **32 facts / 131 rows**, same search hits and scores before/after, then **0 growth in 180 s** with the write-side dedupe on (was ~280 rows/min) |
+| **R4** persistent placement ledger + `mine_owned` | `d866a5b` | route and refusal live (`GET /memory/placements` → `count: 0`; `mine_owned` → `nothing_owned_nearby`, `owned: 0`, 1 ms, logged as an action); the positive cycle is block-tested because the room offers nothing to place |
 
 ## 2. Improved but not complete
 
@@ -55,6 +56,12 @@ environmental blocker.
 - **Redstone/Nether happy paths**: circuits are declaratively planned and the R6
   safety limits are live-probed, but no lapis/redstone/obsidian/glowstone exists
   in the live world, so the builds themselves are unit-tested only.
+- **Placement recovery (`mine_owned`)**: the ledger is persistent and the action
+  reconciles, reaches and removes; live it only answers the refusal
+  (`nothing_owned_nearby`), because the room offers nothing to place (inventory
+  `{dirt: 1}`, and `place_*` exists only for `crafting_table`/`furnace`/`torch`/
+  `bed` or a redstone component). The two probe blocks that seal the room predate
+  the ledger, so no action can claim them.
 
 ## 3. Blockers (root cause, attempts, next action)
 
@@ -68,7 +75,7 @@ environmental blocker.
 
 ## 4. Tests
 
-- `node --test tests/*.test.mjs` → **1021 pass / 0 fail** (79 files). The one flake
+- `node --test tests/*.test.mjs` → **1045 pass / 0 fail** (81 files). The one flake
   that used to appear under full-suite load
   (`tests/bedrock-circuits.test.mjs`, "a different delay is an error", which
   measured real tick timing) is **fixed**: the delay measurement reads an
@@ -77,13 +84,14 @@ environmental blocker.
 - Purely unit-tested modules added: consolidation, observation log, vector index,
   `structures`, `exploration`, `bedrock-fluids`, `bedrock-air`, `bedrock-dive`,
   `bedrock-waterfall`, `bedrock-lava`, `bedrock-bucket`, `bedrock-redstone`,
-  `circuits`, `bedrock-nether`, `bedrock-end`, `human-replies`, action-lock.
+  `circuits`, `bedrock-nether`, `bedrock-end`, `human-replies`, action-lock, and
+  the placement ledger on both storage backends.
 - Live rounds performed (each in [verification](verification.md)): goal→mission,
   curriculum `first_night`, consolidation idempotence, mining/pickup, chat M5,
   crops, milk, shield, travel kit, exploration M2/M4/M5/M6, fluids M0–M6, redstone
   R0–R6, nether N0–N7, P2 refusals, semantic recall and waypoint, both retention
-  fronts.
-- `npm run wiki:lint` → no errors (39 files, 400 relative links).
+  fronts, the placement ledger (route + refusal).
+- `npm run wiki:lint` → no errors (39 files, 416 relative links).
 - **Deployment parity re-checked** after the last front: `md5sum` of every
   git-tracked file outside `docs/` and `tests/` compared against the live
   container's `/app` → **119 local / 114 in the container, no differing file**;
@@ -126,8 +134,10 @@ environmental blocker.
    (`setblock 115 73 160 air`, `setblock 115 74 158 air`); if that is not enough,
    the two carpets that close the corridor to the door. Almost every remaining
    live-only item (companion, fishing, containers, trade, mounting, crops) sits
-   behind it. The no-console variant is a bot-owned cleanup action, which needs
-   the R4 placement registry to become persistent first.
+   behind it. The no-console variant exists now (`mine_owned` over the persistent
+   R4 ledger), but it can only claim blocks placed **after** the registry shipped:
+   the two probe blocks that seal this room were placed before it and are not in
+   the ledger, so the console edit is still the only way to remove those two.
 2. **Packet capture from a real client** (mount, trade, swim): one capture unblocks
    `p2-riding`, `p2-trade-timeout` and fluids M1 with the same work.
 3. **`p2-companion` / `p2-fishing` happy paths**: need iron ingots (shears, bucket,
