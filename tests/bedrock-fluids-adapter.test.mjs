@@ -748,8 +748,8 @@ test('M4: cross_lava rifiuta dentro la lava, senza lava davanti e a tratto tronc
   assert.match(truncated.hint, /far shore/);
 });
 
-test('M4: cross_lava chiede il gate e poi dichiara il ponte non implementato', async () => {
-  const { adapter } = fluidAdapter({ '1,71,0': lava, '2,71,0': lava, '8,71,0': lava });
+test('M4/M5: cross_lava chiede il gate e poi costruisce il ponte una cella per volta', async () => {
+  const { adapter, blocks } = fluidAdapter({ '1,71,0': lava, '2,71,0': lava, '8,71,0': lava });
   adapter.inventory = { cobblestone: 8 };
   const logs = [];
   adapter.log = (type, data) => logs.push({ type, ...data });
@@ -766,11 +766,24 @@ test('M4: cross_lava chiede il gate e poi dichiara il ponte non implementato', a
   adapter.effects = new Map([['fire_resistance', { name: 'fire_resistance', seconds: 60 }]]);
   assert.ok(adapter.options().some(o => o.key === 'cross_lava'), 'col gate aperto l\'opzione compare');
 
-  const gated = await adapter._crossLava();
-  assert.equal(gated.ok, false);
-  assert.equal(gated.error, 'bridge_not_implemented');
-  assert.deepEqual(gated.plan, { route: 'bridge', blocks: 3, gap: 2, firstStep: 1, direction: { x: 1, z: 0 } });
-  assert.equal(logs.filter(l => l.type === 'cross_lava_blocked').length, 1);
+  // Il ponte: una cella per passo, ognuna confermata dal mondo e calpestata solo
+  // dopo essere diventata solida. La faccia è quella del blocco d'appoggio.
+  const moves = [];
+  const placements = [];
+  adapter._moveTo = async (point) => { moves.push(point); };
+  adapter._placeAtCell = async (item, block, cell, support, face) => {
+    placements.push({ item, block, cell, support, face });
+    blocks.set(`${cell.x},${cell.y},${cell.z}`, solid(block));
+    return { ok: true, block, position: cell };
+  };
+  const bridged = await adapter._crossLava();
+  assert.deepEqual([bridged.ok, bridged.crossed, bridged.blocks, bridged.route], [true, true, 2, 'bridge']);
+  assert.deepEqual(placements.map(p => p.cell), [{ x: 1, y: 71, z: 0 }, { x: 2, y: 71, z: 0 }]);
+  assert.deepEqual(placements.map(p => p.support), [{ x: 0, y: 71, z: 0 }, { x: 1, y: 71, z: 0 }]);
+  assert.deepEqual(placements.map(p => p.face), [5, 5], 'si clicca la faccia est del blocco d\'appoggio');
+  assert.equal(moves.length, 2, 'un passo per cella');
+  assert.equal(logs.filter(l => l.type === 'lava_bridged').length, 1);
+  assert.equal(logs.filter(l => l.type === 'cross_lava_started').length, 1);
 
   // Un buco largo più di quattro celle non entra nel gate.
   const tooWide = fluidAdapter({ '1,71,0': lava, '2,71,0': lava, '3,71,0': lava, '4,71,0': lava, '5,71,0': lava }).adapter;
@@ -779,4 +792,277 @@ test('M4: cross_lava chiede il gate e poi dichiara il ponte non implementato', a
   const refused = await tooWide._crossLava();
   assert.equal(refused.error, 'gap_too_wide');
   assert.equal(refused.gate.limit, 4);
+});
+
+// --- M5: secchi, barche e pozioni -------------------------------------------
+// Il fixture riusa `fluidAdapter` e aggiunge solo ciò che serve a un "click":
+// l'uso viene simulato (inventario e/o mondo cambiati dal server), perché la
+// conferma di un riempimento/svuotamento arriva dal server, non dal bot.
+function bucketAdapter ({ cells = {}, inventory = {}, use = null, mount = true, floor = 6 } = {}) {
+  const { adapter, blocks } = fluidAdapter(cells, { floor });
+  adapter.client = {};           // `executeAction` esige una connessione viva
+  adapter.inventory = { ...inventory };
+  adapter.inventorySlots = [
+    { network_id: 1, name: 'bucket', count: 1 },
+    { network_id: 2, name: 'water_bucket', count: 1 },
+    { network_id: 3, name: 'glass_bottle', count: 1 },
+  ];
+  adapter.selectedHotbar = 0;
+  adapter.world.runtimeIdAt = () => 1;
+  const inputs = [];
+  const moves = [];
+  const logs = [];
+  adapter.log = (type, data) => logs.push({ type, ...(data ?? {}) });
+  adapter._queueAuthInput = async (packet) => {
+    inputs.push(packet);
+    if (packet?.transaction && use) use({ adapter, blocks, packet });
+  };
+  adapter._lookAt = () => ({ yaw: 0, pitch: 0 });
+  adapter._moveTo = async (point) => { moves.push(point); };
+  adapter._equipForUse = async (item) => ((adapter.inventory[item] || 0) > 0 ? { ok: true, slotIndex: 0 } : { ok: false, error: `missing_${item}` });
+  adapter._interactEntity = () => { if (mount) adapter.riding = { riddenEntityId: 7 }; };
+  adapter._craftItem = async (item) => ({ ok: true, crafted: item, count: 1 });
+  return { adapter, blocks, inputs, moves, logs };
+}
+
+const obsidianBlock = { name: 'obsidian', boundingBox: 'block', diggable: true, hardness: 5 };
+
+test('_bucketSources legge il mondo e scarta l\'acqua che scorre', () => {
+  const { adapter } = bucketAdapter({ cells: { '4,71,0': water, '3,71,0': { name: 'flowing_water' }, '2,71,0': lava } });
+  const sources = adapter._bucketSources();
+  assert.equal(sources.length, 2, 'solo le sorgenti: l\'acqua che scorre non si raccoglie');
+  assert.deepEqual(sources.map(s => [s.block, s.item, s.distance]), [['lava', 'lava_bucket', 2.09], ['water', 'water_bucket', 4.05]]);
+  assert.equal(sources[0].reason, 'lava_source');
+  assert.equal(adapter._bucketsHeld().empty, 0);
+});
+
+test('_fillBucket conferma dal delta di inventario', async () => {
+  const { adapter, inputs, logs } = bucketAdapter({
+    cells: { '3,71,0': water },
+    inventory: { bucket: 1 },
+    use: ({ adapter: a }) => { a.inventory.bucket = 0; a.inventory.water_bucket = 1; },
+  });
+  const result = await adapter._fillBucket();
+  assert.equal(result.ok, true);
+  assert.equal(result.filled, 'water_bucket');
+  assert.equal(result.confirmedBy, 'inventory_delta');
+  assert.deepEqual(result.source, { x: 3, y: 71, z: 0 });
+  assert.deepEqual(result.delta, { bucket: -1, water_bucket: 1 });
+  assert.equal(adapter._bucketLast.ok, true);
+  assert.equal(logs.filter(l => l.type === 'bucket_filled').length, 1);
+  assert.ok(inputs.some(i => i.transaction?.data?.action_type === 'click_block'), 'il click arriva sul blocco');
+});
+
+test('_fillBucket rifiuta senza secchio, senza sorgente e con la sola acqua che scorre', async () => {
+  const empty = bucketAdapter({ cells: { '3,71,0': water } });
+  const noBucket = await empty.adapter._fillBucket();
+  assert.deepEqual([noBucket.ok, noBucket.error], [false, 'missing_bucket']);
+  assert.equal(empty.inputs.length, 0);
+
+  const noSource = bucketAdapter({ inventory: { bucket: 1 } });
+  const nothing = await noSource.adapter._fillBucket();
+  assert.deepEqual([nothing.ok, nothing.error], [false, 'no_source_nearby']);
+  assert.equal(noSource.inputs.length, 0);
+
+  const flowing = bucketAdapter({ cells: { '3,71,0': { name: 'flowing_water' } }, inventory: { bucket: 1 } });
+  assert.equal((await flowing.adapter._fillBucket()).error, 'no_source_nearby');
+});
+
+test('_fillBottle riempie la fiala alla sorgente', async () => {
+  const { adapter, logs } = bucketAdapter({
+    cells: { '2,71,0': water },
+    inventory: { glass_bottle: 2 },
+    use: ({ adapter: a }) => { a.inventory.glass_bottle = 1; a.inventory.potion = 1; },
+  });
+  const result = await adapter._fillBottle();
+  assert.deepEqual([result.ok, result.filled, result.confirmedBy], [true, 'potion', 'inventory_delta']);
+  assert.equal(logs.filter(l => l.type === 'bucket_filled').length, 1);
+});
+
+test('_emptyBucket versa l\'acqua sulla lava e legge l\'ossidiana dal mondo', async () => {
+  const { adapter, blocks, logs } = bucketAdapter({
+    cells: { '3,71,0': lava },
+    inventory: { water_bucket: 1 },
+    use: ({ blocks: b }) => { b.set('3,71,0', obsidianBlock); adapter.inventory.water_bucket = 0; adapter.inventory.bucket = 1; },
+  });
+  const result = await adapter._emptyBucket();
+  assert.equal(result.ok, true);
+  assert.equal(result.expected, 'obsidian');
+  assert.equal(result.world, 'obsidian');
+  assert.equal(result.confirmedBy, 'server_world');
+  assert.equal(result.reason, 'water_on_lava_source');
+  assert.ok(blocks.get('3,71,0').name === 'obsidian');
+  assert.ok(logs.some(l => l.type === 'bucket_emptied'));
+});
+
+test('_emptyBucket rifiuta nel Nether e su un blocco solido', async () => {
+  const nether = bucketAdapter({ inventory: { water_bucket: 1 } });
+  nether.adapter.dimension = 'nether';
+  const refused = await nether.adapter._emptyBucket({ target: { x: 2, y: 71, z: 0 } });
+  assert.deepEqual([refused.ok, refused.error], [false, 'water_in_nether']);
+  assert.equal(nether.inputs.length, 0, 'nessun pacchetto: il verdetto lo dice prima');
+
+  const blocked = bucketAdapter({ cells: { '0,71,1': solid() }, inventory: { water_bucket: 1 } });
+  const verdict = await blocked.adapter._emptyBucket();
+  assert.equal(verdict.error, 'blocked');
+  assert.equal(blocked.inputs.length, 0);
+
+  const nothing = bucketAdapter();
+  assert.equal((await nothing.adapter._emptyBucket()).error, 'missing_water_bucket');
+});
+
+test('_craftBoat chiede la ricetta e le assi giuste', async () => {
+  const noRecipe = bucketAdapter({ inventory: { oak_planks: 8 } });
+  assert.deepEqual([(await noRecipe.adapter._craftBoat()).ok, (await noRecipe.adapter._craftBoat()).error], [false, 'craft_recipe_missing']);
+
+  const fewPlanks = bucketAdapter({ inventory: { oak_planks: 3 } });
+  fewPlanks.adapter.recipes = new Map([['oak_boat', { output: 'oak_boat' }]]);
+  const short = await fewPlanks.adapter._craftBoat();
+  assert.deepEqual([short.error, short.missing], ['missing_ingredients', { planks: 2 }]);
+
+  const ready = bucketAdapter({ inventory: { oak_planks: 5 } });
+  ready.adapter.recipes = new Map([['oak_boat', { output: 'oak_boat' }]]);
+  const crafted = await ready.adapter._craftBoat();
+  assert.deepEqual([crafted.ok, crafted.crafted], [true, 'oak_boat']);
+  assert.equal(ready.logs.filter(l => l.type === 'boat_crafted').length, 1);
+});
+
+test('mount_boat esige la barca e l\'acqua aperta', async () => {
+  const noBoat = bucketAdapter({ cells: { '1,71,0': water, '2,71,0': water, '3,71,0': water } });
+  assert.equal((await noBoat.adapter._mountBoat()).error, 'missing_boat');
+
+  const noWater = bucketAdapter({ cells: { '1,71,0': water }, inventory: { oak_boat: 1 } });
+  const refused = await noWater.adapter._mountBoat();
+  assert.deepEqual([refused.ok, refused.error], [false, 'no_water_nearby']);
+
+  const ready = bucketAdapter({
+    cells: { '1,71,0': water, '2,71,0': water, '3,71,0': water, '4,71,0': water },
+    inventory: { oak_boat: 1 },
+  });
+  ready.adapter.entities.set('7', { kind: 'mob', type: 'boat', position: { x: 2.5, y: 71, z: 0.5 }, runtimeId: 7 });
+  ready.adapter._entityDistance = () => 1.4;
+  const mounted = await ready.adapter._mountBoat();
+  assert.deepEqual([mounted.ok, mounted.mounted, mounted.ridden], [true, 'boat', 7]);
+  assert.equal(ready.logs.filter(l => l.type === 'boat_mounted').length, 1);
+
+  const noConfirm = bucketAdapter({
+    cells: { '1,71,0': water, '2,71,0': water, '3,71,0': water, '4,71,0': water },
+    inventory: { oak_boat: 1 },
+    mount: false,
+  });
+  noConfirm.adapter.entities.set('7', { kind: 'mob', type: 'boat', position: { x: 2.5, y: 71, z: 0.5 }, runtimeId: 7 });
+  noConfirm.adapter._entityDistance = () => 1.4;
+  const stuck = await noConfirm.adapter._mountBoat({ timeoutMs: 300 });
+  assert.deepEqual([stuck.ok, stuck.error], [false, 'mount_not_confirmed']);
+});
+
+test('_brew rifiuta per materiale e dichiara il residuo quando c\'è tutto', async () => {
+  const bare = bucketAdapter();
+  assert.equal((await bare.adapter._brew('water_breathing')).error, 'missing_brewing_stand');
+  assert.equal(bare.logs.filter(l => l.type === 'brew_refused').length, 1);
+
+  const stand = bucketAdapter({ cells: { '1,71,0': { name: 'brewing_stand', boundingBox: 'block', diggable: true, hardness: 0.5 } } });
+  assert.equal((await stand.adapter._brew('water_breathing')).error, 'missing_blaze_powder');
+
+  const ready = bucketAdapter({
+    cells: { '1,71,0': { name: 'brewing_stand', boundingBox: 'block', diggable: true, hardness: 0.5 } },
+    inventory: { blaze_powder: 1, potion: 3, nether_wart: 2, pufferfish: 1 },
+  });
+  const blocked = await ready.adapter._brew('water_breathing');
+  assert.deepEqual([blocked.ok, blocked.error], [false, 'brew_not_implemented']);
+  assert.equal(blocked.plan.ok, true);
+  assert.equal(blocked.plan.steps.length, 3);
+  assert.equal(ready.logs.filter(l => l.type === 'brew_blocked').length, 1);
+  // Una ricetta che non conosciamo resta un rifiuto, non una pozione a caso.
+  assert.equal((await ready.adapter._brew('strength')).error, 'unknown_recipe');
+});
+
+test('le opzioni M5 compaiono solo con i materiali e il verdetto giusti', () => {
+  const withBucket = bucketAdapter({ cells: { '3,71,0': water }, inventory: { bucket: 1 } });
+  const offered = withBucket.adapter.options();
+  assert.ok(offered.some(o => o.key === 'fill_bucket'));
+  assert.match(offered.find(o => o.key === 'fill_bucket').description, /Fill a bucket with water at \{"x":3,"y":71,"z":0\}/);
+
+  const withWater = bucketAdapter({ cells: { '3,71,0': lava }, inventory: { water_bucket: 1 } });
+  const pour = withWater.adapter.options().find(o => o.key === 'place_water');
+  assert.ok(pour, 'con un secchio d\'acqua e la lava davanti l\'opzione c\'è');
+  assert.match(pour.description, /obsidian/);
+
+  const noBucket = bucketAdapter({ cells: { '3,71,0': water } });
+  assert.ok(!noBucket.adapter.options().some(o => o.key === 'fill_bucket'));
+
+  const boat = bucketAdapter({ inventory: { oak_planks: 6 }, cells: { '2,70,1': { name: 'crafting_table', boundingBox: 'block', diggable: true, hardness: 2.5 } } });
+  boat.adapter.recipes = new Map([['oak_boat', { output: 'oak_boat' }]]);
+  assert.ok(boat.adapter.options().some(o => o.key === 'craft_boat'));
+  boat.adapter.inventory = { oak_planks: 3 };
+  assert.ok(!boat.adapter.options().some(o => o.key === 'craft_boat'), 'con tre assi la barca non si offre');
+
+  const view = withBucket.adapter.observe().bucket;
+  assert.equal(view.sources.length, 1);
+  assert.equal(view.boat.inInventory, 0);
+  assert.equal(view.brew.stand, false);
+  assert.equal(view.brew.effects.water_breathing, 'missing_brewing_stand');
+});
+
+test("M5: il ponte puo usare l'acqua (ossidiana) invece dei blocchi", async () => {
+  const { adapter, blocks, logs, inputs } = bucketAdapter({
+    cells: { '1,71,0': lava, '2,71,0': lava },
+    inventory: { water_bucket: 2 },
+    use: ({ adapter: a, blocks: b, packet }) => {
+      const p = packet.transaction.data.block_position;
+      b.set(`${p.x},${p.y},${p.z}`, obsidianBlock);
+      a.inventory.water_bucket -= 1;
+      a.inventory.bucket = (a.inventory.bucket || 0) + 1;
+    },
+  });
+  adapter.effects = new Map([['fire_resistance', { name: 'fire_resistance', seconds: 60 }]]);
+  const report = await adapter._bridgeLava();
+  assert.deepEqual([report.ok, report.crossed, report.blocks], [true, true, 2]);
+  assert.deepEqual(report.placed.map(p => [p.via, p.world]), [['water', 'obsidian'], ['water', 'obsidian']]);
+  assert.equal(blocks.get('1,71,0').name, 'obsidian');
+  assert.equal(blocks.get('2,71,0').name, 'obsidian');
+  assert.ok(inputs.some(i => i.transaction?.data?.action_type === 'click_block'), 'l\'acqua si versa col click sul blocco');
+  assert.equal(logs.filter(l => l.type === 'lava_bridged').length, 1);
+});
+
+test('M5: senza gate il ponte non parte, e i rifiuti sono quelli di M4', async () => {
+  const { adapter, inputs } = bucketAdapter({ cells: { '1,71,0': lava, '2,71,0': lava } });
+  const refused = await adapter._bridgeLava();
+  assert.deepEqual([refused.ok, refused.error], [false, 'not_equipped']);
+  assert.equal(inputs.length, 0, 'nessun pacchetto: si rifiuta prima di toccare la lava');
+  assert.equal(adapter._bucketLast, null);
+
+  const inside = bucketAdapter({ cells: { '0,71,0': lava, '1,71,0': lava } });
+  assert.equal((await inside.adapter._bridgeLava()).error, 'in_lava');
+
+  const dry = bucketAdapter();
+  assert.equal((await dry.adapter._bridgeLava()).error, 'no_lava_ahead');
+});
+
+test('M5: fill_bucket, place_water e mount_boat arrivano al ramo giusto', async () => {
+  // I prefissi generici (`place_<blocco>`, `mount_<tipo>`) intercettavano
+  // `place_water`/`mount_boat`: difetto visto live, coperto qui.
+  const cap = bucketAdapter({
+    cells: { '3,71,0': water },
+    inventory: { bucket: 1 },
+    use: ({ adapter: a }) => { a.inventory.bucket = 0; a.inventory.water_bucket = 1; },
+  });
+  assert.equal((await cap.adapter.executeAction('fill_bucket')).filled, 'water_bucket');
+
+  const pour = bucketAdapter({
+    cells: { '3,71,0': lava },
+    inventory: { water_bucket: 1 },
+    use: ({ blocks: b }) => b.set('3,71,0', obsidianBlock),
+  });
+  const poured = await pour.adapter.executeAction('place_water');
+  assert.deepEqual([poured.ok, poured.expected], [true, 'obsidian'], 'place_water non è il piazzamento del blocco "water"');
+
+  const board = bucketAdapter({
+    cells: { '1,71,0': water, '2,71,0': water, '3,71,0': water, '4,71,0': water },
+    inventory: { oak_boat: 1 },
+  });
+  board.adapter.entities.set('7', { kind: 'mob', type: 'boat', position: { x: 2.5, y: 71, z: 0.5 }, runtimeId: 7 });
+  board.adapter._entityDistance = () => 1.4;
+  const boarded = await board.adapter.executeAction('mount_boat');
+  assert.deepEqual([boarded.ok, boarded.mounted], [true, 'boat'], 'mount_boat non è la cavalcatura di un tipo "boat" generico');
 });

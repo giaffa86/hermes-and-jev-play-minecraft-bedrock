@@ -2913,3 +2913,56 @@ stanza sigillata) e nessuna lava è stata fabbricata con `setblock`/secchi (il m
 restano coperti solo dagli unit test. La misura del varco è limitata dal raggio del
 censimento (un lago più largo è `truncated` ⇒ `gap_unknown`). Il route "acqua →
 ossidiana" è una decisione: `place_water` arriva con M5.
+
+## [2026-10-03] feat | Fluidi M5: secchi, barche, gate dell'alchimia e il ponte sulla lava
+
+Dietro il fronte P7 `p7-fluids`, quinta milestone. Nuovo modulo puro
+`bedrock-bucket.mjs`: `bucketSourceVerdict` (una **sorgente** si riconosce dal nome
+del blocco — `water` contro `flowing_water`, `lava` contro `flowing_lava` — non da
+`liquid_depth`), `placeBucketVerdict` (acqua su lava **sorgente** ⇒ ossidiana, su
+lava che scorre ⇒ cobblestone, pietra su acqua sorgente, e l'acqua rifiutata a
+priori in Nether/End: `water_in_nether`), `bucketDelta` (un secchio si considera
+riempito solo se il prodotto è comparso **e** il recipiente è stato speso;
+`spentItem` serve alla fiala), `boatVerdict` (barca in inventario + 3 celle d'acqua
+entro 16 blocchi) e `brewPlan` (ricette `water_breathing`/`fire_resistance`/
+`night_vision`, i tre passi e la lista di ciò che manca).
+
+Adapter: `_bucketsHeld`, `_bucketSources` (legge il **nome dal mondo**, così l'acqua
+che scorre non viene offerta come sorgente), `_useOnSource` (equipaggia, avvicina,
+guarda, usa, conferma dal delta inventario), `_fillBucket`, `_fillBottle`,
+`_emptyBucket` (il verdetto puro **prima** di ogni pacchetto; conferma dal mondo —
+la cella è cambiata o c'è acqua sopra), `_boatCount`/`_nearestBoat`/`_craftBoat`/
+`_mountBoat`, `_brewStand`/`_brew` (che risponde `brew_not_implemented` con il
+piano: l'interazione col tavolo di alchimia è l'unico buco di M5, dichiarato),
+`_bucketView` + `GET /observe.bucket`, e `_bridgeLava`: il ponte che esegue il gate
+di M4 una cella per volta — versa l'acqua sulla lava (ossidiana) se ha il secchio,
+altrimenti piazza il blocco più abbondante, e avanza solo su una cella che il mondo
+ha confermato; un ponte inceppato si ferma su un appoggio sicuro e lo dichiara.
+`_crossLava` ora delega a `_bridgeLava` (il `bridge_not_implemented` di M4 non
+esiste più). Nove intenti nuovi in `survival/intents.mjs`.
+
+**Difetto trovato dal round live e corretto**: `place_water` rispondeva
+`missing_item` e `mount_boat` `no_rideable_nearby` — i rami nuovi erano stati
+inseriti **dopo** i prefissi generici `key.startsWith('mount_')`/`('place_')`;
+ora stanno prima, con un test di dispatch che fissa l'ordine.
+
+**Test**: 977 (erano 955) — 9 puri in `tests/bedrock-bucket.test.mjs` e 12 nuovi
+nell'adapter (`tests/bedrock-fluids-adapter.test.mjs` 51), fra cui la riscrittura
+del test M4 di `cross_lava`, che ora asserisce il **ponte** invece del rifiuto.
+
+**Collaudo live** (VM 100, container `hermes-jev-bedrock`): `GET
+/observe.bucket?force=1` → nessun secchio, **4 sorgenti di lava** a y=59 (la più
+vicina a 15.68 blocchi), acqua 8 celle a 20.6, lava 251 a 15.4, `boat
+{error:'missing_boat'}`, `brew {stand:false}`. Le sonde rispondono in 14–21 ms con
+rifiuti tipizzati: `fill_bucket` `missing_bucket`, `place_water`
+`missing_water_bucket`, `place_lava` `missing_lava_bucket`, `fill_bottle`
+`missing_glass_bottle`, `craft_boat` `craft_recipe_missing`, `mount_boat`
+`missing_boat`, `brew_water_breathing` `missing_brewing_stand` + i cinque item
+mancanti + il piano in tre passi, `cross_lava` `no_lava_ahead`; `/options` 22
+chiavi senza nessuna azione M5.
+
+**Limiti**: il round live è un round di rifiuti (nessun secchio, nessuna barca,
+nessun tavolo, nessuna lava raggiungibile), quindi catena riempi→versa→ossidiana,
+ponte e barca restano coperti dagli unit test; nessuna lava è stata fabbricata con
+`setblock` (mondo condiviso e resterebbe lava che scorre). Il tavolo di alchimia è
+pianificato ma mai cliccato.

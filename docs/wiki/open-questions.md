@@ -72,8 +72,9 @@ Last lint: 2026-10-03.
   refusals (`no_portal_known`, `missing_materials`, `missing_flint_and_steel`)
   were observed. No deliberate portal *search* either (the census radius is 32).
 - **Fluids** — **M0 (fluid awareness), M1 partial (wading + simulated air
-  budget), M2 (breathing + dive budget), M3 (waterfalls + bubble columns) and M4
-  (lava shores, destroyed loot, crossing gate) implemented and collaudati live
+  budget), M2 (breathing + dive budget), M3 (waterfalls + bubble columns), M4
+  (lava shores, destroyed loot, crossing gate) and M5 (buckets, boats, brewing
+  gate, lava bridge) implemented and collaudati live
   03/10**: the bot knows where water and
   lava are (`GET /observe.fluids`, census + hazard ladder), refuses digs that
   would open into a fluid, repels lava in `_standable` and can `avoid_lava` when
@@ -107,9 +108,20 @@ Last lint: 2026-10-03.
   crossing gate (`fire_resistance` + a bridge, or water → obsidian where water can
   be placed — never in the Nether/End). `move_to_safe` and `cross_lava` refuse with
   typed errors (`not_in_danger`, `no_lava_ahead`, `gap_unknown`, `gap_too_wide`,
-  `no_fire_resistance`, `water_in_nether`, `bridge_not_implemented` + plan); the
-  bridge build itself is M5/M6, so the live round only observed the refusals (the
-  room's lava is 15.4 blocks below the floor).
+  `no_fire_resistance`, `water_in_nether`); the bridge build landed in M5
+  (`_bridgeLava` pours water on the lava or places blocks one cell at a time and
+  only advances on a cell the world confirmed), but the live round only observed
+  the refusals (the room's lava is 15.4 blocks below the floor). M5 added
+  `bedrock-bucket.mjs` and `GET /observe.bucket`: the source verdict (the block
+  name, not `liquid_depth`, tells a source from flowing water), the placement
+  verdict (obsidian on a lava source, cobblestone on flowing lava, water refused
+  in the Nether), the fill confirmed by the inventory delta, the boat gate, and
+  `brewPlan`; `brew_<effect>` honestly answers `brew_not_implemented` with the
+  plan because the brewing-stand interaction is not written — the one M5 hole.
+  A real defect was found by the live round and fixed: `place_water`/`mount_boat`
+  were shadowed by the generic `place_`/`mount_` dispatch prefixes (they answered
+  `missing_item`/`no_rideable_nearby`), and the M5 branches now sit before them
+  with a dispatch test pinning the order.
   Still missing: swimming itself — `_passable()` treats `water|lava` as
   walls, so deep water, `surface`, `swim_to` and the water A* nodes wait for the
   Bedrock water-movement `input_data` flags/`delta` semantics, which need a
@@ -563,7 +575,8 @@ Still missing (the rest of the original gap):
 - **Fluids** (swimming, drowning/breathing, waterfalls, lava avoidance, buckets/
   boats/potions) — M0 + M1 partial (wading + simulated air) + M2 (breathing) + M3
   (waterfalls/bubble columns, detection and verdicts) + M4 (lava shores, destroyed
-  loot, crossing gate) implemented and live 03/10; swimming motion and M5–M6 still spec. Roadmap in [fluids](fluids.md);
+  loot, crossing gate) + M5 (buckets, boats, brewing gate, lava bridge)
+  implemented and live 03/10; swimming motion and M6 still spec. Roadmap in [fluids](fluids.md);
   the blocker is the missing packet capture of a real player swimming.
 - **Goal-driven gameplay** — Goal Contract + task graph + 5 progressive
   benchmarks (16 logs, shelter+night, iron pickaxe, 5 diamonds, Nether portal).

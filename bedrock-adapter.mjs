@@ -16,6 +16,7 @@ import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
 import { normalizeEffectName, waterBreathingSources, divePlan, underwaterWork, CONDUIT_BLOCK, CONDUIT_RANGE } from './bedrock-dive.mjs';
 import { findWaterfalls, findBubbleColumns, columnTactic, summarizeColumn, withinColumn } from './bedrock-waterfall.mjs';
 import { deathVerdict, lostDrops, safeShorePlan, fireResistance, lavaGap, lavaCrossingGate, LAVA_CROSS_GAP_LIMIT } from './bedrock-lava.mjs';
+import { bucketSourceVerdict, placeBucketVerdict, bucketDelta, boatVerdict, brewPlan, isBoatItem, BUCKET_ITEM, WATER_BUCKET_ITEM, LAVA_BUCKET_ITEM, MILK_BUCKET_ITEM, POWDER_SNOW_BUCKET_ITEM, GLASS_BOTTLE_ITEM, WATER_BOTTLE_ITEM, BOAT_INGREDIENTS, BREW_FUEL, BREW_BASE, BREW_EFFECTS } from './bedrock-bucket.mjs';
 import { loadCircuits, planCircuit, circuitSiteBlocked, circuitSafety, forbiddenBlock, checkCircuitSuccess, circuitAnchor, expectedDelayTicks, measureCircuitDelay, TICK_MS, MAX_CIRCUIT_STEPS, MAX_CIRCUIT_COMPONENTS, MIN_CLOCK_TICKS } from './circuits.mjs';
 import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
 import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, isNetherLike, landingHazard, maxFallDepth, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, projectileVelocity, dodgeCandidates, breaksLine, isPiglinType, goldArmorWorn, piglinNeutral, barterTarget, isBarterReward, BARTER_INGOT, BARTER_RANGE, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName, endermanAimPoint, isPumpkinMask, pumpkinMaskWorn, isEnderPearl, ENDERMAN_GAZE_TOLERANCE_DEG, isBlazeType, coverCandidates, blazeTactics, blazeRodProgress, BLAZE_RANGE, BLAZE_RETREAT_HEALTH, BLAZE_ROD, COVER_RADIUS } from './bedrock-nether.mjs';
@@ -243,6 +244,7 @@ export class BedrockAdapter {
     this.swimSupported = false;
     this._waterfallLast = null;
     this._lavaLast = null;
+    this._bucketLast = null;
     this._redstoneScan = null;
     this._redstoneScanAt = 0;
     // R2: i blocchi dell'ultima scansione e l'ultimo cambio osservato, così un
@@ -2578,7 +2580,7 @@ export class BedrockAdapter {
       if (!measured.gap) continue;
       if (!best || measured.gap < best.gap) best = measured;
     }
-    return best ?? { gap: 0, steps: [], reason: 'no_lava' };
+    return best ? { ...best, from } : { gap: 0, steps: [], reason: 'no_lava' };
   }
 
   // M4 — Il verdetto sul sito di morte, ricalcolato dal censimento: in lava (o
@@ -2710,8 +2712,323 @@ export class BedrockAdapter {
       firstStep: view.gap.firstStep,
       direction: view.gap.direction,
     };
-    this.log('cross_lava_blocked', { plan });
-    return { ok: false, error: 'bridge_not_implemented', plan, hint: 'the gate is ready; M5 builds the bridge' };
+    if (view.gate.route === 'none') return { ok: false, error: 'no_gap_to_bridge', plan, hint: 'nothing to bridge' };
+    this.log('cross_lava_started', { plan });
+    return this._bridgeLava();
+  }
+
+  // M5: il ponte sulla lava. Il gate di M4 dice *se* si può (resistenza al fuoco
+  // per i tratti lunghi, materiali contati); qui si posa una cella per volta —
+  // acqua sulla lava (che diventa ossidiana) se c'è, altrimenti blocchi — e si
+  // avanza solo su una cella confermata dal mondo. Se qualcosa si inceppa a metà,
+  // il bot resta in piedi su una cella sicura e lo dichiara: mai una traversata
+  // immaginaria.
+  async _bridgeLava ({ timeoutMs = 90000 } = {}) {
+    const view = this._lavaView();
+    if (view.inLava) return { ok: false, error: 'in_lava', hint: 'use move_to_safe first' };
+    const gap = view.gap;
+    if (!gap?.gap) return { ok: false, error: 'no_lava_ahead', lavaDistance: view.lavaDistance };
+    if (gap.truncated) return { ok: false, error: 'gap_unknown', hint: 'the far shore is beyond the scan radius, so the bridge cannot be sized' };
+    if (!view.gate?.ok) return { ok: false, error: view.gate?.error ?? 'not_equipped', gate: view.gate };
+    if (view.gate.route === 'none') return { ok: false, error: 'no_gap_to_bridge' };
+    const base = gap.from;
+    if (!base) return { ok: false, error: 'gap_unknown', hint: 'no base cell for the measured gap' };
+    // La faccia da cliccare è quella del blocco d'appoggio rivolta alla cella
+    // nuova: la direzione del tratto la decide.
+    const face = gap.direction.x === 1 ? 5 : gap.direction.x === -1 ? 4 : gap.direction.z === 1 ? 3 : 2;
+    const deadline = Date.now() + timeoutMs;
+    const placed = [];
+    let support = base;
+    for (let step = gap.firstStep; step <= gap.lastStep; step++) {
+      if (Date.now() > deadline) return { ok: false, error: 'bridge_timeout', placed, at: { ...support }, remaining: gap.lastStep - step + 1 };
+      const cell = { x: base.x + gap.direction.x * step, y: base.y, z: base.z + gap.direction.z * step };
+      const before = this.world.blockAt(cell);
+      const solidAlready = !!before?.name && !/lava/.test(before.name) && !/^(air|cave_air|void_air|unknown)$/.test(before.name);
+      if (!solidAlready) {
+        let laid = null;
+        if ((this.inventory[WATER_BUCKET_ITEM] || 0) > 0) laid = await this._emptyBucket({ item: WATER_BUCKET_ITEM, target: cell });
+        if (!laid?.ok) {
+          const item = this._placeableBlock({ richest: true });
+          if (!item) return { ok: false, error: 'bridge_out_of_materials', placed, at: cell };
+          laid = await this._placeAtCell(item, item, cell, support, face);
+        }
+        if (!laid?.ok) return { ok: false, error: 'bridge_stalled', placed, at: cell, last: laid };
+        placed.push({ cell, via: laid.poured ? 'water' : 'block', world: laid.world ?? laid.block ?? null });
+      }
+      try {
+        await this._moveTo({ x: cell.x + 0.5, y: cell.y, z: cell.z + 0.5 }, 0.7, 8000);
+      } catch (error) {
+        return { ok: false, error: `bridge_step_failed: ${error.message}`, placed, at: cell };
+      }
+      support = cell;
+    }
+    const report = { ok: true, crossed: true, route: view.gate.route, placed, blocks: placed.length, from: base };
+    this.log('lava_bridged', report);
+    return report;
+  }
+
+  // --- M5: secchi, barche e pozioni ---------------------------------------
+  // Il secchio è l'unico modo di *spostare* un fluido: riempirlo richiede una
+  // sorgente vera (l'acqua che scorre non si raccoglie) e svuotarlo sulla lava
+  // cambia il mondo (ossidiana o cobblestone) invece di allagare. La conferma
+  // viene sempre dal server: delta di inventario per il riempimento, blocco nel
+  // mondo per lo svuotamento.
+
+  _bucketsHeld () {
+    return {
+      empty: this.inventory[BUCKET_ITEM] || 0,
+      water: this.inventory[WATER_BUCKET_ITEM] || 0,
+      lava: this.inventory[LAVA_BUCKET_ITEM] || 0,
+      milk: this.inventory[MILK_BUCKET_ITEM] || 0,
+      powderSnow: this.inventory[POWDER_SNOW_BUCKET_ITEM] || 0,
+      glassBottles: this.inventory[GLASS_BOTTLE_ITEM] || 0,
+      waterBottles: this.inventory[WATER_BOTTLE_ITEM] || 0,
+    };
+  }
+
+  _plankCount () {
+    return Object.keys(this.inventory).filter(name => /_planks$/.test(name)).reduce((sum, name) => sum + (this.inventory[name] || 0), 0);
+  }
+
+  // La cella davanti al bot: `_digDirection` è la stessa bussola degli scavi,
+  // quindi "davanti" vuol dire la stessa cosa ovunque.
+  _frontCell ({ dy = 0 } = {}) {
+    if (!this._feet) return null;
+    const d = this._digDirection();
+    return { x: Math.floor(this._feet.x) + d.dx, y: Math.floor(this._feet.y + 0.1) + dy, z: Math.floor(this._feet.z) + d.dz };
+  }
+
+  /**
+   * Sorgenti raccoglibili entro `radius`. Il nome del blocco viene letto dal
+   * mondo: il censimento sa *dove* è l'acqua, non se scorre (e un secchio
+   * raccoglie solo la sorgente).
+   */
+  _bucketSources ({ radius = 16, limit = 4 } = {}) {
+    const census = this._fluidCensus();
+    const out = [];
+    for (const kind of ['water', 'lava', 'powder_snow']) {
+      for (const cell of census?.cells?.[kind] ?? []) {
+        const verdict = bucketSourceVerdict({ block: this.world.blockAt(cell) });
+        if (!verdict.fillable) continue;
+        const distance = this._pointDistance({ x: cell.x + 0.5, y: cell.y + 0.5, z: cell.z + 0.5 });
+        if (!(distance <= radius)) continue;
+        out.push({ kind, position: cell, item: verdict.item, block: verdict.name, reason: verdict.reason, distance: +distance.toFixed(2) });
+      }
+    }
+    out.sort((a, b) => a.distance - b.distance);
+    return out.slice(0, limit);
+  }
+
+  // Riempie il secchio (o la fiala) alla prima sorgente accettata. La conferma è
+  // il delta di inventario: il mondo che cambia è una seconda conferma, non il
+  // criterio.
+  async _useOnSource ({ item, accept = [WATER_BUCKET_ITEM], produced = null, timeoutMs = 6000 } = {}) {
+    if ((this.inventory[item] || 0) < 1) return { ok: false, error: `missing_${item}` };
+    const source = this._bucketSources().find(s => accept.includes(s.item));
+    if (!source) return { ok: false, error: 'no_source_nearby', water: this._fluidCensus()?.water?.count ?? 0 };
+    const equipped = await this._equipForUse(item);
+    if (!equipped.ok) return equipped;
+    const center = { x: source.position.x + 0.5, y: source.position.y + 0.5, z: source.position.z + 0.5 };
+    if (this._pointDistance(center) > 4.5) {
+      try { await this._moveTo(center, 2.5, 20000); } catch (error) { this.log('source_approach_failed', { message: error.message }); }
+    }
+    if (this._pointDistance(center) > 5.5) {
+      return { ok: false, error: 'source_unreachable', position: source.position, distance: +this._pointDistance(center).toFixed(2) };
+    }
+    const before = { ...this.inventory };
+    const wanted = produced ?? source.item;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const held = this.inventorySlots[this.selectedHotbar];
+      const look = this._lookAt(center);
+      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+      await delay(120);
+      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch, transaction: this._itemUseOnBlockTransaction(held, source.position, 1) });
+      const waitUntil = Math.min(deadline, Date.now() + 2000);
+      while (Date.now() < waitUntil) {
+        const delta = bucketDelta({ before, after: this.inventory, item: wanted, spentItem: item });
+        if (delta.ok) {
+          const report = { ok: true, filled: wanted, source: source.position, block: source.block, reason: source.reason, delta: delta.delta, confirmedBy: 'inventory_delta' };
+          this._bucketLast = report;
+          this.log('bucket_filled', report);
+          return report;
+        }
+        await delay(100);
+      }
+    }
+    this.log('bucket_fill_failed', { position: source.position, item: wanted });
+    return { ok: false, error: 'fill_not_confirmed', position: source.position, item: wanted };
+  }
+
+  _fillBucket () {
+    return this._useOnSource({ item: BUCKET_ITEM, accept: [WATER_BUCKET_ITEM, LAVA_BUCKET_ITEM, POWDER_SNOW_BUCKET_ITEM] });
+  }
+
+  _fillBottle () {
+    return this._useOnSource({ item: GLASS_BOTTLE_ITEM, accept: [WATER_BUCKET_ITEM], produced: WATER_BOTTLE_ITEM });
+  }
+
+  // Svuota il secchio dove il verdetto puro lo permette: sulla lava più vicina
+  // (se porta acqua) o nella cella davanti al bot.
+  async _emptyBucket ({ item = WATER_BUCKET_ITEM, target = null, face = 1, timeoutMs = 5000 } = {}) {
+    if ((this.inventory[item] || 0) < 1) return { ok: false, error: `missing_${item}` };
+    let cell = target;
+    if (!cell) {
+      const lava = item === WATER_BUCKET_ITEM ? this._lavaView().nearest : null;
+      cell = lava ? { x: Math.round(lava.x), y: Math.round(lava.y), z: Math.round(lava.z) } : this._frontCell();
+    }
+    if (!cell) return { ok: false, error: 'no_target_cell' };
+    const block = this.world.blockAt(cell);
+    const verdict = placeBucketVerdict({ held: item, block, dimension: this.dimension });
+    if (!verdict.ok) return { ...verdict, position: cell, block: block?.name ?? null };
+    const equipped = await this._equipForUse(item);
+    if (!equipped.ok) return equipped;
+    const center = { x: cell.x + 0.5, y: cell.y + 0.5, z: cell.z + 0.5 };
+    if (this._pointDistance(center) > 4.5) {
+      try { await this._moveTo(center, 2.5, 20000); } catch (error) { this.log('bucket_target_approach_failed', { message: error.message }); }
+    }
+    const above = { x: cell.x, y: cell.y + 1, z: cell.z };
+    const before = { ...this.inventory };
+    const beforeName = block?.name ?? null;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const held = this.inventorySlots[this.selectedHotbar];
+      const look = this._lookAt(center);
+      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+      await delay(120);
+      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch, transaction: this._itemUseOnBlockTransaction(held, cell, face) });
+      const waitUntil = Math.min(deadline, Date.now() + 2000);
+      while (Date.now() < waitUntil) {
+        const here = this.world.blockAt(cell);
+        const spilled = this.world.blockAt(above);
+        const changed = (here?.name ?? null) !== beforeName || fluidKind(spilled?.name) === 'water';
+        const delta = bucketDelta({ before, after: this.inventory, item });
+        if (changed || delta.spent > 0) {
+          const report = { ok: true, poured: item, expected: verdict.result, reason: verdict.reason, position: cell, world: here?.name ?? null, above: spilled?.name ?? null, confirmedBy: changed ? 'server_world' : 'inventory_delta' };
+          this._bucketLast = report;
+          this.log('bucket_emptied', report);
+          return report;
+        }
+        await delay(100);
+      }
+    }
+    this.log('bucket_empty_failed', { position: cell, expected: verdict.result });
+    return { ok: false, error: 'empty_not_confirmed', position: cell, expected: verdict.result };
+  }
+
+  _boatCount () {
+    return Object.keys(this.inventory).filter(name => isBoatItem(name)).reduce((sum, name) => sum + (this.inventory[name] || 0), 0);
+  }
+
+  _nearestBoat (limit = 8) {
+    const rows = [];
+    for (const entity of this.entities.values()) {
+      if (!entity.position || !isBoatItem(normalizeEntityType(entity.type))) continue;
+      const distance = this._entityDistance(entity);
+      if (distance > 32) continue;
+      rows.push({ type: entity.type, runtimeId: entity.runtimeId, position: entity.position, distance: +distance.toFixed(1) });
+    }
+    rows.sort((a, b) => a.distance - b.distance);
+    return rows.slice(0, limit);
+  }
+
+  async _craftBoat () {
+    const recipe = this.recipes ? [...this.recipes.keys()].find(name => isBoatItem(name)) : null;
+    if (!recipe) return { ok: false, error: 'craft_recipe_missing', item: 'boat' };
+    const planks = this._plankCount();
+    if (planks < BOAT_INGREDIENTS.planks) {
+      return { ok: false, error: 'missing_ingredients', item: recipe, missing: { planks: BOAT_INGREDIENTS.planks - planks } };
+    }
+    const result = await this._craftItem(recipe);
+    if (result.ok) this.log('boat_crafted', { item: recipe });
+    return result;
+  }
+
+  // Una barca è un'entità come un cavallo: si sale con lo stesso `interact`, ma
+  // il gate è l'acqua aperta (e la barca in inventario).
+  async _mountBoat ({ timeoutMs = 20000 } = {}) {
+    const census = this._fluidCensus();
+    const verdict = boatVerdict({ boats: this._boatCount(), water: census?.water ?? null, waterDistance: census?.waterDistance ?? null, riding: !!this.riding });
+    if (!verdict.ok) return verdict;
+    const target = this._nearestBoat()[0] ?? null;
+    if (!target) return { ok: false, error: 'no_boat_nearby', hint: 'place the boat on the water first' };
+    const empty = this.inventorySlots.findIndex((s, i) => i < 9 && !s?.network_id);
+    if (empty >= 0) this._selectHotbarSlot(empty);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline && !this.riding) {
+      const live = this.entities.get(String(target.runtimeId));
+      if (!live) return { ok: false, error: 'boat_gone' };
+      if (this._entityDistance(live) > 4.5) {
+        try { await this._moveTo(live.position, 2.0, Math.min(15000, deadline - Date.now())); } catch (error) { this.log('boat_approach_failed', { message: error.message }); }
+      }
+      const current = this.entities.get(String(target.runtimeId));
+      if (!current) return { ok: false, error: 'boat_gone' };
+      if (this._entityDistance(current) > 5) return { ok: false, error: 'boat_unreachable' };
+      const look = this._lookAt({ x: current.position.x, y: current.position.y + 0.5, z: current.position.z });
+      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+      await delay(120);
+      this._interactEntity(current);
+      const waitUntil = Math.min(deadline, Date.now() + 2000);
+      while (Date.now() < waitUntil && !this.riding) await delay(100);
+    }
+    if (!this.riding) return { ok: false, error: 'mount_not_confirmed', type: 'boat' };
+    const report = { ok: true, mounted: 'boat', ridden: this.riding.riddenEntityId, water: verdict.waterCount };
+    this.log('boat_mounted', report);
+    return report;
+  }
+
+  // M5: la pozione si *decide* qui, non si improvvisa. L'interazione col
+  // brewing_stand (combustibile + fiala + ingrediente nel container, più il
+  // timer di 400 tick) è il residuo dichiarato di M5: meglio un rifiuto
+  // tipizzato con il piano in mano che una pozione immaginaria.
+  _brewStand () {
+    try { return this.world.findBlocks('brewing_stand', this.position, 8, 1).length > 0; } catch { return false; }
+  }
+
+  _brewPlan (effect) {
+    return brewPlan({
+      effect,
+      stand: this._brewStand(),
+      fuel: this.inventory[BREW_FUEL] || 0,
+      waterBottles: this.inventory[WATER_BOTTLE_ITEM] || 0,
+      netherWart: this.inventory[BREW_BASE] || 0,
+      ingredients: this.inventory,
+    });
+  }
+
+  async _brew (effect) {
+    const plan = this._brewPlan(effect);
+    if (!plan.ok) {
+      this.log('brew_refused', { effect, error: plan.error, missing: plan.missing });
+      return { ok: false, error: plan.error, missing: plan.missing, plan };
+    }
+    this.log('brew_blocked', { effect, plan });
+    return { ok: false, error: 'brew_not_implemented', plan, hint: 'the stand interaction is the residual of M5' };
+  }
+
+  _bucketView ({ force = false } = {}) {
+    const census = this._fluidCensus({ force });
+    const sources = this._bucketSources();
+    const boat = this._nearestBoat()[0] ?? null;
+    return {
+      held: this._bucketsHeld(),
+      sources: sources.map(s => ({ kind: s.kind, position: s.position, block: s.block, item: s.item, reason: s.reason, distance: s.distance })),
+      water: { count: census?.water?.count ?? 0, nearest: census?.water?.nearest ?? null, distance: census?.waterDistance ?? null },
+      lava: { count: census?.lava?.count ?? 0, distance: census?.lavaDistance ?? null },
+      boat: {
+        inInventory: this._boatCount(),
+        nearby: boat ? { type: boat.type, position: boat.position, distance: boat.distance } : null,
+        verdict: boatVerdict({ boats: this._boatCount(), water: census?.water ?? null, waterDistance: census?.waterDistance ?? null, riding: !!this.riding }),
+      },
+      brew: {
+        stand: this._brewStand(),
+        fuel: this.inventory[BREW_FUEL] || 0,
+        waterBottles: this.inventory[WATER_BOTTLE_ITEM] || 0,
+        netherWart: this.inventory[BREW_BASE] || 0,
+        effects: Object.fromEntries(BREW_EFFECTS.map(effect => [effect, this._brewPlan(effect).error])),
+      },
+      last: this._bucketLast,
+    };
   }
 
   // N3: il proiettile che *sta arrivando*, con la traiettoria misurata. La
@@ -2917,6 +3234,7 @@ export class BedrockAdapter {
       fluids,
       dive: this._diveView({ fluids }),
       lava: this._lavaView(),
+      bucket: this._bucketView(),
       nether: this._netherView(),
       redstone: this._redstoneView(),
       circuits: this._circuitsView(),
@@ -3032,6 +3350,34 @@ export class BedrockAdapter {
     // M4: attraversare si può solo col gate aperto (resistenza al fuoco + ponte).
     if (!lavaNow.inLava && lavaNow.gap?.gap > 0 && !lavaNow.gap.truncated && lavaNow.gate?.ok) {
       o.push({ key: 'cross_lava', description: `Cross the ${lavaNow.gap.gap}-block lava gap ahead (${lavaNow.gate.route}: ${lavaNow.gate.reason})` });
+    }
+    // M5: secchi, barche, pozioni. Come per le cascate, l'opzione compare solo
+    // quando l'azione non verrebbe rifiutata dal verdetto puro.
+    const buckets = this._bucketsHeld();
+    const bucketSource = this._bucketSources()[0] ?? null;
+    if (buckets.empty > 0 && bucketSource) {
+      o.push({ key: 'fill_bucket', description: `Fill a bucket with ${bucketSource.block} at ${JSON.stringify(bucketSource.position)} (${bucketSource.distance} blocks away)` });
+    }
+    if (buckets.water > 0) {
+      const lavaCell = lavaNow.nearest ? { x: Math.round(lavaNow.nearest.x), y: Math.round(lavaNow.nearest.y), z: Math.round(lavaNow.nearest.z) } : null;
+      const cell = lavaCell ?? this._frontCell();
+      const verdict = cell ? placeBucketVerdict({ held: WATER_BUCKET_ITEM, block: this.world.blockAt(cell), dimension: this.dimension }) : null;
+      if (verdict?.ok) {
+        const extra = verdict.reason === 'water_on_lava_source' ? ' — it will turn the lava into obsidian' : '';
+        o.push({ key: 'place_water', description: `Pour water at ${JSON.stringify(cell)} (${verdict.result}${extra})` });
+      }
+    }
+    if (buckets.glassBottles > 0 && bucketSource?.item === WATER_BUCKET_ITEM) {
+      o.push({ key: 'fill_bottle', description: `Fill a glass bottle at the water source ${JSON.stringify(bucketSource.position)} (${bucketSource.distance} blocks away)` });
+    }
+    const boatRecipe = this.recipes ? [...this.recipes.keys()].find(name => isBoatItem(name)) : null;
+    if (boatRecipe && this._plankCount() >= BOAT_INGREDIENTS.planks && this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
+      o.push({ key: 'craft_boat', description: `Craft a boat from ${BOAT_INGREDIENTS.planks} planks (takes the bot across the water)` });
+    }
+    const boatNow = boatVerdict({ boats: this._boatCount(), water: this._fluidCensus()?.water ?? null, waterDistance: this._fluidCensus()?.waterDistance ?? null, riding: !!this.riding });
+    const nearestBoat = this._nearestBoat()[0] ?? null;
+    if (boatNow.ok && nearestBoat) {
+      o.push({ key: 'mount_boat', description: `Board the boat at ${JSON.stringify(nearestBoat.position)} (${nearestBoat.distance} blocks away)` });
     }
     // M3: cascate e colonne di bolle. L'opzione compare solo quando l'azione
     // corrispondente non verrebbe rifiutata (stesso verdetto di `columnTactic`),
@@ -3607,6 +3953,24 @@ export class BedrockAdapter {
         result = await this._breedAnimals(key.slice('breed_'.length));
       } else if (key.startsWith('tame_')) {
         result = await this._tameAnimal(key.slice('tame_'.length));
+      // M5: questi rami stanno *prima* dei prefissi generici (`mount_<tipo>`,
+      // `place_<blocco>`, `fill_*`), altrimenti `place_water` verrebbe scambiato
+      // per il piazzamento del blocco `water` e `mount_boat` per la cavalcatura
+      // di un'entità `boat` — difetto visto live il 03/10/2026.
+      } else if (key === 'fill_bucket') {
+        result = await this._fillBucket();
+      } else if (key === 'place_water' || key === 'empty_bucket') {
+        result = await this._emptyBucket({ item: WATER_BUCKET_ITEM });
+      } else if (key === 'place_lava') {
+        result = await this._emptyBucket({ item: LAVA_BUCKET_ITEM });
+      } else if (key === 'fill_bottle') {
+        result = await this._fillBottle();
+      } else if (key === 'craft_boat') {
+        result = await this._craftBoat();
+      } else if (key === 'mount_boat') {
+        result = await this._mountBoat();
+      } else if (key.startsWith('brew_')) {
+        result = await this._brew(key.slice('brew_'.length));
       } else if (key.startsWith('mount_')) {
         result = await this._mountVehicle(key.slice('mount_'.length));
       } else if (key === 'dismount') {

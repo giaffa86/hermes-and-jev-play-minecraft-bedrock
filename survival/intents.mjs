@@ -54,6 +54,19 @@ const KEY_INTENTS = {
   descend_waterfall: ['descend', 'travel'],
   climb_waterfall: ['ascend', 'travel'],
   use_bubble_column: ['fluid', 'ascend', 'descend', 'travel'],
+  // Fluidi (M5): spostare un fluido col secchio è una raccolta (riempire) o una
+  // costruzione (svuotare); la barca è un viaggio sull'acqua e la pozione è
+  // sopravvivenza che si prepara.
+  fill_bucket: ['collect', 'fluid'],
+  empty_bucket: ['build', 'fluid'],
+  place_water: ['build', 'fluid'],
+  place_lava: ['build', 'fluid'],
+  fill_bottle: ['collect', 'fluid'],
+  craft_boat: ['craft', 'travel'],
+  mount_boat: ['travel', 'fluid'],
+  brew_water_breathing: ['survive', 'fluid', 'heal'],
+  brew_fire_resistance: ['survive', 'fluid', 'heal'],
+  brew_night_vision: ['travel', 'fluid'],
   // Redstone (R2): azionare un input e leggere lo stato di un circuito.
   use_redstone: ['toggle', 'redstone'],
   sense_redstone: ['sense', 'redstone'],

@@ -8,17 +8,19 @@ bubble columns, potions, underwater mining/fishing.
 
 Status: **M0 (fluid awareness) + M1 partial (wading and simulated air budget) +
 M2 (breathing and dive budget) + M3 (waterfalls and bubble columns) + M4 (lava:
-shores, destroyed loot, crossing gate) implemented, unit-tested and collaudato
+shores, destroyed loot, crossing gate) + M5 (buckets, boats, brewing gate, lava
+bridge) implemented, unit-tested and collaudato
 live** (03/10/2026); the swimming *physics* of M1
 (ballistic flags, water A*, `swim_to`) is **blocked** by a missing packet capture —
 see the M1 section, and M3's column **actions** inherit that same blocker while
-their detection and verdicts work. M5–M6 still spec only (tracked in
+their detection and verdicts work. M6 still spec only (tracked in
 [roadmap](roadmap.md) and [open-questions](open-questions.md)).
 Full raw source: [`docs/raw/FLUIDS_ROADMAP.md`](../raw/FLUIDS_ROADMAP.md).
 
 Sources: `bedrock-adapter.mjs` (movement, physics, digging, fishing),
 `bedrock-dive.mjs` (M2 decision), `bedrock-waterfall.mjs` (M3 columns),
-`bedrock-lava.mjs` (M4 lava verdicts), `BEDROCK.md`
+`bedrock-lava.mjs` (M4 lava verdicts), `bedrock-bucket.mjs` (M5 buckets, boats,
+brewing), `BEDROCK.md`
 (action status), [headless-client](headless-client.md) (perception/action model),
 [survival-intelligence](survival-intelligence.md) (governor/skills/verifier),
 [fishing](fishing.md), [companions](companions.md) (boats/riding).
@@ -527,6 +529,106 @@ offline):
   destroyed-loot verdict is unit-tested against a synthetic death site, and it is
   the *next* lava contact that will exercise it end to end.
 
+## M5 — Buckets, boats, brewing and the lava bridge (implemented, live 03/10/2026)
+
+### Implementation
+
+- **`bedrock-bucket.mjs` (pure)**: `bucketSourceVerdict({block})` (a source is
+  distinguished by the **block name** — `water` vs `flowing_water`, `lava` vs
+  `flowing_lava` — not by `liquid_depth`; powder snow fills too),
+  `placeBucketVerdict({held, block, dimension})` → `obsidian` on a lava
+  **source**, `cobblestone` on flowing lava, `water`/`lava`/`powder_snow`
+  otherwise, with the Nether/End refused from the start (`water_in_nether`),
+  `bucketDelta({before, after, item, spentItem})` (a bucket counts as filled only
+  when the product was gained **and** the container was spent; `spentItem` is the
+  glass bottle for a potion), `boatVerdict({boats, water, riding, waterDistance})`
+  (needs a boat in the inventory and `BOAT_MIN_WATER` 3 water cells within
+  `BOAT_WATER_RANGE` 16), `brewPlan({effect, stand, fuel, waterBottles,
+  netherWart, ingredients})` with `BREW_RECIPES` (`water_breathing`: pufferfish,
+  `fire_resistance`: magma cream, `night_vision`: golden carrot) and the three
+  steps (bottle → awkward potion → effect).
+- **`bedrock-adapter.mjs`**: `_bucketsHeld`, `_bucketSources({radius: 16})`
+  (reads the **block name from the world**, so flowing water is not offered as a
+  source), `_useOnSource` (equip → approach → look → use → confirm from the
+  inventory delta), `_fillBucket`, `_fillBottle`, `_emptyBucket(item, target)`
+  (the pure verdict runs *before* any packet; the confirmation reads the world —
+  the cell changed, or water ended up above it), `_boatCount`/`_nearestBoat`/
+  `_craftBoat`/`_mountBoat`, `_brewStand`/`_brewPlan`/`_brew`, `_bucketView`, and
+  **`_bridgeLava`**: it walks the gap one cell at a time, pours a water bucket on
+  the lava when one is in the inventory (obsidian) or places the most abundant
+  block, and only advances onto a cell it has seen become solid — a stalled
+  bridge stops on a safe footing and says so. `_crossLava` now delegates to it
+  (M4's `bridge_not_implemented` is gone).
+- Options: `fill_bucket`, `place_water` (the description says it will turn the
+  lava into obsidian when the target is a source), `fill_bottle`, `craft_boat`,
+  `mount_boat`, each gated by the corresponding pure verdict. `GET
+  /observe.bucket` exposes `held`, `sources`, `water`, `lava`, `boat`, `brew` and
+  `last`.
+- **The brewing stand interaction is deliberately not implemented**:
+  `brew_<effect>` answers `brew_not_implemented` with the full plan. The plan is
+  honest (it names every missing item and the three steps) and the container
+  interaction is the one piece of M5 left to do.
+
+### Tests
+
+**977 tests** (was 955): 8 pure in `tests/bedrock-bucket.test.mjs` (source vs
+flowing, every placement result, bucket delta with a spent bottle, boat gate,
+brew plan), 12 new adapter cases in `tests/bedrock-fluids-adapter.test.mjs` (51
+total: the source census, the fill confirmed by the inventory delta, the bottle,
+`_emptyBucket` reading obsidian back from the world, the Nether and blocked-cell
+refusals, `_craftBoat`, `mount_boat` including `mount_not_confirmed`, `_brew`, the
+option gating, `observe().bucket`), the rewritten M4 `cross_lava` test (it now
+asserts the **bridge**: cells, supports, face 5, two moves, `lava_bridged`), a
+water-bridge test, the bridge refusals, and a dispatch test. The dispatch test
+exists because of a real defect: `place_water` and `mount_boat` were answering
+`missing_item`/`no_rideable_nearby` because the new branches sat **after** the
+generic `key.startsWith('mount_')`/`('place_')` branches; the M5 block now sits
+first, and the test calls `executeAction('fill_bucket' | 'place_water' |
+'mount_boat')` so the ordering cannot regress silently.
+
+### Live round (03/10/2026)
+
+`GET /observe.bucket?force=1` on the deployed container: no bucket of any kind
+(`held` all zero), **4 lava sources** at y=59 (`111,59,155` at 15.68 blocks,
+`110,59,156`, `110,59,155`, `111,59,154` — the list is capped at 4), water `8`
+cells at 20.6 blocks (`116,71,180`), lava `251` cells at 15.4, no boat
+(`missing_boat`), no brewing stand, `last: null`.
+
+| probe | live answer | ms |
+|---|---|---|
+| `fill_bucket` | `missing_bucket` | 18 |
+| `place_water` | `missing_water_bucket` | 15 |
+| `place_lava` | `missing_lava_bucket` | 14 |
+| `fill_bottle` | `missing_glass_bottle` | 16 |
+| `craft_boat` | `craft_recipe_missing` | 21 |
+| `mount_boat` | `missing_boat` | 17 |
+| `brew_water_breathing` | `missing_brewing_stand` + `missing: [brewing_stand, blaze_powder, potion, nether_wart, pufferfish]` + the 3-step plan | 19 |
+| `cross_lava` | `no_lava_ahead` (the measured gap is 0: no lava on the four cardinal directions) | 16 |
+
+`/options` returns 22 keys and **none** of the M5 actions (the gates are closed),
+`/observe.lava` keeps reporting `gap {gap: 0, reason: 'no_lava'}` and
+`gate {ok: true, route: 'none'}`. As for M2–M4, the bottle in hand is the only
+reason the hidden lava 15.4 blocks below the room is out of reach, so the happy
+paths (fill → pour → obsidian, the bridge, the boat ride) are unit-tested and the
+live round is a refusal round. No lava was fabricated with `setblock` (shared
+world, and flowing lava would be left behind).
+
+### Known limits
+
+- The brewing stand is planned but never clicked (`brew_not_implemented`): the
+  container interaction (fuel slot, three bottle slots, ingredient slot,
+  wait for the bubble animation) is future work.
+- `_bridgeLava` places at most `LAVA_CROSS_GAP_LIMIT + 1` cells and refuses a
+  gap wider than 4 (`gap_too_wide`), and it refuses a `truncated` measurement
+  (`gap_unknown`): a real lava lake stays out of bounds.
+- Placing water in the Nether is refused from the verdict up
+  (`water_in_nether`), so the Nether crossing still needs the block bridge.
+- `mount_boat` needs a boat in the inventory: `craft_boat` is gated on a
+  server-provided recipe whose id matches `isBoatItem` (wood variants); the ride
+  itself reuses `_rideToward`, which still walks rather than paddles.
+- The water bucket is consumed by the first bridge cell even when the pour is not
+  confirmed (the inventory delta is the only local truth available).
+
 ## Milestones
 
 | # | Milestone | Content | Status |
@@ -536,7 +638,7 @@ offline):
 | M2 | Breathing & controlled dives | `dive` with air budget; underwater `mine_*`/`collect_drop`; Water Breathing detection; governor `drowning` + `breathe` need. | ◑ implemented + live 03/10/2026: the **decision** (budget, `waterBreathing`, the gate on `mine_*`/`collect_drop`) is implemented, unit-tested and collaudato live (effect detected and counted down by the real server; the gate transparent on a dry bot). The underwater *move* stays blocked by M1: from the base room the head never gets under water, so the refusal path is unit-tested only. |
 | M3 | Waterfalls & bubble columns | `findWaterfalls`/`findBubbleColumns`; `descend_waterfall`, `climb_waterfall`, `use_bubble_column`; pathfinding edges; `dig_down` prefers a nearby waterfall. | ◑ implemented + live partial 03/10/2026: detection (`findWaterfalls`/`findBubbleColumns` on the real census), the three actions with typed verdicts, the `onWaterfall` governor condition and the `dig_down` preference are implemented and unit-tested; live only the **refusal** path was observable (no waterfall exists in the loaded area: the only water is a 2-high pool), so the descent/climb themselves stay blocked by the M1 swimming blocker. Pathfinding column edges were deliberately **not** added yet (see the M3 section). |
 | M4 | Lava: avoid (cross later) | Absolute obstacle + repulsion; `move_to_safe`; lava-death marking; never mine into lava; bucket bridging (`place_water` → obsidian); Nether crossing gated behind `fire_resistance` + bridging. | ◑ implemented + live 03/10/2026: `bedrock-lava.mjs` (death verdict, water-preferring shore plan, gap measurement, crossing gate), the `move_to_safe`/`cross_lava` actions with typed refusals, the drop filter and the destroyed-loot verdict on `recover_loot` are implemented and unit-tested; live the bot has no reachable lava (nearest is 15.4 blocks below the base room) so only the refusals were observable — the bridge build and the real escape move stay unit-tested |
-| M5 | Buckets, boats, potions | `craft_bucket`/`craft_boat`; `fill_bucket`/`empty_bucket`/`place_water`; boat travel on open water via `mount_*`/`_rideToward`; brewing. | ❌ not implemented |
+| M5 | Buckets, boats, potions | `craft_bucket`/`craft_boat`; `fill_bucket`/`empty_bucket`/`place_water`; boat travel on open water via `mount_*`/`_rideToward`; brewing. | ◑ implemented + live 03/10/2026: `bedrock-bucket.mjs` (source/placement verdicts, bucket delta, boat gate, brew plan), `fill_bucket`/`fill_bottle`/`place_water`/`place_lava`/`craft_boat`/`mount_boat`/`brew_*` actions, `_bucketView` + `GET /observe.bucket`, and the **lava bridge** (`_bridgeLava`, which closes M4's `bridge_not_implemented`) are implemented and unit-tested; live every action answers a typed refusal in milliseconds (no bucket, no boat, no stand, no reachable lava) — the `craft_bucket`→`fill_bucket`→`place_water` chain, the boat ride and the brewing-stand interaction stay unit-tested (see the M5 section) |
 | M6 | Survival Intelligence integration | Gameplay skills in `skills/gameplay/fluids/`; progression milestones `bucket`, `water_travel`, gated `nether_cross_lava`; docs + tests. | ❌ not implemented |
 
 ## Key risks / open questions
@@ -559,10 +661,21 @@ offline):
   prism the bot cannot verify).
 - `DIVE_WORK_SECONDS` (3 s) is an estimate for one hand-mined block: the gate does
   not consult the tool yet, so a slow block can outlast the work budget it claims.
-- Lava crossing is **decision-complete but not executable**: the gate tells the
-  truth about what is needed, and `cross_lava` refuses with the plan
-  (`bridge_not_implemented`). Whoever implements M5 has to build the bridge
-  *and* keep the refusal honest until the last block is placed.
+- Lava crossing is decision-complete and the bridge exists (`_bridgeLava`
+  pours water/places blocks one cell at a time and only advances on a confirmed
+  cell), but it has **never been exercised live**: no lava is reachable from the
+  base room, so the happy path is unit-tested only. The gate still refuses
+  anything wider than 4 cells or `truncated`.
+- The brewing stand is the one M5 hole: the plan is computed and honest
+  (`brew_not_implemented` with the missing list and the three steps), the
+  container interaction is not written.
+- `place_water` on lava gives obsidian only when the target is a **source**;
+  on flowing lava it gives cobblestone. That distinction comes from the block
+  name the server sends, not from the visual "is it lava" question.
+- The M5 dispatch ordering was a real defect (the generic `mount_`/`place_`
+  prefixes shadowed the new branches): any future action whose name starts like a
+  generic prefix must be added **before** it, and `tests/bedrock-fluids-adapter.test.mjs`
+  now pins the ordering.
 - The lava gap is measured from the loaded census radius: a wide lake is
   `truncated` ⇒ `gap_unknown`. Measuring further would need a scan that costs
   more than the answer is worth today, and a wrong width is worse than no width.

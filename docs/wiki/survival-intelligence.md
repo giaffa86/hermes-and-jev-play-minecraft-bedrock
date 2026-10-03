@@ -75,7 +75,7 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**955 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**977 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
 
 - **Fluids in the survival layer (M0, 2026-10-03)**: the governor vocabulary grew
@@ -225,6 +225,19 @@ ride itself waits on M1's swimming. The pathfinding column edges were left out o
 purpose: a descent into water the bot cannot leave is a trap, not an
 optimisation.
 
+- **Buckets, boats and the lava bridge (M5, 2026-10-03)**: `bedrock-bucket.mjs`
+keeps the three decisions apart — *is this a source* (`bucketSourceVerdict`: the
+block name, not `liquid_depth`, says `water` vs `flowing_water`), *what happens
+when it is poured* (`placeBucketVerdict`: obsidian on a lava source, cobblestone
+on flowing lava, and the Nether refuses water outright), and *did it fill*
+(`bucketDelta`: the product gained **and** the container spent). The boat gate
+(`boatVerdict`) wants a boat in the inventory and three water cells within 16
+blocks, and `brewPlan` names every missing item and the three brewing steps while
+the stand interaction answers `brew_not_implemented`. The bridge
+(`_bridgeLava`) is the executor of M4's gate: one cell at a time, water poured on
+the lava when a bucket is in hand (obsidian) or the most abundant block placed,
+and the next cell is only stepped on after the world confirms it — a stalled
+bridge stops on a safe footing instead of pretending to have crossed.
 - **Lava as an absolute obstacle (M4, 2026-10-03)**: `bedrock-lava.mjs` decides
 three things the governor and the recovery path both need. **A lava death
 destroys the loot**: `deathVerdict({position, lava})` marks the site
