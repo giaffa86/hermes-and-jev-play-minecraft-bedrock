@@ -429,7 +429,11 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
     What is left: the **observation log** is still unbounded (the graph, missions
     and hints have a retention path now: `pruneEpisodic` / `POST /memory/prune`,
     dry-run by default, only consolidated terminal missions), and turning a
-    **semantic hit into a real waypoint** for a free-form goal. **Planner-side recall is wired**
+    **semantic hit into a real waypoint** *is* wired (03/10: `reachable=1` on
+    `GET /memory/search` -> `placeCandidate` -> `applySemanticWaypoint`, with
+    `reachability_unknown` treated as "not confirmed"; the live round shows the
+    refusal because the bot's walkable component is one cell — see
+    [open questions](open-questions.md)). **Planner-side recall is wired**
     (03/10: the controller queries `GET /memory/search` before every plan with a
     goal-derived query and injects the hits as hints — fail-open,
     `tests/controller-recall.test.mjs`). The graph, producers,

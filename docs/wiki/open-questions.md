@@ -54,6 +54,33 @@ Last lint: 2026-10-03.
   `take_`/`deposit_`/`eat`/trading; (C) no world change — the affected live rounds
   stay documented as environment-blocked. Until an answer arrives the plan in
   force is **(C)**: no change to the base, offline verification only.
+- **Update 2026-10-03 (later) — the walkable component shrank to one cell**: a
+  single request tells the whole story. `GET /memory/search?q=…&reachable=1` ->
+  `hits[].reachability.detail` = `{feet: true, cells: 1, truncated: false, start:
+  {x: 115, y: 73, z: 159}, neighbors: [{116,73,159: feet=bed}, {114,73,159:
+  feet=bed}, {115,73,160: feet=crafting_table}, {115,73,158: head=oak_log}]}` —
+  floor `oak_planks` at `y=72`, ceiling at `y=75`. East and west are the room's
+  **beds** (base furniture); south and north are a `crafting_table` at
+  `(115,73,160)` and an `oak_log` at `(115,74,158)`, i.e. **the two blocks the P5
+  probes placed** (`place_crafting_table` and `build_hut`). The 10-cell corridor
+  measured on 02/10 is gone. Consequences: `_reachabilityUsable()` is false, so
+  the P2 filters are **fail-open** again (`/options` offers `mount_donkey`,
+  `attack_zombie`, `read_container`, `open_trade` at any distance) and every
+  action that needs walking fails (`path_failed`/`target_not_found`); actions
+  within reach still work (`mine_dirt` confirmed twice by the server, `craft_*`
+  on the adjacent table, `sleep`), and drops land in the cavity below the floor
+  (`collect_drop` -> `item_not_collected`). The bot cannot escape on its own:
+  `pillar_up` -> `no_headroom` (2-high room), `dig_up` -> `protected_head`
+  (planks), and mining is not targetable.
+- **Revised pending decision (2026-10-03)**: besides (A)/(B)/(C) above, the
+  cheapest fix removes **only the two blocks our own probes placed**
+  (`setblock 115 73 160 air`, `setblock 115 74 158 air`): it restores the
+  pre-probe state and touches nothing of the base. Without any console edit, a
+  harness action that may mine **only the blocks the bot itself placed** (the R4
+  placement registry is the natural gate) would do the same from inside the
+  world. Recommended: the bot-owned cleanup action, because it unblocks the whole
+  live backlog (riding, trade, containers, crops, mounting) with no base
+  modification. Until an answer arrives, plan **(C)** stays in force.
 
 ## Mounting a vehicle is never confirmed (2026-10-03)
 

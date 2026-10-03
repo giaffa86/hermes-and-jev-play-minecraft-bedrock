@@ -264,19 +264,39 @@ function semanticRecallLines (hits, limit = 3) {
 }
 
 // Il recall non deve mai bloccare un piano: se la rotta manca o risponde male si
-// prosegue senza indizi, con l'errore nel log.
+// prosegue senza indizi, con l'errore nel log. `reachable=1` chiede all'harness
+// di dire quali hit sono camminabili, così un hit può diventare una destinazione.
 async function semanticRecall (goal) {
   const query = recallQuery(goal);
-  if (!query) return [];
-  let hits = [];
+  if (!query) return { query, hits: [], candidate: null };
+  let out = null;
   let error = null;
   try {
-    const out = await api('GET', `/memory/search?q=${encodeURIComponent(query)}&limit=3`);
-    if (Array.isArray(out?.hits)) hits = out.hits;
-    else error = out?.error ?? 'no_hits';
+    out = await api('GET', `/memory/search?q=${encodeURIComponent(query)}&limit=3&reachable=1`);
+    if (!Array.isArray(out?.hits)) { error = out?.error ?? 'no_hits'; out = null; }
   } catch (err) { error = err.message; }
+  const hits = out?.hits ?? [];
   log('semantic_recall', {query, hits: hits.map(h => ({id: h.id, score: h.score})), error});
-  return hits;
+  return { query, hits, candidate: out?.candidate ?? null, candidateReason: out?.candidateReason ?? null };
+}
+
+// P6: un hit semantico diventa un **waypoint** solo se l'harness lo dichiara
+// raggiungibile e il piano non ne ha già uno (il goal esplicito e il curriculum
+// comandano). La memoria suggerisce, il mondo decide: una reachability
+// sconosciuta non è una conferma, quindi non si parte.
+function applySemanticWaypoint (plan, recall) {
+  if (!plan || CURRICULUM || WAYPOINT || plan.waypoint || plan.follow || plan.need || plan.recover) return plan;
+  const candidate = recall?.candidate;
+  if (!candidate?.position) {
+    if (recall?.hits?.length || recall?.candidateReason) {
+      log('semantic_waypoint_skipped', {reason: recall?.candidateReason ?? 'no_reachable_place', hits: recall?.hits?.length ?? 0});
+    }
+    return plan;
+  }
+  const waypoint = {x: Math.round(candidate.position.x), z: Math.round(candidate.position.z)};
+  log('semantic_waypoint', {place: candidate.id, score: candidate.score, waypoint, reachability: candidate.reachability ?? null});
+  const note = `waypoint from memory: ${candidate.id}`;
+  return {...plan, waypoint, notes: plan.notes ? `${plan.notes} (${note})` : note};
 }
 
 async function hermesPlan(observation, { recall = '' } = {}) {
@@ -326,8 +346,9 @@ async function planForStep (observation, reason, goal = null) {
     }
     log('curriculum_fallback', {reason, milestone});
   }
-  const recall = semanticRecallLines(await semanticRecall(goal));
-  return hermesPlan(observation, {recall});
+  const recall = await semanticRecall(goal);
+  const plan = await hermesPlan(observation, {recall: semanticRecallLines(recall.hits)});
+  return applySemanticWaypoint(plan, recall);
 }
 
 // ---- comando umano via chat (M1-M3) ---------------------------------------------------------

@@ -364,3 +364,58 @@ test('un atterraggio su magma non è mai una destinazione del pathfinding', () =
   assert.deepEqual([...adapter._neighbors({ x: 2, y: 75, z: 0 })].filter(s => s.x === 3), [], 'nessun passo verso il magma');
   assert.equal(adapter._standable(2, 75, 0), true, 'sull\'altopiano di pietra si sta');
 });
+
+test('placeReach distingue una destinazione della memoria camminabile da una isolata', () => {
+  const world = flatWorld({ minX: 0, maxX: 4, minZ: 0, maxZ: 0 });
+  // Tasca isolata a x=8, come nel test del componente.
+  world.set(8, 70, 0, STONE);
+  world.set(8, 71, 0, AIR);
+  world.set(8, 72, 0, AIR);
+  const adapter = reachAdapter(world);
+
+  assert.deepEqual(adapter.placeReach({ x: 3, y: 71, z: 0 }), { reachable: true, reason: 'cell', distance: 2.5 });
+  assert.equal(adapter.placeReach({ x: 8, y: 71, z: 0 }).reachable, false);
+  assert.equal(adapter.placeReach({ x: 8, y: 71, z: 0 }).reason, 'unreachable');
+  assert.deepEqual(adapter.placeReach(null), { reachable: false, reason: 'no_position', distance: null });
+  assert.deepEqual(adapter.placeReach({ x: NaN, y: 71, z: 0 }), { reachable: false, reason: 'no_position', distance: null });
+
+  // Fail-open: un mondo senza colonne caricate non è una prova di
+  // irraggiungibilità, quindi la destinazione resta candidabile.
+  const blind = reachAdapter({ map: new Map(), blockAt: () => null, findBlocks: () => [] });
+  const verdict = blind.placeReach({ x: 42, y: 70, z: 42 });
+  assert.equal(verdict.reachable, true);
+  assert.equal(verdict.reason, 'reachability_unknown');
+});
+
+test('placeCandidate promuove solo un luogo confermato camminabile', () => {
+  const world = flatWorld({ minX: 0, maxX: 6, minZ: 0, maxZ: 0 });
+  // Tasca isolata a x=12: calpestabile ma fuori dal componente.
+  world.set(12, 70, 0, STONE);
+  world.set(12, 71, 0, AIR);
+  world.set(12, 72, 0, AIR);
+  const adapter = reachAdapter(world);
+  const hits = [
+    { id: 'far_cave', position: { x: 12, y: 71, z: 0 } },
+    { id: 'near_patch', position: { x: 5, y: 71, z: 0 } },
+  ];
+
+  const pick = adapter.placeCandidate(hits);
+  assert.equal(pick.reason, null);
+  assert.equal(pick.candidate.id, 'near_patch', 'il primo hit confermato, non il primo in assoluto');
+  assert.equal(pick.hits[0].reachability.reachable, false);
+  assert.equal(pick.hits[0].reachability.reason, 'unreachable');
+  assert.equal(pick.hits[1].reachability.reason, 'cell');
+
+  // Solo luoghi isolati: nessun candidato e il motivo lo dice.
+  assert.deepEqual(adapter.placeCandidate([hits[0]]).candidate, null);
+  assert.equal(adapter.placeCandidate([hits[0]]).reason, 'all_unreachable');
+  assert.equal(adapter.placeCandidate([]).reason, 'no_hits');
+
+  // Reachability ignota (mondo senza colonne caricate): **non** è una conferma,
+  // perché un luogo nuovo non si sceglie su una stima.
+  const blind = reachAdapter({ map: new Map(), blockAt: () => null, findBlocks: () => [] });
+  const blindPick = blind.placeCandidate([{ id: 'unknown_cave', position: { x: 3, y: 71, z: 0 } }]);
+  assert.equal(blindPick.candidate, null);
+  assert.equal(blindPick.reason, 'reachability_unknown');
+  assert.equal(blindPick.hits[0].reachability.detail.cells, 1, 'il dettaglio spiega perché il verdetto manca');
+});

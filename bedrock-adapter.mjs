@@ -7298,6 +7298,23 @@ export class BedrockAdapter {
     return !!below && (below.boundingBox === 'block' || below.name === 'unknown');
   }
 
+  // Perché una cella non è calpestabile. Non è nel percorso caldo: serve a
+  // diagnosticare un componente di **una sola cella** (bot sigillato) senza
+  // leggere il mondo a mano. Rispecchia l'ordine dei controlli di `_standable`.
+  _standableWhy (x, y, z) {
+    const feet = this._blockForPath(x, y, z);
+    const head = this._blockForPath(x, y + 1, z);
+    const below = this._blockForPath(x, y - 1, z);
+    const names = { feet: feet?.name ?? null, head: head?.name ?? null, below: below?.name ?? null };
+    const cell = { x, y, z };
+    if (!this._passableForPath(feet) && !this._wadeable(feet)) return { ok: false, reason: 'feet', cell, ...names };
+    if (!this._passableForPath(head)) return { ok: false, reason: 'head', cell, ...names };
+    if (this._lavaAdjacent(x, y, z)) return { ok: false, reason: 'lava_adjacent', cell, ...names };
+    if (below && landingHazard(below.name)) return { ok: false, reason: 'landing_hazard', cell, ...names };
+    if (!below || (below.boundingBox !== 'block' && below.name !== 'unknown')) return { ok: false, reason: 'no_floor', cell, ...names };
+    return { ok: true, reason: 'ok', cell, ...names };
+  }
+
   _collides (x, y, z) {
     const eps = 1e-9;
     const minX = Math.floor(x - PLAYER_HALF_WIDTH + eps), maxX = Math.floor(x + PLAYER_HALF_WIDTH - eps);
@@ -7613,6 +7630,54 @@ export class BedrockAdapter {
     if (!entity?.position) return true;
     if (!this._reachabilityUsable()) return true;
     return this.approachReachable(entity.position, { range, dy });
+  }
+
+  // Un luogo suggerito dalla memoria (un hit dell'indice vettoriale) diventa una
+  // destinazione solo se il bot può arrivarci: stesso verdetto delle azioni, con
+  // fail-open quando il componente non è affidabile (il limite di `reachableCells`
+  // è una stima, non una prova di irraggiungibilità).
+  placeReach (position) {
+    if (!position || !Number.isFinite(position.x) || !Number.isFinite(position.z)) {
+      return { reachable: false, reason: 'no_position', distance: null };
+    }
+    const distance = this.position
+      ? Math.round(Math.hypot(position.x - this.position.x, position.z - this.position.z) * 10) / 10
+      : null;
+    if (!this._reachabilityUsable()) {
+      const reach = this.reachableCells();
+      // Fail-open, ma con il motivo: un componente degenere o troncato è una
+      // stima, e senza questo dettaglio il verdetto non si diagnostica. Con una
+      // sola cella si riporta anche perché i quattro vicini non lo sono: è il
+      // caso del bot sigillato, e leggerlo dal vivo non deve richiedere una
+      // sessione di debug.
+      const detail = { feet: !!this._feet, cells: reach.cells.size, truncated: reach.truncated };
+      if (reach.cells.size <= 1 && reach.start) {
+        const { x, y, z } = reach.start;
+        detail.start = reach.start;
+        detail.neighbors = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dz]) => this._standableWhy(x + dx, y, z + dz));
+      }
+      return { reachable: true, reason: 'reachability_unknown', distance, detail };
+    }
+    if (this.cellReachable(position)) return { reachable: true, reason: 'cell', distance };
+    if (this.approachReachable(position, { range: 3, dy: 2 })) return { reachable: true, reason: 'approach', distance };
+    return { reachable: false, reason: 'unreachable', distance };
+  }
+
+  // Sceglie il primo luogo della memoria che il mondo **conferma** camminabile.
+  // Qui si è severi: una reachability sconosciuta non è una conferma, e mandare
+  // il bot verso un posto non verificato brucia budget in `path_failed`. I filtri
+  // sulle azioni restano fail-open (non togliere un'opzione su un mondo
+  // inaffidabile); questa è la creazione di una **nuova destinazione**.
+  placeCandidate (hits) {
+    const annotated = (hits ?? []).map(hit => ({...hit, reachability: this.placeReach(hit.position)}));
+    const candidate = annotated.find(hit => hit.reachability.reachable === true && hit.reachability.reason !== 'reachability_unknown') ?? null;
+    let reason = null;
+    if (!candidate) {
+      if (!annotated.length) reason = 'no_hits';
+      else if (annotated.every(hit => hit.reachability.reason === 'unreachable' || hit.reachability.reason === 'no_position')) reason = 'all_unreachable';
+      else reason = 'reachability_unknown';
+    }
+    return { hits: annotated, candidate, reason };
   }
 
   // Il drop di un blocco scavato atterra nella cella del blocco, che dopo lo

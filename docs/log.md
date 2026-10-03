@@ -3156,3 +3156,50 @@ solo con una finestra che non cancella nulla; le cancellazioni sono coperte dai
 13 test unitari sui due backend. Limiti noti: il **log delle osservazioni**
 (5372 righe) non viene potato e un backlog non consolidato blocca la potatura per
 progetto (`POST /memory/consolidate` prima).
+
+
+## [2026-10-03] feat | Memoria P6: da un hit semantico a un waypoint reale (con verdetto del mondo)
+
+Chiuso il follow-up dichiarato di P6 ("turning a hit into a real waypoint").
+`GET /memory/search` accetta `reachable=1`: `Adapter.placeReach` da a ogni hit il
+verdetto di raggiungibilita (`cell`/`approach`/`unreachable`, o
+`reachability_unknown` quando il componente e degenere o troncato) e
+`placeCandidate` restituisce `candidate` (il **primo luogo che il mondo
+conferma** camminabile) + `candidateReason`. In `controller.mjs`
+`applySemanticWaypoint` trasforma il candidato nel waypoint del piano (eventi
+`semantic_waypoint`/`semantic_waypoint_skipped`) solo se il piano non ne ha gia
+uno, il goal non e `CURRICULUM` e non c'e un `WAYPOINT` esplicito. **Asimmetria
+voluta**: i filtri sulle azioni restano fail-open (non si toglie un'opzione su un
+mondo inaffidabile), ma **creare una nuova destinazione e fail-closed** —
+`reachability_unknown` non e una conferma, quindi il bot non parte.
+`placeReach.detail` riporta anche, per un componente di una sola cella, il
+verdetto dei quattro vicini (`_standableWhy`), e cosi il blocco live si e letto in
+una richiesta.
+
+Test: `tests/bedrock-reachability.test.mjs` 20 casi (nuovi `placeCandidate` e
+`placeReach`) e `tests/controller-recall.test.mjs` 5 (waypoint dal candidato,
+rifiuto con `reachability_unknown`, il `WAYPOINT` esplicito vince). Suite
+completa: **1007 test, 1007 pass**.
+
+Collaudo live sul container `hermes-jev-bedrock` (deploy di `bedrock-adapter.mjs`,
+`bedrock-harness.mjs`, `controller.mjs` con md5 identici + restart):
+`GET /memory/search?q=productive iron cave&limit=3&reachable=1` -> tre hit con
+`reachability_unknown` e `candidate: null`; `RUN_ID=p6-waypoint-live` con goal
+libero -> `semantic_recall` (tre hit) e `semantic_waypoint_skipped
+{"reason":"reachability_unknown","hits":3}`, nessun waypoint nel piano, due
+`mine_dirt` confermati dal server, `collect_drop` -> `item_not_collected`,
+`CANCELLED (exhausted)`, `exit=0`.
+
+**Scoperta live importante (blocca i round che richiedono movimento)**: il
+componente camminabile del bot e **una sola cella**. Il dettaglio lo dice: piedi a
+(115,73,159) con pavimento `oak_planks` a y=72, **letti** a est e ovest,
+`crafting_table` a sud e `oak_log` in testa a nord — gli ultimi due **piazzati
+dalle sonde del fronte P5**. Effetti: i filtri di raggiungibilita di P2 restano
+fail-open (`/options` offre di nuovo `mount_donkey`, `attack_zombie`,
+`read_container` a qualunque distanza) e tutto cio che richiede di camminare
+fallisce; `mine_*` entro il braccio e `craft_*` sul tavolo adiacente funzionano
+(`mine_dirt` ok due volte), i drop finiscono nella cavita sotto il pavimento
+(`collect_drop` -> `item_not_collected`). Il bot non ha una azione per uscirne
+(`pillar_up` -> `no_headroom`, `dig_up` -> blocco protetto). Opzioni in
+`open-questions.md` (raccomandata: una azione mirata sui soli blocchi piazzati dal
+bot, oppure un `setblock` di console sui due blocchi delle sonde).

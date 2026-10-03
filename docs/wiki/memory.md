@@ -428,9 +428,23 @@ own watermark analysis), and an unconsolidated backlog blocks pruning by design
 - ~~**Planner-side semantic recall**~~: implemented — the controller queries
   `GET /memory/search` before every plan (goal-derived query, top 3 hits in the
   prompt as hints next to the P0 productivity hints, fail-open, `semantic_recall`
-  event; integration tests in `tests/controller-recall.test.mjs`). Open follow-up:
-  turning a hit into a real waypoint when the goal is free-form ("the rich
-  cave") instead of only hinting at it.
+  event; integration tests in `tests/controller-recall.test.mjs`).
+- ~~**Turning a hit into a real waypoint**~~: implemented — `GET
+  /memory/search?...&reachable=1` annotates every hit with the reachability
+  verdict (`Adapter.placeReach`) and returns `candidate` (the first place the
+  world **confirms** walkable) plus `candidateReason`; the controller turns that
+  candidate into the plan waypoint (`applySemanticWaypoint`, event
+  `semantic_waypoint`/`semantic_waypoint_skipped`) unless the plan already has
+  one, the goal is `CURRICULUM`, or an explicit `WAYPOINT` is configured.
+  Fail-closed where it matters: a verdict of `reachability_unknown` is *not* a
+  confirmation, so the bot is never sent to a place the world has not confirmed
+  (the action filters stay fail-open, but creating a *new destination* is a
+  different question). Live 03/10/2026: the bot's walkable component is a single
+  cell (see [open questions](open-questions.md)), so the round shows the refusal
+  — `semantic_waypoint_skipped {"reason":"reachability_unknown","hits":3}` —
+  with the per-neighbour diagnostic in `hits[].reachability.detail` (beds east
+  and west, the harness's own `crafting_table` south, its own `oak_log` at the
+  north head cell).
 
 ## Related pages
 

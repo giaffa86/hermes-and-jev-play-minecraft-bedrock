@@ -8,7 +8,8 @@
 //   POST /memory/consolidate {limit,since} -> backfill idempotente dei consolidamenti
 //   GET  /memory/observations?subject=&predicate=&limit=N -> log grezzo delle osservazioni
 //   POST /memory/materialize {limit} -> riproietta il log nel grafo (idempotente)
-//   GET  /memory/search?q=<testo>&limit=N -> recall semantico (indice vettoriale derivato)
+//   GET  /memory/search?q=<testo>&limit=N[&reachable=1] -> recall semantico (indice vettoriale derivato;
+//        con reachable=1 ogni hit porta il verdetto di raggiungibilita' e `candidate` e' il primo raggiungibile)
 //   POST /memory/reindex {limit} -> ricostruisce l'indice vettoriale
 //   POST /memory/prune {keepMissions, keepActions, keepCheckpoints, minAgeMs, dryRun} -> retention
 // Il controller sceglie solo chiavi restituite da /options; la validità è qui.
@@ -557,7 +558,19 @@ server = createServer(async (req, res) => {
         limit: Number(params.get('limit') ?? 5) || 5,
         refresh: params.get('refresh') === '1',
       });
-      response = [200, { query, hits, count: hits.length }];
+      // Con `reachable=1` ogni hit riceve il verdetto di raggiungibilità del
+      // bot e `candidate` è il primo luogo che il mondo **conferma**
+      // raggiungibile: un hit è una memoria, non una destinazione — la
+      // raggiungibilità la dice il mondo, e un verdetto sconosciuto non basta.
+      if (params.get('reachable') === '1') {
+        const pick = adapter.placeCandidate(hits);
+        response = [200, {
+          query, hits: pick.hits, count: pick.hits.length, candidate: pick.candidate,
+          candidateReason: pick.reason, reachabilityChecked: true,
+        }];
+      } else {
+        response = [200, { query, hits, count: hits.length }];
+      }
     }
     else if (req.method === 'POST' && req.url === '/memory/reindex') {
       const payload = body ? JSON.parse(body) : {};

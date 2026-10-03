@@ -139,6 +139,7 @@ test('the planner prompt carries the semantic recall of the current goal', async
     assert.match(searches[0].query.q, /Collect 1 dirt near home/);
     assert.match(searches[0].query.q, /dirt/);
     assert.equal(searches[0].query.limit, '3');
+    assert.equal(searches[0].query.reachable, '1', 'la ricerca chiede il verdetto di raggiungibilita\' al mondo');
 
     // Il recall finisce nel prompt del planner, insieme agli indizi di P0.
     const planPrompt = hermes.prompts().find(p => p.includes('PLANNER'));
@@ -183,6 +184,88 @@ test('a broken recall route does not stop the plan (fail-open)', async () => {
 
     const contract = readEvents(runId).filter(e => e.type === 'goal_contract');
     assert.equal(contract.at(-1).status, 'success');
+  } finally {
+    server.close();
+    rmSync(hermes.dir, { recursive: true, force: true });
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+  }
+});
+
+// Il candidato è l'unico hit che l'harness dichiara camminabile: senza di lui la
+// memoria resta un indizio e il piano non riceve un waypoint di fantasia.
+const SEARCH_WITH_PLACE = {
+  hits: [
+    { id: 'landmark_home', score: 0.44, kind: 'landmark', type: 'home', label: 'home', position: { x: 108, y: 74, z: 138 }, reachability: { reachable: false, reason: 'unreachable', distance: 21.5 } },
+    { id: 'resource_site_7_9', score: 0.31, kind: 'resource_site', type: 'surface_ores', label: 'dirt patch', position: { x: 120.4, y: 75, z: 152.6 }, reachability: { reachable: true, reason: 'approach', distance: 8.1 } },
+  ],
+  count: 2,
+  candidate: { id: 'resource_site_7_9', score: 0.31, kind: 'resource_site', type: 'surface_ores', label: 'dirt patch', position: { x: 120.4, y: 75, z: 152.6 }, reachability: { reachable: true, reason: 'approach', distance: 8.1 } },
+  reachabilityChecked: true,
+};
+
+test('a reachable semantic hit becomes the plan waypoint when the plan has none', async () => {
+  const hermes = fakeHermesQueue([PLAN, 'mine_dirt']);
+  const { server, port, calls } = await startHarness({ search: SEARCH_WITH_PLACE });
+  const runId = `test-sem-wp-${Date.now().toString(36)}`;
+  try {
+    const { code, stderr } = await runController(baseEnv(runId, port, hermes.dir));
+    assert.equal(code, 0, stderr);
+
+    const plan = calls.filter(c => c.path === '/plan' && c.method === 'POST').at(-1);
+    assert.deepEqual(plan.payload.waypoint, { x: 120, z: 153 }, 'le coordinate del luogo raggiungibile (arrotondate)');
+    assert.match(plan.payload.notes, /waypoint from memory: resource_site_7_9/);
+
+    const events = readEvents(runId);
+    const wp = events.filter(e => e.type === 'semantic_waypoint');
+    assert.equal(wp.length, 1);
+    assert.equal(wp[0].place, 'resource_site_7_9');
+    assert.deepEqual(wp[0].waypoint, { x: 120, z: 153 });
+    assert.equal(wp[0].reachability.reason, 'approach');
+    assert.equal(events.filter(e => e.type === 'semantic_waypoint_skipped').length, 0);
+  } finally {
+    server.close();
+    rmSync(hermes.dir, { recursive: true, force: true });
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+  }
+});
+
+test('an unreachable-only recall never invents a waypoint', async () => {
+  const hermes = fakeHermesQueue([PLAN, 'mine_dirt']);
+  const { server, port, calls } = await startHarness({
+    search: { hits: [SEARCH_WITH_PLACE.hits[0]], count: 1, candidate: null, candidateReason: 'reachability_unknown', reachabilityChecked: true },
+  });
+  const runId = `test-sem-wp-off-${Date.now().toString(36)}`;
+  try {
+    const { code, stderr } = await runController(baseEnv(runId, port, hermes.dir));
+    assert.equal(code, 0, stderr);
+
+    const plan = calls.filter(c => c.path === '/plan' && c.method === 'POST').at(-1);
+    assert.equal(plan.payload.waypoint, null, 'nessun waypoint inventato');
+
+    const events = readEvents(runId);
+    assert.equal(events.filter(e => e.type === 'semantic_waypoint').length, 0);
+    const skipped = events.filter(e => e.type === 'semantic_waypoint_skipped');
+    assert.equal(skipped.length, 1);
+    assert.equal(skipped[0].reason, 'reachability_unknown', 'un verdetto ignoto non promuove un luogo');
+    assert.equal(skipped[0].hits, 1);
+  } finally {
+    server.close();
+    rmSync(hermes.dir, { recursive: true, force: true });
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+  }
+});
+
+test('an explicit waypoint wins over the semantic place', async () => {
+  const hermes = fakeHermesQueue([JSON.stringify({ objective: 'walk', targets: {}, waypoint: { x: 381, z: 16 }, notes: 'explicit' }), 'mine_dirt']);
+  const { server, port, calls } = await startHarness({ search: SEARCH_WITH_PLACE });
+  const runId = `test-sem-wp-env-${Date.now().toString(36)}`;
+  try {
+    const { code, stderr } = await runController({ ...baseEnv(runId, port, hermes.dir), WAYPOINT: '{"x":380,"z":16}' });
+    assert.equal(code, 0, stderr);
+
+    const plan = calls.filter(c => c.path === '/plan' && c.method === 'POST').at(-1);
+    assert.deepEqual(plan.payload.waypoint, { x: 381, z: 16 }, 'il waypoint dichiarato in configurazione non viene sovrascritto');
+    assert.equal(readEvents(runId).filter(e => e.type === 'semantic_waypoint').length, 0);
   } finally {
     server.close();
     rmSync(hermes.dir, { recursive: true, force: true });
