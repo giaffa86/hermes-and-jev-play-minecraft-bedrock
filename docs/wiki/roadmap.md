@@ -280,14 +280,19 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
     the loaded radius; the Deep Dark rule has never been observed live).
 11. **Memory follow-ups** (see [memory](memory.md)): ~~a **structure detector**
     (villages / Ancient Cities → `structure:*` nodes)~~ **done** (03/10:
-    `structures.mjs` + `surveyBlocks`, M5/M6), an explicit
-    **observation log** (`subject/predicate/object` that materializes the
-    current graph), a **vector index** for semantic recall, and a
-    **retention/pruning policy** for the episodic layer (missions, action
-    events and checkpoints only grow today). The graph, producers, chunk
-    memory, missions, the goal/episodic controller wiring and the
-    **episodic → semantic consolidation** (productivity hints on the target
-    node) are implemented and unit-tested.
+    `structures.mjs` + `surveyBlocks`, M5/M6), ~~an explicit **observation log**~~
+    **done** (03/10: `subject/predicate/object` + confidence/observedAt/source,
+    schema v5, `POST /memory/materialize` idempotent, `GET /memory/observations`;
+    the graph is a projection of the log), ~~a **vector index** for semantic
+    recall~~ **done** (03/10: `vector-index.mjs` — a *derived* index over the
+    current records with a TTL cache, `GET /memory/search` / `POST /memory/reindex`,
+    comparative proof in `tests/memory-semantic.test.mjs`; SQLite stays the truth).
+    What is left: a **retention/pruning policy** for the episodic layer (missions,
+    action events and checkpoints only grow today) and **planner-side recall**
+    (nothing in the planner queries `GET /memory/search` yet). The graph, producers,
+    chunk memory, missions, the goal/episodic controller wiring and the
+    **episodic → semantic consolidation** (productivity hints on the target node)
+    are implemented and unit-tested.
 12. **Travel kit** (spec in
     [exploration](exploration.md#travel-survival-kit-and-adaptation-multi-day-expeditions)):
     `craft_bed`/`place_bed` + `/observe.travel` readiness, and the missing

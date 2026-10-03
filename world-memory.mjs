@@ -12,6 +12,7 @@
 import { join } from 'node:path';
 import { JsonMemoryRepository } from './memory-store.mjs';
 import { SqliteMemoryRepository } from './sqlite-memory.mjs';
+import { VectorIndex, documentText } from './vector-index.mjs';
 
 export const MEMORY_STATUS = Object.freeze({
   KNOWN: 'known',     // probabilmente ancora valido
@@ -20,6 +21,23 @@ export const MEMORY_STATUS = Object.freeze({
 });
 
 export const LANDMARK_KINDS = Object.freeze(['landmark', 'structure', 'home']);
+
+// Tipi indicizzati dall'indice vettoriale: solo luoghi/cose su cui si può pianificare.
+// Fuori: `concept` (`resource:iron_ore` e simili, raggiungibili per relazione e
+// senza posizione), `mission`/`checkpoint`/`action` (episodi) e `explored_chunk`
+// (biomi già coperti da `unexploredFrontier`).
+export const VECTOR_KINDS = Object.freeze([
+  'landmark', 'structure', 'home', 'resource_site', 'container', 'portal', 'entity',
+]);
+
+// Predicati del log delle osservazioni e nodo-concetto in cui puntano: `contains`
+// (un contenitore/sito contiene una risorsa), `is_a` (un luogo è una struttura),
+// `in_biome`. Gli altri predicati trattano l'oggetto come id di nodo.
+export const OBSERVATION_CONCEPT_KINDS = Object.freeze({
+  contains: 'resource',
+  is_a: 'structure',
+  in_biome: 'biome',
+});
 
 export function distance3d (a, b) {
   if (!a || !b) return Infinity;
@@ -52,6 +70,11 @@ export class WorldMemory {
     // Crescita limitata: episodi tracciati per (nodo, risorsa) e risorse per nodo.
     maxHintSources = 20,
     maxHintsPerNode = 12,
+    // Indice vettoriale derivato: si ricostruisce da solo dopo questo TTL (o su
+    // richiesta con `refresh`). Non è una fonte di verità, solo un indice.
+    vectorTtlMs = 5000,
+    vectorDims = 2048,
+    maxVectorDocs = 2000,
   } = {}) {
     if (!repo) throw new Error('WorldMemory needs a repository');
     this.repo = repo;
@@ -61,6 +84,12 @@ export class WorldMemory {
     this.autoConsolidate = autoConsolidate;
     this.maxHintSources = maxHintSources;
     this.maxHintsPerNode = maxHintsPerNode;
+    this.vectorTtlMs = vectorTtlMs;
+    this.vectorDims = vectorDims;
+    this.maxVectorDocs = maxVectorDocs;
+    this._vector = null;        // VectorIndex o null
+    this._vectorAt = 0;         // quando è stato costruito
+    this._vectorDirty = false;  // una scrittura dopo l'ultima costruzione
   }
 
   // ---- landmarks (luoghi: landmark/structure/resource_site/portal/entity) ---------
@@ -153,6 +182,12 @@ export class WorldMemory {
       source,
     });
     this._materializeContains(id, contents);
+    // Il log conserva la lettura grezza (anche degli item spariti): gli archi sono
+    // la proiezione, il log è la storia.
+    for (const [item, count] of Object.entries(contents || {})) {
+      if (!count) continue;
+      this.observe({ subject: id, predicate: 'contains', object: item, observedAt: now, source, data: { count } });
+    }
     return this.repo.get(id);
   }
 
@@ -226,6 +261,9 @@ export class WorldMemory {
       const node = this.rememberConcept({ kind: 'resource', label: ore });
       this.repo.link({ from: key, to: node.id, type: 'contains' });
     }
+    for (const ore of observations) {
+      this.observe({ subject: key, predicate: 'contains', object: ore, observedAt: now, source });
+    }
     return record;
   }
 
@@ -259,6 +297,7 @@ export class WorldMemory {
       source,
     });
     this.link(landmarkId, this.conceptId('structure', type), 'is_a', { confidence, metadata: evidence ? { evidence } : undefined });
+    this.observe({ subject: landmarkId, predicate: 'is_a', object: type, confidence, source, data: evidence ? { evidence } : {} });
     return record;
   }
 
@@ -446,14 +485,17 @@ export class WorldMemory {
   link (from, to, type, { confidence = 1, metadata = {} } = {}) {
     this._ensureNode(from);
     this._ensureNode(to);
+    this._touchVector();
     return this.repo.link({ from, to, type, confidence, metadata });
   }
 
   unlink (from, to, type) {
+    this._touchVector();
     return this.repo.unlink({ from, to, type });
   }
 
   invalidateRelation (from, to, type) {
+    this._touchVector();
     return this.repo.invalidateRelation({ from, to, type });
   }
 
@@ -691,6 +733,83 @@ export class WorldMemory {
 
   missionActions (missionId) {
     return this.repo.missionActions(missionId);
+  }
+
+  // ---- observation log (subject/predicate/object) ----------------------------------
+
+  // Registro grezzo delle letture del mondo: `subject --predicate--> object` con
+  // istante e confidenza. Gli archi del grafo sono una *proiezione* di questo log,
+  // quindi si possono ricostruire senza perdere la storia né le contraddizioni
+  // (una lettura nuova smentisce la vecchia, che resta nel log).
+  observe ({ subject, predicate, object, confidence = 1, observedAt = null, source = null, data = {} }) {
+    if (!subject || !predicate || object == null) throw new Error('observe needs subject, predicate and object');
+    // Il testo indicizzato include le osservazioni: un'osservazione nuova cambia
+    // il documento del soggetto, quindi l'indice vettoriale va ricostruito.
+    this._touchVector();
+    return this.repo.recordObservation({ subject, predicate, object, confidence, observedAt, source, data });
+  }
+
+  observations (options) {
+    return this.repo.observations(options);
+  }
+
+  observationCount () {
+    return typeof this.repo.observationCount === 'function' ? this.repo.observationCount() : 0;
+  }
+
+  // Materializza il log nel grafo, idempotente: per ogni coppia
+  // (subject, predicate) vince l'ultima *lettura* — il gruppo di osservazioni con
+  // l'`observedAt` più recente (per `contains` è l'ultimo contenuto letto, per
+  // `is_a` l'ultima classificazione). Gli archi non più supportati vengono
+  // invalidati, mai cancellati, e un'osservazione senza nodo soggetto è conteggiata
+  // come orfana invece di ricrearlo (il log è storia, non un comando).
+  materialize ({ limit = 500, now = Date.now() } = {}) {
+    const log = this.repo.observations({ limit });
+    const report = { observations: log.length, subjects: 0, linked: 0, invalidated: 0, orphaned: 0, at: now };
+    const groups = new Map();
+    for (const obs of log) {
+      const key = `${obs.subject}|${obs.predicate}`;
+      const group = groups.get(key) ?? [];
+      group.push(obs);
+      groups.set(key, group);
+    }
+    for (const [key, group] of groups) {
+      const separator = key.lastIndexOf('|');
+      const subject = key.slice(0, separator);
+      const predicate = key.slice(separator + 1);
+      if (!this.repo.get(subject)) { report.orphaned++; continue; }
+      report.subjects++;
+      const latestAt = Math.max(...group.map(o => o.observedAt));
+      const wanted = new Map();
+      for (const obs of group) {
+        if (obs.observedAt !== latestAt) continue;
+        const target = this._observationTarget(predicate, obs.object);
+        if (!wanted.has(target)) wanted.set(target, obs);
+      }
+      for (const edge of this.repo.relationsFrom(subject, { type: predicate })) {
+        if (wanted.has(edge.to)) continue;
+        this.repo.invalidateRelation({ id: edge.id });
+        report.invalidated++;
+      }
+      for (const [target, obs] of wanted) {
+        this._ensureNode(target);
+        this.repo.link({
+          from: subject, to: target, type: predicate, confidence: obs.confidence,
+          metadata: { observedAt: obs.observedAt, ...(obs.source ? { source: obs.source } : {}), ...(obs.data ?? {}) },
+        });
+        report.linked++;
+      }
+    }
+    return report;
+  }
+
+  // L'oggetto di un'osservazione è un'etichetta per i predicati che puntano a un
+  // nodo-concetto (`resource:`/`structure:`/`biome:`), altrimenti è già un id.
+  _observationTarget (predicate, object) {
+    const kind = OBSERVATION_CONCEPT_KINDS[predicate];
+    if (kind) return this.conceptId(kind, object);
+    const id = String(object);
+    return id.includes(':') ? id : this.conceptId('node', id);
   }
 
   // Missioni precedenti per intent/target (memoria episodica: "come ho fatto l'ultima
@@ -935,6 +1054,7 @@ export class WorldMemory {
         });
       }
       if (applied.some(a => !a.unchanged)) {
+        this._touchVector();
         this.repo.upsert({ ...node, productivity: this._capHints(productivity) });
       }
       this.linkMission(mission.id, 'consolidated_into', node.id, {
@@ -1000,6 +1120,72 @@ export class WorldMemory {
     return limit != null ? hints.slice(0, limit) : hints;
   }
 
+  // ---- semantic recall (indice vettoriale *derivato*) --------------------------
+  //
+  // SQLite resta la fonte di verità: qui si costruisce un indice in memoria dai
+  // record esistenti e lo si interroga per similarità. Serve dove la ricerca per
+  // campo non sa scegliere ("la grotta ricca di ferro vicino alla montagna"): la
+  // query viene confrontata col *testo* del record, che include le osservazioni e
+  // i suggerimenti di produttività del consolidamento P0.
+
+  // Marca l'indice come da ricostruire (chiamato dalle scritture di rilievo).
+  _touchVector () {
+    this._vectorDirty = true;
+  }
+
+  // Ricostruisce l'indice dai record correnti. `limit` limita i documenti per
+  // non trasformare il recall in un costo illimitato. Si indicizzano solo i
+  // record *spaziali* (dove si può andare): i concetti (`resource:iron_ore`) non
+  // hanno una posizione e sono già raggiungibili per relazione, mentre missioni,
+  // checkpoint ed eventi sono episodi, non luoghi.
+  buildVectorIndex ({ limit = this.maxVectorDocs } = {}) {
+    const index = new VectorIndex({ dims: this.vectorDims });
+    for (const record of this.repo.find({ kinds: VECTOR_KINDS, includeInvalid: false, limit })) {
+      // I nodi-concetto (`structure:cave`, `resource:iron_ore`) portano lo stesso
+      // `kind` di un luogo ma non hanno posizione: non sono destinazioni.
+      if (!record.position) continue;
+      const text = documentText(record);
+      if (!text) continue;
+      index.add({ id: record.id, text });
+    }
+    this._vector = index;
+    this._vectorAt = Date.now();
+    this._vectorDirty = false;
+    return index;
+  }
+
+  // Indice pronto all'uso: riusa quello in cache se fresco e non sporco.
+  vectorIndex ({ refresh = false } = {}) {
+    const fresh = this._vector && !this._vectorDirty && (Date.now() - this._vectorAt) < this.vectorTtlMs;
+    if (refresh || !fresh) return this.buildVectorIndex();
+    return this._vector;
+  }
+
+  // Ricerca semantica: rank + record completo, così il chiamante può pianificare
+  // sulla posizione. Restituisce [] per una query senza termini utili. `filter`
+  // riceve il risultato arricchito (`kind`/`type`/`position`), non il solo hit.
+  semanticSearch (query, { limit = 5, minScore = 0, refresh = false, filter = null } = {}) {
+    const index = this.vectorIndex({ refresh });
+    // Con un filtro si esplora l'intero indice (bounded da `maxVectorDocs`) e si
+    // applica il limite *dopo* il filtro, altrimenti `limit` scarterebbe documenti
+    // che il filtro avrebbe tenuto.
+    const hits = index.search(query, { limit: filter ? index.size : limit, minScore });
+    const out = [];
+    for (const hit of hits) {
+      const record = this.repo.get(hit.id);
+      if (!record) continue;
+      const entry = {
+        id: hit.id, score: hit.score, kind: record.kind, type: record.type,
+        label: record.label ?? null, position: record.position ?? null,
+        productivity: record.productivity ?? null,
+      };
+      if (filter && !filter(entry)) continue;
+      out.push(entry);
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
   // ---- status ----------------------------------------------------------------------
 
   // Promuove a STALE ciò che è stato osservato troppo tempo fa. Non invalida
@@ -1013,7 +1199,12 @@ export class WorldMemory {
 
   hydrate (now = Date.now()) {
     this.refreshStatuses(now);
-    return this.summary();
+    // Il grafo è la proiezione del log: ricostruirlo all'avvio è idempotente e
+    // recupera gli archi derivati se il grafo è più vecchio del log.
+    const projected = this.materialize({ now });
+    this.flushChunks();
+    this.flush();
+    return { ...this.summary(), projected };
   }
 
   summary () {
@@ -1030,10 +1221,11 @@ export class WorldMemory {
       relations: typeof this.repo.relationCount === 'function' ? this.repo.relationCount() : 0,
       missionRelations: typeof this.repo.missionRelationsCount === 'function' ? this.repo.missionRelationsCount() : 0,
       actionEvents: typeof this.repo.actionEventCount === 'function' ? this.repo.actionEventCount() : 0,
+      observations: this.observationCount(),
     };
   }
 
-  observeView ({ maxContainers = 20, maxLandmarks = 20, maxHints = 10 } = {}) {
+  observeView ({ maxContainers = 20, maxLandmarks = 20, maxHints = 10, maxObservations = 10 } = {}) {
     const landmarks = this.findLandmarks({ limit: maxLandmarks }).map((r) => ({
       id: r.id, type: r.type, kind: r.kind, label: r.label ?? null, position: r.position,
       status: r.status, lastSeenAt: r.lastSeenAt,
@@ -1050,7 +1242,16 @@ export class WorldMemory {
       score: h.score, confidence: h.confidence, found: h.found, attempts: h.attempts,
       contradicted: h.contradicted, last: h.last,
     }));
-    return { landmarks, containers, portals, hints, counts: this._kindCounts() };
+    const observations = this.observations({ limit: maxObservations }).map(o => ({
+      subject: o.subject, predicate: o.predicate, object: o.object,
+      observedAt: o.observedAt, confidence: o.confidence, source: o.source ?? null,
+    }));
+    // Stato dell'indice semantico: se non è mai stato costruito, non lo si costruisce
+    // qui (una lettura di stato non deve costare una ricostruzione).
+    const vector = this._vector
+      ? { documents: this._vector.size, dims: this._vector.dims, at: this._vectorAt, stale: this._vectorDirty }
+      : null;
+    return { landmarks, containers, portals, hints, observations, vector, counts: this._kindCounts() };
   }
 
   _kindCounts () {
@@ -1068,6 +1269,8 @@ export class WorldMemory {
     if (missionRelations) counts.missionRelations = missionRelations;
     const actionEvents = typeof this.repo.actionEventCount === 'function' ? this.repo.actionEventCount() : 0;
     if (actionEvents) counts.actionEvents = actionEvents;
+    const observations = this.observationCount();
+    if (observations) counts.observations = observations;
     return counts;
   }
 

@@ -335,9 +335,27 @@ Still missing (the rest of the original gap):
   deployed `.env` still carried the stale `JEV_MODEL=typesafe/jev-1.13` value that
   makes every controller run die with TypeSafe `400 Unknown model` (removed; use
   `jev-latest` with `TYPESAFE_API_KEY`; the container environment keeps the old
-  value until the next recreate). Still open: retention/pruning policy for the
-  episodic layer; the consolidation write happens on every terminal patch
-  (cheap but unconditional). See [memory](memory.md).
+  value until the next recreate).
+
+  **P6 follow-ups are done too (03/10).** The **observation log** is implemented
+  (`subject/predicate/object` + `confidence`/`observedAt`/`source`, schema v5 in
+  both repositories, `POST /memory/materialize` idempotent, `GET
+  /memory/observations`): the graph is now a *projection* of the log, newest
+  observation per `subject|predicate` wins and an edge the log no longer supports
+  is invalidated, never deleted. The **vector index** for semantic recall is
+  implemented too (`vector-index.mjs`, a derived dependency-free index over the
+  current records, `GET /memory/search`, `POST /memory/reindex`, `TTL` cache
+  invalidated by writes and by consolidation) — SQLite stays the source of truth.
+  Live on the deployed container: migration v4 → v5 with no data loss (141
+  records, 34 observations), `materialize` replaying with identical numbers, and
+  `?q=productive%20dirt%20site` ranking the consolidated `resource_site_7_9`
+  first; the comparative test shows the keyword path returning nothing for *"the
+  iron rich cave near the mountain"* while the vector path returns the right cave
+  first. Still open: retention/pruning policy for the episodic layer; the
+  consolidation write happens on every terminal patch (cheap but unconditional);
+  **nothing in the planner reads `GET /memory/search` yet** (harness /
+  observability path only); recall is lexical-semantic, so a query must use the
+  game's vocabulary (`iron` ≠ `iron_ore`). See [memory](memory.md).
 - **Drop collection regression** (02/10) — **resolved on 03/10**: it was a
   *geometry* case, not a broken `take_item_entity` handshake. The live event log of
   `p3-first-night-3` (03/10, 00:34:59→00:43:30) shows the pickup path working

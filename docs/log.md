@@ -1853,3 +1853,54 @@ faceva crashare l'harness: `TypeError: Cannot read properties of undefined
 casi). Doc: `exploration.md` (sezione travel kit riscritta + limiti di
 piazzamento e residui live), `verification.md` (riga 45.4),
 `open-questions.md`, `roadmap.md` (voce 12).
+
+## [2026-10-03] feat | Observation log + indice vettoriale (P6)
+
+Chiuse le due sotto-slice P6 rimaste sulla memoria. L'**observation log**
+(`memory-store.mjs`, `sqlite-memory.mjs` schema v5, `world-memory.mjs`,
+`bedrock-harness.mjs`) rende il grafo una *proiezione* di un log
+`subject/predicate/object` con `confidence`/`observedAt`/`source`: i produttori
+(`rememberContainer`, `rememberResourceSite`, `rememberStructure`) continuano a
+scrivere gli archi e registrano anche l'osservazione; `materialize()` riproietta
+il log in modo idempotente (vince l'osservazione più recente per
+`subject|predicate`, un arco non più supportato viene **invalidato** e non
+cancellato, le osservazioni senza nodo soggetto sono contate `orphaned` e non lo
+ricreano) e `hydrate()` lo esegue all'avvio. Rotte nuove: `GET
+/memory/observations`, `POST /memory/materialize`. Un bug trovato dai test: nel
+repository JSON il campo `this.observations` ombreggiava l'omonimo metodo.
+
+L'**indice vettoriale** (`vector-index.mjs`, nuovo modulo puro senza dipendenze) è
+un indice *derivato* sui record correnti: tokenizer con stopword en/it, hash
+FNV-1a, embedding bag-of-words con segno, 2048 dimensioni, normalizzazione L2,
+similarità coseno, cache con TTL invalidata dalle scritture e dal consolidamento.
+`VECTOR_KINDS` + posizione obbligatoria escludono i nodi-concetto (stesso `kind`
+ma non destinazioni). Rotte: `GET /memory/search`, `POST /memory/reindex`,
+`GET /observe.memory.vector`.
+
+Prova comparativa richiesta dalla slice: per *"the iron rich cave near the
+mountain"* il percorso per parola chiave non trova nulla (i `contains` sono id di
+gioco: `iron` ≠ `iron_ore`) o restituisce due grotte non ordinate senza punteggio,
+mentre il vettoriale mette la grotta giusta **prima** (`precision@1 = 1`) con la
+posizione. L'integrazione col consolidamento P0 funziona: `documentText()`
+indicizza le chiavi dei productivity hint più `successful productive rich abundant
+proven`, quindi *"productive dirt site"* restituisce il sito consolidato.
+
+Verifica live (container `hermes-jev-bedrock`, VM 100): migrazione **v4 → v5 senza
+perdita** (`schema_version 5`, 141 record `world_memory`, 39 missioni, 80
+relazioni, 34 osservazioni); `POST /memory/materialize {limit:500}` ripetuto due
+volte con gli stessi numeri (`linked:6`, `invalidated:0`, `orphaned:0`);
+`POST /memory/reindex` → `{documents:44, dims:2048}`; `GET
+/memory/search?q=productive%20dirt%20site` → `resource_site_7_9` primo (0.407) coi
+hint `dirt`/`potatoes`/`carrots`, `?q=where did I find potatoes and carrots` →
+stesso sito (0.124, dopo aver alzato le dimensioni da 512 a 2048 per togliere le
+collisioni spurie), `?q=village with beds and villagers` →
+`structure_village_113_73_156`. Suite: 667 test (`tests/memory-observations.test.mjs`
+16 casi ×2 backend, `tests/vector-index.test.mjs` 7, `tests/memory-semantic.test.mjs`
+5 ×2).
+
+Limiti residui: recall solo lessicale-semantico (nessun sinonimo: la query deve
+usare il vocabolario del gioco), nessun consumatore nel planner (la rotta è oggi
+di osservabilità) e retention/pruning dell'episodico non ancora definite. Doc:
+`memory.md` (sezioni "Observation log" e "Semantic recall"), `verification.md`
+(righe 42.4/42.5), `open-questions.md` (bullet goal/episodic), `roadmap.md`
+(voce 11).

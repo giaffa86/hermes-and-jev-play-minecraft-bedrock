@@ -6,6 +6,10 @@
 //   POST /say {message, type?} -> il bot scrive in chat (pacchetto `text`)
 //   GET  /memory/hints?resource=<item>&limit=N -> località provate (episodico → semantico)
 //   POST /memory/consolidate {limit,since} -> backfill idempotente dei consolidamenti
+//   GET  /memory/observations?subject=&predicate=&limit=N -> log grezzo delle osservazioni
+//   POST /memory/materialize {limit} -> riproietta il log nel grafo (idempotente)
+//   GET  /memory/search?q=<testo>&limit=N -> recall semantico (indice vettoriale derivato)
+//   POST /memory/reindex {limit} -> ricostruisce l'indice vettoriale
 // Il controller sceglie solo chiavi restituite da /options; la validità è qui.
 import { createServer } from 'node:http';
 import { appendFileSync, mkdirSync } from 'node:fs';
@@ -435,6 +439,42 @@ server = createServer(async (req, res) => {
     else if (req.method === 'POST' && req.url === '/memory/consolidate') {
       const payload = body ? JSON.parse(body) : {};
       response = [200, worldMemory.consolidatePending({ limit: payload.limit ?? 50, since: payload.since ?? null })];
+    }
+    // Log delle osservazioni: il registro grezzo (`subject --predicate--> object`)
+    // di cui gli archi del grafo sono la proiezione.
+    else if (req.method === 'GET' && req.url.startsWith('/memory/observations')) {
+      const params = new URLSearchParams(req.url.split('?')[1] ?? '');
+      const options = {
+        subject: params.get('subject'),
+        predicate: params.get('predicate'),
+        object: params.get('object'),
+        limit: Number(params.get('limit') ?? 20) || 20,
+      };
+      const observations = worldMemory.observations(options);
+      response = [200, { observations, count: observations.length, total: worldMemory.observationCount() }];
+    }
+    // Riproietta il log nel grafo (idempotente): utile dopo un restore o per
+    // verificare che il grafo e il log raccontino la stessa storia.
+    else if (req.method === 'POST' && req.url === '/memory/materialize') {
+      const payload = body ? JSON.parse(body) : {};
+      response = [200, worldMemory.materialize({ limit: payload.limit ?? 500 })];
+    }
+    // Recall semantico: "la grotta ricca di ferro vicino alla montagna". L'indice
+    // è derivato dai record (SQLite resta la verità) e include i suggerimenti di
+    // produttività del consolidamento, quindi un sito già produttivo sale.
+    else if (req.method === 'GET' && req.url.startsWith('/memory/search')) {
+      const params = new URLSearchParams(req.url.split('?')[1] ?? '');
+      const query = params.get('q') ?? params.get('query') ?? '';
+      const hits = worldMemory.semanticSearch(query, {
+        limit: Number(params.get('limit') ?? 5) || 5,
+        refresh: params.get('refresh') === '1',
+      });
+      response = [200, { query, hits, count: hits.length }];
+    }
+    else if (req.method === 'POST' && req.url === '/memory/reindex') {
+      const payload = body ? JSON.parse(body) : {};
+      const index = worldMemory.buildVectorIndex({ limit: payload.limit ?? undefined });
+      response = [200, { ok: true, documents: index.size, dims: index.dims }];
     }
     else if (req.method === 'POST' && req.url === '/plan') { adapter.setPlan(JSON.parse(body)); response = [200, { ok: true, plan: adapter.plan }]; }
     else if (req.method === 'POST' && req.url === '/say') {

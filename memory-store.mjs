@@ -8,7 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-export const MEMORY_SCHEMA_VERSION = 4;
+export const MEMORY_SCHEMA_VERSION = 5;
 
 const edgeKey = (from, type, to) => `${from}|${type}|${to}`;
 const missionEdgeKey = (missionId, type, targetId) => `${missionId}|${type}|${targetId}`;
@@ -23,6 +23,8 @@ export class JsonMemoryRepository {
     this._missionRelations = new Map();
     this.actionEvents = new Map();
     this._actionSeq = 0;   // garantisce id unici per evento d'azione (non persistito)
+    this._observations = new Map();
+    this._obsSeq = 0;      // id unici per osservazione (non persistito)
     this.dirty = false;
   }
 
@@ -54,6 +56,9 @@ export class JsonMemoryRepository {
     }
     for (const event of Array.isArray(raw?.actionEvents) ? raw.actionEvents : []) {
       if (event?.id != null) this.actionEvents.set(event.id, event);
+    }
+    for (const obs of Array.isArray(raw?.observations) ? raw.observations : []) {
+      if (obs?.id != null) this._observations.set(obs.id, obs);
     }
     return this;
   }
@@ -250,6 +255,41 @@ export class JsonMemoryRepository {
     return [...this.actionEvents.values()].filter(e => e.missionId === missionId);
   }
 
+  // ---- observation log (subject/predicate/object) ----------------------------------
+
+  recordObservation ({ id = null, subject, predicate, object, confidence = 1, observedAt = null, source = null, data = {} }) {
+    if (!subject || !predicate || object == null) throw new Error('recordObservation needs subject, predicate and object');
+    const now = Date.now();
+    const base = `${subject}|${predicate}|${object}|${observedAt ?? now}`;
+    // Id unico per evento: due letture identiche nello stesso millisecondo sono
+    // due osservazioni distinte (stessa regola degli action event).
+    let key = id ?? `${base}#${++this._obsSeq}`;
+    if (!id) while (this._observations.has(key)) key = `${base}#${++this._obsSeq}`;
+    this._observations.set(key, {
+      ...data,
+      id: key, subject, predicate, object, confidence,
+      observedAt: observedAt ?? now, source,
+    });
+    this.dirty = true;
+    return key;
+  }
+
+  // Filtro opzionale per soggetto/predicato/oggetto e finestra temporale; ordina
+  // dal più recente (la materializzazione legge sempre dal più recente).
+  observations ({ subject = null, predicate = null, object = null, since = null, limit = null } = {}) {
+    let out = [...this._observations.values()];
+    if (subject) out = out.filter(o => o.subject === subject);
+    if (predicate) out = out.filter(o => o.predicate === predicate);
+    if (object) out = out.filter(o => o.object === object);
+    if (since != null) out = out.filter(o => o.observedAt >= since);
+    out.sort((a, b) => b.observedAt - a.observedAt || (b.id > a.id ? 1 : -1));
+    return limit ? out.slice(0, limit) : out;
+  }
+
+  observationCount () {
+    return this._observations.size;
+  }
+
   flush () {
     if (!this.dirty || !this.dir) { this.dirty = false; return; }
     const file = this.file;
@@ -261,6 +301,7 @@ export class JsonMemoryRepository {
       relations: [...this.relations.values()],
       missionRelations: [...this._missionRelations.values()],
       actionEvents: [...this.actionEvents.values()],
+      observations: [...this._observations.values()],
     }, null, 2)}\n`);
     renameSync(tmp, file);
     this.dirty = false;

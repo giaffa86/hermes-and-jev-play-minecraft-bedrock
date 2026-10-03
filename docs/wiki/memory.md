@@ -290,6 +290,82 @@ module, so the mission lifecycle can call it without an import cycle).
   biome/dimension; consolidation never deletes the episodic record, so a
   retention/pruning policy is still open (see next slices).
 
+## Observation log
+
+The graph is a **projection of a log**: every derived claim is written down as an
+observation and the edges are recomputed from it.
+
+- **Shape**: `subject → predicate → object` with `confidence`, `observedAt`,
+  `source` and free-form `data`. `OBSERVATION_CONCEPT_KINDS` maps the predicates
+  that already exist as concept nodes: `contains → resource:<name>`,
+  `is_a → structure:<name>`, `in_biome → biome:<name>`.
+- **Producers**: `rememberContainer` (one observation per item),
+  `rememberResourceSite` (one per ore) and `rememberStructure` (the `is_a` edge)
+  call `observe()`. They keep writing the graph directly: the log is the *history*
+  of those writes, not a second source of truth.
+- **`materialize({ limit, now })`**: for each `subject|predicate` pair the newest
+  observation wins; an edge the log no longer supports is **invalidated** (never
+  deleted); observations whose subject node is gone are counted `orphaned` and do
+  **not** resurrect the node. Report: `{ observations, subjects, linked,
+  invalidated, orphaned, at }`.
+- **Relations stay the primitive**: `link()`/`unlink()`/`invalidateRelation()` are
+  what the rest of the code uses; `materialize` is the idempotent replay, and
+  `hydrate()` runs it at startup (`{ ...summary(), projected }`).
+- **Routes**: `GET /memory/observations?subject=&predicate=&object=&limit=`,
+  `POST /memory/materialize { limit }`; `observeView()` → `GET /observe` →
+  `memory.observations` (bounded) and `summary().observations`.
+- **Storage**: schema v5 — a JSON `observations` map (`memory-store.mjs`) and an
+  `observation` table with `idx_obs_subject(subject, predicate)`,
+  `idx_obs_object(object, predicate)`, `idx_obs_time(observed_at)`
+  (`sqlite-memory.mjs`). Ids are
+  `${subject}|${predicate}|${object}|${observedAt}#seq`, so two observations in the
+  same millisecond stay distinct.
+- **Contradiction**: a newer reading that disagrees (a chest that no longer holds
+  the item, a site with no ore) invalidates the old edge while the old observation
+  remains in the log as history.
+- **Tests**: `tests/memory-observations.test.mjs` (16 cases × json/sqlite:
+  filters, ordering, same-millisecond ids, idempotent replay, contradiction,
+  orphan, `hydrate` reprojection, persistence after reopen).
+
+## Semantic recall (vector index)
+
+`vector-index.mjs` is a pure, dependency-free module: tokenizer (lowercase,
+accents stripped, stopwords en/it), FNV-1a hashing, `embed()` producing a signed,
+L2-normalized bag-of-words vector (2048 dims), `cosine()`, `documentText()` and
+`VectorIndex` (`add`/`addRecord`/`remove`/`clear`/`search`).
+
+- **Derived, never authoritative**: `buildVectorIndex()` indexes the *current
+  records* — `VECTOR_KINDS` (landmark/structure/home/resource_site/container/
+  portal/entity) **with a position**. Concept nodes (`structure:cave`,
+  `resource:iron_ore`) share a place kind but are not destinations, so they stay
+  out. `semanticSearch(query, { limit, minScore, refresh, filter })` returns
+  `{ id, score, kind, type, label, position, productivity }`.
+- **Cache**: built lazily, reused while fresh (`vectorTtlMs`, default 5000 ms) and
+  marked dirty by `observe()`/`link()`/`unlink()`/`invalidateRelation()` and by
+  consolidation. `POST /memory/reindex`, `GET /memory/search?q=&limit=`, and
+  `GET /observe` → `memory.vector = { documents, dims, at, stale }`.
+- **P0 integration**: `documentText()` indexes the productivity hint keys plus the
+  qualitative words (`successful productive rich abundant proven` / `failed empty
+  unproductive`), so a site that actually produced comes out for "the rich dirt
+  site" instead of living in a separate table. Coordinates and counts are left
+  out on purpose: a number is not a retrieval signal and only adds collisions.
+- **Why it is worth having (comparative proof, 03/10)**: for *"the iron rich cave
+  near the mountain"* the keyword path returns **nothing** (its `contains` values
+  are game ids, so `iron` ≠ `iron_ore`) or, with a type filter, an **unordered**
+  set of two caves with no relevance score at all; the vector path returns the
+  right cave **first** (`precision@1 = 1`) with its position. The live round
+  repeated the proof on the deployed memory
+  (`resource_site_7_9` first for *"where did I find potatoes and carrots"* and
+  *"productive dirt site"*), and a long productive node still wins against 12
+  hash-colliding places (regression test). The comparison is measured in
+  `tests/memory-semantic.test.mjs`, not claimed in prose.
+- **Known limits**: lexical-semantic only (no synonym mapping — a query must use
+  the game's vocabulary; `chest` matches only if the container record's `type` is
+  `chest`, which is what the adapter stores), collisions are mitigated by 2048
+  dimensions but not impossible, and **nothing in the planner reads
+  `semanticSearch` yet**: today it is a harness/observability path plus the
+  comparative test.
+
 ## Next slices
 
 - ~~**Episodic → semantic consolidation**~~: implemented — see the
@@ -302,10 +378,15 @@ module, so the mission lifecycle can call it without an import cycle).
   itself (`structures.mjs` + `surveyBlocks` in `bedrock-world.mjs`) is live
   (village + cavity) — see
   [exploration](exploration.md#structures-and-underground-targets-m5m6).
-- **Observation log**: an explicit `subject/predicate/object/observedAt/confidence`
-  log that materializes the current graph (the API is already shaped for it).
-- **Vector index** over structured memory for *semantic* recall ("the iron-rich
-  cave near the mountain") — on top of SQLite, never replacing it.
+- ~~**Observation log**~~: implemented — see the "Observation log" section above
+  (schema v5, `POST /memory/materialize` idempotent, `GET /memory/observations`).
+- ~~**Vector index**~~: implemented — see "Semantic recall (vector index)" above
+  (derived index, `GET /memory/search`, comparative proof in
+  `tests/memory-semantic.test.mjs`).
+- **Planner-side semantic recall**: nothing in the planner queries
+  `GET /memory/search` yet. Next step is to let a free-form request ("the rich
+  cave") produce candidate locations that the planner can turn into a waypoint,
+  with the same "hint, not fact" re-verification as the P0 hints.
 
 ## Related pages
 

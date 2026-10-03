@@ -16,7 +16,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-export const SQLITE_SCHEMA_VERSION = 4;
+export const SQLITE_SCHEMA_VERSION = 5;
 const CHUNK = 16;
 
 const NODE_SCHEMA = `
@@ -99,8 +99,27 @@ CREATE INDEX IF NOT EXISTS idx_aev_mission ON action_event(mission_id);
 CREATE INDEX IF NOT EXISTS idx_aev_action ON action_event(action_type);
 `;
 
-const META_SCHEMA = `CREATE TABLE IF NOT EXISTS world_memory_meta (key TEXT PRIMARY KEY, value TEXT);`;
+// Observation log: `subject --predicate--> object` con confidenza e istante.
+// È il registro grezzo delle letture del mondo: il grafo (memory_relation) ne è
+// la proiezione materializzata, quindi si può ricostruire o contraddire senza
+// perdere la storia (observation ≠ relation).
+const OBSERVATION_SCHEMA = `
+CREATE TABLE IF NOT EXISTS observation (
+  id TEXT PRIMARY KEY,
+  subject TEXT NOT NULL,
+  predicate TEXT NOT NULL,
+  object TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 1,
+  observed_at INTEGER NOT NULL,
+  source TEXT,
+  data TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_obs_subject ON observation(subject, predicate);
+CREATE INDEX IF NOT EXISTS idx_obs_object ON observation(object, predicate);
+CREATE INDEX IF NOT EXISTS idx_obs_time ON observation(observed_at);
+`;
 
+const META_SCHEMA = `CREATE TABLE IF NOT EXISTS world_memory_meta (key TEXT PRIMARY KEY, value TEXT);`;
 function safeJson (text) {
   try { return JSON.parse(text) ?? {}; } catch { return {}; }
 }
@@ -113,6 +132,7 @@ export class SqliteMemoryRepository {
     this.version = version;
     this.db = new DatabaseSync(file);
     this._actionSeq = 0;   // id unici per evento d'azione (per istanza)
+    this._obsSeq = 0;      // id unici per osservazione (per istanza)
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA foreign_keys = ON;');
@@ -122,6 +142,7 @@ export class SqliteMemoryRepository {
     this.db.exec(RELATION_SCHEMA);
     this.db.exec(MISSION_RELATION_SCHEMA);
     this.db.exec(ACTION_EVENT_SCHEMA);
+    this.db.exec(OBSERVATION_SCHEMA);
     this._prepare();
   }
 
@@ -202,6 +223,13 @@ export class SqliteMemoryRepository {
       ON CONFLICT(id) DO UPDATE SET
         outcome=excluded.outcome, completed_at=excluded.completed_at, data=excluded.data`);
     this._missionActions = this.db.prepare('SELECT * FROM action_event WHERE mission_id = ?');
+    this._recordObservation = this.db.prepare(`INSERT INTO observation
+      (id, subject, predicate, object, confidence, observed_at, source, data)
+      VALUES (?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET
+        confidence=excluded.confidence, observed_at=excluded.observed_at,
+        source=excluded.source, data=excluded.data`);
+    this._observationCount = this.db.prepare('SELECT COUNT(*) AS n FROM observation');
   }
 
   static rowToRecord (row) {
@@ -346,6 +374,34 @@ export class SqliteMemoryRepository {
     return this.db.prepare('SELECT COUNT(*) AS n FROM action_event').get().n;
   }
 
+  // ---- observation log -------------------------------------------------------
+
+  recordObservation ({ id = null, subject, predicate, object, confidence = 1, observedAt = null, source = null, data = {} }) {
+    if (!subject || !predicate || object == null) throw new Error('recordObservation needs subject, predicate and object');
+    const now = Date.now();
+    const base = `${subject}|${predicate}|${object}|${observedAt ?? now}`;
+    const key = id ?? `${base}#${++this._obsSeq}`;
+    this._recordObservation.run(key, subject, predicate, String(object), confidence, observedAt ?? now, source, JSON.stringify(data));
+    return key;
+  }
+
+  observations ({ subject = null, predicate = null, object = null, since = null, limit = null } = {}) {
+    const where = [];
+    const params = [];
+    if (subject) { where.push('subject = ?'); params.push(subject); }
+    if (predicate) { where.push('predicate = ?'); params.push(predicate); }
+    if (object != null) { where.push('object = ?'); params.push(String(object)); }
+    if (since != null) { where.push('observed_at >= ?'); params.push(since); }
+    const sql = `SELECT * FROM observation${where.length ? ` WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY observed_at DESC, id DESC${limit ? ' LIMIT ?' : ''}`;
+    if (limit) params.push(limit);
+    return this.db.prepare(sql).all(...params).map(SqliteMemoryRepository.rowToObservation);
+  }
+
+  observationCount () {
+    return this._observationCount.get().n;
+  }
+
   // ---- edges -----------------------------------------------------------------
 
   link ({ id = null, from, to, type, confidence = 1, status = 'known', firstSeenAt = null, lastSeenAt = null, metadata = {} }) {
@@ -399,6 +455,20 @@ export class SqliteMemoryRepository {
       status: row.status,
       firstSeenAt: row.first_seen_at,
       lastSeenAt: row.last_seen_at,
+    };
+  }
+
+  static rowToObservation (row) {
+    if (!row) return null;
+    return {
+      ...safeJson(row.data),
+      id: row.id,
+      subject: row.subject,
+      predicate: row.predicate,
+      object: row.object,
+      confidence: row.confidence,
+      observedAt: row.observed_at,
+      source: row.source,
     };
   }
 

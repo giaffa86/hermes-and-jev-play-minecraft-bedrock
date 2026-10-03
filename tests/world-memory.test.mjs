@@ -97,7 +97,7 @@ for (const backend of BACKENDS) {
     const view = wm.observeView();
     assert.equal(view.landmarks[0].type, 'sheep_farm');
     assert.equal(view.containers[0].contents.white_wool, 5);
-    assert.deepEqual(wm.summary(), { records: 3, containers: 1, chunks: 0, concepts: 1, missions: 0, relations: 1, missionRelations: 0, actionEvents: 0 });
+    assert.deepEqual(wm.summary(), { records: 3, containers: 1, chunks: 0, concepts: 1, missions: 0, relations: 1, missionRelations: 0, actionEvents: 0, observations: 1 });
   }));
 
   test(`[${backend}] resource sites, portals and entities are remembered and queried`, () => withMemory(backend, (wm) => {
