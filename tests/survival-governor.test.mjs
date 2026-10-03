@@ -329,3 +329,49 @@ test('il governor riconosce di essere dentro una cascata e la tiene fra gli inte
   assert.equal(evaluateCondition('onWaterfall', true, perceive(observation({ fluids: {} }))), false);
   assert.equal(evaluateCondition('onWaterfall', false, perceive(observation({}))), true, 'ignoto = non dentro una cascata');
 });
+
+// ---- M4: lava addosso, lava vicina e le azioni dedicate -----------------------------
+
+test('il governor distingue la lava addosso da quella vicina e il vocabolario M4 resta coerente', () => {
+  const lava = (fluids, extra = {}) => evaluateSurvival(observation({
+    fluids: {
+      inWater: false, headInWater: false, inLava: false, lavaDistance: 0.7,
+      air: 300, airSeconds: 15, waterBreathing: false, water: { count: 0 }, lava: { count: 2 },
+      ...fluids,
+    },
+    ...extra,
+  }), { rules });
+
+  // Lava addosso: priorità 100 ⇒ emergenza, con l'obiettivo che dice di uscire.
+  const contact = lava({ inLava: true, lavaDistance: 0 });
+  assert.equal(contact.rule, 'lava_contact');
+  assert.equal(contact.mode, 'emergency');
+  assert.match(contact.overrideObjective, /Get out of the lava immediately/);
+  assert.ok(contact.allowedIntents.includes('escape'));
+  assert.ok(keyMatchesIntents('move_to_safe', contact.allowedIntents), 'la fuga M4 è coerente con gli intenti di emergenza');
+  assert.ok(keyMatchesIntents('avoid_lava', contact.allowedIntents));
+
+  // Lava vicina ma non addosso: priorità 88 ⇒ cautela, non emergenza.
+  const near = lava({ lavaDistance: 2.5 });
+  assert.equal(near.rule, 'lava_near');
+  assert.equal(near.mode, 'caution');
+
+  // Lontana: nessuna regola di lava e nessun intento di fuga forzato.
+  const far = lava({ lavaDistance: 18 });
+  assert.ok(!far.matchedRules.includes('lava_contact'));
+  assert.ok(!far.matchedRules.includes('lava_near'));
+
+  // Vocabolario delle nuove chiavi: `cross_lava` è un viaggio, non una fuga.
+  assert.equal(keyMatchesIntents('move_to_safe', ['escape']), true);
+  assert.equal(keyMatchesIntents('cross_lava', ['travel', 'fluid']), true);
+  assert.equal(keyMatchesIntents('cross_lava', ['escape']), false);
+  assert.equal(keyMatchesIntents('move_to_safe', ['fluid']), false);
+
+  // Le condizioni della lava sono nel vocabolario chiuso e mappano la percezione.
+  // `lavaWithin` è l'alias di `lavaDistance` nella percezione: la regola
+  // dichiarativa parla di "lava entro N blocchi".
+  assert.equal(evaluateCondition('inLava', true, perceive(observation({ fluids: { inLava: true } }))), true);
+  assert.equal(evaluateCondition('inLava', true, perceive(observation({ fluids: {} }))), false);
+  assert.equal(evaluateCondition('lavaWithin', 4, perceive(observation({ fluids: { lavaDistance: 2.5 } }))), true);
+  assert.equal(evaluateCondition('lavaWithin', 4, perceive(observation({ fluids: { lavaDistance: 9 } }))), false);
+});

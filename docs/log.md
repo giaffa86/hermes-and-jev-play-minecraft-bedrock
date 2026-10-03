@@ -2870,3 +2870,46 @@ dai test unitari, perché serve il nuoto; `WATERFALL_MIN_HEIGHT = 3` è una scel
 giudizio; l'atterraggio si legge dal chunk caricato (una cascata che finisce fuori
 dal caricato viene ignorata); il danno da caduta non è ancora modellato, quindi una
 cascata è sicura *perché* atterra in acqua, non perché il bot capisca la caduta.
+
+## [2026-10-03] feat | Fluidi M4: lava — sponde, loot distrutto, gate di attraversamento
+
+**Cosa**: milestone M4 della roadmap fluidi. Nuovo modulo puro `bedrock-lava.mjs`
+(`deathVerdict` con `recoverable: false` dentro la lava o entro `LAVA_DEATH_RADIUS`
+2, `lostDrops`, `safeShorePlan` che preferisce la sponda **con acqua accanto**
+(`gain + 2`) e rifiuta le celle a meno di `SAFE_SHORE_MIN_GAP` 2 dal bordo,
+`fireResistance` con gli effetti scaduti scartati, `lavaGap` che misura il **primo**
+tratto di lava a passi di un blocco e dichiara `truncated` invece di inventare la
+sponda opposta, `lavaCrossingGate` con `gap_unknown`/`gap_too_wide` (oltre 4)/
+`water_in_nether`/`not_equipped`/`no_fire_resistance`/`{ok, route: none|bridge|water,
+blocks}`).
+
+**Adapter**: `_dropInLava` filtra i drop bruciati da `_nearestDrop`; `_deathVerdict`
+ricalcolato dal censimento e `_recoverLoot` che ritorna `drops_lost_in_lava` + log
+`recover_loot_skipped` **prima** di muoversi (l'opzione `recover_loot` sparisce); la
+misura del varco parte dalla **cella** occupata (i piedi sono frazionari: da `0.5`
+nessuna cella intera verrebbe riconosciuta); `_lavaView`; `_moveToSafe` (rifiuto
+`not_in_danger`, candidati su anelli 4/8/12, verdetto *dopo* il movimento in
+`_lavaLast`); `_crossLava` con i rifiuti tipizzati e, a gate aperto,
+**`bridge_not_implemented`** con il piano in mano (il ponte è M5/M6: un falso
+successo qui sarebbe la bugia più costosa della milestone). `GET /observe.lava`
+(+`lava` in `/observe`). `survival/intents.mjs`: `move_to_safe: ['escape','travel']`,
+`cross_lava: ['travel','fluid']`.
+
+**Test**: 955 verde (era 938). `tests/bedrock-lava.test.mjs` (9 puri),
+`tests/bedrock-fluids-adapter.test.mjs` 39 (+7 M4), `tests/survival-governor.test.mjs`
++1 (lava addosso ⇒ emergenza con l'obiettivo `lava_contact`, lava entro 4 ⇒ cautela).
+
+**Collaudo live** (VM 100, container `hermes-jev-bedrock`, BDS 1.26.52):
+`GET /observe.lava?force=1` → `inLava: false`, `lavaDistance: 15.4` (251 celle in una
+cava **sotto** la stanza, `nearest {x:111,y:59,z:155}`), `gap: {gap: 0, reason:
+'no_lava'}`, `gate: {ok: true, route: 'none'}`, `lostDrops: []`, `death: null`;
+`move_to_safe` → `not_in_danger` e `cross_lava` → `no_lava_ahead` immediati (nessun
+movimento, nessun burn); `/options` 26 chiavi **senza** le due azioni (e senza
+`recover_loot`); `/survival` resta `normal` senza regole di lava.
+
+**Limiti**: la fuga non è stata esercitata live (la lava è 15.4 blocchi sotto una
+stanza sigillata) e nessuna lava è stata fabbricata con `setblock`/secchi (il mondo
+è condiviso e resterebbe lava che scorre): fuga, ponte e verdetto sul loot bruciato
+restano coperti solo dagli unit test. La misura del varco è limitata dal raggio del
+censimento (un lago più largo è `truncated` ⇒ `gap_unknown`). Il route "acqua →
+ossidiana" è una decisione: `place_water` arriva con M5.

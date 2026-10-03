@@ -40,6 +40,10 @@ const KEY_INTENTS = {
   dig_up: ['mine', 'travel'],
   // Fluidi: allontanarsi dalla lava è una fuga, non un semplice spostamento.
   avoid_lava: ['escape', 'travel'],
+  // Fluidi (M4): raggiungere una sponda sicura è una fuga; attraversare la lava è
+  // un viaggio che richiede attrezzatura (il gate è esplicito nel verdetto).
+  move_to_safe: ['escape', 'travel'],
+  cross_lava: ['travel', 'fluid'],
   // Nether (N3): schivare un proiettile è una fuga laterale, non un viaggio.
   dodge_projectile: ['escape', 'travel'],
   surface: ['surface', 'swim'],

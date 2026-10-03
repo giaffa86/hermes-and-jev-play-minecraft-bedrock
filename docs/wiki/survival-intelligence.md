@@ -75,7 +75,7 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**938 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**955 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
 
 - **Fluids in the survival layer (M0, 2026-10-03)**: the governor vocabulary grew
@@ -224,6 +224,27 @@ them offered by `/options`, `ride_waterfall` not firing on a dry bot — while t
 ride itself waits on M1's swimming. The pathfinding column edges were left out on
 purpose: a descent into water the bot cannot leave is a trap, not an
 optimisation.
+
+- **Lava as an absolute obstacle (M4, 2026-10-03)**: `bedrock-lava.mjs` decides
+three things the governor and the recovery path both need. **A lava death
+destroys the loot**: `deathVerdict({position, lava})` marks the site
+`recoverable: false` when the bot died inside the lava — or within
+`LAVA_DEATH_RADIUS` 2, because a drop on the edge falls in — and `recover_loot`
+then returns `drops_lost_in_lava` **without moving** (the option is not even
+offered) and a tracked drop sitting in a lava cell is filtered out of
+`_nearestDrop`. **The escape prefers water**: `safeShorePlan()` scores each
+standable candidate `gain + (waterAdjacent ? 2 : 0)` and refuses anything closer
+than `SAFE_SHORE_MIN_GAP` 2 to the lava, because a shore one block from the edge
+is a bet and water puts the fire out. **Crossing is gated**: `lavaGap()` measures
+the first stretch of lava along a direction in one-block steps and reports
+`truncated` instead of guessing a far shore, and `lavaCrossingGate()` requires
+fire resistance plus a bridge — or water → obsidian *where water can be placed*,
+which is never the Nether or the End (`water_in_nether`). `move_to_safe` and
+`cross_lava` expose those verdicts as actions, and the second stops at
+`bridge_not_implemented` with the plan in hand: the bridge is M5/M6 and a nominal
+success would be the most expensive lie of the milestone. Live the lava is 15.4
+blocks below the base room, so the round shows the refusals (`not_in_danger`,
+`no_lava_ahead`) and no action in `/options`.
 
 - **Mature-crop detection (2026-10-03)**: `cropMaturity()`/`seedForCrop()` live in
 `bedrock-survival.mjs` (`growth` 0..7 for wheat/carrots/potatoes/beetroots/melon

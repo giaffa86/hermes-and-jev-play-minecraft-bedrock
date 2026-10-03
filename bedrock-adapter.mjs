@@ -11,10 +11,11 @@ import { professionName, normalizeProfession, professionMatches, pickBestTrade }
 import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
 import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
 import { detectStructures } from './structures.mjs';
-import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT } from './bedrock-fluids.mjs';
+import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT, LAVA_CONTACT_RANGE } from './bedrock-fluids.mjs';
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
 import { normalizeEffectName, waterBreathingSources, divePlan, underwaterWork, CONDUIT_BLOCK, CONDUIT_RANGE } from './bedrock-dive.mjs';
 import { findWaterfalls, findBubbleColumns, columnTactic, summarizeColumn, withinColumn } from './bedrock-waterfall.mjs';
+import { deathVerdict, lostDrops, safeShorePlan, fireResistance, lavaGap, lavaCrossingGate, LAVA_CROSS_GAP_LIMIT } from './bedrock-lava.mjs';
 import { loadCircuits, planCircuit, circuitSiteBlocked, circuitSafety, forbiddenBlock, checkCircuitSuccess, circuitAnchor, expectedDelayTicks, measureCircuitDelay, TICK_MS, MAX_CIRCUIT_STEPS, MAX_CIRCUIT_COMPONENTS, MIN_CLOCK_TICKS } from './circuits.mjs';
 import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
 import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, isNetherLike, landingHazard, maxFallDepth, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, projectileVelocity, dodgeCandidates, breaksLine, isPiglinType, goldArmorWorn, piglinNeutral, barterTarget, isBarterReward, BARTER_INGOT, BARTER_RANGE, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName, endermanAimPoint, isPumpkinMask, pumpkinMaskWorn, isEnderPearl, ENDERMAN_GAZE_TOLERANCE_DEG, isBlazeType, coverCandidates, blazeTactics, blazeRodProgress, BLAZE_RANGE, BLAZE_RETREAT_HEALTH, BLAZE_ROD, COVER_RADIUS } from './bedrock-nether.mjs';
@@ -241,6 +242,7 @@ export class BedrockAdapter {
     // `swimming_unavailable` invece di provare una fisica che non c'è.
     this.swimSupported = false;
     this._waterfallLast = null;
+    this._lavaLast = null;
     this._redstoneScan = null;
     this._redstoneScanAt = 0;
     // R2: i blocchi dell'ultima scansione e l'ultimo cambio osservato, così un
@@ -2559,6 +2561,159 @@ export class BedrockAdapter {
     return { ok: false, error: `avoid_lava_failed${lastError ? `: ${lastError}` : ''}`, lava: threat.position };
   }
 
+  // M4 — Quanti blocchi di lava separano il bot dalla sponda opposta, lungo i
+  // quattro versi: il tratto più corto. La lava non è mai una scorciatoia, quindi
+  // la misura serve solo a decidere *se* si può attraversare (e con cosa).
+  _lavaGapAhead ({ maxSteps = LAVA_CROSS_GAP_LIMIT + 2 } = {}) {
+    const feet = this._feet ?? this.position;
+    const lava = this._fluidCensus()?.cells?.lava ?? [];
+    if (!feet || !lava.length) return { gap: 0, steps: [], reason: 'no_lava' };
+    // `lavaGap` misura a passi di un blocco partendo da una *cella*: con le
+    // coordinate frazionarie dei piedi (0.5) nessuna cella intera verrebbe
+    // riconosciuta, quindi si parte dalla cella occupata.
+    const from = { x: Math.floor(feet.x), y: Math.floor(feet.y + 0.1), z: Math.floor(feet.z) };
+    let best = null;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const measured = lavaGap({ from, direction: { x: dx, z: dz }, lava, maxSteps });
+      if (!measured.gap) continue;
+      if (!best || measured.gap < best.gap) best = measured;
+    }
+    return best ?? { gap: 0, steps: [], reason: 'no_lava' };
+  }
+
+  // M4 — Il verdetto sul sito di morte, ricalcolato dal censimento: in lava (o
+  // a un blocco dal bordo) il loot è distrutto, e `recover_loot` non si offre.
+  _deathVerdict () {
+    if (!this.deathSite) return null;
+    return deathVerdict({ position: this.deathSite.position, lava: this._fluidCensus()?.cells?.lava ?? [] });
+  }
+
+  _waterBucketsHeld () {
+    return (this.inventory?.water_bucket || 0);
+  }
+
+  _bridgeBlocksHeld () {
+    const item = this._placeableBlock({ richest: true });
+    return item ? (this.inventory?.[item] || 0) : 0;
+  }
+
+  // M4 — Vista della lava: dove è, quanto è larga, cosa manca per attraversarla e
+  // quali drop ha già distrutto. La morte in lava è un fatto del sito di morte,
+  // non un'opinione: il verdetto arriva da `deathVerdict` sul censimento vero.
+  _lavaView ({ force = false } = {}) {
+    const census = this._fluidCensus({ force });
+    const lava = census?.cells?.lava ?? [];
+    const from = this._feet ?? this.position;
+    const death = this.deathSite
+      ? deathVerdict({ position: this.deathSite.position, lava })
+      : null;
+    const resistance = fireResistance({ effects: this.effects });
+    const gap = this._lavaGapAhead();
+    const gate = lavaCrossingGate({
+      dimension: this.dimension ?? 'overworld',
+      gap: gap.truncated ? null : gap.gap,
+      fireResistance: resistance.active,
+      waterBuckets: this._waterBucketsHeld(),
+      bridgeBlocks: this._bridgeBlocksHeld(),
+    });
+    return {
+      dimension: this.dimension ?? 'overworld',
+      // Come in `_fluidsView`: i piedi sono frazionari, la cella è quella arrotondata.
+      inLava: from ? this._fluidKindAt(Math.floor(from.x), Math.floor(from.y + 0.1), Math.floor(from.z)) === 'lava' : false,
+      lavaDistance: census?.lavaDistance ?? null,
+      nearest: census?.lava?.nearest?.position ?? null,
+      cells: lava.length,
+      fireResistance: resistance,
+      gap,
+      gate,
+      lostDrops: lostDrops(this.drops, lava),
+      death,
+      last: this._lavaLast,
+    };
+  }
+
+  // M4 — Fuga dalla lava: una sponda sicura, preferibilmente con l'acqua accanto
+  // (entrare in acqua spegne il fuoco). `avoid_lava` allontana dalla lava vicina;
+  // `move_to_safe` serve quando la lava è *addosso*.
+  async _moveToSafe ({ timeoutMs = 15000 } = {}) {
+    if (!this._feet) return { ok: false, error: 'no_position' };
+    const before = this._lavaView();
+    if (!before.inLava && !(before.lavaDistance != null && before.lavaDistance <= LAVA_CONTACT_RANGE)) {
+      return { ok: false, error: 'not_in_danger', inLava: before.inLava, lavaDistance: before.lavaDistance };
+    }
+    const census = this._fluidCensus();
+    const from = { x: this._feet.x, y: this._feet.y, z: this._feet.z };
+    const candidates = [];
+    for (const radius of [4, 8, 12]) {
+      for (let i = 0; i < 12; i++) {
+        const angle = (i / 12) * Math.PI * 2;
+        const cell = this._standableNear({ x: from.x + Math.cos(angle) * radius, z: from.z + Math.sin(angle) * radius });
+        if (!cell) continue;
+        if (this._reachabilityUsable() && !this.cellReachable(cell)) continue;
+        candidates.push(cell);
+      }
+    }
+    const ranked = safeShorePlan({
+      from,
+      candidates,
+      hazards: census?.cells?.lava ?? [],
+      water: census?.cells?.water ?? [],
+    });
+    if (!ranked.length) {
+      this.log('move_to_safe_no_cell', { position: from, lava: before.nearest });
+      return { ok: false, error: 'no_safe_cell', inLava: before.inLava, lavaDistance: before.lavaDistance };
+    }
+    const deadline = Date.now() + timeoutMs;
+    let lastError = null;
+    for (const entry of ranked) {
+      if (Date.now() >= deadline) break;
+      try {
+        await this._moveTo(entry.cell, 0.8, Math.min(8000, Math.max(2000, deadline - Date.now())));
+        const after = this._lavaView({ force: true });
+        const report = {
+          ok: true,
+          moved: true,
+          from: { inLava: before.inLava, lavaDistance: before.lavaDistance },
+          to: { inLava: after.inLava, lavaDistance: after.lavaDistance },
+          waterAdjacent: entry.waterAdjacent,
+          gain: entry.gain,
+          position: this.pos(),
+        };
+        this._lavaLast = report;
+        this.log('move_to_safe', report);
+        return report;
+      } catch (error) {
+        lastError = error.message;
+      }
+    }
+    this.log('move_to_safe_failed', { position: from, error: lastError });
+    return { ok: false, error: `move_to_safe_failed${lastError ? `: ${lastError}` : ''}`, lava: before.nearest };
+  }
+
+  // M4 — Attraversare la lava: solo col gate aperto (resistenza al fuoco + ponte,
+  // o acqua → ossidiana dove l'acqua si può piazzare). Costruire il ponte è M5/M6:
+  // qui si rifiuta con il piano in mano invece di fingere un attraversamento.
+  async _crossLava () {
+    const view = this._lavaView();
+    if (view.inLava) return { ok: false, error: 'in_lava', hint: 'use move_to_safe first', position: this.pos() };
+    if (!view.gap?.gap) return { ok: false, error: 'no_lava_ahead', lavaDistance: view.lavaDistance };
+    if (view.gap.truncated) {
+      return { ok: false, error: 'gap_unknown', hint: 'the far shore is beyond the scan radius, so the bridge cannot be sized' };
+    }
+    if (!view.gate?.ok) {
+      return { ok: false, error: view.gate?.error ?? 'not_equipped', gate: view.gate };
+    }
+    const plan = {
+      route: view.gate.route,
+      blocks: view.gate.blocks,
+      gap: view.gap.gap,
+      firstStep: view.gap.firstStep,
+      direction: view.gap.direction,
+    };
+    this.log('cross_lava_blocked', { plan });
+    return { ok: false, error: 'bridge_not_implemented', plan, hint: 'the gate is ready; M5 builds the bridge' };
+  }
+
   // N3: il proiettile che *sta arrivando*, con la traiettoria misurata. La
   // vista Nether espone solo il riassunto (distanza, tempo all'impatto): per
   // schivare serve la velocità, e la riga di `_projectileRows` ha i campioni.
@@ -2761,6 +2916,7 @@ export class BedrockAdapter {
       structureSurvey: this._structureSurvey,
       fluids,
       dive: this._diveView({ fluids }),
+      lava: this._lavaView(),
       nether: this._netherView(),
       redstone: this._redstoneView(),
       circuits: this._circuitsView(),
@@ -2864,8 +3020,18 @@ export class BedrockAdapter {
     // Lava: pericolo assoluto (M0). L'opzione esiste solo se la lava è davvero
     // vicina e se c'è una cella d'appoggio che aumenta la distanza.
     const lavaThreat = this._lavaThreat();
+    const lavaNow = this._lavaView();
     if (lavaThreat) {
       o.push({ key: 'avoid_lava', description: `Move away from the lava at ${JSON.stringify({ x: Math.round(lavaThreat.position.x), y: Math.round(lavaThreat.position.y), z: Math.round(lavaThreat.position.z) })} (${lavaThreat.distance} blocks away)` });
+    }
+    // M4: quando la lava è addosso serve una *sponda*, non solo allontanarsi
+    // (l'acqua accanto vale doppio: spegne il fuoco).
+    if (lavaNow.inLava || (lavaNow.lavaDistance != null && lavaNow.lavaDistance <= LAVA_CONTACT_RANGE)) {
+      o.push({ key: 'move_to_safe', description: `Get out of the lava now (${lavaNow.inLava ? 'standing in it' : `${lavaNow.lavaDistance} blocks away`}): reach a safe shore, water if possible` });
+    }
+    // M4: attraversare si può solo col gate aperto (resistenza al fuoco + ponte).
+    if (!lavaNow.inLava && lavaNow.gap?.gap > 0 && !lavaNow.gap.truncated && lavaNow.gate?.ok) {
+      o.push({ key: 'cross_lava', description: `Cross the ${lavaNow.gap.gap}-block lava gap ahead (${lavaNow.gate.route}: ${lavaNow.gate.reason})` });
     }
     // M3: cascate e colonne di bolle. L'opzione compare solo quando l'azione
     // corrispondente non verrebbe rifiutata (stesso verdetto di `columnTactic`),
@@ -3010,8 +3176,9 @@ export class BedrockAdapter {
         o.push({ key: 'enter_end_portal', description: 'Step into the End portal and wait for the dimension change' });
       }
     }
-    // Recupero post-morte: il loot e gli orb EXP sono rimasti dov'è morto.
-    if (this.deathSite && this.position) {
+    // Recupero post-morte: il loot e gli orb EXP sono rimasti dov'è morto. In
+    // lava il loot è distrutto (M4): l'opzione non si offre nemmeno.
+    if (this.deathSite && this.position && this._deathVerdict()?.recoverable !== false) {
       const p = this.deathSite.position;
       const d = Math.hypot(p.x - this.position.x, p.z - this.position.z);
       o.push({ key: 'recover_loot', description: `Walk back to the death site at ${JSON.stringify(p)} (${d.toFixed(1)} blocks) to recover the dropped items and XP orbs` });
@@ -3518,6 +3685,10 @@ export class BedrockAdapter {
         result = await this._enterPortal({ kind: 'end' });
       } else if (key === 'avoid_lava') {
         result = await this._avoidLava();
+      } else if (key === 'move_to_safe') {
+        result = await this._moveToSafe();
+      } else if (key === 'cross_lava') {
+        result = await this._crossLava();
       } else if (key === 'descend_waterfall' || key === 'climb_waterfall') {
         result = await this._useColumn(key === 'climb_waterfall' ? 'climb' : 'descend');
       } else if (key === 'use_bubble_column') {
@@ -3592,10 +3763,20 @@ export class BedrockAdapter {
     return Math.hypot(drop.position.x - this.position.x, drop.position.y - this.position.y, drop.position.z - this.position.z);
   }
 
+  // M4 — Un drop che giace in lava è già distrutto: non si insegue (e `recover_loot`
+  // non deve tornare a cercarlo per venti secondi).
+  _dropInLava (position) {
+    if (!position) return false;
+    if (!this._lavaCells) this._fluidCensus();
+    if (!this._lavaCells?.size) return false;
+    return this._lavaCells.has(`${Math.floor(position.x)},${Math.floor(position.y)},${Math.floor(position.z)}`);
+  }
+
   _nearestDrop ({ reachableOnly = false } = {}) {
     const filterReach = reachableOnly && this._reachabilityUsable();
     return this.drops
       .filter(drop => !drop.failedAt || Date.now() - drop.failedAt > 10000)
+      .filter(drop => !this._dropInLava(drop.position))
       .filter(drop => !filterReach || this.dropReachable(drop.position))
       .map(drop => ({ ...drop, distance: this._dropDistance(drop) }))
       .sort((a, b) => a.distance - b.distance)[0] || null;
@@ -3615,6 +3796,14 @@ export class BedrockAdapter {
     if (this.dead) return { ok: false, error: 'dead' };
     const site = this.deathSite;
     if (!site) return { ok: false, error: 'no_death_site' };
+    // M4: se il sito è nella lava (o a un blocco dal bordo) il loot non esiste
+    // più. Tornarci significa solo rischiare una seconda morte.
+    const death = this._deathVerdict() ?? deathVerdict({ position: site.position, lava: [] });
+    site.lava = { inLava: death.inLava, nearest: death.nearest, recoverable: death.recoverable, reason: death.reason };
+    if (death.recoverable === false) {
+      this.log('recover_loot_skipped', { site: site.position, reason: death.reason, nearest: death.nearest });
+      return { ok: false, error: 'drops_lost_in_lava', reason: death.reason, site: site.position, nearest: death.nearest };
+    }
     const target = { x: site.position.x, y: site.position.y, z: site.position.z };
     const levelBefore = this.experienceLevel;
     const nearSite = () => this._feet &&

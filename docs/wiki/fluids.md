@@ -6,17 +6,19 @@ descend and ascend, and **avoid lava** until it is equipped (bucket, fire
 resistance, bridging). It also covers every fluid-related skill: buckets, boats,
 bubble columns, potions, underwater mining/fishing.
 
-Status: **M0 (fluid awareness) + M1 partial (wading and simulated air budget) +.
-M2 (breathing and dive budget) + M3 (waterfalls and bubble columns) implemented,
-unit-tested and collaudato live** (03/10/2026); the swimming *physics* of M1
+Status: **M0 (fluid awareness) + M1 partial (wading and simulated air budget) +
+M2 (breathing and dive budget) + M3 (waterfalls and bubble columns) + M4 (lava:
+shores, destroyed loot, crossing gate) implemented, unit-tested and collaudato
+live** (03/10/2026); the swimming *physics* of M1
 (ballistic flags, water A*, `swim_to`) is **blocked** by a missing packet capture —
 see the M1 section, and M3's column **actions** inherit that same blocker while
-their detection and verdicts work. M4–M6 still spec only (tracked in
+their detection and verdicts work. M5–M6 still spec only (tracked in
 [roadmap](roadmap.md) and [open-questions](open-questions.md)).
 Full raw source: [`docs/raw/FLUIDS_ROADMAP.md`](../raw/FLUIDS_ROADMAP.md).
 
 Sources: `bedrock-adapter.mjs` (movement, physics, digging, fishing),
-`bedrock-dive.mjs` (M2 decision), `bedrock-waterfall.mjs` (M3 columns), `BEDROCK.md`
+`bedrock-dive.mjs` (M2 decision), `bedrock-waterfall.mjs` (M3 columns),
+`bedrock-lava.mjs` (M4 lava verdicts), `BEDROCK.md`
 (action status), [headless-client](headless-client.md) (perception/action model),
 [survival-intelligence](survival-intelligence.md) (governor/skills/verifier),
 [fishing](fishing.md), [companions](companions.md) (boats/riding).
@@ -414,6 +416,117 @@ all the tactic branches), `tests/bedrock-fluids-adapter.test.mjs` (32, +9 for M3
 - Fall damage is still not modelled (see the risks): a waterfall is safe *because*
   the landing is water, not because the bot understands the fall.
 
+## M4 — Lava: shores, destroyed loot and a crossing gate (implemented, live partial 03/10/2026)
+
+Lava is the one fluid that is *never* a route: it is an absolute obstacle, and the
+M4 work is about not losing what it destroys and not walking into it when a
+later milestone could have made it crossable.
+
+### Implementation
+
+- **`bedrock-lava.mjs`** (pure, no I/O, five decisions that can be checked
+offline):
+  - `deathVerdict({position, lava, radius})` → `{known, inLava, nearest,
+    recoverable, reason}` with `reason ∈ in_lava | lava_near | safe |
+    unknown_site`. Inside the lava — or within `LAVA_DEATH_RADIUS = 2` — the
+    loot is gone, so `recoverable: false`.
+  - `lostDrops(drops, lava)` → the tracked drops whose cell *is* lava.
+  - `safeShorePlan({from, candidates, hazards, water})` → escape cells ranked by
+    `gain + (waterAdjacent ? 2 : 0)`: water next to the cell is worth more
+    because entering water puts the fire out. Cells closer than
+    `SAFE_SHORE_MIN_GAP = 2` to lava are refused (a shore one block from the
+    lava is a bet, not a shore).
+  - `lavaGap({from, direction, lava, maxSteps})` → the **first** stretch of lava
+    along a direction, in one-block steps, with `truncated: true` when the lava
+    continues past the scan: the far shore is never invented. `lateral` defaults
+    to 0 — with a lateral tolerance the stretch widens by two cells, and a
+    measurement that lies wide is worse than no measurement.
+  - `lavaCrossingGate({dimension, gap, fireResistance, waterBuckets,
+    bridgeBlocks})` → `gap_unknown`, `gap_too_wide` (over
+    `LAVA_CROSS_GAP_LIMIT = 4`), **`water_in_nether`** (a water bucket cannot be
+    placed in the Nether or the End: saying otherwise would be the most
+    expensive lie of this milestone), `not_equipped`, `no_fire_resistance` (a gap
+    over one block needs the potion), or `{ok: true, route: 'none' | 'bridge' |
+    'water', blocks}`.
+  - `fireResistance({effects})` normalises the effect name (`water_breathing`
+    style) and drops expired entries (`seconds <= 0`).
+- **Adapter**: `_dropInLava(position)` (feeds `_nearestDrop`, so a burnt drop is
+  never chased); `_deathVerdict()` recomputed from the census (the verdict does
+  not depend on the order of actions) and `_recoverLoot()` returning
+  `drops_lost_in_lava` + log `recover_loot_skipped` **before** moving; the
+  `recover_loot` option disappears entirely when the site is unrecoverable;
+  `_lavaGapAhead()` measuring the four cardinal directions from the occupied
+  cell (the bot's feet are fractional: measuring from `0.5` would match no whole
+  cell) and keeping the shortest stretch; `_lavaView({force})` → dimension,
+  `inLava`, `lavaDistance`, `cells`, `fireResistance`, `gap`, `gate`,
+  `lostDrops`, `death`, `last`; `_moveToSafe({timeoutMs})` (refuses with
+  `not_in_danger` when the lava is not on top of the bot, builds candidates from
+  `_standableNear` on rings 4/8/12, ranks them with `safeShorePlan`, and records
+  the after-verdict in `_lavaLast`); `_crossLava()` (typed refusals `in_lava`,
+  `no_lava_ahead`, `gap_unknown`, then the gate error, and with the gate open
+  `bridge_not_implemented` + the plan it would follow: the bridge is M5/M6, and a
+  fake success here would be the worst possible outcome).
+- **Governor**: no new condition — `inLava`, `lavaWithin` and the `lava_contact`
+  (priority 100 ⇒ emergency) / `lava_near` (88 ⇒ caution) rules already existed
+  from M0; `survival/intents.mjs` gains `move_to_safe: ['escape','travel']` and
+  `cross_lava: ['travel','fluid']`, so the new keys are coherent with the intent
+  vocabulary an emergency rule can request.
+- **Harness**: `GET /observe.lava[?force=1]` → `adapter._lavaView({force})`, and
+  `lava` inside `/observe`.
+
+### Tests
+
+- `tests/bedrock-lava.test.mjs` — 9 pure cases: cell keys and `inLava` with
+  rounding, distances, every `deathVerdict` outcome, `lostDrops` ignoring lava on
+  another Y, `safeShorePlan` (the water flank wins, the lava edge is refused, no
+  candidate that gains ⇒ empty list), `fireResistance`, `lavaGap` (measured,
+  truncated, outside the direction, other height, missing inputs) and the whole
+  `lavaCrossingGate` ladder including the Nether water refusal.
+- `tests/bedrock-fluids-adapter.test.mjs` — +7 M4 cases (39 in total): the view
+  with distance, gap, gate and lost drops; the gate armed by a real
+  `fire_resistance` effect; the drop filter; the lava death + `recover_loot`
+  refusal with zero moves; `move_to_safe` refusing out of danger, choosing the
+  water flank, and `no_safe_cell` with no candidate; `cross_lava` refusing inside
+  the lava, with no lava ahead and on a truncated stretch; the gate ladder and the
+  `bridge_not_implemented` plan.
+- `tests/survival-governor.test.mjs` — +1 case: lava on top of the bot ⇒ emergency
+  with the `lava_contact` objective, lava within 4 ⇒ caution, the two new keys
+  coherent with the intents, and the `inLava`/`lavaWithin` conditions mapping the
+  perception (where `lavaWithin` is the alias of `lavaDistance`).
+- Suite: **955 tests, 0 failures** (03/10/2026).
+
+### Live round (03/10/2026)
+
+| Probe | Result |
+|---|---|
+| `GET /observe.lava?force=1` | `inLava: false`, `lavaDistance: 15.4` (nearest `{x:111,y:59,z:155}`, 251 cells in a cave **below** the room), `cells: 251`, `lostDrops: []`, `death: null`, `gap: {gap:0, reason:'no_lava'}`, `gate: {ok:true, route:'none'}` |
+| `POST /act move_to_safe` | `{"ok":false,"error":"not_in_danger","inLava":false,"lavaDistance":15.4}` — immediate, no movement, no burn |
+| `POST /act cross_lava` | `{"ok":false,"error":"no_lava_ahead","lavaDistance":15.4}` |
+| `GET /options` | 26 keys, **neither** `move_to_safe` nor `cross_lava` (and no `recover_loot`: there is no death site) |
+| `GET /survival` | `mode: normal`, no lava rule matched, no lava risk — the rules stay inert on a bot that is not near lava |
+| `GET /observe` | `lava` present next to `fluids`/`dive` (regression check), bot `spawned` at (115.5, 74.62, 159.5) with its inventory unchanged |
+
+### Known limits
+
+- The **bridge is not built**: `cross_lava` stops at `bridge_not_implemented` with
+  the plan in hand. That is deliberate — the building primitive belongs to M5/M6,
+  and M0's rule is that a typed refusal is worth more than a nominal success.
+- The **escape move** (`move_to_safe`) was never exercised live: the base room's
+  lava is 15.4 blocks below the floor. Its shore choice, its preference for water
+  and its `no_safe_cell` path are unit-tested only.
+- No lava was fabricated for the test (`setblock`/buckets would modify the shared
+  world and leave flowing lava behind): the acceptance criterion "live escape from
+  the lava edge" stays **unmet on the live side** and is recorded as such.
+- No `place_water` exists yet, so the obsidian route in the gate is decision-only:
+  `route: 'water'` describes what M5 will do, and the gate refuses the Nether
+  before it can be attempted.
+- The gap measurement is bounded by the fluid census radius
+  (`FLUID_SCAN_RADIUS`, 24 by default): a lake wider than that is reported
+  `truncated` (and therefore `gap_unknown`), never `gap_too_wide`.
+- Death in lava itself was not observed live (no death in this round): the
+  destroyed-loot verdict is unit-tested against a synthetic death site, and it is
+  the *next* lava contact that will exercise it end to end.
+
 ## Milestones
 
 | # | Milestone | Content | Status |
@@ -422,7 +535,7 @@ all the tactic branches), `tests/bedrock-fluids-adapter.test.mjs` (32, +9 for M3
 | M1 | Swimming physics & navigation | Water becomes passable; buoyancy/drag/swim speed in `_physicsStep`; correct `input_data` flags (packet-capture task); A* water nodes; air budget + auto-`surface`; `surface`/`swim_to`. | ◑ partial 03/10/2026: **wading** (shallow water traversal + slower local speed) and the **simulated air budget** (`bedrock-air.mjs`, `airSource`) are implemented and unit-tested; the live crossing round is blocked (only deep water within 20.6 blocks, bot sealed in the base room) and the swimming motion/water A*/`surface`/`swim_to` stay unimplemented pending a packet capture of a real player swimming |
 | M2 | Breathing & controlled dives | `dive` with air budget; underwater `mine_*`/`collect_drop`; Water Breathing detection; governor `drowning` + `breathe` need. | ◑ implemented + live 03/10/2026: the **decision** (budget, `waterBreathing`, the gate on `mine_*`/`collect_drop`) is implemented, unit-tested and collaudato live (effect detected and counted down by the real server; the gate transparent on a dry bot). The underwater *move* stays blocked by M1: from the base room the head never gets under water, so the refusal path is unit-tested only. |
 | M3 | Waterfalls & bubble columns | `findWaterfalls`/`findBubbleColumns`; `descend_waterfall`, `climb_waterfall`, `use_bubble_column`; pathfinding edges; `dig_down` prefers a nearby waterfall. | ◑ implemented + live partial 03/10/2026: detection (`findWaterfalls`/`findBubbleColumns` on the real census), the three actions with typed verdicts, the `onWaterfall` governor condition and the `dig_down` preference are implemented and unit-tested; live only the **refusal** path was observable (no waterfall exists in the loaded area: the only water is a 2-high pool), so the descent/climb themselves stay blocked by the M1 swimming blocker. Pathfinding column edges were deliberately **not** added yet (see the M3 section). |
-| M4 | Lava: avoid (cross later) | Absolute obstacle + repulsion; `move_to_safe`; lava-death marking; never mine into lava; bucket bridging (`place_water` → obsidian); Nether crossing gated behind `fire_resistance` + bridging. | ❌ not implemented |
+| M4 | Lava: avoid (cross later) | Absolute obstacle + repulsion; `move_to_safe`; lava-death marking; never mine into lava; bucket bridging (`place_water` → obsidian); Nether crossing gated behind `fire_resistance` + bridging. | ◑ implemented + live 03/10/2026: `bedrock-lava.mjs` (death verdict, water-preferring shore plan, gap measurement, crossing gate), the `move_to_safe`/`cross_lava` actions with typed refusals, the drop filter and the destroyed-loot verdict on `recover_loot` are implemented and unit-tested; live the bot has no reachable lava (nearest is 15.4 blocks below the base room) so only the refusals were observable — the bridge build and the real escape move stay unit-tested |
 | M5 | Buckets, boats, potions | `craft_bucket`/`craft_boat`; `fill_bucket`/`empty_bucket`/`place_water`; boat travel on open water via `mount_*`/`_rideToward`; brewing. | ❌ not implemented |
 | M6 | Survival Intelligence integration | Gameplay skills in `skills/gameplay/fluids/`; progression milestones `bucket`, `water_travel`, gated `nether_cross_lava`; docs + tests. | ❌ not implemented |
 
@@ -446,6 +559,16 @@ all the tactic branches), `tests/bedrock-fluids-adapter.test.mjs` (32, +9 for M3
   prism the bot cannot verify).
 - `DIVE_WORK_SECONDS` (3 s) is an estimate for one hand-mined block: the gate does
   not consult the tool yet, so a slow block can outlast the work budget it claims.
+- Lava crossing is **decision-complete but not executable**: the gate tells the
+  truth about what is needed, and `cross_lava` refuses with the plan
+  (`bridge_not_implemented`). Whoever implements M5 has to build the bridge
+  *and* keep the refusal honest until the last block is placed.
+- The lava gap is measured from the loaded census radius: a wide lake is
+  `truncated` ⇒ `gap_unknown`. Measuring further would need a scan that costs
+  more than the answer is worth today, and a wrong width is worse than no width.
+- `move_to_safe` prefers a shore with water next to it (+2 score). That is a
+  heuristic from the raw roadmap ("water puts out the fire"), not a measured
+  advantage: it is not yet known whether the extra walk is worth it.
 - Fall damage is not modelled today: waterfalls solve descent into water, not
   drops onto land. Add `_fallStartY` + a safe-landing predicate.
 - A waterfall is only a route once the bot can **leave** the water: the M3 column

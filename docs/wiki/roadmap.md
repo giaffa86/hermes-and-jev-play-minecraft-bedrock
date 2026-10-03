@@ -200,13 +200,16 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   [fluids](fluids.md) / [`raw/FLUIDS_ROADMAP.md`](../raw/FLUIDS_ROADMAP.md);
   **M0 (fluid awareness) + M1 partial (wading + simulated air budget) + M2
   (Water Breathing detection and the dive/work budget) + M3 (waterfalls and bubble
-  columns) implemented, unit-tested and collaudato live 03/10** (`/observe.fluids`
+  columns) + M4 (lava: shores, destroyed loot, crossing gate) implemented,
+  unit-tested and collaudato live 03/10** (`/observe.fluids`
   census, hazard ladder, `avoid_lava`, dig-neighbour refusal, lava repulsion in
   `_standable`, `airSource` with the simulated `AirMeter`; `/observe.dive` with the
   descent/work/ascent budget and `_underwaterWorkAllowed` gating
   `_mineBlock`/`_collectDrop`; `/observe.waterfall` with the column detection and
   the typed verdicts behind `descend_waterfall`/`climb_waterfall`/
-  `use_bubble_column`). Deep water is still a wall (`_passable` rejects
+  `use_bubble_column`; `/observe.lava` with the death verdict, the water-preferring
+  shore plan, the gap measurement and the crossing gate behind `move_to_safe`/
+  `cross_lava`). Deep water is still a wall (`_passable` rejects
   `water|lava`) and the swimming motion/`surface`/`swim_to` remain unimplemented
   because their Bedrock flags need a packet capture of a real player swimming, so
   M3's column **actions** are refused with `swimming_unavailable` for now.
@@ -325,7 +328,7 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    offline-verified since 03/10 (`fish_hook_hook` + dip fallback); the live round
    still has to confirm the bobber entity name and that the server really sends
    the event.
-6. **Fluids** (spec in [fluids](fluids.md)): **M0 + M1 partial + M2 + M3 done** (03/10 —
+6. **Fluids** (spec in [fluids](fluids.md)): **M0 + M1 partial + M2 + M3 + M4 done** (03/10 —
    fluid awareness: `/observe.fluids`, hazard ladder, `avoid_lava`, dig
    adjacency, lava repulsion; live round documented in [verification](verification.md)
    rows 47/47.1). M1's wading (shallow water traversal at `WADE_SPEED_FACTOR`)
@@ -340,7 +343,14 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    plus the `dig_down` preference for a usable waterfall — its live round could
    only observe the refusals (`no_column`: the only water in reach is a 2-high
    pool), and the pathfinding column edges are deliberately **not** there because a
-   descent into water the bot cannot leave would be a trap. The underwater refusal
+   descent into water the bot cannot leave would be a trap. M4 adds
+   `bedrock-lava.mjs` (the death verdict on a burnt loot site, the shore plan that
+   prefers water, the gap measurement and the crossing gate) with `move_to_safe`
+   and `cross_lava`: the bot now refuses to chase loot destroyed by lava and will
+   not cross a lava gap without fire resistance and a bridge — the bridge build
+   itself is M5/M6, so the action stops at `bridge_not_implemented` with the plan
+   in hand. Its live round could only observe the refusals (`not_in_danger`,
+   `no_lava_ahead`: the room's lava sits 15.4 blocks below the floor). The underwater refusal
    is unit-tested only:
    the swimming motion (`surface`/`swim_to`, water A* nodes, buoyancy/`delta`
    flags) stays unimplemented because it needs a packet capture of a real player

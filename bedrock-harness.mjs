@@ -216,6 +216,13 @@ server = createServer(async (req, res) => {
       const u = new URL(req.url, 'http://x');
       const force = /^(1|true|on)$/i.test(u.searchParams.get('force') ?? '');
       response = [200, adapter._columnView({ force })];
+    } else if (req.method === 'GET' && req.url.startsWith('/observe.lava')) {
+      // Lava (M4 di docs/wiki/fluids.md): dove è, quanto è larga, cosa ha già
+      // distrutto e cosa mancherebbe per attraversarla. `?force=1` rifà il
+      // censimento; il verdetto di `move_to_safe`/`cross_lava` è dentro `gate`.
+      const u = new URL(req.url, 'http://x');
+      const force = /^(1|true|on)$/i.test(u.searchParams.get('force') ?? '');
+      response = [200, adapter._lavaView({ force })];
     } else if (req.method === 'GET' && req.url.startsWith('/observe.redstone')) {
       // Redstone (R0 di docs/wiki/redstone.md): componenti vicini con potenza e
       // direzione, minerali di redstone e TNT. Come per i fluidi il censimento è

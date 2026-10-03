@@ -72,8 +72,9 @@ Last lint: 2026-10-03.
   refusals (`no_portal_known`, `missing_materials`, `missing_flint_and_steel`)
   were observed. No deliberate portal *search* either (the census radius is 32).
 - **Fluids** — **M0 (fluid awareness), M1 partial (wading + simulated air
-  budget), M2 (breathing + dive budget) and M3 (waterfalls + bubble columns)
-  implemented and collaudati live 03/10**: the bot knows where water and
+  budget), M2 (breathing + dive budget), M3 (waterfalls + bubble columns) and M4
+  (lava shores, destroyed loot, crossing gate) implemented and collaudati live
+  03/10**: the bot knows where water and
   lava are (`GET /observe.fluids`, census + hazard ladder), refuses digs that
   would open into a fluid, repels lava in `_standable` and can `avoid_lava` when
   lava is within range; the governor gained the
@@ -98,7 +99,17 @@ Last lint: 2026-10-03.
   round could only observe the refusals (`no_column`: the only water in reach is
   a two-block pool, no column anywhere in 24 blocks) because riding a waterfall
   needs swimming, and the pathfinding column edges are deliberately left out (a
-  descent into water the bot cannot leave would be a trap).
+  descent into water the bot cannot leave would be a trap). M4 added
+  `bedrock-lava.mjs` and `GET /observe.lava`: the death verdict on a loot site
+  destroyed by lava (within 2 blocks the loot is gone and `recover_loot` is not
+  even offered), the escape plan that prefers a shore with **water** next to it,
+  the first-stretch gap measurement along the four cardinal directions, and the
+  crossing gate (`fire_resistance` + a bridge, or water → obsidian where water can
+  be placed — never in the Nether/End). `move_to_safe` and `cross_lava` refuse with
+  typed errors (`not_in_danger`, `no_lava_ahead`, `gap_unknown`, `gap_too_wide`,
+  `no_fire_resistance`, `water_in_nether`, `bridge_not_implemented` + plan); the
+  bridge build itself is M5/M6, so the live round only observed the refusals (the
+  room's lava is 15.4 blocks below the floor).
   Still missing: swimming itself — `_passable()` treats `water|lava` as
   walls, so deep water, `surface`, `swim_to` and the water A* nodes wait for the
   Bedrock water-movement `input_data` flags/`delta` semantics, which need a
@@ -551,8 +562,8 @@ Still missing (the rest of the original gap):
   Roadmap in [fishing](fishing.md).
 - **Fluids** (swimming, drowning/breathing, waterfalls, lava avoidance, buckets/
   boats/potions) — M0 + M1 partial (wading + simulated air) + M2 (breathing) + M3
-  (waterfalls/bubble columns, detection and verdicts) implemented and live
-  03/10; swimming motion and M4–M6 still spec. Roadmap in [fluids](fluids.md);
+  (waterfalls/bubble columns, detection and verdicts) + M4 (lava shores, destroyed
+  loot, crossing gate) implemented and live 03/10; swimming motion and M5–M6 still spec. Roadmap in [fluids](fluids.md);
   the blocker is the missing packet capture of a real player swimming.
 - **Goal-driven gameplay** — Goal Contract + task graph + 5 progressive
   benchmarks (16 logs, shelter+night, iron pickaxe, 5 diamonds, Nether portal).
