@@ -198,7 +198,10 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 - **Fluids** — swimming, drowning/breathing, waterfalls (descent/ascent), lava
   avoidance, buckets/boats/bubble columns/potions. Roadmap (M0–M6) in
   [fluids](fluids.md) / [`raw/FLUIDS_ROADMAP.md`](../raw/FLUIDS_ROADMAP.md);
-  fluids are currently walls (`_passable` rejects `water|lava`).
+  **M0 (fluid awareness) implemented, unit-tested and collaudato live 03/10**
+  (`/observe.fluids` census, hazard ladder, `avoid_lava`, dig-neighbour refusal,
+  lava repulsion in `_standable`), M1 onward pending — fluids are still walls
+  (`_passable` rejects `water|lava`).
 - **Redstone and primitive automation** — switches, delay lines, observers/
   pistons, hoppers, dispensers. Roadmap (R0–R6) in [redstone](redstone.md) /
   [`raw/REDSTONE_ROADMAP.md`](../raw/REDSTONE_ROADMAP.md); no redstone support
@@ -247,10 +250,13 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    offline-verified since 03/10 (`fish_hook_hook` + dip fallback); the live round
    still has to confirm the bobber entity name and that the server really sends
    the event.
-6. **Fluids** (spec in [fluids](fluids.md)): start with M0 (fluid awareness,
-   `/observe.fluids`, lava forbidden in A*, dig adjacency check), then M1
-   (swimming physics + air budget). Requires a packet capture of a real player
-   swimming to confirm the Bedrock water movement flags/`delta` semantics.
+6. **Fluids** (spec in [fluids](fluids.md)): **M0 done** (03/10 — fluid
+   awareness: `/observe.fluids`, hazard ladder, `avoid_lava`, dig adjacency,
+   lava repulsion; live round documented in [verification](verification.md) row
+   47), next M1 (swimming physics + air budget, which also relaxes the M0
+   conservatism of refusing digs next to water). Requires a packet capture of a
+   real player swimming to confirm the Bedrock water movement flags/`delta`
+   semantics, and an answer on the air budget (server attribute or simulation).
 7. **Redstone** (spec in [redstone](redstone.md)): start with R0 (protect
    redstone in `DIG_PROTECTED`, `/observe.redstone`, state-aware search) and R1
    (oriented placement — needs a packet capture of a real placement to confirm

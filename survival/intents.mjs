@@ -7,9 +7,13 @@
 // già offerte dal harness.
 
 // Intenti riconosciuti (documentati in docs/SURVIVAL-INTELLIGENCE.md).
+// `swim`/`surface`/`descend`/`ascend`/`fluid` sono il vocabolario dei fluidi
+// (M0 di docs/wiki/fluids.md): le azioni che li usano arrivano nelle milestone
+// successive, qui restano dichiarati e validati.
 export const INTENTS = [
   'escape', 'fight', 'eat', 'heal', 'sleep', 'shelter', 'recover', 'collect',
   'travel', 'mine', 'craft', 'smelt', 'build', 'wait',
+  'swim', 'surface', 'descend', 'ascend', 'fluid',
 ];
 
 const KEY_INTENTS = {
@@ -28,6 +32,11 @@ const KEY_INTENTS = {
   goto_waypoint: ['travel'],
   dig_down: ['mine', 'travel'],
   dig_up: ['mine', 'travel'],
+  // Fluidi: allontanarsi dalla lava è una fuga, non un semplice spostamento.
+  avoid_lava: ['escape', 'travel'],
+  surface: ['surface', 'swim'],
+  swim_to: ['swim', 'travel'],
+  dive: ['descend', 'swim'],
 };
 
 const PREFIX_INTENTS = [

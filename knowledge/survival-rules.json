@@ -1,7 +1,15 @@
 {
   "version": 1,
-  "comment": "Regole di sopravvivenza deterministiche. Condizioni disponibili (AND): healthMax, healthBelow, foodMax, foodBelow, phase, night, timeKnown, bedAvailable, hasFood, weaponInInventory, pickaxeInInventory, sleeping, dead, lootNearby, hostileWithin, hostileSeverityAtLeast, hostileTypeWithin. Vedi docs/SURVIVAL-INTELLIGENCE.md.",
+  "comment": "Regole di sopravvivenza deterministiche. Condizioni disponibili (AND): healthMax, healthBelow, foodMax, foodBelow, phase, night, timeKnown, bedAvailable, hasFood, weaponInInventory, pickaxeInInventory, sleeping, dead, lootNearby, hostileWithin, hostileSeverityAtLeast, hostileTypeWithin, inWater, headInWater, inLava, lavaWithin, airBelow. Vedi docs/SURVIVAL-INTELLIGENCE.md.",
   "rules": [
+    {
+      "id": "lava_contact",
+      "priority": 100,
+      "when": { "inLava": true },
+      "intents": ["escape", "heal"],
+      "objective": "Get out of the lava immediately: move to solid ground and heal before anything else.",
+      "preferredSkills": ["avoid_lava"]
+    },
     {
       "id": "dead",
       "priority": 100,
@@ -49,6 +57,22 @@
       "intents": ["eat", "heal"],
       "objective": "Eat available food to restore hunger before resuming progression.",
       "preferredSkills": ["eat_available_food"]
+    },
+    {
+      "id": "drowning",
+      "priority": 98,
+      "when": { "headInWater": true, "airBelow": 8 },
+      "intents": ["surface"],
+      "objective": "Surface for air before the air budget runs out.",
+      "preferredSkills": ["surface_for_air"]
+    },
+    {
+      "id": "lava_near",
+      "priority": 88,
+      "when": { "lavaWithin": 4 },
+      "intents": ["escape", "travel"],
+      "objective": "Move away from the lava and keep at least four blocks of distance.",
+      "preferredSkills": ["avoid_lava"]
     },
     {
       "id": "hostile_close",

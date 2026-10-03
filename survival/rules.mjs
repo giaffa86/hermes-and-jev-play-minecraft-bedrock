@@ -13,13 +13,16 @@ export const CONDITION_KEYS = [
   'bedAvailable', 'hasFood', 'weaponInInventory', 'pickaxeInInventory',
   'sleeping', 'dead', 'lootNearby',
   'hostileWithin', 'hostileSeverityAtLeast', 'hostileTypeWithin',
+  // Fluidi (M0 di docs/wiki/fluids.md).
+  'inWater', 'headInWater', 'inLava', 'lavaWithin', 'airBelow',
 ];
 
 const BOOLEAN_KEYS = new Set([
   'night', 'timeKnown', 'bedAvailable', 'hasFood', 'weaponInInventory',
   'pickaxeInInventory', 'sleeping', 'dead', 'lootNearby',
+  'inWater', 'headInWater', 'inLava',
 ]);
-const NUMBER_KEYS = new Set(['healthMax', 'healthBelow', 'foodMax', 'foodBelow', 'hostileWithin']);
+const NUMBER_KEYS = new Set(['healthMax', 'healthBelow', 'foodMax', 'foodBelow', 'hostileWithin', 'lavaWithin', 'airBelow']);
 const PHASES = ['day', 'dusk', 'night', 'dawn'];
 
 export function validateRule (rule, index = 0) {
@@ -83,15 +86,15 @@ export function evaluateCondition (key, value, perception = {}) {
     case 'hasFood':
       return perception.hasFood === value;
     case 'weaponInInventory':
-      return !!perception.weapon === value;
+      return (perception.weapon != null) === value;
     case 'pickaxeInInventory':
-      return !!perception.pickaxe === value;
+      return (perception.pickaxe != null) === value;
     case 'sleeping':
       return perception.sleeping === value;
     case 'dead':
       return perception.dead === value;
     case 'lootNearby':
-      return !!perception.lootNearby === value;
+      return (perception.lootNearby === true) === value;
     case 'hostileWithin':
       return !!nearest && nearest.distance <= value;
     case 'hostileSeverityAtLeast': {
@@ -104,6 +107,23 @@ export function evaluateCondition (key, value, perception = {}) {
         if (!match) return false;
       }
       return true;
+    }
+    // Fluidi: le condizioni leggono la perception normalizzata, mai l'osservazione
+    // grezza. `lavaWithin`/`airBelow` sono distanze/soglie numeriche; l'aria ignota
+    // (null) non fa scattare nulla.
+    case 'inWater':
+      return perception.fluids?.inWater === value;
+    case 'headInWater':
+      return perception.fluids?.headInWater === value;
+    case 'inLava':
+      return perception.fluids?.inLava === value;
+    case 'lavaWithin': {
+      const distance = perception.fluids?.lavaWithin;
+      return Number.isFinite(distance) && distance <= value;
+    }
+    case 'airBelow': {
+      const air = perception.fluids?.air;
+      return Number.isFinite(air) && air < value;
     }
     default:
       throw new Error(`unknown survival condition: ${key}`);

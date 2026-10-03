@@ -65,12 +65,18 @@ Last lint: 2026-10-03.
   counter and a way to fight from range. Nothing is implemented yet.
 - **Advanced shelter** — no wall/shelter building actions.
 - **Nether portal** — not implemented.
-- **Fluids** — swimming, drowning/breathing, waterfalls and lava avoidance are
-  not implemented; `_passable()` treats `water|lava` as walls (`bedrock-adapter.mjs`).
-  Roadmap in [fluids](fluids.md). Two discovery items block M1: the exact Bedrock
-  water-movement `input_data` flags/`delta` semantics (needs a packet capture of a
-  real player swimming) and whether self metadata exposes `breathing`/air or the
-  air budget must be simulated.
+- **Fluids** — **M0 (fluid awareness) implemented and collaudato live 03/10**: the
+  bot knows where water and lava are (`GET /observe.fluids`, census + hazard
+  ladder), refuses digs that would open into a fluid, repels lava in `_standable`
+  and can `avoid_lava` when lava is within range; the governor gained the
+  `lava_contact`/`drowning`/`lava_near` rules. Swimming itself is still missing:
+  `_passable()` treats `water|lava` as walls (`bedrock-adapter.mjs`), so M1
+  (physics, pathfinding, air budget) is the next slice in [fluids](fluids.md).
+  Two discovery items block M1: the exact Bedrock water-movement `input_data`
+  flags/`delta` semantics (needs a packet capture of a real player swimming) and
+  whether self metadata exposes `breathing`/air or the air budget must be
+  simulated (the attribute was never seen live in the M0 round, so the `drowning`
+  rule stays inert).
 
 ## Exploration travel kit (multi-day expeditions)
 
@@ -419,8 +425,8 @@ Still missing (the rest of the original gap):
   whether the BDS really sends that event.
   Roadmap in [fishing](fishing.md).
 - **Fluids** (swimming, drowning/breathing, waterfalls, lava avoidance, buckets/
-  boats/potions) — spec only. Roadmap in [fluids](fluids.md); start at M0 (fluid
-  awareness) and M1 (swimming physics + air budget).
+  boats/potions) — M0 (awareness) implemented and live 03/10; M1–M6 still spec.
+  Roadmap in [fluids](fluids.md); next is M1 (swimming physics + air budget).
 - **Goal-driven gameplay** — Goal Contract + task graph + 5 progressive
   benchmarks (16 logs, shelter+night, iron pickaxe, 5 diamonds, Nether portal).
   Proposal in [goal-achievement](goal-achievement.md); the 5 benchmarks have

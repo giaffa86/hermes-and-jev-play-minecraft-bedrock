@@ -36,6 +36,35 @@ export function threatSeverity (type, distance) {
 
 // Le entità di /observe hanno già `hostile`, ma la perception non se ne fida
 // ciecamente: ricalcola il tipo con la stessa classificazione dell'adapter.
+export function perceiveFluids (fluids = null) {
+  // Un'osservazione senza `fluids` (harness vecchio, fixture) non dichiara
+  // allarmi: `known: false` e nessun pericolo inventato.
+  if (!fluids || typeof fluids !== 'object') {
+    return {
+      known: false, inWater: false, headInWater: false, inLava: false,
+      lavaDistance: null, lavaWithin: null, waterDistance: null, waterWithin: null,
+      lavaCount: 0, waterCount: 0, air: null,
+    };
+  }
+  const num = (value) => (Number.isFinite(value) ? value : null);
+  const lavaDistance = num(fluids.lavaDistance);
+  const waterDistance = num(fluids.waterDistance);
+  return {
+    known: true,
+    inWater: fluids.inWater === true,
+    headInWater: fluids.headInWater === true,
+    inLava: fluids.inLava === true,
+    lavaDistance,
+    // Alias usato dalle regole dichiarative ("lava entro N blocchi").
+    lavaWithin: lavaDistance,
+    waterDistance,
+    waterWithin: waterDistance,
+    lavaCount: num(fluids.lava?.count) ?? num(fluids.lavaCount) ?? 0,
+    waterCount: num(fluids.water?.count) ?? num(fluids.waterCount) ?? 0,
+    air: num(fluids.air),
+  };
+}
+
 export function perceiveThreats (entities = []) {
   const threats = [];
   for (const entity of entities) {
@@ -109,6 +138,7 @@ export function perceive (observation = {}) {
     bedDistance: bed?.distance ?? null,
     lootNearby: Array.isArray(observation.drops) && observation.drops.length > 0,
     dropCount: Array.isArray(observation.drops) ? observation.drops.length : 0,
+    fluids: perceiveFluids(observation.fluids),
     inventorySummary: {
       logs: tagCount(inventory, 'logs'),
       planks: tagCount(inventory, 'planks'),

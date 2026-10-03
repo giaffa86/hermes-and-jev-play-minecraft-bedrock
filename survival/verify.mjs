@@ -15,6 +15,8 @@
 //   nightSurvived                   una notte è passata (before/context.sawNight)
 //   deathsAtLeast n                 il contatore morti ha raggiunto n
 //   itemPreserved [item]            nessun item della lista è diminuito vs `before`
+//   inWater bool / notInLava bool   stato fluido corrente (osservazione `fluids`)
+//   airAtLeast n                    aria residua (quando il budget d'aria è noto)
 //   allOf [criteri] | anyOf [criteri]
 //
 // Modulo puro (l'unico I/O è nel loader delle skill).
@@ -177,6 +179,31 @@ export function evaluateCriteria (criteria, observation, { before = null, contex
     evidence.phase = afterPhase;
     return sawNight && dayAgain ? { ok: true, evidence } : fail(`night survival not confirmed (sawNight=${sawNight}, phase=${afterPhase})`);
   }
+  if ('inWater' in criteria) {
+    const inWater = after.fluids?.inWater === true;
+    evidence.inWater = inWater;
+    return inWater === criteria.inWater
+      ? { ok: true, evidence }
+      : fail(`inWater ${inWater}, expected ${criteria.inWater}`);
+  }
+  if ('notInLava' in criteria) {
+    const inLava = after.fluids?.inLava === true;
+    evidence.inLava = inLava;
+    // Il criterio è una sicurezza: senza il dato fluido non si dichiara successo.
+    if (after.fluids == null) return fail('lava state unknown');
+    const safe = !inLava;
+    return safe === criteria.notInLava
+      ? { ok: true, evidence }
+      : fail(`inLava ${inLava}, expected not ${criteria.notInLava}`);
+  }
+  if ('airAtLeast' in criteria) {
+    const air = Number.isFinite(after.fluids?.air) ? after.fluids.air : null;
+    evidence.air = air;
+    if (air == null) return fail('air budget unknown');
+    return air >= criteria.airAtLeast
+      ? { ok: true, evidence }
+      : fail(`air ${air} < ${criteria.airAtLeast}`);
+  }
   return fail(`unknown success criterion: ${Object.keys(criteria).join(', ')}`);
 }
 
@@ -212,6 +239,7 @@ export const CRITERIA_KEYS = [
   'inventoryGte', 'inventoryTagGte', 'healthAtLeast', 'foodAtLeast', 'phaseIn',
   'dimension', 'nearbyBlock', 'foodIncreased', 'healthIncreased', 'noHostileWithin',
   'threatDistanceIncreasedBy', 'nightSurvived', 'deathsAtLeast', 'itemPreserved',
+  'inWater', 'notInLava', 'airAtLeast',
   'allOf', 'anyOf',
 ];
 
@@ -241,6 +269,8 @@ export function validateCriteria (criteria, where = 'criteria') {
     }
     if (key === 'phaseIn' && !Array.isArray(value)) errors.push(`${where}.${key}: must be an array of phases`);
     if (key === 'deathsAtLeast' && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) errors.push(`${where}.${key}: must be a non-negative number`);
+    if ((key === 'inWater' || key === 'notInLava') && typeof value !== 'boolean') errors.push(`${where}.${key}: must be a boolean`);
+    if (key === 'airAtLeast' && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) errors.push(`${where}.${key}: must be a non-negative number`);
     if (key === 'itemPreserved' && (!Array.isArray(value) || !value.length || value.some(item => typeof item !== 'string' || !item))) errors.push(`${where}.${key}: must be a non-empty array of item names`);
     if (key === 'nearbyBlock' && typeof value !== 'string' && (typeof value !== 'object' || !value?.name)) errors.push(`${where}.${key}: must be a block name or {name, within}`);
   }

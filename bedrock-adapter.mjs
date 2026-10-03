@@ -11,6 +11,7 @@ import { professionName, normalizeProfession, professionMatches, pickBestTrade }
 import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
 import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
 import { detectStructures } from './structures.mjs';
+import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT } from './bedrock-fluids.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -102,6 +103,13 @@ const DISCOVERY_RESCAN_MS = 15000;   // ri-scansione scoperte nella stessa chunk
 const STRUCTURE_RESCAN_MS = +(process.env.STRUCTURE_RESCAN_MS || 60000);
 const STRUCTURE_RADIUS = +(process.env.STRUCTURE_RADIUS || 48);
 const STRUCTURE_SURVEY_LIMIT = +(process.env.STRUCTURE_SURVEY_LIMIT || 20000);
+// Fluidi (M0 di docs/wiki/fluids.md): il censimento di acqua/lava nell'area caricata
+// ha lo stesso costo di una ricognizione di strutture, quindi ha un TTL suo.
+const FLUID_RESCAN_MS = +(process.env.FLUID_RESCAN_MS || 5000);
+const FLUID_SCAN_RADIUS = +(process.env.FLUID_SCAN_RADIUS || DEFAULT_FLUID_RADIUS);
+const FLUID_SCAN_LIMIT = +(process.env.FLUID_SCAN_LIMIT || DEFAULT_FLUID_LIMIT);
+// Distanza oltre la quale la lava non è più un motivo per offrire `avoid_lava`.
+const LAVA_AVOID_RANGE = +(process.env.LAVA_AVOID_RANGE || 8);
 // Occasioni: raggio della scansione delle ore di valore. Deve combaciare con
 // ORE_INTEREST_RANGE di world-events.mjs: tutto ciò che genera un evento
 // VALUABLE_ORE_SEEN è anche un'opzione mine_<ore>.
@@ -168,6 +176,9 @@ export class BedrockAdapter {
     this.structures = [];          // strutture rilevate nell'ultima ricognizione (M5/M6)
     this._structureSurvey = null;  // riassunto dell'ultima ricognizione (per /observe)
     this._structureSurveyAt = 0;
+    this._fluidScan = null;        // censimento acqua/lava nell'area caricata (M0)
+    this._fluidScanAt = 0;
+    this.air = null;               // budget d'aria, se il server lo espone (M2 lo userà)
     this.dimension = 'overworld';
     this.standingOn = null;
     this.plan = null;
@@ -991,6 +1002,153 @@ export class BedrockAdapter {
     };
   }
 
+  // ---- fluidi (M0 di docs/wiki/fluids.md) --------------------------------------------
+  //
+  // Il bot non nuota ancora (M1) e non respira (M2): qui impara a *vedere* acqua e
+  // lava, a trattare la lava come pericolo assoluto e a rifiutare gli scavi che
+  // aprirebbero un varco verso un fluido.
+
+  _fluidKindAt (x, y, z) {
+    return fluidKind(this.world.blockAt({ x, y, z })?.name);
+  }
+
+  // Le sei celle attorno a un blocco che sta per essere rimosso.
+  _fluidNeighbors (cell) {
+    const out = [];
+    for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0]]) {
+      const position = { x: cell.x + dx, y: cell.y + dy, z: cell.z + dz };
+      out.push({ name: this.world.blockAt(position)?.name, position });
+    }
+    return out;
+  }
+
+  // Censimento di acqua/lava nell'area caricata, con TTL: `findBlocks` su quattro
+  // nomi non è gratis e `/observe` viene interrogata di continuo. Un mondo senza
+  // `findBlocks` (fixture dei test) semplicemente non produce censimento.
+  _fluidCensus ({ force = false } = {}) {
+    const now = Date.now();
+    if (!force && this._fluidScan && now - this._fluidScanAt < FLUID_RESCAN_MS) return this._fluidScan;
+    const found = [];
+    if (this.position && typeof this.world?.findBlocks === 'function') {
+      for (const name of ['water', 'flowing_water', 'lava', 'flowing_lava']) {
+        for (const block of this.world.findBlocks(name, this.position, FLUID_SCAN_RADIUS, FLUID_SCAN_LIMIT)) {
+          found.push({ name, position: block?.position ?? block });
+        }
+      }
+    }
+    const summary = summarizeFluids(found, this._feet ?? this.position);
+    // Appena connessi il mondo può non avere ancora nessuna colonna caricata: un
+    // censimento vuoto in quel momento direbbe "nessuna lava" per un mondo che non
+    // abbiamo ancora guardato. Non si mette in cache e si dichiara `ready: false`,
+    // così la consapevolezza si recupera al primo tick con i chunk caricati.
+    const loaded = this.world?.loaded?.size ?? null;
+    const ready = loaded !== 0;
+    const census = { ...summary, cells: fluidCells(found), scanned: found.length, loaded, ready, at: now };
+    if (!ready) return census;
+    this._fluidScan = census;
+    this._fluidScanAt = now;
+    this._lavaCells = new Set(census.cells.lava.map(p => `${p.x},${p.y},${p.z}`));
+    return this._fluidScan;
+  }
+
+  // Vista compatta per /observe: stato delle celle del bot (letto ogni volta) +
+  // censimento (in cache) + verdetto di pericolo.
+  _fluidsView ({ force = false, cells = false } = {}) {
+    const feet = this._feet
+      ? { x: Math.floor(this._feet.x), y: Math.floor(this._feet.y + 0.1), z: Math.floor(this._feet.z) }
+      : null;
+    const head = feet ? { x: feet.x, y: feet.y + 1, z: feet.z } : null;
+    const inWater = feet ? this._fluidKindAt(feet.x, feet.y, feet.z) === 'water' : false;
+    const headInWater = head ? this._fluidKindAt(head.x, head.y, head.z) === 'water' : false;
+    const inLava = feet ? this._fluidKindAt(feet.x, feet.y, feet.z) === 'lava' : false;
+    const census = this._fluidCensus({ force });
+    const air = Number.isFinite(this.air) ? this.air : null;
+    const view = {
+      inWater,
+      headInWater,
+      inLava,
+      air,
+      water: census.water,
+      lava: census.lava,
+      waterDistance: census.waterDistance,
+      lavaDistance: census.lavaDistance,
+      hazard: fluidHazard({ inWater, headInWater, inLava, lavaDistance: census.lavaDistance, air }),
+      scanned: census.scanned,
+      ready: census.ready !== false,
+      at: census.at,
+    };
+    // Le celle servono solo alla diagnostica (`/observe.fluids`): tenerle fuori
+    // da /observe evita di gonfiare la percezione del controller.
+    if (cells) view.cells = census.cells;
+    return view;
+  }
+
+  // La lava entro `LAVA_AVOID_RANGE`: la cella più vicina (motivo per `avoid_lava`).
+  _lavaThreat () {
+    const census = this._fluidCensus();
+    if (!census.lava?.nearest) return null;
+    if (census.lavaDistance != null && census.lavaDistance > LAVA_AVOID_RANGE) return null;
+    return { position: census.lava.nearest.position, distance: census.lava.nearest.distance ?? null };
+  }
+
+  // Una cella con lava in orizzontale ai piedi non è una destinazione: brucia.
+  // Il censimento è in cache, quindi qui si tratta solo di una lookup su Set.
+  _lavaAdjacent (x, y, z) {
+    if (!this._lavaCells) this._fluidCensus();
+    if (!this._lavaCells?.size) return false;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      if (this._lavaCells.has(`${x + dx},${y},${z + dz}`)) return true;
+    }
+    return false;
+  }
+
+  // Allontana il bot dalla lava: fra le celle d'appoggio raggiungibili che
+  // guadagnano distanza, sceglie quella che guadagna di più (rankEscapeCells).
+  async _avoidLava (timeoutMs = 15000) {
+    if (!this._feet) return { ok: false, error: 'no_position' };
+    const threat = this._lavaThreat();
+    if (!threat) return { ok: true, moved: false, reason: 'no_lava_nearby' };
+    const hazards = this._fluidCensus().cells.lava;
+    const from = { x: this._feet.x, y: this._feet.y, z: this._feet.z };
+    const candidates = [];
+    for (const radius of [12, 8, 16]) {
+      for (let i = 0; i < 16; i++) {
+        const angle = (i / 16) * Math.PI * 2;
+        const point = { x: from.x + Math.cos(angle) * radius, z: from.z + Math.sin(angle) * radius };
+        const cell = this._standableNear(point);
+        if (!cell) continue;
+        if (this._reachabilityUsable() && !this.cellReachable(cell)) continue;
+        candidates.push(cell);
+      }
+    }
+    const ranked = rankEscapeCells(candidates, { from, hazards, minGain: 1.5, limit: 4 });
+    if (!ranked.length) {
+      this.log('avoid_lava_no_cell', { position: from, lava: threat.position });
+      return { ok: false, error: 'no_safe_cell', lava: threat.position, distance: threat.distance };
+    }
+    const deadline = Date.now() + timeoutMs;
+    let lastError = null;
+    for (const entry of ranked) {
+      if (Date.now() >= deadline) break;
+      try {
+        await this._moveTo(entry.cell, 0.8, Math.min(8000, Math.max(2000, deadline - Date.now())));
+        const after = this._fluidCensus({ force: true });
+        return {
+          ok: true,
+          moved: true,
+          lava: threat.position,
+          fromDistance: threat.distance,
+          gain: entry.gain,
+          lavaDistance: after.lavaDistance,
+          position: this.pos(),
+        };
+      } catch (error) {
+        lastError = error.message;
+      }
+    }
+    return { ok: false, error: `avoid_lava_failed${lastError ? `: ${lastError}` : ''}`, lava: threat.position };
+  }
+
   observe () {
     const heldSlot = this.inventorySlots[this.selectedHotbar];
     const heldInfo = heldSlot?.network_id ? this.world.registry?.items[heldSlot.network_id] : null;
@@ -1024,6 +1182,7 @@ export class BedrockAdapter {
       nearby: this.nearbyBlocks,
       structures: this.structures.slice(0, 8),
       structureSurvey: this._structureSurvey,
+      fluids: this._fluidsView(),
       ores: (this.valuableOres ?? []).slice(0, 8),
       recent: this.recent.slice(-8),
       status: this.status,
@@ -1102,6 +1261,12 @@ export class BedrockAdapter {
     }
     if (threats.length && threats[0].distance <= 16) {
       o.push({ key: 'flee', description: `Run away from the nearest ${threats[0].type} (${threats[0].distance.toFixed(1)} blocks away)` });
+    }
+    // Lava: pericolo assoluto (M0). L'opzione esiste solo se la lava è davvero
+    // vicina e se c'è una cella d'appoggio che aumenta la distanza.
+    const lavaThreat = this._lavaThreat();
+    if (lavaThreat) {
+      o.push({ key: 'avoid_lava', description: `Move away from the lava at ${JSON.stringify({ x: Math.round(lavaThreat.position.x), y: Math.round(lavaThreat.position.y), z: Math.round(lavaThreat.position.z) })} (${lavaThreat.distance} blocks away)` });
     }
     // Rifugio: rientra a casa (spawn o HOME_WAYPOINT) quando è lontana o in pericolo.
     if (this.home && this.position) {
@@ -1581,6 +1746,8 @@ export class BedrockAdapter {
         result = await this._eat();
       } else if (key === 'flee') {
         result = await this._flee();
+      } else if (key === 'avoid_lava') {
+        result = await this._avoidLava();
       } else if (key === 'go_home' || key === 'retreat') {
         result = await this._goHome();
       } else if (key === 'equip_armor') {
@@ -3835,6 +4002,15 @@ export class BedrockAdapter {
       if (!block.diggable || !(block.hardness >= 0)) return { error: `not_diggable_${label}` };
       targets.push({ cell, block, label });
     }
+    // Secondo passaggio: un fluido *adiacente* a una cella da scavare aprirebbe un
+    // varco verso l'acqua (una scala che pesca in un lago si allaga) o verso la
+    // lava. Il controllo viene dopo quello sul fluido nella cella stessa, così il
+    // motivo riportato è quello più specifico.
+    for (const target of targets) {
+      if (target.raw) continue;
+      const fluidRisk = digFluidRisk({ neighbors: this._fluidNeighbors(target.cell), avoidWater: true });
+      if (fluidRisk.unsafe) return { error: `unsafe_${fluidRisk.reason}_${target.label}`, block: fluidRisk.block, position: fluidRisk.position };
+    }
     // Nessun blocco da scavare (gradino già aperto: discesa interrotta o scalino
     // naturale): resta valida la sola discesa, con lo stesso controllo di appoggio.
     const supportBlock = this.world.blockAt(support);
@@ -4109,6 +4285,9 @@ export class BedrockAdapter {
   _standable (x, y, z) {
     if (!this._passableForPath(this._blockForPath(x, y, z))) return false;
     if (!this._passableForPath(this._blockForPath(x, y + 1, z))) return false;
+    // Una cella con lava in orizzontale ai piedi non è una destinazione: il bot
+    // non è equipaggiato per attraversarla (M4 la renderà una scelta gated).
+    if (this._lavaAdjacent(x, y, z)) return false;
     const below = this._blockForPath(x, y - 1, z);
     // Anche un hash non risolto sotto i piedi vale come piano d'appoggio.
     return !!below && (below.boundingBox === 'block' || below.name === 'unknown');
@@ -4906,6 +5085,9 @@ export class BedrockAdapter {
       if (attr.name === 'minecraft:player.hunger') this.food = value;
       if (attr.name === 'minecraft:player.level') this.experienceLevel = value;
       if (attr.name === 'minecraft:player.experience') this.experienceProgress = value;
+      // Il budget d'aria non è ancora stato osservato in live su BDS 1.26: se il
+      // server non lo manda resta null e la regola `drowning` non scatta (M2).
+      if (/air$/.test(attr.name)) this.air = value;
     }
   }
 
@@ -6798,6 +6980,13 @@ export class BedrockAdapter {
       if (DIG_PROTECTED.test(block.name)) return { error: `protected_${label}`, block: block.name };
       if (!block.diggable || !(block.hardness >= 0)) return { error: `not_diggable_${label}` };
       targets.push({ cell, block, label });
+    }
+    // Come in _digTargets: i fluidi adiacenti si controllano dopo, così vince il
+    // motivo più specifico (fluido nella cella da scavare).
+    for (const target of targets) {
+      if (target.raw) continue;
+      const fluidRisk = digFluidRisk({ neighbors: this._fluidNeighbors(target.cell), avoidWater: true });
+      if (fluidRisk.unsafe) return { error: `unsafe_${fluidRisk.reason}_${target.label}`, block: fluidRisk.block, position: fluidRisk.position };
     }
     // Il gradino vero e proprio (davanti ai piedi) deve essere solido.
     if (!this._solidAt(front.x, front.y, front.z)) return { error: 'no_step_ahead' };

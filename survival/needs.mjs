@@ -7,7 +7,7 @@
 // Modulo puro: nessun I/O, testabile con osservazioni finte.
 
 export const NEEDS = [
-  'survive', 'escape', 'eat', 'heal', 'sleep', 'shelter',
+  'survive', 'escape', 'surface', 'eat', 'heal', 'sleep', 'shelter',
   'obtain_food', 'obtain_weapon', 'obtain_armor', 'replace_tool', 'continue_progression',
 ];
 
@@ -26,6 +26,13 @@ export function deriveNeeds (perception = {}, risk = {}) {
   if (nearest && (hurt || highRisk || nearest.severity === 'critical' || nearest.severity === 'high')) {
     add('escape');
   }
+  // Sott'acqua con l'aria agli sgoccioli: prima si risale. In M0 il budget d'aria
+  // non è ancora noto (`air` null) e il bisogno non scatta: nessun allarme finto.
+  if (perception.fluids?.headInWater === true && Number.isFinite(perception.fluids?.air) && perception.fluids.air <= 8) {
+    add('surface');
+  }
+  // Contatto con la lava: fuga immediata, è più urgente di ogni altra cura.
+  if (perception.fluids?.inLava === true) add('escape');
   if (food != null && food <= 14 && perception.hasFood) add('eat');
   if (hurt) add('heal');
   if (perception.night && perception.bedAvailable) add('sleep');

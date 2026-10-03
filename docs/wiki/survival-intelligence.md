@@ -75,8 +75,25 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**543 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**685 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
+
+- **Fluids in the survival layer (M0, 2026-10-03)**: the governor vocabulary grew
+five conditions (`inWater`, `headInWater`, `inLava`, `lavaWithin`, `airBelow`)
+and three rules in `knowledge/survival-rules.json` — `lava_contact` (priority
+100, `inLava`, intents `[escape, heal]`, skill `avoid_lava`), `drowning` (98,
+`headInWater` + `airBelow 8`, intents `[surface]`) and `lava_near` (88,
+`lavaWithin 4`, intents `[escape, travel]`). Lava therefore outranks every
+hostile rule. `perceiveFluids()` keeps unknown fluids as `known: false` (no
+invented alarm), `risk.mjs` scores `in_lava` +60 / `lava_adjacent` +45 /
+`drowning` +45 / `lava_near` +22 / `lava_in_range` +8, the `surface` need fires
+only with a known air budget, the intents `swim`/`surface`/`descend`/`ascend`/
+`fluid` were added, and the verifier gained `inWater`/`notInLava`/`airAtLeast`
+(the last two **fail loudly** when the state is unknown instead of passing).
+Live 03/10: a dry bot produces no fluid need and no fluid risk reason
+(`GET /survival` unchanged); `air` was never sent by the server, so `drowning`
+and `surface` are inert until M1 finds or simulates the budget
+([fluids](fluids.md), [verification](verification.md) row 47).
 
 - **Mature-crop detection (2026-10-03)**: `cropMaturity()`/`seedForCrop()` live in
 `bedrock-survival.mjs` (`growth` 0..7 for wheat/carrots/potatoes/beetroots/melon

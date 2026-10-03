@@ -185,6 +185,13 @@ server = createServer(async (req, res) => {
         try { adapter._surveyStructures({ force: true, radius, limit }); } catch (e) { error = e.message; }
       }
       response = [200, { ok: !error, error, structures: adapter.structures ?? [], survey: adapter._structureSurvey ?? null }];
+    } else if (req.method === 'GET' && req.url.startsWith('/observe.fluids')) {
+      // Fluidi (M0 di docs/wiki/fluids.md): stato delle celle del bot + censimento
+      // di acqua/lava nell'area caricata. Il censimento è in cache, `?force=1` lo
+      // rifà subito (diagnostica); `cells` elenca le celle trovate.
+      const u = new URL(req.url, 'http://x');
+      const force = /^(1|true|on)$/i.test(u.searchParams.get('force') ?? '');
+      response = [200, adapter._fluidsView({ force, cells: true })];
     } else if (req.method === 'GET' && req.url === '/options') {
       // Validity owner resta l'adapter; il governor può solo restringere in
       // emergenza le opzioni già offerte, mai aggiungerne.

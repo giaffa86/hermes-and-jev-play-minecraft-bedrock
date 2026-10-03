@@ -72,6 +72,35 @@ export function assessRisk (perception = {}) {
     }
   }
 
+  // Fluidi: la lava è un pericolo meccanico che il harness misura da solo, quindi
+  // pesa quanto (o più di) un ostile. L'acqua è solo un segnale, l'annegamento
+  // diventa critico quando il budget d'aria è noto e basso.
+  const fluids = perception.fluids || {};
+  const lavaDistance = Number.isFinite(fluids.lavaWithin) ? fluids.lavaWithin : null;
+  if (fluids.inLava === true) {
+    score += 60;
+    push(reasons, 'in_lava');
+  } else if (lavaDistance != null && lavaDistance <= 2) {
+    score += 45;
+    push(reasons, 'lava_adjacent');
+  } else if (lavaDistance != null && lavaDistance <= 5) {
+    score += 22;
+    push(reasons, 'lava_near');
+  } else if (lavaDistance != null && lavaDistance <= 10) {
+    score += 8;
+    push(reasons, 'lava_in_range');
+  }
+  if (fluids.headInWater === true) {
+    if (Number.isFinite(fluids.air) && fluids.air <= 8) {
+      score += 45;
+      push(reasons, 'drowning');
+    } else {
+      push(reasons, 'head_underwater');
+    }
+  } else if (fluids.inWater === true) {
+    push(reasons, 'in_water');
+  }
+
   if (health != null && health <= 10 && nearest && nearest.distance <= 8) {
     score += 10;
     push(reasons, 'low_health_near_hostile');

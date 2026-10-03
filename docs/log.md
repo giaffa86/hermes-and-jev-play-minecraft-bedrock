@@ -1904,3 +1904,72 @@ di osservabilità) e retention/pruning dell'episodico non ancora definite. Doc:
 `memory.md` (sezioni "Observation log" e "Semantic recall"), `verification.md`
 (righe 42.4/42.5), `open-questions.md` (bullet goal/episodic), `roadmap.md`
 (voce 11).
+
+## [2026-10-03] feat | Fluidi M0: consapevolezza di acqua e lava, fuga dalla lava, scavo sicuro
+
+Prima milestone della roadmap [fluids](wiki/fluids.md) (M0–M6). Il bot non sa
+ancora nuotare (M1), quindi M0 si ferma a *sapere dove sono i fluidi* e a
+rifiutare le mosse che finirebbero nella lava.
+
+Nuovo modulo puro `bedrock-fluids.mjs`: classificazione (`fluidKind`,
+`isWaterBlock` riusato da `bedrock-fishing.mjs`, `isLavaBlock`, prefisso
+`minecraft:` case-insensitive), `summarizeFluids` (conteggi + cella più vicina
+per tipo), `fluidCells`, la scala di pericolo `fluidHazard` (critical: in lava,
+lava ≤2, annegamento con `headInWater && air ≤8`; high: lava ≤5; medium: lava
+≤10; low: immerso; none), `rankEscapeCells` (tiene solo le celle che *guadagnano*
+distanza dal pericolo) e `digFluidRisk` (uno scavo con lava — sempre — o acqua —
+su richiesta — in una cella adiacente è rifiutato).
+
+Nell'adapter: `_fluidCensus()` scandisce `water`/`flowing_water`/`lava`/
+`flowing_lava` con `world.findBlocks` dentro `FLUID_SCAN_RADIUS` (TTL
+`FLUID_RESCAN_MS`) e costruisce il set delle celle di lava; se il mondo non ha
+**nessuna colonna caricata** il censimento non viene messo in cache e si dichiara
+`ready: false` (un mondo non ancora guardato non è un mondo senza lava);
+`_fluidsView()` legge le celle di piedi/testa a ogni chiamata e unisce censimento
++ verdetto, esposta in `observe().fluids` e da `GET /observe.fluids[?force=1]`;
+`_standable()` respinge le celle adiacenti alla lava (repulsione); `_digTargets()`
+e `_upTargets()` controllano le celle *intorno* a ogni bersaglio con
+`digFluidRisk` (il fluido *dentro* la cella resta il motivo più specifico);
+`avoid_lava` è offerto solo con lava entro `LAVA_AVOID_RANGE` e `_avoidLava()`
+ordina 16 direzioni × raggi 12/8/16 con `rankEscapeCells`, filtra per
+raggiungibilità e si muove una volta (errori tipizzati `no_position`,
+`no_lava_nearby`, `no_safe_cell`, `avoid_lava_failed`); `_applyOwnAttributes`
+memorizza un attributo d'aria **se il server lo manda**.
+
+Nel layer survival, vocabolari chiusi estesi (mai aggirati): condizioni
+`inWater`/`headInWater`/`inLava`/`lavaWithin`/`airBelow`, tre regole in
+`knowledge/survival-rules.json` (`lava_contact` 100 → `avoid_lava`, `drowning`
+98 → `surface`, `lava_near` 88 → `avoid_lava`; la lava batte ogni regola ostile),
+`perceiveFluids()` (fluidi ignoti ⇒ `known:false`, nessun allarme inventato),
+punteggi in `risk.mjs` (`in_lava` +60, `lava_adjacent` +45, `drowning` +45,
+`lava_near` +22, `lava_in_range` +8), bisogno `surface`, intenti
+`swim`/`surface`/`descend`/`ascend`/`fluid`, criteri `inWater`/`notInLava`/
+`airAtLeast` (gli ultimi due **falliscono rumorosamente** se lo stato è ignoto
+invece di passare).
+
+Collaudo live (container `hermes-jev-bedrock`, VM 100, BDS 1.26.52):
+`GET /observe.fluids?force=1` → `ready:true`, 259 celle fluide in 24 blocchi
+(`water 8`, più vicina a 20.6 — uno stagno; `lava 251`, più vicina a **15.4,
+y=59**); bot asciutto ⇒ `hazard {level:'none'}`, `air: null`; `GET /options` (23
+chiavi) **non** offre `avoid_lava` (lava oltre il range) e `POST /act
+{"key":"avoid_lava"}` risponde `{ok:true,moved:false,reason:'no_lava_nearby'}` in
+millisecondi; `GET /survival` resta `night_with_bed` con rischio `low` e nessun
+bisogno fluido (nessun falso positivo su un bot asciutto); `POST /act
+{"key":"dig_down"}` → `protected_front` (il pavimento della stanza); durante un
+riavvio, con nessun chunk caricato, il censimento ha riportato `ready:false,
+scanned:0`.
+
+Limiti documentati in `fluids.md` e in `verification.md` (riga 47): il
+*movimento* di fuga non è stato esercitato live (dalla stanza base la lava a 15.4
+blocchi sotto è irraggiungibile e il gate dell'opzione resta giustamente chiuso),
+`air` non è mai stato osservato (quindi `drowning` e il bisogno `surface` restano
+inerti finché M1 non trova o simula il budget) e il rifiuto dello scavo accanto
+all'**acqua** è una prudenza voluta di M0 che M1 rilasserà.
+
+Test: `tests/bedrock-fluids.test.mjs` (8 casi) e
+`tests/bedrock-fluids-adapter.test.mjs` (10 casi, mondo finto che rispetta
+`world.loaded`); suite completa **685 test verdi**. Doc: `fluids.md` (stato +
+sezione M0 + limiti + tabella milestone), `verification.md` (riga 47),
+`roadmap.md` (voce Fluids e prossimi passi), `open-questions.md`,
+`survival-intelligence.md` (vocabolario + conteggio test), `AGENTS.md` (env
+`FLUID_RESCAN_MS`/`FLUID_SCAN_RADIUS`/`FLUID_SCAN_LIMIT`/`LAVA_AVOID_RANGE`).
