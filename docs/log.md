@@ -4,6 +4,35 @@ Append-only record of wiki operations. Prefix: `## [YYYY-MM-DD] <type> | <title>
 where `<type>` is one of `ingest`, `query`, `lint`, `doc`, `feat`, `fix`,
 `verify`, `report` (the last four joined as the wiki grew).
 
+## [2026-10-03] verify | The session drops are a NetherNet data-channel close, not a kick
+
+The environment defect that killed several live rounds (row 47.34 of
+[verification](wiki/verification.md)) got a mechanism instead of a hypothesis, by reading
+the code rather than the console.
+
+- The close reason does **not** come from the game: `bedrock-lifecycle.mjs:12`
+  (`trackNethernetClient`) stores `client._lifecycleCloseReason` from nethernet's
+  `handleConnectionClosed(connection, reason)`, and nethernet calls
+  `notifyClosed('disconnected')` when the WebRTC data channel fires `onclose`/`onerror`
+  (`node_modules/nethernet/src/connection.js:31,35,43,47`). It is the SCTP/WebRTC session
+  that dies, at the transport layer.
+- It is not a game kick: the `client.on('kick')` handler in `bedrock-adapter.mjs` logs
+  `kicked`, and no `kicked` line exists in the event log. The BDS console says only
+  `Player disconnected: <player>, xuid: …`.
+- It is not an idle timeout either: `_authTickInterval` (`bedrock-adapter.mjs:589` →
+  `_authTick`) sends `player_auth_input` every 50 ms while spawned, so the client keeps
+  talking. The only deliberate disconnect in the adapter is `_resyncByReconnect`
+  (`bedrock-adapter.mjs:5889`), which logs `inventory_resync` first — absent in every drop.
+- Recovery needs no operator: `onDisconnect` → `startConnectionWorker(10000)` →
+  `connectLoop` (`bedrock-harness.mjs:124-138`) retries until the bot spawns again.
+  Observed twice on 03/10 — the bot returned by itself with its inventory intact — so the
+  `systemctl restart minecraft-bedrock.service` on CT 108 is a convenience for the
+  `connecterror:9` state, not a requirement.
+- Still open: the trigger. Seven of the eight drops happened around a `read_container`
+  (many window open/close cycles and `inventory_content` bursts); a bounded experiment
+  separating "many windows" from "a long walk with no movement" is still worth running.
+  The verification row and [open-questions](wiki/open-questions.md) carry the full detail.
+
 ## [2026-10-03] fix | The fishing bite never arrives: the guard that swallowed it, and what the live cast measured
 
 A live fishing round (rod crafted from chest string, 3×3 bench) proved the cast chain and

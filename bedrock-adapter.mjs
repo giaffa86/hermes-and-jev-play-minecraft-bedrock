@@ -8569,6 +8569,22 @@ export class BedrockAdapter {
   _onEntityEvent (packet) {
     const runtimeId = String(packet.runtime_entity_id ?? '');
     const entity = this.entities.get(runtimeId);
+    // Diagnostica pesca (03/10): live il server non ha mai mandato `fish_hook_hook`
+    // (13) né `fish_hook_tease` (14) in otto minuti di lanci, quindi serve sapere se
+    // manda **qualcosa** sull'amo: ogni evento dell'amo o con un id della pesca
+    // (`fish_hook_bubble`/`fish_hook_position`, 11/12) viene registrato con il
+    // payload. Misura del 03/10 (90 s di lancio continuo): solo eventi generici di
+    // altri oggetti (`item_entity_merge`, `eat_grass_animation`), **zero** id
+    // 11/12/13/14.
+    const fishingId = packet.event_id === 11 || packet.event_id === 12 ||
+      packet.event_id === 'fish_hook_bubble' || packet.event_id === 'fish_hook_position';
+    const hookEvent = entity?.type === 'fishing_hook';
+    if (fishingId || hookEvent) {
+      this.log('hook_event', {
+        runtimeId, hook: entity?.type ?? null, event: packet.event_id,
+        data: packet.data ?? null, at: packet.fire_at_position ?? null,
+      });
+    }
     // Morso della pesca: il server manda `fish_hook_hook` (13) sul bobber quando
     // un pesce ha abboccato, e `fish_hook_tease` (14) quando si avvicina senza
     // abboccare. È il segnale esatto: l'affondo del bobber resta un fallback.

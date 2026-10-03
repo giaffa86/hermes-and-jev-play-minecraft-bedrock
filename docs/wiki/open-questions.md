@@ -176,11 +176,31 @@ Last lint: 2026-10-03.
   earlier is a *transient* state, not a permanent one; twice a
   `systemctl restart minecraft-bedrock.service` on CT 108 was still needed to get back
   quickly.
-- **Leading hypothesis**: while the read walks towards containers that are outside the
-  walkable component, the walk fails with `movement timeout` (up to 30 s each) and the
-  client stops producing normal movement/keep-alive traffic for ~a minute, so the server
-  times the session out. It is not the *read* per se: the last drop happened with the
-  shortest read of the day.
+- **Diagnosis refined the same evening — the drop is at the transport layer**: the reason
+  string in `client_close` does **not** come from the game. `bedrock-lifecycle.mjs:12`
+  (`trackNethernetClient`) captures `client._lifecycleCloseReason` from nethernet's
+  `handleConnectionClosed(connection, reason)`, and nethernet sets that reason to
+  `'disconnected'` when the WebRTC **data channel** fires `onclose`/`onerror`
+  (`node_modules/nethernet/src/connection.js:31,35,43,47`). No `kick` packet was ever
+  logged (`client.on('kick')` in `bedrock-adapter.mjs` logs `kicked`), so this is a
+  transport failure: the SCTP/WebRTC session to the BDS dies, it is not a game-level kick.
+- **The client is not silent**: `_authTickInterval` sends `player_auth_input` every 50 ms
+  while spawned (`bedrock-adapter.mjs:589` → `_authTick`), so an earlier reading of this
+  section ("the client stops producing traffic while the walk fails, and the server times
+  the session out") no longer explains it. The only deliberate disconnect in the adapter
+  is `_resyncByReconnect` (`bedrock-adapter.mjs:5889`), which logs `inventory_resync`
+  first — that is not what happened in any of these drops.
+- **Recovery is automatic**: `onDisconnect` → `startConnectionWorker(10000)` →
+  `connectLoop` retries until the bot is spawned again (`bedrock-harness.mjs:124-138`).
+  On 03/10 the bot came back **by itself** twice with its inventory intact, so a BDS
+  restart is usually unnecessary; the `connecterror:9` state can still need a few
+  attempts (in one round a `systemctl restart minecraft-bedrock.service` on CT 108 was
+  used to come back promptly).
+- **Leading hypothesis (now narrower)**: the channel dies during heavy clientbound bursts
+  — the eighth drop of the day happened again around a `read_container` (many windows,
+  `inventory_content` bursts). Separating "many open/close windows" from "a long walk with
+  no movement" still needs a bounded experiment; what is confirmed is the mechanism: a
+  transport close, not a kick and not an idle timeout.
 - **Mitigation in the adapter** (row 47.33 of [verification](verification.md)): the scan
   no longer stops at six blocks per storage name, the read is capped at 8 containers and
   90 s, and each walk gets 8 s instead of 30 s. Result: the same read now returns
