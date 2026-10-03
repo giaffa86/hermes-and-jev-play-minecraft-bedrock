@@ -2595,3 +2595,56 @@ pura in `bedrock-nether.mjs`.
   `found 0`: la base non ha ossidiana né un portale, quindi il round live copre i
   **rifiuti** e il percorso felice resta coperto dai soli test unitari (limite
   dichiarato in `docs/wiki/nether.md`).
+
+## [2026-10-03] feat | Nether N2: sopravvivenza — hub senza legna, cadute corte, atterraggi sicuri
+
+Implementato N2 (`docs/wiki/nether.md`): nel Nether cadono tre certezze
+dell'Overworld — l'acqua evapora (niente MLU, niente doccia salvavita dopa una
+caduta), il pavimento può essere magma o fuoco, e le assi del rifugio notturno
+bruciano.
+
+- **Primitivi puri** (`bedrock-nether.mjs`): `landingHazard`/`safeLanding`
+  (lava/flowing_lava → lava, magma, fire/soul_fire → fire, cactus) e
+  `maxFallDepth(dimension)` (4 in Overworld, 2 nel Nether/End);
+  `isFlammableBlock` (set esplicito più i suffissi `_planks`/`_log`/`_wood`/
+  `_stem`/`_hyphae`/`_wool`/`_fence`/`_slab`/`_stairs`/`_door`/`_leaves`/…);
+  `pickHubBlock(owned)` (il blocco **non infiammabile** più abbondante);
+  `shellCells(feet, {roofCenter})` e `netherHubPlan({feet, block})`: la geometria
+  del rifugio sta nel modulo puro, così `build_hut` e l'hub condividono una sola
+  definizione di "casetta" (12 celle: quattro pareti di due blocchi più la corona
+  del tetto, mai sopra la testa del bot).
+- **Pathfinder**: `_neighbors` limita la caduta a `maxFallDepth` e si ferma al
+  primo atterraggio il cui appoggio è un `landingHazard`; `_standable` rifiuta in
+  **qualsiasi** dimensione una cella il cui sostegno fa danno (magma, fuoco,
+  cactus), quindi valgono anche i vicini di passo. `/observe.portals` espone
+  `maxFall` e l'ultimo hub.
+- **Azione `build_nether_hub`**: rifiuta fuori dal Nether/End
+  (`wrong_dimension`), sceglie un materiale che non brucia (`no_hub_materials`
+  con la lista `flammable` se possediamo solo legna), costruisce con l'helper
+  condiviso `_shellAround` (estratto da `_buildHut`: stessa forma, stesse
+  regole: cella già solida saltata, budget di tempo, mai un blocco a metà senza
+  dirlo) e ricorda il punto in memoria come `kind: home` **solo se la dimora è
+  chiusa**; una dimora incompleta risponde `hub_incomplete` e non lascia il
+  landmark. Il sonno nel Nether era già vietato da N0 e nessuna azione piazza
+  acqua: "niente acqua" è strutturale, non una guardia — per questo la metà
+  interessante di N2 è la regola sulle cadute.
+- **Test**: 843 verdi (6 casi puri nuovi, 5 sull'adapter, 2 sul pathfinder in
+  `tests/bedrock-reachability.test.mjs`, 1 asserzione di intento). **Bug trovato
+  dai test**: il campo `this._netherHub = null` nel costruttore **ombreggiava**
+  il metodo `_netherHub` (stessa classe di errore del `this.observations` di P6)
+  — rinominato `_netherHubLast`.
+- **Collaudo live (03/10/2026, BDS 1.26.52)**: `GET /observe.portals` →
+  `dimension overworld`, **`maxFall: 4`**, `hub: null`, `ready true`;
+  `POST /act build_nether_hub` → `{ok:false, error:'wrong_dimension',
+  dimension:'overworld'}` (immediato, tipizzato, zero pacchetti); `/options` 25
+  chiavi senza portale/hub; `POST /act wait` → `{ok:true}` (dispatch sano dopo il
+  nuovo ramo). **I rami Nether restano coperti solo dai test unitari**: il bot
+  live non ha mai lasciato l'Overworld (limite dichiarato in
+  `docs/wiki/nether.md`), quindi "un hub di cobblestone nasce davvero nel Nether",
+  il tetto di caduta a due blocchi e il rifiuto dell'atterraggio sul magma non
+  hanno prova live. Manca anche la protezione dal vuoto (una caduta nel vuoto non
+  è un "atterraggio") e l'attraversamento della lava (M4 dei fluidi).
+- **Lezione operativa**: un `docker cp` può copiare un file vecchio se la copia
+  sulla VM è stantia (qui `survival/intents.mjs` era rimasto indietro): dopo il
+  deploy conviene confrontare gli **md5** host/container, non solo il numero di
+  occorrenze di una stringa.

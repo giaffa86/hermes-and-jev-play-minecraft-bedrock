@@ -75,7 +75,7 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**830 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**843 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
 
 - **Fluids in the survival layer (M0, 2026-10-03)**: the governor vocabulary grew
@@ -193,6 +193,13 @@ off. Live: `/observe.nearby` now reports `potatoes growth 7/7/6/6, mature true/f
 `carrots growth 7`; `harvest_potatoes` fails in 0.01 s with `drop_unreachable`
 (the only fields are outside the bot's walkable component), `harvest_wheat` with
 `no_crop_found`.
+- **Nether survival (N2, 2026-10-03)**: the survival layer does not need new
+  rules for this — N2 changes what the *pathfinder* is willing to do. In the
+  Nether/End the fall cap drops from four blocks to two (`maxFallDepth`, no
+  water to break a fall) and a cell whose support is magma, fire or cactus is no
+  longer standable **in any dimension** (`landingHazard`); the shelter is built
+  with a non-flammable block (`isFlammableBlock`/`pickHubBlock`) and remembered
+  as `kind: home` only when it is sealed.
 - **Portal actions (N1, 2026-10-03)**: the four actions
   (`goto_portal`/`build_portal`/`light_portal`/`enter_portal`) are mapped to the
   `travel`/`build` intents in `survival/intents.mjs`, so a curriculum step that

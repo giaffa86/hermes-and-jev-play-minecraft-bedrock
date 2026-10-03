@@ -12,6 +12,8 @@ import {
   gazeVector, gazeAngle, gazedAtEnderman, netherHazard,
   PROJECTILE_TYPES, ENDERMAN_GAZE_TOLERANCE_DEG,
   planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates,
+  maxFallDepth, OVERWORLD_MAX_FALL, NETHER_LIKE_MAX_FALL,
+  landingHazard, safeLanding, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan,
 } from '../bedrock-nether.mjs';
 
 const at = (x, y, z) => ({ x, y, z });
@@ -363,4 +365,77 @@ test('portalFrameCandidates derives candidate frames from obsidian blocks', () =
   assert.deepEqual(exact.map(plan => plan.axis).sort(), ['x', 'z']);
   // Un blocco senza posizione non genera geometria inventata.
   assert.deepEqual(portalFrameCandidates([{ name: 'obsidian' }]), []);
+});
+
+// --- N2: sopravvivenza nel Nether ------------------------------------------
+
+test('maxFallDepth accorcia la caduta dove l\'acqua evapora', () => {
+  assert.equal(maxFallDepth('overworld'), OVERWORLD_MAX_FALL);
+  assert.equal(maxFallDepth('nether'), NETHER_LIKE_MAX_FALL);
+  assert.equal(maxFallDepth('the_end'), NETHER_LIKE_MAX_FALL);
+  assert.equal(maxFallDepth(undefined), OVERWORLD_MAX_FALL, 'dimensione ignota: la regola prudente è quella normale');
+  assert.ok(NETHER_LIKE_MAX_FALL < OVERWORLD_MAX_FALL);
+});
+
+test('landingHazard riconosce gli appoggi che fanno danno', () => {
+  assert.equal(landingHazard('lava'), 'lava');
+  assert.equal(landingHazard('flowing_lava'), 'lava');
+  assert.equal(landingHazard('minecraft:magma'), 'magma');
+  assert.equal(landingHazard('magma_block'), null, 'solo il nome reale, non qualunque cosa lo contenga');
+  assert.equal(landingHazard('fire'), 'fire');
+  assert.equal(landingHazard('soul_fire'), 'fire');
+  assert.equal(landingHazard('cactus'), 'cactus');
+  assert.equal(landingHazard('stone'), null);
+  assert.equal(landingHazard(''), null);
+  assert.equal(landingHazard(null), null);
+  assert.equal(safeLanding('magma'), false);
+  assert.equal(safeLanding('cobblestone'), true);
+});
+
+test('isFlammableBlock distingue il legno dalla pietra', () => {
+  for (const name of ['oak_planks', 'spruce_log', 'stripped_oak_log', 'white_wool', 'bamboo',
+    'crimson_stem', 'warped_hyphae', 'oak_fence', 'oak_fence_gate', 'oak_slab', 'oak_stairs',
+    'oak_door', 'oak_trapdoor', 'oak_leaves', 'oak_sign', 'bookshelf', 'ladder', 'chest', 'target']) {
+    assert.equal(isFlammableBlock(name), true, `${name} brucia`);
+  }
+  for (const name of ['cobblestone', 'stone', 'netherrack', 'obsidian', 'blackstone', 'basalt',
+    'dirt', 'glass', 'iron_block', 'andesite', 'deepslate']) {
+    assert.equal(isFlammableBlock(name), false, `${name} non brucia`);
+  }
+  assert.equal(isFlammableBlock(''), false);
+});
+
+test('pickHubBlock sceglie il materiale più abbondante che non brucia', () => {
+  const owned = [
+    { name: 'oak_planks', count: 40 },
+    { name: 'netherrack', count: 12 },
+    { name: 'cobblestone', count: 20 },
+    { name: 'glass', count: 0 },
+  ];
+  assert.equal(pickHubBlock(owned), 'cobblestone');
+  assert.equal(pickHubBlock([{ name: 'oak_log', count: 64 }]), null, 'solo legna: nessun materiale da hub');
+  assert.equal(pickHubBlock([]), null);
+  assert.equal(pickHubBlock(), null);
+  assert.equal(pickHubBlock([null, { name: '', count: 3 }]), null);
+});
+
+test('shellCells descrive pareti e tetto intorno al bot', () => {
+  const cells = shellCells({ x: 10.5, y: 64, z: -3.5 });
+  assert.equal(cells.length, 12);
+  assert.deepEqual(cells[0], { label: 'wall_feet', position: at(11, 64, -4), support: at(11, 63, -4) });
+  assert.deepEqual(cells[4], { label: 'wall_head', position: at(11, 65, -4), support: at(11, 64, -4) });
+  assert.deepEqual(cells[8], { label: 'roof', position: at(11, 66, -4), support: at(11, 65, -4) });
+  assert.equal(cells.some(c => c.position.x === 10 && c.position.z === -4), false, 'mai sopra la testa del bot');
+  assert.equal(shellCells({ x: 10.5, y: 64, z: -3.5 }, { roofCenter: true }).length, 13);
+  assert.deepEqual(shellCells(null), []);
+  assert.deepEqual(shellCells({}), []);
+});
+
+test('netherHubPlan è la stessa forma del rifugio, col materiale dichiarato', () => {
+  const plan = netherHubPlan({ feet: { x: 4.5, y: 70, z: 4.5 }, block: 'cobblestone' });
+  assert.equal(plan.ok, true);
+  assert.deepEqual(plan.origin, at(4, 70, 4));
+  assert.equal(plan.cells.length, 12);
+  assert.deepEqual(plan.needs, { cobblestone: 12 });
+  assert.deepEqual(netherHubPlan({}), { ok: false, error: 'missing_feet' });
 });

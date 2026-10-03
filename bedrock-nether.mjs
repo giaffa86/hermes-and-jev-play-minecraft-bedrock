@@ -520,3 +520,107 @@ export function portalFrameCandidates (blocks = [], {
   }
   return plans;
 }
+
+// --- N2: sopravvivenza nel Nether ----------------------------------------
+// Nel Nether cadono tre certezze dell'Overworld: l'acqua evapora (niente MLG,
+// niente doccia salvavita dopo una caduta), il pavimento può essere magma o
+// fuoco (atterrare fa danno anche se la cella è "calpestabile"), e i blocchi
+// infiammabili che usiamo per il rifugio notturno diventano legna da ardere.
+// Questi primitivi sono puri: il pathfinder e il builder li interrogano, ma la
+// politica resta fuori dalla fisica.
+export const LANDING_HAZARDS = {
+  lava: 'lava',
+  flowing_lava: 'lava',
+  magma: 'magma',
+  fire: 'fire',
+  soul_fire: 'fire',
+  cactus: 'cactus'
+};
+// Un atterraggio su una di queste celle è un danno certo (o peggio): non è mai
+// una destinazione del pathfinding.
+export function landingHazard (name) {
+  const key = normalizeNetherName(name);
+  if (!key) return null;
+  return LANDING_HAZARDS[key] ?? null;
+}
+export function safeLanding (name) {
+  return landingHazard(name) === null;
+}
+
+// Senza acqua per attutire, una caduta lunga è una condanna: nel Nether/End il
+// pathfinder scende al massimo di due blocchi invece dei quattro dell'Overworld.
+export const OVERWORLD_MAX_FALL = 4;
+export const NETHER_LIKE_MAX_FALL = 2;
+export function maxFallDepth (dimension) {
+  return isNetherLike(dimension) ? NETHER_LIKE_MAX_FALL : OVERWORLD_MAX_FALL;
+}
+
+// Materiali da costruzione: nel Nether assi, tronchi e lana bruciano (e i ghast
+// non aspettano). Il rifugio dev'essere di pietra, ciottoli, netherrack, ecc.
+const FLAMMABLE_BLOCKS = new Set([
+  'bamboo', 'bamboo_block', 'bamboo_planks', 'bamboo_mosaic', 'book_shelf', 'bookshelf',
+  'crimson_stem', 'warped_stem', 'crimson_hyphae', 'warped_hyphae',
+  'dead_bush', 'hay_block', 'scaffolding', 'target', 'vine', 'cave_vines',
+  'wool', 'carpet', 'coal_block', 'dried_kelp_block', 'ladder', 'chest', 'trapped_chest',
+  'bamboo_sapling', 'campfire', 'soul_campfire', 'torchflower', 'spore_blossom'
+]);
+export function isFlammableBlock (name) {
+  const key = normalizeNetherName(name);
+  if (!key) return false;
+  if (FLAMMABLE_BLOCKS.has(key)) return true;
+  return /_planks$|_log$|_wood$|_stem$|_hyphae$|_wool$|_sign$|_door$|_fence$|_fence_gate$|_slab$|_stairs$|_trapdoor$|_leaves$|_banner$|_carpet$|_button$|_pressure_plate$/.test(key);
+}
+
+// Il blocco da costruzione più abbondante che non prende fuoco. `owned` è una
+// lista `{name, count}` (la forma dell'inventario appiattita): la scelta non
+// guarda il tipo di materiale, guarda che non sia infiammabile.
+export function pickHubBlock (owned = []) {
+  const usable = (owned || [])
+    .filter(entry => entry && entry.name && (entry.count || 0) > 0)
+    .filter(entry => !isFlammableBlock(entry.name))
+    .sort((a, b) => (b.count || 0) - (a.count || 0));
+  return usable.length ? usable[0].name : null;
+}
+
+// Geometria del rifugio: quattro pareti di due blocchi intorno al bot più la
+// corona del tetto. È la stessa forma del `build_hut` dell'Overworld — un
+// rifugio è un rifugio, cambia solo il materiale — e sta qui perché il Nether
+// deve poterla ispezionare senza toccare l'adapter.
+export function shellCells (feet, { roofCenter = false } = {}) {
+  const cells = [];
+  if (!feet || feet.x == null || feet.y == null || feet.z == null) return cells;
+  const bx = Math.floor(feet.x), bz = Math.floor(feet.z), by = Math.floor(feet.y + 0.1);
+  const sides = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  for (const [dx, dz] of sides) {
+    const x = bx + dx, z = bz + dz;
+    cells.push({ label: 'wall_feet', position: { x, y: by, z }, support: { x, y: by - 1, z } });
+  }
+  for (const [dx, dz] of sides) {
+    const x = bx + dx, z = bz + dz;
+    cells.push({ label: 'wall_head', position: { x, y: by + 1, z }, support: { x, y: by, z } });
+  }
+  for (const [dx, dz] of sides) {
+    const x = bx + dx, z = bz + dz;
+    cells.push({ label: 'roof', position: { x, y: by + 2, z }, support: { x, y: by + 1, z } });
+  }
+  if (roofCenter) {
+    cells.push({ label: 'roof_center', position: { x: bx, y: by + 2, z: bz }, support: null });
+  }
+  return cells;
+}
+
+// Un hub nel Nether è il rifugio sopra il punto in cui siamo arrivati: pareti e
+// tetto chiusi (un ghast spara dall'alto) e una cella d'appoggio ricordata in
+// memoria come `home`, così il bot ha un posto dove rientrare.
+export function netherHubPlan ({ feet = null, roofCenter = false, block = null } = {}) {
+  const cells = shellCells(feet, { roofCenter });
+  if (!cells.length) return { ok: false, error: 'missing_feet' };
+  return {
+    ok: true,
+    origin: { x: Math.floor(feet.x), y: Math.floor(feet.y + 0.1), z: Math.floor(feet.z) },
+    block,
+    roofCenter,
+    cells,
+    needs: block ? { [block]: cells.length } : {}
+  };
+}

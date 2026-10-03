@@ -413,3 +413,76 @@ test('the portal actions only show up in /options when the ingredients exist', (
   const lighter = portalAdapter(frameCells, { inventory: { flint_and_steel: 1 } });
   assert.equal(lighter.options().map(option => option.key).includes('light_portal'), true);
 });
+
+// --- N2: sopravvivenza nel Nether (hub, materiali che non bruciano) -------
+
+function hubAdapter ({ inventory = {}, dimension = 'nether' } = {}) {
+  const adapter = portalAdapter({}, { inventory, dimension });
+  adapter.memory = { landmarks: [], rememberLandmark (landmark) { this.landmarks.push(landmark); } };
+  return adapter;
+}
+
+test('_netherHub rifiuta di costruire fuori dal Nether/End', async () => {
+  const overworld = hubAdapter({ inventory: { cobblestone: 20 }, dimension: 'overworld' });
+  const result = await overworld._netherHub({});
+  assert.equal(result.error, 'wrong_dimension');
+  assert.equal(result.dimension, 'overworld');
+  assert.equal(overworld.events.placed.length, 0);
+});
+
+test('_netherHub senza materiale non infiammabile dice cosa ha rifiutato', async () => {
+  const adapter = hubAdapter({ inventory: { oak_planks: 40, oak_log: 10 } });
+  const result = await adapter._netherHub({});
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'no_hub_materials');
+  assert.deepEqual(result.flammable.sort(), ['oak_log', 'oak_planks']);
+  assert.equal(adapter.events.placed.length, 0);
+});
+
+test('_netherHub costruisce la casetta col materiale non infiammabile e la ricorda come home', async () => {
+  const adapter = hubAdapter({ inventory: { oak_planks: 40, cobblestone: 20 } });
+  const result = await adapter._netherHub({});
+  assert.equal(result.ok, true);
+  assert.equal(result.block, 'cobblestone');
+  assert.equal(result.placed.length, 12);
+  assert.equal(result.failed.length, 0);
+  assert.equal(result.covered, 12);
+  assert.deepEqual(result.hub, { x: 0, y: 71, z: 0 });
+  assert.ok(adapter.events.placed.every(p => p.block === 'cobblestone'));
+  assert.equal(adapter.inventory.cobblestone, 8);
+  assert.equal(adapter.inventory.oak_planks, 40, 'la legna non viene toccata');
+  assert.equal(adapter._netherHubLast.sealed, true);
+  assert.equal(adapter._netherView().hub.sealed, true);
+  assert.equal(adapter.memory.landmarks.length, 1);
+  assert.equal(adapter.memory.landmarks[0].id, 'nether_hub');
+  assert.equal(adapter.memory.landmarks[0].kind, 'home');
+  assert.equal(adapter.memory.landmarks[0].dimension, 'nether');
+});
+
+test('_netherHub resta incompleto e non si ricorda come home se un muro non si piazza', async () => {
+  const adapter = hubAdapter({ inventory: { cobblestone: 20 } });
+  let calls = 0;
+  adapter._placeAtCell = async (item, block, target, support, face) => {
+    calls++;
+    adapter.events.placed.push({ item, block, target: { ...target }, support: { ...support }, face });
+    if (calls === 3) return { ok: false, error: 'place_not_confirmed' };
+    return { ok: true };
+  };
+  const result = await adapter._netherHub({});
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'hub_incomplete');
+  assert.equal(result.placed.length, 11);
+  assert.equal(result.failed.length, 1);
+  assert.equal(result.failed[0].error, 'place_not_confirmed');
+  assert.equal(adapter.memory.landmarks.length, 0);
+  assert.equal(adapter._netherHubLast.sealed, false);
+});
+
+test('build_nether_hub è offerto solo nel Nether e solo con materiale che non brucia', () => {
+  const netherReady = hubAdapter({ inventory: { cobblestone: 20 } });
+  assert.equal(netherReady.options().map(o => o.key).includes('build_nether_hub'), true);
+  const netherWood = hubAdapter({ inventory: { oak_planks: 20 } });
+  assert.equal(netherWood.options().map(o => o.key).includes('build_nether_hub'), false, 'solo legna: niente hub');
+  const overworld = hubAdapter({ inventory: { cobblestone: 20 }, dimension: 'overworld' });
+  assert.equal(overworld.options().map(o => o.key).includes('build_nether_hub'), false, 'in Overworld il rifugio è build_hut');
+});

@@ -51,6 +51,8 @@ const KEY_INTENTS = {
   enter_portal: ['travel'],
   build_portal: ['build'],
   light_portal: ['build'],
+  // Nether (N2): un hub e un rifugio *e* un punto di rientro (`home`).
+  build_nether_hub: ['build', 'shelter'],
 };
 
 const PREFIX_INTENTS = [

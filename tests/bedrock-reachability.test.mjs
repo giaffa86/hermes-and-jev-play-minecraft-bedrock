@@ -322,3 +322,45 @@ test('il pickup automatico raccoglie il drop raggiungibile e ignora quello impri
   assert.equal(skipped.skipped, 1);
   assert.ok(adapter.drops.find(d => d.id === 'trap').failedAt > 0, 'drop imprigionato marchiato');
 });
+
+// --- N2: senza acqua la caduta è più corta, e l'atterraggio non fa danno ----
+
+const MAGMA = { name: 'magma', boundingBox: 'block', diggable: true };
+
+// Altopiano di pietra a y=74 (x 0..2) sopra il pavimento di `flatWorld`: dal
+// bordo si può solo cadere, quattro blocchi sotto c'è il piano.
+function plateauWorld ({ landing = STONE } = {}) {
+  const world = flatWorld({ minX: 0, maxX: 5, minZ: 0, maxZ: 0, floorY: 70, height: 8 });
+  for (let x = 0; x <= 2; x++) world.set(x, 74, 0, STONE);
+  if (landing !== STONE) world.set(3, 70, 0, landing);
+  return world;
+}
+
+const plateauAdapter = (world, dimension) => {
+  const adapter = reachAdapter(world, { feet: { x: 2.5, y: 75, z: 0.5 } });
+  adapter.dimension = dimension;
+  return adapter;
+};
+
+test('la caduta permessa dipende dalla dimensione: quattro blocchi in Overworld, due nel Nether', () => {
+  const world = plateauWorld();
+  const overworld = plateauAdapter(world, 'overworld');
+  const nether = plateauAdapter(world, 'nether');
+
+  const steps = (adapter) => [...adapter._neighbors({ x: 2, y: 75, z: 0 })];
+  const down = steps(overworld).filter(s => s.x === 3);
+
+  assert.deepEqual(down, [{ x: 3, y: 71, z: 0, cost: 1 + 4 * 0.5 }], 'in Overworld si scende di quattro blocchi');
+  assert.deepEqual(steps(nether).filter(s => s.x === 3), [], 'nel Nether (senza acqua) no: la caduta lunga è una condanna');
+  assert.equal(nether._netherView().maxFall, 2);
+  assert.equal(overworld._netherView().maxFall, 4);
+});
+
+test('un atterraggio su magma non è mai una destinazione del pathfinding', () => {
+  const world = plateauWorld({ landing: MAGMA });
+  const adapter = plateauAdapter(world, 'overworld');
+
+  assert.equal(adapter._standable(3, 71, 0), false, 'appoggio che fa danno');
+  assert.deepEqual([...adapter._neighbors({ x: 2, y: 75, z: 0 })].filter(s => s.x === 3), [], 'nessun passo verso il magma');
+  assert.equal(adapter._standable(2, 75, 0), true, 'sull\'altopiano di pietra si sta');
+});

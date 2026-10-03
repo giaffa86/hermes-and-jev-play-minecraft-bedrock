@@ -6,10 +6,11 @@ Roadmap for taking the bot from the first Nether portal to the End while
 gaze**, collect **blaze rods** and **ender pearls**, craft eyes of ender, find the
 stronghold, open the End portal, and (stretch) defeat the **Ender Dragon**.
 
-Status: **N0 (awareness and hazards) and N1 (portal reach/build/light/enter)
-implemented and unit-tested; both have a live round (03/10/2026), N1 partial
-because the live world has no obsidian and no loaded portal; N2–N7 still spec
-only**.
+Status: **N0 (awareness and hazards), N1 (portal reach/build/light/enter) and N2
+(nether survival: non-flammable hub, dimension-aware fall, hazardous landings)
+implemented and unit-tested; all three have a live round (03/10/2026), N1 and N2
+partial because the live world is an Overworld room with no obsidian and no
+loaded portal; N3–N7 still spec only**.
 `knowledge/progression.json` now has the full chain and the
 `beat_the_dragon → enter_nether` contradiction is fixed: `beat_the_dragon` is a
 real milestone requiring `enter_end`. Full raw source:
@@ -73,7 +74,7 @@ New item tags: `gold_ingots`, `obsidian`, `blaze_rods`, `blaze_powder`,
 |---|---|---|---|
 | N0 | Nether awareness & hazards | `_refreshNearby` (portal, end_portal_frame, magma, spawner, fire); `/observe.portals`; projectile sensing (`projectileIncoming`); gaze sensing (`gazedAtEnderman`); governor rules. | ◑ implemented + live (03/10/2026), see below |
 | N1 | Portal locate/build/light/enter | `goto_portal`, `build_portal`, `light_portal`, `enter_portal`; prefer reusing a nearby portal; verify `portal` block then `dimension: nether`. | ◑ implemented + live partial (03/10/2026), see below |
-| N2 | Nether survival | fire/lava avoidance (fluids), minimal nether hub, fall handling (no water), never sleep/place water. | ❌ not implemented |
+| N2 | Nether survival | fire/lava avoidance (fluids), minimal nether hub, fall handling (no water), never sleep/place water. | ◑ implemented + live partial (03/10/2026), see below |
 | N3 | Ghast avoidance | track fireballs, dodge perpendicular to the trajectory (or deflect), never flee into lava. | ❌ not implemented |
 | N4 | Piglin bartering | wear gold armour for neutrality; `barter_piglin` (gold in hand → `item_use_on_entity` → collect drops); never hit piglins. | ❌ not implemented |
 | N5 | Ender gaze & pearls | never aim at enderman eyes; pumpkin option; kill at body/feet; collect pearls. | ❌ not implemented |
@@ -247,6 +248,83 @@ no pathfinder budget burned on an impossible goal.
   portal further away is invisible until N1 grows a deliberate search (the
   `find_block` mission already exists and can locate an unlit frame by
   `obsidian`).
+
+## N2 — Nether survival (implemented, live partial 03/10/2026)
+
+Three certainties of the Overworld fall away in the Nether: water evaporates (no
+MLG, no rescue shower after a fall), the floor can be magma or fire (landing
+there hurts even though the cell is “walkable”), and the planks we use for the
+night shelter turn into firewood. N2 answers those three with primitives the
+pathfinder and the builder can ask for, plus one action that leaves a place
+behind.
+
+### Implementation
+
+- **`bedrock-nether.mjs`** (pure): `landingHazard(name)` (`lava`/`flowing_lava`
+  → `lava`, `magma`, `fire`/`soul_fire` → `fire`, `cactus`) and `safeLanding`;
+  `maxFallDepth(dimension)` (`OVERWORLD_MAX_FALL` 4, `NETHER_LIKE_MAX_FALL` 2);
+  `isFlammableBlock(name)` (an explicit set plus the `_planks`/`_log`/`_wood`/
+  `_stem`/`_hyphae`/`_wool`/`_fence`/`_slab`/`_stairs`/`_door`/`_leaves`/…
+  suffixes); `pickHubBlock(owned)` (the most abundant **non-flammable** block);
+  `shellCells(feet, {roofCenter})` and `netherHubPlan({feet, block})` — the
+  shelter geometry lives here so the Nether can inspect it without touching the
+  adapter (and so `build_hut` and the hub share one definition of “a shelter”).
+- **Pathfinding safety**: `_neighbors` caps the fall at `maxFallDepth` and
+  `break`s at the first landing whose support is a `landingHazard`;
+  `_standable` refuses a cell whose support hurts (magma, fire, cactus) in **any**
+  dimension, so the step neighbours are covered too. `/observe.portals` now
+  carries `maxFall` and the last hub.
+- **`_netherHub`** (action `build_nether_hub`): refuses outside the Nether/End
+  (`wrong_dimension`), asks `pickHubBlock` for a non-flammable block (only wood
+  owned → `no_hub_materials` with the refused `flammable` list), then builds the
+  12-cell shell **bottom-up, never above its own head**, through the shared
+  `_shellAround(cells, block)` helper that `_buildHut` uses as well. When the
+  shell is sealed it is remembered in memory as `kind: home` (`nether_hub`), so
+  the bot has a place to come back to; an incomplete shell returns
+  `hub_incomplete` and is **not** remembered as home.
+- **Never sleep / never place water**: sleep in the Nether was already refused by
+  N0 (`beds_explode_here`, the option is not even offered) and no action in the
+  adapter places water at all — so “no water MLG” is structural rather than a
+  guard, which is why the fall rule is the interesting half of N2.
+
+### Tests
+
+`tests/bedrock-nether.test.mjs` (6 pure N2 cases: fall depth per dimension,
+landing hazards, flammability, `pickHubBlock`, `shellCells`, `netherHubPlan`),
+`tests/bedrock-nether-adapter.test.mjs` (5 cases: `wrong_dimension`,
+`no_hub_materials` with the flammable list, a sealed hub with the wood untouched
+and the `home` landmark written, `hub_incomplete` without the landmark, option
+gating), `tests/bedrock-reachability.test.mjs` (2 cases: four-block fall in the
+Overworld vs two in the Nether, no step onto a magma landing) and the
+`build_nether_hub` intent assertion in `tests/gameplay-skills.test.mjs` — **843
+tests** in the whole suite.
+
+### Live round (03/10/2026, BDS 1.26.52)
+
+| Probe | Result |
+| --- | --- |
+| `GET /observe.portals` | `dimension: overworld`, `isNether: false`, **`maxFall: 4`**, `hub: null`, `ready: true` |
+| `POST /act {"key":"build_nether_hub"}` | `{ok: false, error: wrong_dimension, dimension: overworld}` — immediate, typed, zero packets |
+| `GET /options` | 25 keys, **none** about portals or the hub (the hub needs the Nether) |
+| `POST /act {"key":"wait"}` | `{ok: true}` — dispatch still healthy after the new branch |
+
+### Known limits (N2)
+
+- **The Nether branches are unit-tested only**: the live bot never left the
+  Overworld, so “a cobblestone hub actually gets built in the Nether”, the
+  two-block fall cap and the magma-landing refusal have no live evidence. The
+  live round proves the refusal and that nothing regressed in the Overworld.
+- The hub is a shell, not a base: no chest, no portal inside it, no roof centre
+  (the shell keeps the bot's own column open for headroom, exactly like
+  `build_hut`), and the material comes from the inventory — no netherrack
+  *mining* strategy yet.
+- **No void protection**: a fall into the void is not a “landing”, so the
+  `landingHazard` list cannot catch it; lava *crossing* (bridging) is M4 of
+  [fluids](fluids.md) and is still missing, so the bot can be safe but stuck on
+  one side of a lava lake.
+- The hazard refusal is deliberately broader than the Nether: magma, fire and
+  cactus are never a destination in the Overworld either. That is a behaviour
+  change for the pathfinder (documented here, covered by tests).
 
 ## Dependencies and risks
 

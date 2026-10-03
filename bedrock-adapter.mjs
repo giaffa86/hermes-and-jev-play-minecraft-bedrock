@@ -15,7 +15,7 @@ import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, d
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
 import { loadCircuits, planCircuit, circuitSiteBlocked, circuitSafety, forbiddenBlock, checkCircuitSuccess, circuitAnchor, expectedDelayTicks, measureCircuitDelay, TICK_MS, MAX_CIRCUIT_STEPS, MAX_CIRCUIT_COMPONENTS, MIN_CLOCK_TICKS } from './circuits.mjs';
 import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
-import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName } from './bedrock-nether.mjs';
+import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, isNetherLike, landingHazard, maxFallDepth, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName } from './bedrock-nether.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -229,6 +229,9 @@ export class BedrockAdapter {
     this._circuits = null;
     this._circuitError = null;
     this._circuitLast = null;
+    // Ultimo hub del Nether costruito (N2): posizione, materiale, se chiuso.
+    // Il campo non può chiamarsi `_netherHub`: ombreggerebbe il metodo.
+    this._netherHubLast = null;
     // R4: registro dei blocchi che il bot ha piazzato lui (chiave "x,y,z"),
     // con la sorgente e, per i cantieri, l'id del circuito. Serve al teardown
     // per non toccare mai un blocco che non è suo.
@@ -1261,6 +1264,10 @@ export class BedrockAdapter {
         magmaDistance: census.hazards.magmaDistance,
         inLava: feet ? this._fluidKindAt(feet.x, feet.y, feet.z) === 'lava' : false,
       }),
+      // N2: senza acqua la caduta permessa è più corta, e l'atterraggio su
+      // magma/fuoco non è mai una destinazione (vedi `_neighbors`/`_standable`).
+      maxFall: maxFallDepth(dimension),
+      hub: this._netherHubLast ?? null,
       scanned: census.scanned,
       ready: census.ready !== false,
       at: census.at,
@@ -1775,6 +1782,12 @@ export class BedrockAdapter {
     // davvero (notte o ostili a tiro).
     if (this._placeableBlock() && (this._isNight() || this._hostiles().some(h => this._entityDistance(h) <= 16))) {
       o.push({ key: 'build_hut', description: 'Seal a temporary hut around you with blocks (walls + roof) to survive the night' });
+    }
+    // N2: nel Nether la casetta deve essere di materiale che non brucia e vale
+    // come punto di rientro (`home`) — lì non esiste la notte, quindi il gate
+    // non è "è tardi" ma "siamo nel Nether".
+    if (isNetherLike(this.dimension) && pickHubBlock(Object.entries(this.inventory).map(([name, count]) => ({ name, count })))) {
+      o.push({ key: 'build_nether_hub', description: 'Seal a nether hub around you with non-flammable blocks (walls + roof, remembered as a place to come back to)' });
     }
     const food = this._bestFoodItem();
     if (food && (this.food < 18 || (this.health < 20 && this.food < 20))) {
@@ -2316,6 +2329,8 @@ export class BedrockAdapter {
         result = await this._pillarUp({});
       } else if (key === 'build_hut') {
         result = await this._buildHut({});
+      } else if (key === 'build_nether_hub') {
+        result = await this._netherHub({});
       } else if (key === 'sleep') {
         result = await this._sleepInBed();
       } else if (key === 'recover_loot') {
@@ -5446,6 +5461,9 @@ export class BedrockAdapter {
     // non è equipaggiato per attraversarla (M4 la renderà una scelta gated).
     if (this._lavaAdjacent(x, y, z)) return false;
     const below = this._blockForPath(x, y - 1, z);
+    // N2: un appoggio che fa danno (magma, fuoco, cactus) non è un appoggio,
+    // in nessuna dimensione: ci si sta sopra una volta sola.
+    if (below && landingHazard(below.name)) return false;
     // Anche un hash non risolto sotto i piedi vale come piano d'appoggio.
     return !!below && (below.boundingBox === 'block' || below.name === 'unknown');
   }
@@ -5834,11 +5852,16 @@ export class BedrockAdapter {
       if (this._standable(nx, y, nz)) yield { x: nx, y, z: nz, cost: 1 };
       if (this._standable(nx, y + 1, nz)) yield { x: nx, y: y + 1, z: nz, cost: 1.4 };
       if (this._standable(nx, y - 1, nz)) yield { x: nx, y: y - 1, z: nz, cost: 1.2 };
-      // Caduta oltre un gradino, fino a 4 blocchi.
+      // Caduta oltre un gradino: quattro blocchi in Overworld, due nel
+      // Nether/End (`maxFallDepth`) perché là non c'è acqua per attutire la
+      // caduta — e l'atterraggio su magma o fuoco non è mai un atterraggio.
       if (y > 1 && this._passable(this._blockForPath(nx, y, nz)) &&
           this._passable(this._blockForPath(nx, y + 1, nz))) {
-        for (let ny = y - 2; ny >= y - 5; ny--) {
+        const maxFall = maxFallDepth(this.dimension);
+        for (let ny = y - 2; ny >= y - maxFall - 1; ny--) {
           if (!this._passable(this._blockForPath(nx, ny + 1, nz))) break;
+          const landing = this._blockForPath(nx, ny - 1, nz);
+          if (landing && landingHazard(landing.name)) break;
           if (this._standable(nx, ny, nz)) { yield { x: nx, y: ny, z: nz, cost: 1 + (y - ny) * 0.5 }; break; }
         }
       }
@@ -6986,10 +7009,11 @@ export class BedrockAdapter {
   // `richest` sceglie quello di cui c'è più copia: un rifugio consuma molti
   // blocchi, quindi conviene spendere lo stack più grosso invece del primo nome
   // in lista (che può essere un singolo pezzo).
-  _placeableBlock ({ richest = false } = {}) {
+  _placeableBlock ({ richest = false, filter = null } = {}) {
     const preferred = ['cobblestone', 'dirt', 'oak_planks', 'spruce_planks', 'cherry_planks', 'birch_planks',
       'stone', 'oak_log', 'spruce_log', 'cherry_log', 'birch_log', 'sand', 'gravel'];
-    const owned = preferred.filter(b => (this.inventory[b] || 0) > 0);
+    let owned = preferred.filter(b => (this.inventory[b] || 0) > 0);
+    if (typeof filter === 'function') owned = owned.filter(filter);
     if (!richest) return owned[0] ?? null;
     return owned.sort((a, b) => (this.inventory[b] || 0) - (this.inventory[a] || 0))[0] ?? null;
   }
@@ -7130,35 +7154,73 @@ export class BedrockAdapter {
     if (!this.spawned || !this._feet) return { ok: false, error: 'not_ready' };
     const block = this._placeableBlock({ richest: true });
     if (!block) return { ok: false, error: 'no_placeable_block' };
-    const feet = this._feet;
-    const bx = Math.floor(feet.x), bz = Math.floor(feet.z), by = Math.floor(feet.y + 0.1);
-    const sides = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    const { placed, failed, skipped, covered } = await this._shellAround(shellCells(this._feet), block, { timeoutMs });
+    this._refreshNearby();
+    const already = placed.length === 0 && failed.length === 0;
+    const sealed = failed.length === 0 && covered >= 12;
+    return { ok: sealed, block, placed, failed, skipped, already, covered, ...(sealed ? {} : { error: 'hut_incomplete' }) };
+  }
+
+  // Costruisce una "casetta" attorno al bot (quattro pareti di due blocchi + la
+  // corona del tetto) date le celle. La geometria sta in `shellCells`
+  // (`bedrock-nether.mjs`): un rifugio è un rifugio, cambia il materiale, non la
+  // forma. Una cella già solida viene saltata (l'ambiente fa metà del lavoro) e
+  // il tempo è un budget, non un'attesa: oltre la scadenza il resto è `failed`,
+  // mai un blocco piazzato a metà senza dirlo.
+  async _shellAround (cells, block, { timeoutMs = 90000 } = {}) {
     const placed = [];
     const failed = [];
     let skipped = 0;
     const deadline = Date.now() + Math.max(5000, Number(timeoutMs) || 90000);
-    const place = async (label, target, support) => {
-      if (this._solidAt(target.x, target.y, target.z)) { skipped++; return true; }
-      if (Date.now() > deadline) { failed.push({ label, position: target, error: 'hut_timeout' }); return false; }
-      const res = await this._placeAtCell(block, block, target, support, 1);
-      if (res.ok) placed.push({ label, position: target });
-      else failed.push({ label, position: target, error: res.error ?? 'place_failed' });
-      return res.ok;
-    };
-    for (const [dx, dz] of sides) {
-      const x = bx + dx, z = bz + dz;
-      await place('wall_feet', { x, y: by, z }, { x, y: by - 1, z });
-      await place('wall_head', { x, y: by + 1, z }, { x, y: by, z });
+    for (const cell of cells) {
+      const target = cell.position;
+      if (this._solidAt(target.x, target.y, target.z)) { skipped++; continue; }
+      if (Date.now() > deadline) { failed.push({ label: cell.label, position: target, error: 'shell_timeout' }); continue; }
+      const res = await this._placeAtCell(block, block, target, cell.support, 1);
+      if (res.ok) placed.push({ label: cell.label, position: target });
+      else failed.push({ label: cell.label, position: target, error: res.error ?? 'place_failed' });
     }
-    for (const [dx, dz] of sides) {
-      const x = bx + dx, z = bz + dz;
-      await place('roof', { x, y: by + 2, z }, { x, y: by + 1, z });
+    return { placed, failed, skipped, covered: placed.length + skipped, block };
+  }
+
+  // Un hub nel Nether (N2): la stessa casetta del rifugio notturno, ma con
+  // materiale che non prende fuoco (assi e tronchi nel Nether sono legna da
+  // ardere) e con il punto ricordato in memoria come `home`, così il bot ha un
+  // posto dove rientrare dopo un'esplorazione. Fuori dal Nether/End rifiuta: là
+  // il rifugio è `build_hut` e un hub non significa niente.
+  async _netherHub ({ timeoutMs = 90000 } = {}) {
+    if (!this.spawned || !this._feet) return { ok: false, error: 'not_ready' };
+    if (!isNetherLike(this.dimension)) {
+      return { ok: false, error: 'wrong_dimension', dimension: this.dimension };
     }
+    const owned = Object.entries(this.inventory).map(([name, count]) => ({ name, count }));
+    const block = pickHubBlock(owned);
+    if (!block) {
+      return {
+        ok: false,
+        error: 'no_hub_materials',
+        dimension: this.dimension,
+        flammable: owned.filter(e => isFlammableBlock(e.name)).map(e => e.name),
+      };
+    }
+    const plan = netherHubPlan({ feet: this._feet, block });
+    if (!plan.ok) return { ok: false, error: plan.error, dimension: this.dimension };
+    const { placed, failed, skipped, covered } = await this._shellAround(plan.cells, block, { timeoutMs });
     this._refreshNearby();
-    const covered = placed.length + skipped;
-    const already = placed.length === 0 && failed.length === 0;
     const sealed = failed.length === 0 && covered >= 12;
-    return { ok: sealed, block, placed, failed, skipped, already, covered, ...(sealed ? {} : { error: 'hut_incomplete' }) };
+    this._netherHubLast = { position: plan.origin, block, sealed, covered, at: Date.now() };
+    if (sealed) {
+      this.memory?.rememberLandmark({
+        id: 'nether_hub', type: 'nether_hub', kind: 'home', label: 'nether hub',
+        dimension: 'nether', position: plan.origin, source: 'built'
+      });
+      this.log('nether_hub_built', { position: plan.origin, block, covered });
+    }
+    return {
+      ok: sealed, block, placed, failed, skipped, covered,
+      hub: plan.origin, dimension: this.dimension,
+      ...(sealed ? {} : { error: 'hub_incomplete' })
+    };
   }
 
   // Prossimo pezzo del kit craftabile *adesso* che manca, in ordine di
