@@ -17,6 +17,37 @@ const withMemory = (backend, fn) => {
 };
 
 for (const backend of BACKENDS) {
+  test(`[${backend}] a detected structure is a landmark linked to its concept, with the evidence on the relation`, () => withMemory(backend, (wm) => {
+    const record = wm.rememberStructure({
+      type: 'village',
+      label: 'Village',
+      position: { x: 40, y: 64, z: -20 },
+      confidence: 0.62,
+      evidence: { score: 5, minScore: 5, matched: ['bell', 'beds'], missing: [], blocks: { bell: 1, beds: 3 }, entities: {} },
+    });
+    assert.equal(record.kind, 'structure');
+    assert.equal(record.id, 'structure_village_40_64_-20');
+    assert.deepEqual(record.tags, ['structure', 'village']);
+
+    const landmarks = wm.findLandmarks({ kind: 'structure', type: 'village' });
+    assert.equal(landmarks.length, 1);
+    assert.deepEqual(landmarks[0].position, { x: 40, y: 64, z: -20 });
+
+    const links = wm.relationsFrom(record.id, { type: 'is_a' });
+    assert.equal(links.length, 1);
+    assert.equal(links[0].to, 'structure:village');
+    assert.equal(links[0].evidence.blocks.beds, 3, 'l\'evidenza resta leggibile dalla relazione');
+    // Il nodo-concetto resta distinguibile dai landmark: categoria `conceptual`,
+    // nessuna posizione, quindi `findLandmarks` non lo restituisce.
+    assert.equal(wm.repo.get('structure:village').category, 'conceptual');
+    assert.equal(wm.findLandmarks({ type: 'village' }).length, 1);
+
+    // Idempotente: la stessa ricognizione non moltiplica i nodi.
+    wm.rememberStructure({ type: 'village', position: { x: 40, y: 64, z: -20 }, confidence: 0.5 });
+    assert.equal(wm.findLandmarks({ kind: 'structure' }).length, 1);
+    assert.equal(wm.relationsFrom(record.id, { type: 'is_a' }).length, 1);
+  }));
+
   test(`[${backend}] landmarks are remembered, searched by type and nearest`, () => withMemory(backend, (wm) => {
     wm.rememberLandmark({ type: 'sheep_farm', label: 'stalla delle pecore', position: { x: 123, y: 64, z: -87 } });
     wm.rememberLandmark({ type: 'village', position: { x: 500, y: 70, z: -300 } });

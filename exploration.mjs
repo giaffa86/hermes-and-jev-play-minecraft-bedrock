@@ -152,7 +152,21 @@ const SEARCH_ALIASES = {
   bee: ['bee', 'ape', 'api'],
 };
 
+// Strutture riconosciute euristicamente (spec M5/M6): non sono nomi di blocco,
+// quindi la ricerca le risolve a `structure:<tipo>` e la scansione interroga il
+// detector (`structures.mjs`) e la memoria invece della palette.
+const SEARCH_STRUCTURES = {
+  village: ['village', 'villages', 'villaggio', 'villaggi'],
+  mineshaft: ['mineshaft', 'miniera', 'miniera abbandonata'],
+  ancient_city: ['ancient city', 'città antica', 'citta antica', 'deep dark'],
+  trial_chamber: ['trial chamber', 'camera delle prove', 'camera dei trial'],
+  spawner: ['spawner', 'spawner dei mostri', 'monster spawner'],
+  amethyst_geode: ['geode', 'geode di ametista', 'amethyst geode'],
+  cave: ['cave', 'caverna', 'caverne', 'grotta', 'grotte'],
+};
+
 const aliasEntries = Object.entries(SEARCH_ALIASES);
+const structureEntries = Object.entries(SEARCH_STRUCTURES);
 
 // Confine di parola, non sottostringa: "canna da zucchero" non deve combaciare
 // con l'alias "zucche" di pumpkin.
@@ -168,6 +182,9 @@ export function resolveSearchTarget (text) {
     const name = explicit[2].trim();
     return name ? { kind: explicit[1], name, id: `${MC_PREFIX}${name}` } : null;
   }
+  for (const [name, aliases] of structureEntries) {
+    if (name === raw || aliases.some(a => matchesAlias(raw, a))) return { kind: 'structure', name, id: `structure:${name}` };
+  }
   for (const [name, aliases] of aliasEntries) {
     if (name === raw || aliases.some(a => matchesAlias(raw, a))) {
       return { kind: SEARCH_ENTITIES.has(name) ? 'entity' : 'block', name, id: `${MC_PREFIX}${name}` };
@@ -176,14 +193,21 @@ export function resolveSearchTarget (text) {
   return null;
 }
 
-export const SUPPORTED_SEARCH_TARGETS = Object.freeze(aliasEntries.map(([name]) => `${MC_PREFIX}${name}`));
+export const SUPPORTED_SEARCH_TARGETS = Object.freeze([
+  ...aliasEntries.map(([name]) => `${MC_PREFIX}${name}`),
+  ...structureEntries.map(([name]) => `structure:${name}`),
+]);
 
 // Report di un target trovato: chi ha trovato cosa, dove e (se possibile) quanto
 // dista. `matches` è già ordinato per distanza dal chiamante.
+// Il tipo del target nel report: la ricerca di strutture non è una ricerca di
+// blocchi, e dirlo "block" era un'etichetta sbagliata (visto dal vivo).
+const REPORT_KINDS = { find_entity: 'entity', find_structure: 'structure' };
+
 export function buildSearchReport ({ mission = null, matches = [], scannedChunks = null, now = Date.now() } = {}) {
   const origin = mission?.origin ?? null;
   const best = matches[0] ?? null;
-  const kind = mission?.type === 'find_entity' ? 'entity' : 'block';
+  const kind = REPORT_KINDS[mission?.type] ?? 'block';
   return {
     missionId: mission?.id ?? null,
     target: mission?.target ?? null,

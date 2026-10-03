@@ -153,26 +153,108 @@ In every case the Survival Governor handles hunger/health/hostiles and then
 - Shelter building uses `barricade`/`place_*` pieces but there is no
   "build a provisional hut" skill.
 
-## Underground targets (M6)
+## Structures and underground targets (M5/M6)
 
 Caves, mineshafts, the Deep Dark and spawners are the richest resource sources,
-so they are first-class exploration targets (same mission model as M1, different
-`target`). Targets resolve to Minecraft IDs:
+so they are first-class exploration targets: same mission model as M1, target
+resolved to Minecraft IDs.
 
 ```text
-cave            -> cave_air volumes; cave / lush_caves / dripstone_caves biomes
-mineshaft       -> mineshaft / abandoned_mineshaft (planks, rails, fences, cobwebs, spawner)
-deep dark/city  -> deep_dark biome + sculk / sculk_shrieker / sculk_catalyst +
-                   reinforced_deepslate + ancient_city
-spawner         -> mob_spawner / monster_spawner block (+ mob type)
-amethyst geode  -> amethyst_geode (bonus)
+village         -> beds + workstations + villagers (the bot lives in one)
+cave            -> cave_air volumes, or "air below the feet" on Bedrock palettes
+mineshaft       -> planks + rails + fences + cobwebs + spawner
+spawner         -> mob_spawner / monster_spawner block (+ the mob type)
+amethyst geode  -> amethyst_geode
+ancient city    -> deep_dark biome + sculk / sculk_shrieker / sculk_catalyst +
+                   reinforced_deepslate
+trial chamber   -> trial_spawner / vault + tuff/chiseled bricks
 ```
 
-Heuristic detection first (cave = `cave_air` clusters or a vertical opening;
-mineshaft = planks + rails + cobwebs + spawner; ancient city = an extended sculk
-+ deepslate area; spawner = a visible `mob_spawner` block).
+### Implementation (03/10/2026)
 
-**Hazards and rules** (much harsher than surface exploration):
+- **Survey** — `bedrock-world.mjs` `surveyBlocks(point, radius = 48,
+  {limit = 20000, maxDistinct = 96, airBelow = 3, ignore})`: one bounded pass
+  over the loaded cells, returning a **histogram by block name**
+  (`names: Map(name → {count, first})`, `scanned`, `truncated`, `distinct`) — not
+  an array per block (48 blocks radius is ~10^5 cells). The cell budget is spent
+  **starting from the sections closest to the point**, otherwise a capped survey
+  would miss exactly the surroundings of the bot. Air is noise and is ignored,
+  **except** below the point: air at `y <= point.y - airBelow` is counted in the
+  synthetic `air_below` bucket, which is what makes an invisible cavity
+  observable.
+- **Detector** — `structures.mjs` (pure, deterministic): `STRUCTURE_DEFS` maps
+  each type to block/entity rules `{matcher, min, score, label}` plus `anchors`
+  (preference order for the reported position) and `minScore`;
+  `detectStructures({survey, entities, position, dimension, defs})` returns
+  `{id: 'structure:<type>', type, label, dimension, position, confidence,
+  evidence: {score, minScore, matched, missing, blocks, entities}}`, sorted by
+  score. A rule below its `min` does not score and shows up in `missing` as
+  `"label (count/min)"`. The anchor is the **most specific matched marker** (not
+  the centre of the area), and a type is emitted only above `minScore`:
+  a room with a crafting table is not a village.
+- **Memory** — `WorldMemory.rememberStructure({type, position, confidence,
+  evidence, …})` writes a `kind: structure` landmark
+  (`structure_<type>_x_y_z`, tags `[structure, <type>]`) and links it to the
+  `structure:<type>` concept node with `is_a` + the evidence. Repeated surveys
+  do not duplicate records (idempotent by id). Concept nodes are
+  `category: conceptual` with no position, so `findLandmarks` filters them out:
+  they are knowledge, not places.
+- **Adapter** — `_surveyStructures({radius, limit, force})` runs the survey +
+  detector (throttled by `STRUCTURE_RESCAN_MS`, default 60 s), remembers every
+  detection and logs `structure_detected`; `GET /observe` exposes `structures`
+  (≤8) and `structureSurvey` (top 12 names, `scanned`, `truncated`).
+- **Route** — `GET /observe.structures[?force&radius&limit]`; the search
+  pipeline of M4 also handles structures (`find_structure` missions):
+  `scanStructureTarget` merges the live detection with the remembered
+  landmarks, so a structure is findable even after a restart.
+- **Search aliases** — `resolveSearchTarget` resolves the `structure:` aliases
+  (villages/villaggio, mineshaft/miniera, ancient city/città antica, trial
+  chamber, spawner, amethyst geode, cave/caverna/grotta) **before** the
+  block/entity tables, with the same word-boundary matching.
+
+### Live round (03/10/2026, bot inside a village at (115, 74.6, 157))
+
+`GET /observe.structures?force=1&radius=24&limit=60000` (`scanned 60000`,
+`distinct 47`, `truncated: true`) — two real detections and no false positive:
+
+---
+
+- `structure:village` at **(113, 73, 156)**, `confidence 0.6`, score 6,
+  matched `beds`/`workstations`/`villagers` — blocks `bed: 30`, `workstations:
+  315` (grass_path 306, stonecutter_block 2, blast_furnace 2, fletching_table,
+  smithing_table, cartography_table, barrel, lectern), entities `villagers: 11`,
+  missing `bell (0/1)`.
+- `structure:cave` at **(112, 71, 144)**, `confidence 0.5`, score 3, matched
+  `air below` (`831` air cells below the bot's feet) — the tunnel network under
+  the base, i.e. the same y=71 cavity documented above.
+
+Then `POST /explore/find {target:'grotta'}` → `report {kind: 'structure',
+found: true, best: {name: 'cave', position: (112,71,144), distance: 13.1}}`,
+and `{target:'città antica'}` → `move` with `found: 0`.
+
+**Bedrock naming lessons found by the live round**: the bed block is `bed`
+(not `oak_bed`), the stonecutter is `stonecutter_block` (not `stonecutter`),
+and `cave_air` is absent from the observed palette — hence the `air_below`
+measure. The survey histogram of a village room also shows the built counter
+(`oak_planks`, `cobblestone`) as top names: detection must key on **markers**,
+never on generic building blocks.
+
+### Known limits
+
+- The survey is an **histogram of names**, not a map: it can count a cave but
+  not follow it, and it only sees what is loaded around the bot (48 blocks,
+  budgeted). Deep structures outside the loaded/charted area stay invisible
+  until the bot walks there — that is the job of the M1 spiral + memory.
+- Marker thresholds are **tuned on this world** (a village with ≥1 bell, etc.);
+  a structure with unusual blocks can be missed. Missing is preferred to
+  inventing: a detection needs `minScore`.
+- `cave_air` volumes are only detectable on palettes that have the block; on
+  Bedrock the cavity signal is `air_below` (min 48 cells), which sees *a* cavity
+  below the bot, not necessarily a walkable cave system.
+- The Deep Dark/Ancient City rule is a marker rule (sculk family); it has **not**
+  been observed live yet.
+
+### Hazards and rules (unchanged)
 
 - **Deep Dark / Warden**: shriekers summon the Warden. Default is **observe and
   report** from a safe distance, never trigger more shriekers or loot without an
@@ -274,16 +356,22 @@ a report → stays on the spot → can return later → can escort the player th
 
 ## Current status in the code
 
-◑ **M1 core, M2 and M4 implemented.** `exploration.mjs` is the
+◑ **M1 core, M2, M4, M5 and the marker side of M6 implemented.** `exploration.mjs` is the
 deterministic planner: biome target resolution (natural language →
 `minecraft:<id>`), the expanding-square/spiral over **unexplored chunks**, biome
-detection and the structured report — plus the M2 replay primitives and the M4
-observable-target search. The harness steps it (`POST /explore` creates the
+detection and the structured report — plus the M2 replay primitives, the M4
+observable-target search and the M5 structure aliases. The harness steps it
+(`POST /explore` creates the
 mission, `GET /explore` returns one `move`/`found`/`hold`/`exhausted` step,
 `POST/GET /explore/replay` replays a recorded route, `POST/GET /explore/find`
-searches a block/entity) and `explore.mjs` / `explore-replay.mjs` /
+searches a block/entity/structure) and `explore.mjs` / `explore-replay.mjs` /
 `explore-find.mjs` are the drivers. Missions + sparse checkpoints are persisted
 in the [world memory](memory.md) (`kind: mission`).
+
+Structures and cavities are detected by `structures.mjs` (`surveyBlocks` →
+`detectStructures` → `rememberStructure`, exposed by `GET /observe.structures`;
+see the M5/M6 section above for the live evidence: a real village at
+(113,73,156) and the cavity at (112,71,144)).
 
 Hardening done with the live rounds (03/10):
 
@@ -316,8 +404,8 @@ written. The M4 search works from where the bot stands (it scans the 125 loaded
 chunks), so it is live-verifiable in the room, but a target that is not loaded
 still needs travel. M3 (escort) is blocked by the environment: no human player
 is connected to the BDS, so `ESCORTING`/`WAITING_FOR_PLAYER` cannot be
-exercised. M5 (structures) and the M6 underground targets (caves, mineshafts,
-Deep Dark, spawners) are still spec only; the multi-leg case of M2 (a route with
+exercised. M5 (structures) and the M6 marker targets are implemented and
+live-verified (village + cavity); the multi-leg case of M2 (a route with
 intermediate checkpoints) is covered by unit tests, since inside the room no
 checkpoint can be earned (they are written every 48 blocks of travel).
 

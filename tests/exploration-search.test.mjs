@@ -22,6 +22,19 @@ test('an explicit block:/entity: target bypasses the alias table', () => {
   assert.equal(resolveSearchTarget('block:'), null);
 });
 
+test('structure targets resolve to `structure:<type>`, the kind the detector knows', () => {
+  assert.deepEqual(resolveSearchTarget('villaggio'), { kind: 'structure', name: 'village', id: 'structure:village' });
+  assert.deepEqual(resolveSearchTarget('Villages'), { kind: 'structure', name: 'village', id: 'structure:village' });
+  assert.equal(resolveSearchTarget('città antica').name, 'ancient_city');
+  assert.equal(resolveSearchTarget('camera delle prove').name, 'trial_chamber');
+  assert.equal(resolveSearchTarget('grotta').name, 'cave');
+  assert.equal(resolveSearchTarget('miniera abbandonata').name, 'mineshaft');
+  assert.equal(resolveSearchTarget('geode di ametista').name, 'amethyst_geode');
+  assert.ok(SUPPORTED_SEARCH_TARGETS.includes('structure:village'));
+  // La ricerca per nome resta di M1: un bioma non è un blocco né una struttura.
+  assert.equal(resolveSearchTarget('cherry grove'), null);
+});
+
 test('unknown or non-search targets are refused', () => {
   assert.equal(resolveSearchTarget('cherry grove'), null, 'un bioma non è un target di ricerca');
   assert.equal(resolveSearchTarget('qualcosa di inesistente'), null);
@@ -52,6 +65,7 @@ test('buildSearchReport summarises what was found, where and how far', () => {
   assert.equal(report.scannedChunks, 7);
   assert.equal(typeof report.durationSeconds, 'number');
   assert.equal(buildSearchReport({ mission: { id: 'm', type: 'find_entity', target: 'minecraft:cow' }, matches: [] }).kind, 'entity');
+  assert.equal(buildSearchReport({ mission: { id: 'm', type: 'find_structure', target: 'structure:village' }, matches: [] }).kind, 'structure');
 });
 
 test('planSearchStep reports when the scan matched, otherwise explores like M1', () => {

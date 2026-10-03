@@ -207,7 +207,11 @@ chunk. See
 
 Still missing (the rest of the original gap):
 
-- **structures** — villages / Ancient Cities have no heuristic detector yet;
+- ~~**structures**~~ — implemented 03/10: `surveyBlocks` + `structures.mjs`
+  detectors, `rememberStructure` landmarks, `GET /observe.structures`, structure
+  search (`find_structure`), live-verified on a real village at (113,73,156) and
+  on the cavity at (112,71,144) — see
+  [exploration](exploration.md#structures-and-underground-targets-m5m6);
 - **mission checkpoints** ([exploration](exploration.md) M1);
 - everything else stays ephemeral: `this.containers` (runtime TTL cache, now
   *also* written to memory), `deathSite`, `entities`, `drops`, `_openDoors`, and
@@ -215,21 +219,22 @@ Still missing (the rest of the original gap):
 
 ## Design limitations
 
-- **No real exploration** (03/10: M1+M2+M4 implemented, the long-distance run is
+- **No real exploration** (03/10: M1+M2+M4+M5 implemented, the long-distance run is
   what is still missing): the bot only "sees" ores within ~±40 loaded blocks (the
   96-block radar is capped by the actively requested subchunks) and has no random
   walk / strip mining / cave exploration. See
   [headless-client](headless-client.md#8-render-distance-not-comparable). The
   deterministic planner (find biome, spiral over unexplored chunks, checkpoints,
-  report), the route replay (return to a recorded place) and the observable-target
-  search (a block or an entity, from where the bot stands) are live-exercised
-  ([verification](verification.md) rows 45/45.1/45.2), but **an end-to-end run
-  cannot happen while the bot is boxed in the room**: the first spiral waypoint is
-  96 blocks away → `target_not_found`, and a target that is not in the 125 loaded
-  chunks still needs travel. Still spec only in
+  report), the route replay (return to a recorded place), the observable-target
+  search (a block or an entity, from where the bot stands) and the **structure /
+  cavity detector** are live-exercised
+  ([verification](verification.md) rows 45/45.1/45.2/45.3), but **an end-to-end
+  run cannot happen while the bot is boxed in the room**: the first spiral
+  waypoint is 96 blocks away → `target_not_found`, and a target that is not in
+  the 125 loaded chunks still needs travel. Still spec only in
   [exploration](exploration.md): M3 escort (blocked by the environment, no human
-  player on the BDS), M5 structures and the **underground targets** (caves,
-  mineshafts, Deep Dark/Ancient City, spawners).
+  player on the BDS) and the *deep* side of M6 (following a cave system beyond
+  the loaded radius, Deep Dark/Ancient City never observed live).
 - **Placement** only on a top face adjacent to the bot; no scaling/orientation.
 - **No redstone awareness or placement.** `_refreshNearby`'s fixed list excludes
   redstone ore and components, so the bot cannot *watch* for them; the separate

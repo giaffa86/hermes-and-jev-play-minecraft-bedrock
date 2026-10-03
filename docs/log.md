@@ -1759,3 +1759,73 @@ suite completa **604 test, 604 pass, 0 fail**.
 limiti aggiornati: l'M4 funziona da fermo perché scansiona i 125 chunk caricati,
 un target non caricato richiede viaggio), `verification.md` (riga 45.2, riga 46),
 `open-questions.md`, `roadmap.md` (voce 10).
+
+## [2026-10-03] feat | Esplorazione M5/M6: detector di strutture e cavità + round live
+
+**Obiettivo**: dare all'esplorazione i target "dove sono le cose" (M5 strutture,
+M6 sottosuolo) con un detector deterministico, non con una lista di coordinate
+cablata.
+
+**Implementazione**
+- `bedrock-world.mjs`: `surveyBlocks(point, radius = 48, {limit = 20000,
+  maxDistinct = 96, airBelow = 3, ignore})` → istogramma **per nome di blocco**
+  (`names: Map(name → {count, first})`, `scanned`, `truncated`, `distinct`) in
+  una sola passata limitata. Il budget di celle si spende **partendo dalle
+  sezioni più vicine** (prima un `limit` raggiunto lasciava fuori l'area attorno
+  al bot). L'aria resta rumore ignorato, **tranne** quella sotto i piedi
+  (`y <= point.y - airBelow`): finisce nel bucket sintetico `air_below`, che è
+  ciò che rende osservabile una cavità non visibile.
+- `structures.mjs` (nuovo, puro): `STRUCTURE_DEFS` (village, mineshaft,
+  ancient_city, trial_chamber, spawner, amethyst_geode, cave) con regole
+  `{matcher, min, score, label}`, `anchors` e `minScore`; `detectStructures`
+  restituisce `{id: 'structure:<type>', position, confidence, evidence:{score,
+  matched, missing, blocks, entities}}`, l'ancora è il marker più specifico
+  combaciato e un tipo esce solo sopra `minScore` (nessun villaggio per un tavolo
+  da lavoro).
+- `world-memory.mjs`: `rememberStructure(...)` → landmark `kind: structure`
+  (`structure_<tipo>_x_y_z`) + `is_a` verso il nodo-concetto `structure:<tipo>`
+  con l'evidenza; idempotente per id. `findLandmarks` ora scarta i nodi
+  `category: conceptual` (sono conoscenza, non luoghi).
+- `bedrock-adapter.mjs`: `_surveyStructures({radius, limit, force})` con
+  throttle `STRUCTURE_RESCAN_MS` (60 s), `this.structures`,
+  `_structureSurvey` in `/observe`, log `structure_detected`; `GET
+  /observe.structures[?force&radius&limit]`; `scanStructureTarget` unisce
+  detection live e landmark ricordati (una struttura resta trovabile dopo un
+  riavvio); `resolveSearchTarget` risolve gli alias `structure:*` prima delle
+  tabelle blocco/entità.
+- Nomi Bedrock corretti grazie al round live: il letto è **`bed`** (non
+  `oak_bed`) e il tagliapietre è **`stonecutter_block`** (non `stonecutter`).
+
+**Collaudo live** (container `hermes-jev-bedrock`, BDS 1.26.52, bot in un
+villaggio a (115, 74.6, 157))
+- `GET /observe.structures?force=1&radius=24&limit=60000` (`scanned 60000`,
+  `distinct 47`, `truncated: true`): `structure:village` a **(113,73,156)**
+  `confidence 0.6` score 6 (30 letti, 315 workstation fra cui
+  `stonecutter_block`, 11 villager, manca `bell (0/1)`) e `structure:cave` a
+  **(112,71,144)** `confidence 0.5` score 3 (`air below: 831` celle d'aria sotto
+  i piedi: la rete di tunnel a y=71 già nota). Entrambe scritte in SQLite come
+  landmark + archi `is_a` con l'evidenza; ricognizioni ripetute non duplicano i
+  record.
+- `POST /explore/find {target:'grotta'}` → missione `mission_find_structure_*`
+  → `report {kind: 'structure', found: true, best: {cave (112,71,144), 13.1}}`;
+  `{target:'città antica'}` → `move` con `found: 0` (**nessun falso positivo**
+  con la soglia `minScore`).
+
+**Test**: 6 casi in `tests/structures.test.mjs` (villaggio solo-letti → nessuno,
+letti+sentieri senza abitanti → nessuno, villaggio completo con ancora sui letti
+e `missing` per il campanile, marker M6, `air_below`, soglie/ordinamento) +
+`rememberStructure` su entrambi i backend in `tests/world-memory.test.mjs` +
+asserzioni su `surveyBlocks` in `tests/bedrock-world.test.mjs` + strutture in
+`tests/exploration-search.test.mjs`. Suite completa **612 test, 612 pass, 0
+fail**.
+
+**Limiti residui**: il survey è un istogramma (conta una cavità, non la segue) e
+vede solo ciò che è caricato attorno al bot (48 blocchi, con budget); le soglie
+sono tarate su questo mondo (meglio mancare una struttura che inventarla); la
+regola Ancient City/Deep Dark non è mai stata osservata dal vivo.
+
+**Doc**: `exploration.md` (sezione "Structures and underground targets (M5/M6)" +
+stato del codice + limiti), `memory.md` (slice "Structures" → implementata),
+`verification.md` (riga 45.3), `open-questions.md`, `roadmap.md` (voci 10 e 11),
+`AGENTS.md` (env `STRUCTURE_RESCAN_MS`/`STRUCTURE_RADIUS`/
+`STRUCTURE_SURVEY_LIMIT`).

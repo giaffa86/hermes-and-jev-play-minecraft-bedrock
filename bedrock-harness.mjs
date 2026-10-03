@@ -40,9 +40,39 @@ const eventLog = (type, data) => appendFileSync(`runs/${RUN}/events.jsonl`, JSON
 // delle sezioni (un nome ignoto semplicemente non trova nulla). Entità: il
 // registro delle entità viste — `_nearbyEntities` cappa a 24 blocchi, cioè la
 // stessa percezione del bot (non si promette di vedere più lontano).
+const SEARCH_MISSION_TYPES = { block: 'find_block', entity: 'find_entity', structure: 'find_structure' };
+const missionTypeFor = (kind) => SEARCH_MISSION_TYPES[kind] ?? 'find_block';
+
+// M5/M6: un target "struttura" non è nella palette, quindi la scansione unisce
+// le detection live del bot (area caricata) e i landmark già in memoria (che
+// sopravvivono a un riavvio).
+function scanStructureTarget (adapter, name, { limit = 8 } = {}) {
+  const live = (adapter._surveyStructures?.() ?? []).filter(s => s.type === name);
+  const known = adapter.memory?.findLandmarks?.({ kind: 'structure', type: name, limit: 16 }) ?? [];
+  const here = adapter.position;
+  const seen = new Set();
+  const matches = [];
+  for (const row of [...live, ...known]) {
+    const p = row.position;
+    if (!p) continue;
+    const key = `${Math.round(p.x)},${Math.round(p.y)},${Math.round(p.z)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    matches.push({
+      name,
+      position: { x: p.x, y: p.y, z: p.z },
+      distance: here ? +Math.hypot(p.x - here.x, p.z - here.z).toFixed(1) : null,
+      source: row.evidence ? 'detected' : 'memory',
+      confidence: row.confidence ?? null,
+    });
+  }
+  return { matches: matches.sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity)).slice(0, limit) };
+}
+
 function scanSearchTarget (adapter, mission, { radius = 48, limit = 16 } = {}) {
   const name = String(mission?.target ?? '').replace(/^minecraft:/, '');
   if (!name) return { error: 'no_target', matches: [] };
+  if (mission.type === 'find_structure') return scanStructureTarget(adapter, name.replace(/^structure:/, ''), { limit });
   if (mission.type === 'find_entity') {
     const rows = adapter._nearbyEntities?.(Math.max(limit, 24)) ?? [];
     return { matches: rows.filter(e => e.type === name).map(e => ({ name: e.type, position: e.position, distance: e.distance })).slice(0, limit) };
@@ -139,6 +169,18 @@ server = createServer(async (req, res) => {
       const obs = adapter.observe();
       obs.survival = summarizeSurvival(evaluateSurvival(obs, { rules: survivalRules }));
       response = [200, obs];
+    } else if (req.method === 'GET' && req.url.startsWith('/observe.structures')) {
+      // Strutture/ambienti rilevati (spec M5/M6): la ricognizione è throttled
+      // dentro il metodo, `?force=1` la rifà subito (diagnostica).
+      const u = new URL(req.url, 'http://x');
+      const force = /^(1|true|on)$/i.test(u.searchParams.get('force') ?? '');
+      const radius = Number(u.searchParams.get('radius') || 0) || undefined;
+      const limit = Number(u.searchParams.get('limit') || 0) || undefined;
+      let error = null;
+      if (force || radius || limit) {
+        try { adapter._surveyStructures({ force: true, radius, limit }); } catch (e) { error = e.message; }
+      }
+      response = [200, { ok: !error, error, structures: adapter.structures ?? [], survey: adapter._structureSurvey ?? null }];
     } else if (req.method === 'GET' && req.url === '/options') {
       // Validity owner resta l'adapter; il governor può solo restringere in
       // emergenza le opzioni già offerte, mai aggiungerne.
@@ -333,11 +375,11 @@ server = createServer(async (req, res) => {
         const origin = adapter.position ? { x: adapter.position.x, y: adapter.position.y, z: adapter.position.z } : null;
         const superseded = [];
         for (const prev of adapter.memory.missions({ state: 'running', limit: 20 })) {
-          if (prev.type !== 'find_block' && prev.type !== 'find_entity') continue;
+          if (prev.type !== 'find_block' && prev.type !== 'find_entity' && prev.type !== 'find_structure') continue;
           adapter.memory.finishMission(prev.id, { outcome: 'superseded', success: false, state: 'cancelled', failureReason: 'superseded_by_new_search' });
           superseded.push(prev.id);
         }
-        const mission = adapter.memory.createMission({ type: resolved.kind === 'entity' ? 'find_entity' : 'find_block', target: resolved.id, origin });
+        const mission = adapter.memory.createMission({ type: missionTypeFor(resolved.kind), target: resolved.id, origin });
         adapter.missionId = mission.id;
         adapter.searchMissionId = mission.id;
         adapter.explorationMissionId = null;
@@ -352,7 +394,7 @@ server = createServer(async (req, res) => {
       const radius = Number(params.get('radius') ?? 48) || 48;
       const limit = Number(params.get('limit') ?? 16) || 16;
       const active = adapter.searchMissionId ? adapter.memory?.getMission(adapter.searchMissionId) : null;
-      const mission = active ?? adapter.memory?.missions({ state: 'running', limit: 20 }).find(m => m.type === 'find_block' || m.type === 'find_entity') ?? null;
+      const mission = active ?? adapter.memory?.missions({ state: 'running', limit: 20 }).find(m => m.type === 'find_block' || m.type === 'find_entity' || m.type === 'find_structure') ?? null;
       if (!mission) response = [200, { action: 'hold', reason: 'no_mission' }];
       else {
         const scan = scanSearchTarget(adapter, mission, { radius, limit });

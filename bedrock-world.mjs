@@ -9,6 +9,16 @@ const Stream = require('prismarine-chunk/src/bedrock/common/Stream');
 const PalettedStorage = require('prismarine-chunk/src/bedrock/common/PalettedStorage');
 const { StorageType } = require('prismarine-chunk/src/bedrock/common/constants');
 
+// Nomi che non dicono nulla su una struttura o un ambiente: restano fuori
+// dall'istogramma di `surveyBlocks` per non consumare il budget dei nomi.
+// `cave_air` è volutamente incluso come dato: serve al detector delle caverne.
+const SURVEY_IGNORE = new Set([
+  'air', 'water', 'flowing_water', 'lava', 'flowing_lava', 'stone', 'deepslate', 'dirt', 'grass_block',
+  'gravel', 'sand', 'sandstone', 'bedrock', 'andesite', 'granite', 'diorite', 'tuff', 'calcite', 'netherrack',
+  'short_grass', 'tall_grass', 'fern', 'snow_layer', 'deadbush',
+  'oak_leaves', 'spruce_leaves', 'birch_leaves', 'jungle_leaves', 'acacia_leaves', 'dark_oak_leaves', 'mangrove_leaves', 'azalea_leaves', 'flowering_azalea_leaves',
+]);
+
 class NetworkSection extends SubChunk {
   entry (runtimeId) {
     const block = this.registry.blocksByRuntimeId[runtimeId];
@@ -243,6 +253,53 @@ export class BedrockWorld {
       block.distance = entry.distance;
       return block;
     });
+  }
+
+  // Istogramma dei blocchi caricati attorno a un punto, in una sola passata e
+  // con memoria limitata (`limit` celle visitate, `maxDistinct` nomi tracciati).
+  // È la base dei detector euristici di strutture e ambienti: quelli devono
+  // guardare *tutti* i nomi di blocco, non una lista curata, e non possono
+  // pagare un array per blocco (un'area di 48 blocchi sono ~10^5 celle).
+  // L'aria sotto i piedi viene contata a parte nel bucket sintetico `air_below`
+  // (altrimenti il rumore dell'aria dominerebbe l'istogramma): è la misura che
+  // rende osservabile una cavità non visibile, cioè il target M6.
+  surveyBlocks (point, radius = 48, { limit = 20000, maxDistinct = 96, airBelow = 3, ignore = SURVEY_IGNORE } = {}) {
+    if (!this.registry || !point) return { names: new Map(), scanned: 0, truncated: false, distinct: 0 };
+    const names = new Map();
+    let scanned = 0, truncated = false;
+    // Il budget di celle si spende **partendo da vicino**: l'ordine di `loaded`
+    // è arbitrario, quindi senza questo ordinamento un limite raggiunto poteva
+    // lasciare fuori proprio l'area attorno al bot.
+    const centreOf = (key) => {
+      const [cx, cy, cz] = key.split(',').map(Number);
+      return (cx * 16 + 8 - point.x) ** 2 + (cy * 16 + 8 - point.y) ** 2 + (cz * 16 + 8 - point.z) ** 2;
+    };
+    const keys = [...this.loaded].map(key => [centreOf(key), key]).sort((a, b) => a[0] - b[0]).map(pair => pair[1]);
+    cells: for (const key of keys) {
+      const [cx, cy, cz] = key.split(',').map(Number);
+      const column = this.columns.get(`${cx},${cz}`), section = column?.getSectionAtIndex(cy);
+      if (!section?.blocks?.[0]) continue;
+      const minX = Math.max(cx * 16, Math.ceil(point.x - radius)), maxX = Math.min(cx * 16 + 15, Math.floor(point.x + radius));
+      const minY = Math.max(cy * 16, Math.ceil(point.y - radius)), maxY = Math.min(cy * 16 + 15, Math.floor(point.y + radius));
+      const minZ = Math.max(cz * 16, Math.ceil(point.z - radius)), maxZ = Math.min(cz * 16 + 15, Math.floor(point.z + radius));
+      for (let x = minX; x <= maxX; x++) for (let y = minY; y <= maxY; y++) for (let z = minZ; z <= maxZ; z++) {
+        if (scanned >= limit) { truncated = true; break cells; }
+        const name = section.palette[0][section.blocks[0].get(x & 15, y & 15, z & 15)].name ?? 'unknown:runtime';
+        scanned++;
+        if (ignore.has(name)) {
+          if (name === 'air' && y <= point.y - airBelow) {
+            const below = names.get('air_below');
+            if (below) below.count++;
+            else if (names.size < maxDistinct) names.set('air_below', { count: 1, first: { x, y, z } });
+          }
+          continue;
+        }
+        const row = names.get(name);
+        if (row) row.count++;
+        else if (names.size < maxDistinct) names.set(name, { count: 1, first: { x, y, z } });
+      }
+    }
+    return { names, scanned, truncated, distinct: names.size };
   }
 
   summary () {

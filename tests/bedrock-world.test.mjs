@@ -38,6 +38,28 @@ test('real BDS 1.26.52 terrain contains vanilla blocks, not the first block_prop
   assert.equal(world.blockAt({ x: 0, y: 70, z: 0 }), null);
   assert.ok(world.summary().unknownRuntimeIds > 0);
   assert.equal(world.findBlocks('oak_log', { x: 92, y: 74, z: 163 }, 8, 1).length, 1);
+
+  // Istogramma dei blocchi caricati: la base dei detector di strutture (M5/M6).
+  const survey = world.surveyBlocks({ x: 92, y: 72, z: 163 }, 16);
+  assert.ok(survey.scanned > 0 && survey.truncated === false);
+  assert.ok(survey.names.get('oak_planks').count >= 1);
+  assert.equal(world.blockAt(survey.names.get('oak_log').first).name, 'oak_log', 'la posizione `first` è davvero quel blocco');
+  assert.equal(survey.names.has('stone'), false, 'la pietra è rumore per un detector');
+  assert.equal(survey.names.has('air'), false);
+  assert.equal(survey.names.has('dirt'), false);
+
+  const limited = world.surveyBlocks({ x: 92, y: 72, z: 163 }, 16, { limit: 5 });
+  assert.equal(limited.scanned, 5, 'il budget di celle visitate si rispetta');
+  assert.equal(limited.truncated, true);
+  assert.equal(world.surveyBlocks({ x: 92, y: 72, z: 163 }, 16, { maxDistinct: 0 }).distinct, 0);
+  assert.deepEqual(world.surveyBlocks(null, 16).names.size, 0, 'senza punto non si scansiona nulla');
+
+  // Aria sotto i piedi: misurata a parte (bucket sintetico `air_below`), perché
+  // l'aria è ignorata come rumore e serve invece a vedere una cavità (target M6).
+  assert.equal(survey.names.has('air_below'), false, 'qui il punto è al livello del suolo: nessuna cavità sotto');
+  const below = world.surveyBlocks({ x: 92, y: 72, z: 163 }, 16, { airBelow: 0 });
+  assert.ok(below.names.get('air_below').count > 0);
+  assert.equal(world.blockAt(below.names.get('air_below').first).name, 'air', 'il bucket punta a una cella d\'aria');
 });
 
 test('findBlocks returns the block object itself, block states included', () => {

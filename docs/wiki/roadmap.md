@@ -270,13 +270,17 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
     block/entity search, `POST/GET /explore`, `POST/GET /explore/replay`,
     `POST/GET /explore/find`, drivers `explore.mjs` / `explore-replay.mjs` /
     `explore-find.mjs`, missions + sparse checkpoints in the
-    [world memory](memory.md)). Next: run M1 end-to-end on the BDS once the bot
-    can travel (today the spiral waypoint is 96 blocks away and unreachable;
-    M4 and M2 work from where the bot stands), then M3 (escort, blocked: no
-    human player on the BDS), M5 (structures), M6 (underground targets: caves,
-    mineshafts, Deep Dark, spawners).
-11. **Memory follow-ups** (see [memory](memory.md)): a **structure detector**
-    (villages / Ancient Cities → `structure:*` nodes), an explicit
+    [world memory](memory.md)). M4 (block/entity search) and M5/M6 (structure and
+    cavity detector, `GET /observe.structures`, `find_structure` searches) are
+    done and live-verified (a real village at (113,73,156), the cavity at
+    (112,71,144)). Next: run M1 end-to-end on the BDS once the bot can travel
+    (today the spiral waypoint is 96 blocks away and unreachable; M4, M2 and the
+    detector work from where the bot stands), then M3 (escort, blocked: no human
+    player on the BDS) and the deep side of M6 (following a cave system beyond
+    the loaded radius; the Deep Dark rule has never been observed live).
+11. **Memory follow-ups** (see [memory](memory.md)): ~~a **structure detector**
+    (villages / Ancient Cities → `structure:*` nodes)~~ **done** (03/10:
+    `structures.mjs` + `surveyBlocks`, M5/M6), an explicit
     **observation log** (`subject/predicate/object` that materializes the
     current graph), a **vector index** for semantic recall, and a
     **retention/pruning policy** for the episodic layer (missions, action

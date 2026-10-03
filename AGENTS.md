@@ -84,6 +84,7 @@ Use `CONTROLLER=hermes` if you lack an OpenRouter key; it is slower and costlier
 - `CHAT_MAX_AGE_MS` — an order older than this (default `300000`) is dropped as stale (`chat_stale`) so a restarted controller does not replay the harness inbox.
 - `CHAT_ECHO_WINDOW_MS` — window (default `15000`) used to recognise the bot's own chat coming back from the server (`chat_echo`); the server rewrites `source_name` with the real gamertag, which differs from `BEDROCK_USERNAME`.
 - `SHIELD_THREAT_RANGE` — distance (default `8`) within which a hostile makes `raise_shield` worth offering; the shield lives in the offhand (`equip_shield`) and the use flag is `start_using_item` in `player_auth_input`.
+- `STRUCTURE_RESCAN_MS` / `STRUCTURE_RADIUS` / `STRUCTURE_SURVEY_LIMIT` — structure survey throttle (default `60000` ms), radius (default `48`) and cell budget (default `20000`) of the M5/M6 detector exposed by `GET /observe.structures` (see `docs/wiki/exploration.md`).
 
 ## Architecture gotchas
 

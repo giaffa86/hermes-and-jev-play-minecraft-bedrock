@@ -111,7 +111,10 @@ export class WorldMemory {
     // i loro finder. `kind` può restringere ulteriormente.
     const scope = kind ? { kind } : { kinds: LANDMARK_KINDS };
     const records = this.repo.find({ ...scope, type, tag, includeInvalid, near, radius, limit });
-    return records;
+    // Un landmark è un *luogo*: i nodi-concetto (`structure:village`, categoria
+    // `conceptual` e senza posizione, creati come bersaglio del link `is_a`) non
+    // sono posti da raggiungere e non devono sporcare questa ricerca.
+    return records.filter(record => record.category !== 'conceptual' && record.position);
   }
 
   nearestLandmark ({ type = null, kind = null, from, radius = null, includeInvalid = false } = {}) {
@@ -235,6 +238,30 @@ export class WorldMemory {
 
   // Portale (di norma nether): relazione fra due luoghi. I campi `overworld`
   // (position) e `nether` si completano quando si visita l'altro lato.
+  // Struttura riconosciuta euristicamente (`kind: structure`, spec M5/M6): un
+  // landmark con tipo leggibile, collegato al concetto `structure:<tipo>` così il
+  // planner può chiedere "i villaggi che conosco" senza leggere i blocchi.
+  // L'evidenza della detection (conteggi, punteggio, marker mancanti) viaggia in
+  // `metadata` della relazione `is_a`: i repository spalmano `metadata` *piatto*
+  // nel record della relazione, quindi si rilegge come `relation.evidence`.
+  rememberStructure ({ id = null, type, label = null, dimension = 'overworld', position, confidence = 0.6, evidence = null, tags = [], source = 'detected' }) {
+    if (!type) throw new Error('rememberStructure: type required');
+    const landmarkId = id || this._landmarkId(`structure_${type}`, position);
+    const record = this.rememberLandmark({
+      id: landmarkId,
+      type,
+      kind: 'structure',
+      label: label ?? type,
+      dimension,
+      position,
+      confidence,
+      tags: ['structure', type, ...tags],
+      source,
+    });
+    this.link(landmarkId, this.conceptId('structure', type), 'is_a', { confidence, metadata: evidence ? { evidence } : undefined });
+    return record;
+  }
+
   rememberPortal ({ id = null, position, dimension = 'overworld', portalType = 'nether', nether = null, verified = false, source = 'observed' }) {
     const key = id || this._spatialId('portal', position);
     const existing = this.repo.get(key);

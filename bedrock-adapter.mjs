@@ -10,6 +10,7 @@ import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isMilkableType
 import { professionName, normalizeProfession, professionMatches, pickBestTrade } from './bedrock-trading.mjs';
 import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
 import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
+import { detectStructures } from './structures.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -96,6 +97,11 @@ const STORAGE_BLOCKS = ['chest', 'trapped_chest', 'barrel', 'shulker_box'];
 // TTL della cache contenitori: altri giocatori possono cambiare le scorte.
 const CONTAINER_TTL_MS = 5 * 60 * 1000;
 const DISCOVERY_RESCAN_MS = 15000;   // ri-scansione scoperte nella stessa chunk (mondo appena caricato)
+// Ricognizione di strutture/ambienti (spec esplorazione M5/M6): una passata
+// sull'area caricata non è gratis, quindi si ripete al massimo ogni minuto.
+const STRUCTURE_RESCAN_MS = +(process.env.STRUCTURE_RESCAN_MS || 60000);
+const STRUCTURE_RADIUS = +(process.env.STRUCTURE_RADIUS || 48);
+const STRUCTURE_SURVEY_LIMIT = +(process.env.STRUCTURE_SURVEY_LIMIT || 20000);
 // Occasioni: raggio della scansione delle ore di valore. Deve combaciare con
 // ORE_INTEREST_RANGE di world-events.mjs: tutto ciò che genera un evento
 // VALUABLE_ORE_SEEN è anche un'opzione mine_<ore>.
@@ -159,6 +165,9 @@ export class BedrockAdapter {
     this._fishTeaseAt = 0;           // ultimo evento `fish_hook_tease` (pesce che si avvicina ma non morde)
     this.nearbyBlocks = {};
     this.valuableOres = [];        // ore di valore in vista (occasioni, vedi _scanValuableOres)
+    this.structures = [];          // strutture rilevate nell'ultima ricognizione (M5/M6)
+    this._structureSurvey = null;  // riassunto dell'ultima ricognizione (per /observe)
+    this._structureSurveyAt = 0;
     this.dimension = 'overworld';
     this.standingOn = null;
     this.plan = null;
@@ -860,9 +869,64 @@ export class BedrockAdapter {
         const moved = last ? Math.hypot(last.position.x - pos.x, last.position.z - pos.z) : Infinity;
         if (moved >= CHECKPOINT_MIN_DISTANCE) this.memory.addCheckpoint(this.missionId, pos, { biome });
       }
+      // Strutture/ambienti nell'area caricata (throttled a livello di metodo).
+      this._surveyStructures();
     } catch (error) {
       this.log('memory_discovery_error', { message: error.message });
     }
+  }
+
+  // Ricognizione di strutture e ambienti (spec M5/M6): istogramma dei blocchi
+  // caricati + entità percepite → detector deterministico (`structures.mjs`) →
+  // landmark `kind: structure` in memoria. Un tipo senza marker non compare:
+  // vedi la soglia `minScore` per tipo (un muro di letti non è un villaggio).
+  _surveyStructures ({ radius = STRUCTURE_RADIUS, limit = STRUCTURE_SURVEY_LIMIT, force = false } = {}) {
+    const now = Date.now();
+    if (!force && now - this._structureSurveyAt < STRUCTURE_RESCAN_MS) return this.structures;
+    if (!this.spawned || !this.position || typeof this.world?.surveyBlocks !== 'function') return this.structures;
+    this._structureSurveyAt = now;
+    try {
+      const survey = this.world.surveyBlocks(this.position, radius, { limit });
+      const found = detectStructures({
+        survey: survey.names,
+        entities: this._nearbyEntities(24),
+        position: this.position,
+        dimension: this.dimension,
+      });
+      this.structures = found.slice(0, 8);
+      this._structureSurvey = {
+        at: now,
+        radius,
+        scanned: survey.scanned,
+        distinct: survey.distinct,
+        truncated: survey.truncated,
+        found: this.structures.map(s => s.id),
+        // I nomi visti nell'area (i più frequenti): senza di loro una detection
+        // vuota non è diagnosticabile ("perché nessun villaggio?" → manca il
+        // marker o manca l'area?).
+        names: [...survey.names.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 12).map(([name, row]) => ({ name, count: row.count })),
+      };
+      for (const structure of this.structures) {
+        this.memory?.rememberStructure({
+          type: structure.type,
+          label: structure.label,
+          dimension: structure.dimension,
+          position: structure.position,
+          confidence: structure.confidence,
+          evidence: structure.evidence,
+          source: 'detected',
+        });
+        this.log('structure_detected', {
+          type: structure.type,
+          position: structure.position,
+          confidence: structure.confidence,
+          evidence: structure.evidence,
+        });
+      }
+    } catch (error) {
+      this.log('structure_survey_failed', { message: error.message });
+    }
+    return this.structures;
   }
 
   _refreshInventory () {
@@ -952,6 +1016,8 @@ export class BedrockAdapter {
       plan: this.plan,
       chat: this.chatInbox.slice(-10),
       nearby: this.nearbyBlocks,
+      structures: this.structures.slice(0, 8),
+      structureSurvey: this._structureSurvey,
       ores: (this.valuableOres ?? []).slice(0, 8),
       recent: this.recent.slice(-8),
       status: this.status,

@@ -296,9 +296,12 @@ module, so the mission lifecycle can call it without an import cycle).
   "Episodic → semantic consolidation" section above.
 - **Retention / pruning policy** for the episodic layer (missions, action events
   and checkpoints only grow today).
-- **Structures** (`kind: structure`): villages, Ancient Cities, … — heuristic
-  detection (villagers + beds + village blocks) in the exploration spec M5. The
-  `kind` already exists in the model.
+- ~~**Structures**~~ (`kind: structure`): implemented — `rememberStructure()`
+  writes a `structure_<type>_x_y_z` landmark linked `is_a` to the
+  `structure:<type>` concept node with the detector evidence, and the detector
+  itself (`structures.mjs` + `surveyBlocks` in `bedrock-world.mjs`) is live
+  (village + cavity) — see
+  [exploration](exploration.md#structures-and-underground-targets-m5m6).
 - **Observation log**: an explicit `subject/predicate/object/observedAt/confidence`
   log that materializes the current graph (the API is already shaped for it).
 - **Vector index** over structured memory for *semantic* recall ("the iron-rich
