@@ -778,6 +778,7 @@ test('_barricadeGap finds a 1x2 opening flanked by solid walls', () => {
     if (x === 1 && y === 63 && (z === 1 || z === -1)) return true; // flanking walls
     return false;
   };
+  adapter._airAt = (x, y, z) => !adapter._solidAt(x, y, z);
   const gap = adapter._barricadeGap();
   assert.deepEqual(gap.feet, { x: 1, y: 63, z: 0 });
   assert.deepEqual(gap.head, { x: 1, y: 64, z: 0 });
@@ -803,6 +804,7 @@ test('barricade is offered only with a placeable block and a gap', () => {
   adapter.drops = [];
   adapter.world.findBlocks = () => [];
   adapter._solidAt = (x, y, z) => (x === 1 && y === 62 && z === 0) || (x === 1 && y === 63 && (z === 1 || z === -1));
+  adapter._airAt = (x, y, z) => !adapter._solidAt(x, y, z);
   adapter.inventory = { cobblestone: 3 };
   assert.ok(adapter.options().map(o => o.key).includes('barricade'), 'barricade option');
   adapter.inventory = {};

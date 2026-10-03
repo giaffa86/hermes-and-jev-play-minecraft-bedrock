@@ -81,9 +81,21 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
 - **`craft_bed` / `place_bed`** — **implemented** (3 wool + 3 planks; the `wool`
   tag matches any colour), and `/observe.travel` reports what is missing for a
   trip. Live round pending (no wool available on the server).
-- **Travel-kit / loadout** *action* — still no auto-prepare, only the readiness
-  checklist. Also missing: inventory-full handling, pillar-up, provisional-hut
-  skill.
+- **Travel-kit / loadout** *action* — **implemented** as `travel_kit`
+  (03/10/2026): crafts the missing pieces in dependency order (planks → sticks →
+  sword → table → torches → bed), each at most once per call, and reports
+  `{ok, before, after, crafted, failed}`. **Pillar-up** (`pillar_up`) and the
+  **provisional hut** (`build_hut`) are implemented too, and all three were
+  exercised live on 03/10/2026 (see [exploration](exploration.md) and
+  [verification](verification.md) row 45.4).
+- **Still open**: **inventory-full handling** (drop/consume or abort the trip);
+  the loadout reports `space: false` but does not free slots.
+- **Live residuals (environmental, not code)**: no reachable wool/leather, so
+  armor and the bed stay missing; the bot's room is two blocks tall, so
+  `pillar_up` refuses with the typed `no_headroom`; and the first ring around the
+  bot is furnished, so `build_hut` cannot seal (it placed one wall and reported
+  `hut_incomplete`). All three need the bot to leave the room — same blocker as
+  below.
 
 ## Respawn stuck on live BDS (2026-10-02) — mitigated by auto-reconnect
 

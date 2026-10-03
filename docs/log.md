@@ -1829,3 +1829,27 @@ stato del codice + limiti), `memory.md` (slice "Structures" → implementata),
 `verification.md` (riga 45.3), `open-questions.md`, `roadmap.md` (voci 10 e 11),
 `AGENTS.md` (env `STRUCTURE_RESCAN_MS`/`STRUCTURE_RADIUS`/
 `STRUCTURE_SURVEY_LIMIT`).
+
+## [2026-10-03] feat | Kit di viaggio: loadout, pillar-up, hut + il piazzamento dei blocchi
+
+Implementati in `bedrock-adapter.mjs` (`travel_kit`, `pillar_up`, `build_hut`,
+con `_travelKit`, `_nextKitCraft`, `_ensureCraftingTable`, `_pillarUp`,
+`_buildHut`, `_jumpOnce`, `_headroom`, `_airAt`, `_badSupport`,
+`_placeableBlock({richest})`, `_findPlacementTarget` ad anello) e collaudati
+live sul container `hermes-jev-bedrock` (BDS 1.26.52, VM 100). `travel_kit`
+crafta spada e tavolo (`missing: [armor, night]`, niente lana/cuoio
+raggiungibile); `pillar_up` si rifiuta con `no_headroom` perché la stanza del
+bot è alta due blocchi (`/observe.headroom` = 1) e non invia un solo pacchetto;
+`build_hut` ha piazzato davvero un blocco (`oak_log` 6→5, confermato dal
+server), ha saltato le 8 celle già murate e riporta `hut_incomplete` sulle 3 con
+supporto d'arredamento. Due bug di piazzamento trovati dal vivo e corretti:
+cella bersaglio non-aria (`unexpected_block_torch`: una torcia non è solida ma
+occupa la cella) e supporto "usabile" che consuma il click
+(`place_not_confirmed` con cella vuota); un terzo fix riguarda il salto, che ora
+usa il canale `_freeJump` invece di riscrivere `_motion` (il codice precedente
+faceva crashare l'harness: `TypeError: Cannot read properties of undefined
+(reading 'x')` in `_updateMotionState`). Aggiunta anche la diagnostica
+`/observe.placement`. Suite: 634 test (`tests/bedrock-travel-kit.test.mjs`, 20
+casi). Doc: `exploration.md` (sezione travel kit riscritta + limiti di
+piazzamento e residui live), `verification.md` (riga 45.4),
+`open-questions.md`, `roadmap.md` (voce 12).

@@ -144,14 +144,71 @@ In every case the Survival Governor handles hunger/health/hostiles and then
 - `craft_bed` (3 wool + 3 planks) and `place_bed` — **implemented** (option +
   `wool` tag), and a **travel-kit readiness** checklist is exposed in
   `/observe.travel` (`missing: [...]`). Live round pending (no wool available).
-- **Travel-kit / loadout** *action* (auto-prepare before leaving) — still **not
-  implemented** (readiness is informational only).
-- **Inventory-full handling** (drop/consume or abort the trip) — **not
-  implemented**.
-- **Pillar-up** action — **not implemented** (the bot has `dig_up`/`dig_down`
-  but no "place a block under the feet and climb").
-- Shelter building uses `barricade`/`place_*` pieces but there is no
-  "build a provisional hut" skill.
+- **Travel-kit / loadout** *action* — **implemented** as `travel_kit` (03/10/2026):
+  it crafts the missing pieces in dependency order (planks → sticks → sword →
+  crafting table → torches → bed), each piece at most once per call, and reports
+  `{ok, before, after, crafted, failed}`. `ok` means *the checklist is now
+  green*, not "something was attempted".
+- **Inventory-full handling** (drop/consume or abort the trip) — still **not
+  implemented**; the readiness checklist keeps reporting `space: false` and the
+  loadout does not free slots.
+- **Pillar-up** action — **implemented** as `pillar_up`: jump, place the block
+  in the cell the feet just left, land on it, repeat. Typed refusals:
+  `no_headroom` (fewer than two free cells above the feet — a two-block-tall
+  room **cannot** be pillared), `no_placeable_block`, `no_support`,
+  `out_of_blocks`, `jump_failed`.
+- **Provisional hut** — **implemented** as `build_hut`: walls (feet + head) on
+  the four sides plus a roof over the head walls, **skipping cells that are
+  already solid** (so a half-built shelter is reused instead of broken) and
+  reporting `{ok, placed, failed, skipped, already, covered}` with
+  `hut_incomplete` when the ring is not sealed. Declared limits: no door, the
+  column above the bot stays open, and it does **not** protect from flying mobs.
+
+### Block placement: the support matters (live finding, 03/10/2026)
+
+`place_*`, `barricade`, `travel_kit` and `build_hut` all end up in
+`_placeAtCell`, which clicks the **top face of the support block under the target
+cell**. Two live findings made placements fail with an empty target cell
+(`place_not_confirmed`, no server-side block update):
+
+- the target cell must be **air** (`_airAt`): a torch is not solid but still
+  occupies the cell, and the server refuses the placement
+  (`unexpected_block_torch`);
+- the support must not be a **usable block** (chest/table/furnace/bed/door/…):
+  the click is consumed by that block's own interaction and nothing is placed.
+  `_badSupport` filters those, and the search walks a ring (r=1 then r=2, feet
+  then head level) because a furnished room can leave the whole first ring
+  occupied or unusable.
+
+A third live finding is about the jump: `_jumpOnce` must **not** rebuild
+`this._motion` (the pathfinder owns it and `_updateMotionState` dereferences
+`motion.target`/`motion.path`) — a free jump uses the dedicated `_freeJump`
+channel and declares the same `jumping`/`start_jumping` input flags.
+
+### Live round (03/10/2026) — server-side checks
+
+The bot lives in a walled, furnished room (see the blocker below), so the round
+is **partial but server-verified**:
+
+- `travel_kit` → `crafted: [wooden_sword, crafting_table]`,
+  `missing: [armor, night]` — the 3×3 sword craft needs a table **placed in the
+  world** and that placement worked; armor (leather) and the bed (wool) stay
+  missing because no cow/sheep is reachable from the room.
+- `place_torch` at (115,73,159) → the block is real: `mine_torch` returned
+  `{ok: true, block: 'torch', confirmedBy: 'server_world', picked: [{torch, 1}]}`.
+- `place_dirt` (115,73,158) and `place_crafting_table` (115,73,160) → `ok` with
+  `_lastPlacement.before: 'air'` / `after: '<block>'`.
+- `pillar_up` → `{ok: false, error: 'no_headroom', headroom: 1}`: the live room is
+  **two blocks tall**, so the pillar-up cannot exist there. Zero packets sent.
+- `build_hut` → one real placement (`wall_head` at (115,74,158), `oak_log`
+  6→5), `skipped: 8` (the room already walls those cells), three
+  `place_not_confirmed` on the cells whose support is furniture,
+  `{covered: 9, error: 'hut_incomplete'}`.
+
+Residual gaps for a *complete* kit are environmental, not missing code: no
+reachable wool/leather (armor + bed), a two-block ceiling (pillar-up) and a
+furnished first ring (full hut). All three need the bot to leave the room; see
+[open-questions](open-questions.md).
 
 ## Structures and underground targets (M5/M6)
 

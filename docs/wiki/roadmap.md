@@ -290,10 +290,16 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
     node) are implemented and unit-tested.
 12. **Travel kit** (spec in
     [exploration](exploration.md#travel-survival-kit-and-adaptation-multi-day-expeditions)):
-    `craft_bed`/`place_bed` + `/observe.travel` readiness are implemented and
-    unit-tested; still missing the auto-**loadout** action, **pillar-up**,
-    **provisional hut** and **inventory-full** handling. The `craft_bed` live
-    round is gated by wool (no chest holds wool; shears need the iron chain).
+    `craft_bed`/`place_bed` + `/observe.travel` readiness, and the missing
+    actions — **`travel_kit`** loadout, **`pillar_up`** and **`build_hut`** — are
+    implemented and unit-tested (`tests/bedrock-travel-kit.test.mjs`, 20 cases)
+    and were exercised live on 03/10/2026 (`travel_kit` crafted sword + table,
+    `pillar_up` → typed `no_headroom` with the room two blocks tall, `build_hut`
+    placed one wall and reported `hut_incomplete` on the furniture supports).
+    Remaining: **inventory-full** handling, and the environmental residuals
+    (armor/bed need wool and leather, pillar-up and a full hut need headroom and
+    a free ring), plus the `craft_bed` live round gated by wool (no chest holds
+    wool; shears need the iron chain).
 
 > **Blocker (2026-10-02)**: the deployed bot got stuck on a built platform
 > (`standingOn: oak_planks`; `path_failed` everywhere, `dig_up`/`dig_down`

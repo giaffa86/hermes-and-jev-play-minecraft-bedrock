@@ -195,6 +195,10 @@ export class BedrockAdapter {
     this._lastYaw = 0;
     this._lastPitch = 0;
     this._motion = null;
+    // Salto fuori dal pathfinder (pillar-up): `_motion` è di proprietà del
+    // pathfinder e `_updateMotionState` ne dereferenzia `target`/`path`, quindi
+    // un salto a comando usa un canale dedicato invece di sovrascriverlo.
+    this._freeJump = null;
     this.riding = null;                // { riddenEntityId, at } quando il bot è montato
     this.offhand = null;               // { name, count } dell'offhand (scudo), conferma dal server
     this.shieldUp = false;             // l'ultimo frame auth dichiarava l'uso dell'item
@@ -1002,6 +1006,8 @@ export class BedrockAdapter {
       held: this._slotItemName(heldSlot),
       armor: { ...this.armor, points: this._armorPoints() },
       travel: this._travelReadiness(),
+      placement: this._lastPlacement ?? null,
+      headroom: this._headroom(),
       memory: this.memory ? this.memory.observeView() : null,
       heldDurability: heldInfo?.maxDurability
         ? { damage: this._itemDamage(heldSlot), max: heldInfo.maxDurability }
@@ -1116,6 +1122,22 @@ export class BedrockAdapter {
     // Barricata: sigilla il varco davanti con 2 blocchi (piedi+testa).
     if (this._placeableBlock() && this._barricadeGap()) {
       o.push({ key: 'barricade', description: 'Seal the opening ahead with 2 blocks (feet + head) to block mobs' });
+    }
+    // Kit di viaggio: prepara il prossimo pezzo mancante e craftabile adesso
+    // (assi → bastoni → tavolo → torce → letto). Idempotente.
+    const kitNext = this._nextKitCraft();
+    if (kitNext) {
+      o.push({ key: 'travel_kit', description: `Prepare the travel kit for a multi-day expedition (next craftable step: ${kitNext})` });
+    }
+    // Pillar-up: un blocco sotto i piedi + salto (terza strategia notturna della
+    // spec: funziona contro i mob terrestri, non contro quelli volanti).
+    if (this._placeableBlock() && this._onGround && !this.riding) {
+      o.push({ key: 'pillar_up', description: 'Place a block under your feet and climb onto it (escape a ground mob or start a shelter)' });
+    }
+    // Rifugio provvisorio: muri + tetto con i blocchi disponibili, quando serve
+    // davvero (notte o ostili a tiro).
+    if (this._placeableBlock() && (this._isNight() || this._hostiles().some(h => this._entityDistance(h) <= 16))) {
+      o.push({ key: 'build_hut', description: 'Seal a temporary hut around you with blocks (walls + roof) to survive the night' });
     }
     const food = this._bestFoodItem();
     if (food && (this.food < 18 || (this.health < 20 && this.food < 20))) {
@@ -1567,6 +1589,12 @@ export class BedrockAdapter {
         result = await this._closeDoor();
       } else if (key === 'barricade') {
         result = await this._barricade();
+      } else if (key === 'travel_kit') {
+        result = await this._travelKit();
+      } else if (key === 'pillar_up') {
+        result = await this._pillarUp({});
+      } else if (key === 'build_hut') {
+        result = await this._buildHut({});
       } else if (key === 'sleep') {
         result = await this._sleepInBed();
       } else if (key === 'recover_loot') {
@@ -3225,16 +3253,43 @@ export class BedrockAdapter {
     return true;
   }
 
+  // Cella dove piazzare un blocco: il vicino libero più vicino con un supporto
+  // solido sotto. Cerca ad anello (raggio 1 poi 2, alla quota dei piedi e a
+  // quella appena sopra) perché in una stanza arredata il primo anello può essere
+  // tutto occupato: il piazzamento resta entro la portata del braccio (~5 blocchi).
+  // Supporti su cui non conviene piazzare: blocchi "usabili" (contenitori, tavoli,
+  // fornaci, letti, porte…) intercettano il click e il server non piazza nulla
+  // (esito osservato live: `place_not_confirmed` con la cella bersaglio vuota).
+  _badSupport (name) {
+    return /(chest|_table$|furnace|smoker|barrel|shulker_box|hopper|anvil|brewing_stand|beacon|loom|stonecutter|grindstone|lectern|composter|cauldron|bell|_bed$|_sign$|_banner$|_door$|_fence_gate$|_pot$|torch|lantern)/.test(name || '');
+  }
+
   _findPlacementTarget (blockName) {
     const feet = this._feet;
     const bx = Math.floor(feet.x), by = Math.floor(feet.y + 0.1), bz = Math.floor(feet.z);
-    const dirs = [[1, 0], [0, 1], [-1, 0], [0, -1]];
-    for (const [dx, dz] of dirs) {
-      const target = { x: bx + dx, y: by, z: bz + dz };
-      const support = { x: target.x, y: target.y - 1, z: target.z };
-      if (this._solidAt(target.x, target.y, target.z)) continue;
-      if (!this._solidAt(support.x, support.y, support.z)) continue;
-      return { target, support, face: 1, clickPos: { x: 0.5, y: 1, z: 0.5 }, blockName };
+    const ring = (r) => {
+      const cells = [];
+      for (let dx = -r; dx <= r; dx++) {
+        for (let dz = -r; dz <= r; dz++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+          cells.push([dx, dz]);
+        }
+      }
+      return cells.sort((a, b) => (Math.abs(a[0]) + Math.abs(a[1])) - (Math.abs(b[0]) + Math.abs(b[1])));
+    };
+    for (const r of [1, 2]) {
+      for (const dy of [0, 1]) {
+        for (const [dx, dz] of ring(r)) {
+          if (dx === 0 && dz === 0) continue; // la cella del bot (piedi o testa)
+          const target = { x: bx + dx, y: by + dy, z: bz + dz };
+          const support = { x: target.x, y: target.y - 1, z: target.z };
+          if (!this._airAt(target.x, target.y, target.z)) continue;
+          const under = this.world.blockAt(support);
+          if (!under || !this._solidAt(support.x, support.y, support.z)) continue;
+          if (this._badSupport(under.name)) continue;
+          return { target, support, face: 1, clickPos: { x: 0.5, y: 1, z: 0.5 }, blockName };
+        }
+      }
     }
     return null;
   }
@@ -3257,9 +3312,18 @@ export class BedrockAdapter {
     const held = this.inventorySlots[slotIndex];
     const runtimeId = this.world.runtimeIdAt(support);
     const yaw = this._yawTo(this._feet, { x: target.x + 0.5, z: target.z + 0.5 });
+    const pitch = this._lookAt({ x: target.x + 0.5, y: target.y + 0.5, z: target.z + 0.5 }).pitch;
+    // Diagnostica: l'esito di un piazzamento è altrimenti invisibile da fuori
+    // (il server può ignorare la transazione senza rispondere nulla).
+    const before = this.world.blockAt(target)?.name ?? null;
+    this._lastPlacement = {
+      item: itemName, block: blockName, target: { ...target }, support: { ...support }, face,
+      slot: slotIndex, hotbar: this.selectedHotbar, held: this._slotItemName(held) || null, yaw, pitch,
+      before, at: Date.now(), error: null,
+    };
     await this._queueAuthInput({
       yaw,
-      pitch: this._lookAt({ x: target.x + 0.5, y: target.y + 0.5, z: target.z + 0.5 }).pitch,
+      pitch,
       transaction: {
         legacy: { legacy_request_id: 0 },
         actions: [],
@@ -3284,13 +3348,16 @@ export class BedrockAdapter {
       const placed = this.world.blockAt(target);
       if (placed && placed.name === blockName) {
         this._refreshNearby();
+        this._lastPlacement.after = blockName;
         return { ok: true, block: blockName, position: target };
       }
       if (placed && placed.name !== 'air' && placed.name !== 'unknown') {
+        this._lastPlacement.after = placed.name;
         return { ok: false, error: `unexpected_block_${placed.name}` };
       }
       await delay(100);
     }
+    this._lastPlacement.after = this.world.blockAt(target)?.name ?? null;
     return { ok: false, error: 'place_not_confirmed' };
   }
 
@@ -3924,6 +3991,10 @@ export class BedrockAdapter {
       if (this._collidedHorizontally) inputData.push('horizontal_collision');
       if (this._onGround) inputData.push('vertical_collision');
     }
+    if (this._freeJump?.heldTicks > 0) {
+      inputData.push('jumping', 'want_up');
+      if (this._freeJump.start) { inputData.push('start_jumping'); this._freeJump.start = false; }
+    }
     if (blockAction?.length) inputData.push('block_action');
     if (transaction) inputData.push('item_interact');
     if (itemStackRequest) inputData.push('item_stack_request');
@@ -4000,6 +4071,15 @@ export class BedrockAdapter {
     const block = this.world.blockAt({ x, y, z });
     if (!block || block.name === 'unknown') return true; // non caricato o ignoto: conservativo
     return block.boundingBox === 'block';
+  }
+
+  // Cella libera *per un piazzamento*: deve contenere aria, non basta che non sia
+  // solida. Una torcia o un cespuglio non sono solidi ma occupano la cella, e il
+  // server rifiuta il piazzamento lasciando il blocco precedente (errore
+  // `unexpected_block_*`). `unknown`/non caricato vale come occupato.
+  _airAt (x, y, z) {
+    const name = this.world.blockAt({ x, y, z })?.name;
+    return name === 'air' || name === 'cave_air' || name === 'void_air';
   }
 
   _passable (block) {
@@ -4095,13 +4175,15 @@ export class BedrockAdapter {
   _physicsStep () {
     if (!this._feet) return;
     const motion = this._motion;
-    if (motion?.active && motion.jumpHeldTicks > 0) motion.jumpHeldTicks--;
-    if (motion?.active && motion.jumpQueued && this._onGround) {
+    if (this._freeJump?.heldTicks > 0) this._freeJump.heldTicks--;
+    const freeJump = !!this._freeJump?.queued;
+    if ((motion?.active && motion.jumpQueued || freeJump) && this._onGround) {
       // La gravità viene applicata nello stesso tick: compensa l'impulso così
       // che il primo spostamento verticale sia il salto pieno (apice ~1.3 blocchi).
       this._velocity.y = JUMP_VELOCITY + GRAVITY;
       this._onGround = false;
-      motion.jumpQueued = false;
+      if (motion?.active) motion.jumpQueued = false;
+      if (this._freeJump) this._freeJump.queued = false;
     }
     const beforeX = this._feet.x, beforeZ = this._feet.z;
     if (motion?.active && motion.forward) {
@@ -5548,11 +5630,16 @@ export class BedrockAdapter {
     return { ok: true, closed: true, unconfirmed: true, position: target };
   }
 
-  // Blocco piazzabile più comune in inventario (per barricare un varco).
-  _placeableBlock () {
+  // Blocco piazzabile più comune in inventario (per barricare un varco). Con
+  // `richest` sceglie quello di cui c'è più copia: un rifugio consuma molti
+  // blocchi, quindi conviene spendere lo stack più grosso invece del primo nome
+  // in lista (che può essere un singolo pezzo).
+  _placeableBlock ({ richest = false } = {}) {
     const preferred = ['cobblestone', 'dirt', 'oak_planks', 'spruce_planks', 'cherry_planks', 'birch_planks',
       'stone', 'oak_log', 'spruce_log', 'cherry_log', 'birch_log', 'sand', 'gravel'];
-    return preferred.find(b => (this.inventory[b] || 0) > 0) || null;
+    const owned = preferred.filter(b => (this.inventory[b] || 0) > 0);
+    if (!richest) return owned[0] ?? null;
+    return owned.sort((a, b) => (this.inventory[b] || 0) - (this.inventory[a] || 0))[0] ?? null;
   }
 
   // Cerca un varco 1×2 aperto (piedi+testa liberi, pavimento e fianchi solidi) nei
@@ -5564,8 +5651,8 @@ export class BedrockAdapter {
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const fx = bx + dx, fz = bz + dz;
       const gap = { feet: { x: fx, y: by, z: fz }, head: { x: fx, y: by + 1, z: fz }, support: { x: fx, y: by - 1, z: fz } };
-      if (this._solidAt(gap.feet.x, gap.feet.y, gap.feet.z)) continue;
-      if (this._solidAt(gap.head.x, gap.head.y, gap.head.z)) continue;
+      if (!this._airAt(gap.feet.x, gap.feet.y, gap.feet.z)) continue;
+      if (!this._airAt(gap.head.x, gap.head.y, gap.head.z)) continue;
       if (!this._solidAt(gap.support.x, gap.support.y, gap.support.z)) continue;
       const sx = -dz, sz = dx; // perpendicolare alla direzione del varco
       if (this._solidAt(fx + sx, by, fz + sz) && this._solidAt(fx - sx, by, fz - sz)) return gap;
@@ -5588,6 +5675,210 @@ export class BedrockAdapter {
     this._refreshNearby();
     const sealed = placed.length === 2 && placed.every(p => p.ok);
     return { ok: sealed, block, placed, ...(sealed ? {} : { error: 'barricade_incomplete' }) };
+  }
+
+  // ---- Kit di viaggio (P5): loadout, pillar-up, rifugio provvisorio ----------
+
+  // Salto "a comando" fuori dal pathfinder: se un percorso è già attivo chiede il
+  // salto a quello, altrimenti arma un salto libero (`_freeJump`). In entrambi i
+  // casi attende che i piedi lascino il suolo. Budget breve: il chiamante ha già
+  // un timeout.
+  async _jumpOnce (timeoutMs = 1500) {
+    if (!this.spawned || !this._feet) return false;
+    const motion = this._motion;
+    const free = !motion?.active;
+    if (free) this._freeJump = { queued: true, heldTicks: 6, start: true };
+    else { motion.jumpQueued = true; motion.jumpHeldTicks = 6; motion.jumpStart = true; }
+    const started = Date.now();
+    try {
+      while (Date.now() - started < timeoutMs) {
+        await delay(50);
+        if (!this._onGround) return true;
+      }
+      return false;
+    } finally {
+      if (free) this._freeJump = null;
+    }
+  }
+
+  // Pillar-up: piazza un blocco nella cella dei piedi mentre è in aria e vi
+  // atterra sopra, `blocks` volte. Terza strategia notturna della spec: utile
+  // contro i mob terrestri, inutile contro quelli volanti.
+  // Celle libere sopra la cella dei piedi (tetto compreso): serve al pillar-up,
+  // che per piazzare sotto di sé deve poter alzare i piedi fuori dalla cella.
+  _headroom (limit = 6) {
+    if (!this._feet) return 0;
+    const x = Math.floor(this._feet.x), z = Math.floor(this._feet.z);
+    const by = Math.floor(this._feet.y + 0.1);
+    let free = 0;
+    for (let i = 1; i <= limit; i++) {
+      if (!this._airAt(x, by + i, z)) break;
+      free++;
+    }
+    return free;
+  }
+
+  async _pillarUp ({ blocks = 1, timeoutMs = 20000 } = {}) {
+    if (!this.spawned || !this._feet) return { ok: false, error: 'not_ready' };
+    const block = this._placeableBlock({ richest: true });
+    if (!block) return { ok: false, error: 'no_placeable_block' };
+    // Servono due celle libere sopra i piedi: una per il corpo che sale, una per
+    // il salto. In una stanza alta due blocchi il pillar-up è impossibile.
+    if (this._headroom() < 2) return { ok: false, error: 'no_headroom', block, headroom: this._headroom() };
+    const want = Math.max(1, Math.min(6, Number(blocks) || 1));
+    const startY = this._feet.y;
+    const steps = [];
+    const deadline = Date.now() + Math.max(2000, Number(timeoutMs) || 20000);
+    const stop = (error, cell) => {
+      steps.push({ ok: false, error, position: cell });
+      return { ok: false, error, block, steps, startY, y: this._feet?.y ?? startY };
+    };
+    while (steps.filter(s => s.ok).length < want) {
+      const feet = this._feet;
+      if (!feet) return stop('not_ready');
+      const cell = { x: Math.floor(feet.x), y: Math.floor(feet.y + 0.1), z: Math.floor(feet.z) };
+      const support = { x: cell.x, y: cell.y - 1, z: cell.z };
+      if (Date.now() > deadline) return stop('pillar_timeout', cell);
+      if (!(this.inventory[block] > 0)) return stop('out_of_blocks', cell);
+      if (!this._solidAt(support.x, support.y, support.z)) return stop('no_support', cell);
+      if (this._solidAt(cell.x, cell.y, cell.z)) return stop('cell_occupied', cell);
+      if (!this._airAt(cell.x, cell.y, cell.z)) return stop('cell_occupied', cell);
+      if (!await this._jumpOnce()) return stop('jump_failed', cell);
+      // Il blocco va piazzato mentre il corpo ha già lasciato la cella: nella
+      // prima parte del salto il server rifiuta un blocco dentro il giocatore
+      // (evidenza live: `place_not_confirmed` con i piedi ancora nella cella).
+      const clearDeadline = Date.now() + 1200;
+      while (Date.now() < clearDeadline) {
+        if (this._feet && this._feet.y >= cell.y + 1.02) break;
+        await delay(20);
+      }
+      if (!this._feet || this._feet.y < cell.y + 1.02) return stop('jump_failed', cell);
+      const res = await this._placeAtCell(block, block, cell, support, 1);
+      steps.push({ ...res, position: cell });
+      if (!res.ok) return { ok: false, error: res.error ?? 'place_failed', block, steps, startY, y: this._feet?.y ?? startY };
+      // Il server è autoritativo: aspettiamo di essere atterrati *sopra* il
+      // blocco appena piazzato prima di ripetere il ciclo.
+      const landDeadline = Date.now() + 2500;
+      while (Date.now() < landDeadline) {
+        await delay(50);
+        if (this._onGround && this._feet && this._feet.y >= cell.y + 1) break;
+      }
+    }
+    this._refreshNearby();
+    const y = this._feet?.y ?? startY;
+    return { ok: true, block, blocks: want, climbed: y - startY, startY, y, steps };
+  }
+
+  // Rifugio provvisorio: muri a piedi e testa nei quattro lati + tetto sopra i
+  // muri (supporto = il muro a testa, faccia alta). Le celle già solide si
+  // saltano, quindi funziona anche in una stanza chiusa a metà. Limiti
+  // dichiarati: nessuna porta, il centro sopra il bot resta aperto e non
+  // protegge dai mob volanti.
+  async _buildHut ({ timeoutMs = 90000 } = {}) {
+    if (!this.spawned || !this._feet) return { ok: false, error: 'not_ready' };
+    const block = this._placeableBlock({ richest: true });
+    if (!block) return { ok: false, error: 'no_placeable_block' };
+    const feet = this._feet;
+    const bx = Math.floor(feet.x), bz = Math.floor(feet.z), by = Math.floor(feet.y + 0.1);
+    const sides = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    const placed = [];
+    const failed = [];
+    let skipped = 0;
+    const deadline = Date.now() + Math.max(5000, Number(timeoutMs) || 90000);
+    const place = async (label, target, support) => {
+      if (this._solidAt(target.x, target.y, target.z)) { skipped++; return true; }
+      if (Date.now() > deadline) { failed.push({ label, position: target, error: 'hut_timeout' }); return false; }
+      const res = await this._placeAtCell(block, block, target, support, 1);
+      if (res.ok) placed.push({ label, position: target });
+      else failed.push({ label, position: target, error: res.error ?? 'place_failed' });
+      return res.ok;
+    };
+    for (const [dx, dz] of sides) {
+      const x = bx + dx, z = bz + dz;
+      await place('wall_feet', { x, y: by, z }, { x, y: by - 1, z });
+      await place('wall_head', { x, y: by + 1, z }, { x, y: by, z });
+    }
+    for (const [dx, dz] of sides) {
+      const x = bx + dx, z = bz + dz;
+      await place('roof', { x, y: by + 2, z }, { x, y: by + 1, z });
+    }
+    this._refreshNearby();
+    const covered = placed.length + skipped;
+    const already = placed.length === 0 && failed.length === 0;
+    const sealed = failed.length === 0 && covered >= 12;
+    return { ok: sealed, block, placed, failed, skipped, already, covered, ...(sealed ? {} : { error: 'hut_incomplete' }) };
+  }
+
+  // Prossimo pezzo del kit craftabile *adesso* che manca, in ordine di
+  // dipendenza (assi → bastoni → tavolo → torce → letto). Null se non c'è più
+  // nulla da fare: è anche il gate dell'opzione `travel_kit`.
+  _nextKitCraft () {
+    const inv = this.inventory;
+    const total = (re) => Object.entries(inv).reduce((s, [n, c]) => s + (re.test(n) ? c : 0), 0);
+    const logs = Object.keys(inv).filter(n => /_log$/.test(n) && inv[n] > 0);
+    const planks = total(/_planks$/);
+    const wool = total(/_wool$/);
+    const coal = (inv.coal || 0) + (inv.charcoal || 0);
+    if (planks < 3 && logs.length) return logs[0].replace(/_log$/, '_planks');
+    if ((inv.stick || 0) < 1 && planks >= 2) return 'stick';
+    // La spada del kit: 2 assi + 1 bastone, la prima arma utile in viaggio.
+    if (!Object.keys(inv).some(n => /_sword$/.test(n) && inv[n] > 0) && planks >= 2 && (inv.stick || 0) >= 1) return 'wooden_sword';
+    if (!(inv.crafting_table > 0) && planks >= 4) return 'crafting_table';
+    if (!(inv.torch > 0) && coal >= 1 && (inv.stick || 0) >= 1) return 'torch';
+    if (!(inv.bed > 0) && wool >= 3 && planks >= 3) return 'bed';
+    return null;
+  }
+
+  // Un craft 3×3 (spada, letto, armature) richiede un tavolo *nel mondo*: se non
+  // ce n'è uno a portata e ne portiamo uno in inventario, lo piazziamo qui. Così
+  // il kit di viaggio basta a se stesso anche lontano dalla base.
+  async _ensureCraftingTable () {
+    const nearby = this.world.findBlocks?.('crafting_table', this.position, 8, 1) || [];
+    if (nearby.length && (this.approachReachable(nearby[0].position) || !this._reachabilityUsable())) {
+      return { ok: true, nearby: true, position: nearby[0].position };
+    }
+    if (!(this.inventory.crafting_table > 0)) return { ok: false, error: 'no_crafting_table' };
+    const res = await this._placeBlock('crafting_table', 'crafting_table');
+    if (!res.ok) return { ok: false, error: res.error ?? 'table_place_failed' };
+    this.log('crafting_table_placed', { position: res.position });
+    return { ok: true, placed: true, position: res.position };
+  }
+
+  // Ricette del kit che richiedono il tavolo da lavoro (3×3).
+  _needsTable (item) {
+    return /(_sword|_pickaxe|_axe|_shovel|_hoe|_helmet|_chestplate|_leggings|_boots)$/.test(item) || item === 'bed';
+  }
+
+  // Loadout di partenza: crafta in sequenza i pezzi mancanti del kit finché ne
+  // resta qualcuno craftabile con l'inventario corrente. Non prende nulla dai
+  // container e non tocca il letto/le torce già presenti.
+  async _travelKit () {
+    const before = this._travelReadiness();
+    const crafted = [];
+    const failed = [];
+    const attempted = new Set();
+    for (let i = 0; i < 8; i++) {
+      const next = this._nextKitCraft();
+      if (!next || attempted.has(next)) break;
+      attempted.add(next);
+      let res;
+      try {
+        if (this._needsTable(next)) {
+          const table = await this._ensureCraftingTable();
+          if (!table.ok) {
+            failed.push({ item: next, error: table.error ?? 'no_crafting_table' });
+            break;
+          }
+        }
+        res = await this._craftItem(next);
+      } catch (error) {
+        res = { ok: false, error: error?.message ?? 'craft_failed' };
+      }
+      if (res.ok) crafted.push({ item: next });
+      else { failed.push({ item: next, error: res.error ?? 'craft_failed' }); break; }
+    }
+    const after = this._travelReadiness();
+    return { ok: after.ready, before, after, crafted, failed };
   }
 
   _bestFoodItem () {
