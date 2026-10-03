@@ -68,9 +68,12 @@ environmental blocker.
 
 ## 4. Tests
 
-- `node --test tests/*.test.mjs` → **1019 pass / 0 fail** (79 files). One known
-  flake under full-suite load: `tests/bedrock-circuits.test.mjs` ("a different
-  delay is an error") measures real tick timing; it passes in isolation.
+- `node --test tests/*.test.mjs` → **1021 pass / 0 fail** (79 files). The one flake
+  that used to appear under full-suite load
+  (`tests/bedrock-circuits.test.mjs`, "a different delay is an error", which
+  measured real tick timing) is **fixed**: the delay measurement reads an
+  injectable clock (`this._now`) and the fixture drives it, so the numbers are
+  exact; 15 sequential runs and 4 parallel runs under CPU load are green.
 - Purely unit-tested modules added: consolidation, observation log, vector index,
   `structures`, `exploration`, `bedrock-fluids`, `bedrock-air`, `bedrock-dive`,
   `bedrock-waterfall`, `bedrock-lava`, `bedrock-bucket`, `bedrock-redstone`,

@@ -461,6 +461,15 @@ nothing else.
   arrived), `circuit_delay_mismatch` (measured outside the tolerance). A wrong
   delay is an error even when every block is exactly where the blueprint wanted
   it.
+- **The clock is injectable** (`this._now`, default `() => Date.now()`): the
+  measurement compares the trigger instant with the block update's, so the adapter
+  takes both from `_now` (`triggeredAt = this._now()`, `_noteRedstoneUpdate(position,
+  at = this._now())`). Production is unchanged (real timestamps), but the builder
+  tests can drive a fake server clock and assert **exact** numbers: before this,
+  the fixture stamped its updates with `Date.now()`, so under load the measured
+  delay could drift past the ±60 ms tolerance and
+  `tests/bedrock-circuits.test.mjs` became intermittent (it was documented as a
+  known flake).
 - **Intent mapping**: `teardown_circuit` (and the `teardown_circuit_<id>`
   variant) → `build` + `redstone` in `survival/intents.mjs`; `REDSTONE_TRACE_LIMIT`
   is configurable (default 32).
@@ -472,8 +481,10 @@ nothing else.
   every block still correct), the unmeasured case (`traceUpdates: false` ⇒
   `circuit_delay_unmeasured`), the rollback on a failed step, the teardown of
   owned cells (with the option appearing and disappearing), the cell someone else
-  changed (skipped, not mined) and the two "nothing to tear down" errors. Suite:
-  **774 tests green**.
+  changed (skipped, not mined) and the two "nothing to tear down" errors, plus two
+  cases for the clock: the tolerance boundary (360 ms passes, 361 ms does not,
+  exactly) and the repeatability of the measurement (three builds with the same
+  fake clock give the same `[300, 6, true]`). Suite: **1021 tests green**.
 - **Live round (03/10/2026, container `hermes-jev-bedrock`)**: `/observe.circuits`
   → `{count: 8, buildable: […4…], declared: […4 with a reason…], invalid: null,
   last: null, owned: 0}`; `/options` → 22 keys with **no** `teardown_circuit` and
@@ -494,7 +505,9 @@ nothing else.
   "one tick late, seven times": it is a timing check, not a trace analysis.
   `teardown_circuit` does not check whether the cell is *still powered* by
   something else; it removes the owned block and leaves the neighbour's wire
-  alone.
+  alone. The measurement itself is now reproducible offline as well: the injected
+  clock removed the last real-time dependence from that test (15 sequential runs
+  and 4 parallel runs under CPU load, all green).
 
 ## R5 — Automation and integration (implemented, unit-tested 03/10/2026)
 

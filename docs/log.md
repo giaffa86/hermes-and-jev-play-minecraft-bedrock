@@ -1,7 +1,8 @@
 # Log
 
 Append-only record of wiki operations. Prefix: `## [YYYY-MM-DD] <type> | <title>`
-where `<type>` is one of `ingest`, `query`, `lint`, `doc`.
+where `<type>` is one of `ingest`, `query`, `lint`, `doc`, `feat`, `fix`,
+`verify`, `report` (the last four joined as the wiki grew).
 
 ## [2026-10-03] lint | Deployment parity between HEAD and the live container
 
@@ -3260,3 +3261,33 @@ stesso tempo).
 episodica; il conteggio "fatti" è quello dei `(subject|predicate|object)` distinti.
 Vedi `docs/wiki/memory.md` (sezioni "Observation log" e "Retention of the
 observation log") e la riga 47.25 di `verification.md`.
+
+## [2026-10-03] fix | Circuit delay measurement: injectable clock, load-independent test
+
+`tests/bedrock-circuits.test.mjs` was the one documented flake under full-suite
+load: the fixture stamped the simulated redstone update with
+`Date.now() + delay` while the adapter pinned `triggeredAt = Date.now()`, so the
+measured gap could drift past the ±60 ms tolerance and the exact assertion
+(`measuredMs === 300`) failed.
+
+- `bedrock-adapter.mjs`: `this._now = () => Date.now()` in the constructor (next
+  to `_redstoneTrace`), read by `triggeredAt` in the R4 build path and by
+  `_noteRedstoneUpdate(position, at = this._now())`. Production stays real-time;
+  a test can now drive the clock.
+- `tests/bedrock-circuits.test.mjs`: the fixture sets
+  `adapter._now = () => clock` (fixed `1790000000000`) and the fake
+  `_useRedstone` calls
+  `_noteRedstoneUpdate(target.position, adapter._now() + linkDelayMs)`, plus two
+  new cases — the tolerance boundary (360 ms of slack passes, 361 ms is
+  `circuit_delay_mismatch`, exactly) and the repeatability of the measurement
+  (three builds on the same fake clock give `[[300,6,true],[300,6,true],[300,6,true]]`).
+
+Evidence: the file alone 21/21 pass, 15 sequential runs clean, 4 runs in parallel
+with 4 CPU burners on 8 cores all clean (`# pass 21 # fail 0`); full suite
+**1019 -> 1021 tests**, 1021 pass / 0 fail in 18.3 s. Investigated alongside: the
+`go_home ... movement timeout` rows in the old live log are **historical** — the
+same waypoints today fail in 20-60 ms with typed errors (`target_not_found`,
+`path_failed`, and the near one succeeds in 195 ms with one path node), so no
+budget was changed (a larger budget would only have stretched the failures).
+Docs: [redstone](wiki/redstone.md) R4, [verification](wiki/verification.md) row
+47.6, [final report](wiki/final-report.md).

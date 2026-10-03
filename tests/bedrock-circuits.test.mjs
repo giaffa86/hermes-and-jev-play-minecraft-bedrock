@@ -46,6 +46,11 @@ function circuitAdapter ({
   }
 
   const events = { placed: [], logs: [], delays: [], triggers: [], mined: [] };
+  // Orologio finto: il fixture non ha un server che timbra gli aggiornamenti di
+  // blocco, quindi la misura del ritardo (R4) deve venire da qui e non dal tempo
+  // reale, altrimenti il test dipende dal carico della macchina.
+  const clock = 1790000000000;
+  adapter._now = () => clock;
   adapter.world.loaded = new Map([['0,0', {}]]);
   adapter.world.blockAt = ({ x, y, z }) => blocks.get(`${x},${y},${z}`) ?? null;
   adapter.world.runtimeIdAt = () => 1;
@@ -113,7 +118,7 @@ function circuitAdapter ({
       effects.push(blocks.get(to).name);
       // Il server riporta il cambio dell'output: `linkDelayMs` modella il tempo
       // di propagazione, che è quello che R4 deve misurare.
-      if (traceUpdates) adapter._noteRedstoneUpdate(target.position, Date.now() + linkDelayMs);
+      if (traceUpdates) adapter._noteRedstoneUpdate(target.position, adapter._now() + linkDelayMs);
     }
     return { ok: true, name: 'lever', position, before, after, effects, restored: restore ? false : null };
   };
@@ -259,6 +264,47 @@ test('un ritardo diverso da quello dichiarato è un errore, non un successo', as
   assert.equal(result.delay.expectedMs, 300);
   assert.equal(result.delay.ok, false);
   assert.equal(result.success.checks.every(c => c.ok), true, 'i blocchi sono giusti: è il tempo a non tornare');
+});
+
+test('il confine della tolleranza è esatto: 60 ms di scarto passa, 61 no', async () => {
+  const inside = circuitAdapter({
+    inventory: { ...DELAY_LINE },
+    link: [['0,72,1', '0,71,5']],
+    linkDelayMs: 360,
+  });
+  const a = await inside.adapter.executeAction('build_circuit_delay_line');
+  assert.equal(a.ok, true, JSON.stringify(a));
+  assert.equal(a.delay.measuredMs, 360);
+  assert.equal(a.delay.measuredTicks, 7);
+  assert.equal(a.delay.ok, true, '360 ms sta dentro la tolleranza di 60 ms');
+
+  const outside = circuitAdapter({
+    inventory: { ...DELAY_LINE },
+    link: [['0,72,1', '0,71,5']],
+    linkDelayMs: 361,
+  });
+  const b = await outside.adapter.executeAction('build_circuit_delay_line');
+  assert.equal(b.ok, false);
+  assert.equal(b.error, 'circuit_delay_mismatch');
+  assert.equal(b.delay.measuredMs, 361);
+  assert.equal(b.delay.ok, false, '361 ms supera la tolleranza di 60 ms');
+});
+
+test('la misura del ritardo non dipende dal tempo reale', async () => {
+  // Regressione: il fixture timbrava gli aggiornamenti con `Date.now()`, quindi
+  // sotto carico la misura poteva superare la tolleranza e il test diventava
+  // intermittente. Con l'orologio iniettato la misura è esatta e ripetibile.
+  const runs = [];
+  for (let i = 0; i < 3; i++) {
+    const { adapter } = circuitAdapter({
+      inventory: { ...DELAY_LINE },
+      link: [['0,72,1', '0,71,5']],
+      linkDelayMs: 300,
+    });
+    const r = await adapter.executeAction('build_circuit_delay_line');
+    runs.push([r.delay.measuredMs, r.delay.measuredTicks, r.delay.ok]);
+  }
+  assert.deepEqual(runs, [[300, 6, true], [300, 6, true], [300, 6, true]]);
 });
 
 test('un circuito che chiede la misura ma non produce aggiornamenti resta non misurato', async () => {

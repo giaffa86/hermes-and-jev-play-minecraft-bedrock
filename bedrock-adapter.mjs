@@ -283,6 +283,11 @@ export class BedrockAdapter {
     // R4: traccia degli ultimi cambi redstone osservati ({position, name, power,
     // at}), base della misura del ritardo di un circuito.
     this._redstoneTrace = [];
+    // R4: la misura del ritardo confronta l'istante del trigger con quello
+    // dell'aggiornamento di blocco. L'orologio è iniettabile perché i test del
+    // builder non hanno un server vero che timbra gli update: con `Date.now()`
+    // la misura dipenderebbe dal carico della macchina (test intermittente).
+    this._now = () => Date.now();
     this.dimension = 'overworld';
     this.standingOn = null;
     this.plan = null;
@@ -2448,7 +2453,7 @@ export class BedrockAdapter {
   // del censimento viene aggiornata **in place** (niente nuova scansione, che
   // costerebbe un findBlocks per ogni blocco scavato) e il cambio resta in
   // `_redstoneChange` per la diagnostica. Una cella non redstone non tocca nulla.
-  _noteRedstoneUpdate (position, at = Date.now()) {
+  _noteRedstoneUpdate (position, at = this._now()) {
     if (!position) return;
     const cell = { x: position.x, y: position.y, z: position.z };
     const before = componentAt(this._redstoneScan, cell);
@@ -6347,7 +6352,7 @@ export class BedrockAdapter {
       }
       : null;
     if (plan.trigger) {
-      const triggeredAt = Date.now();
+      const triggeredAt = this._now();
       const on = await this._useRedstone({ position: plan.trigger.cell, restore: false, timeoutMs, guard: false });
       // La verifica si fa con il trigger ancora attivo: è quello lo stato che il
       // blueprint descrive. Il ripristino viene dopo e viene letto anche lui.
