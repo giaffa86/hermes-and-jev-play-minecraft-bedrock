@@ -321,13 +321,27 @@ observation and the edges are recomputed from it.
   `idx_obs_object(object, predicate)`, `idx_obs_time(observed_at)`
   (`sqlite-memory.mjs`). Ids are
   `${subject}|${predicate}|${object}|${observedAt}#seq`, so two observations in the
-  same millisecond stay distinct.
+  same millisecond stay distinct while the write-side dedupe is off.
+- **Write-side dedupe (`observationDedupeMs`, default 5 min, `OBSERVATION_DEDUPE_MS`)**:
+  the census re-reads the same blocks at every pass (live: 5 523 identical readings
+  out of 5 654, ~280 rows/minute). Re-reading the same `subject|predicate|object`
+  from the same `source` inside the window keeps the observation already stored and
+  returns its id; a **different** value is always a new fact, so history and
+  contradictions are preserved. The window must cover the re-scan period
+  (`STRUCTURE_RESCAN_MS` 60 s, ore census ~15 s) or every cycle lands just outside
+  it. `0` disables the filter (append-only log).
+- **Retention**: `pruneObservations({ keepPerFact, minAgeMs, dryRun })` keeps the
+  newest `keepPerFact` readings per fact and drops the superseded ones — the
+  projection only ever reads the newest, so it cannot change — and
+  `POST /memory/observations/prune` exposes it (dry-run by default).
 - **Contradiction**: a newer reading that disagrees (a chest that no longer holds
   the item, a site with no ore) invalidates the old edge while the old observation
   remains in the log as history.
-- **Tests**: `tests/memory-observations.test.mjs` (16 cases × json/sqlite:
+- **Tests**: `tests/memory-observations.test.mjs` (20 cases × json/sqlite:
   filters, ordering, same-millisecond ids, idempotent replay, contradiction,
-  orphan, `hydrate` reprojection, persistence after reopen).
+  orphan, `hydrate` reprojection, persistence after reopen, dedupe window on/off)
+  and `tests/memory-prune.test.mjs` (21 cases × json/sqlite for both retention
+  layers).
 
 ## Semantic recall (vector index)
 
@@ -402,10 +416,31 @@ the consolidated knowledge of a site after the episodes it came from are gone
 the hint must survive). The vector index is invalidated (`_touchVector`) after a
 real prune that removed something.
 
-Known limits: the **observation log is not pruned** (5 372 rows live on
-03/10/2026 — it is the raw log the projection replays, so pruning it needs its
-own watermark analysis), and an unconsolidated backlog blocks pruning by design
-(run `POST /memory/consolidate` first).
+### Retention of the observation log
+
+The log is the raw evidence, so its retention rule is evidence-based rather than
+time-based: `pruneObservations({ keepPerFact = 5, minAgeMs = 0, dryRun = true })`
+keeps the newest readings per `subject|predicate|object` and drops the
+superseded ones, because `materialize()` only ever reads the newest one — the
+node, its edges and the productivity hints are therefore *identical* before and
+after (asserted in the tests and verified live: the same three semantic-search
+hits with the same scores). `POST /memory/observations/prune` is the route, and
+it is a dry-run unless `dryRun: false` is passed explicitly.
+
+Live round (03/10/2026, container on the homelab VM): the log held **5 654 rows
+for only 32 distinct facts** (5 523 superseded repeats, ~280 rows/minute) —
+the root cause was the census re-observing unchanged facts, so the fix has two
+layers: the write-side dedupe above (growth) and this pruning (backlog). After
+the prune the log stood at **131 rows and stayed at 131 for a further 3 minutes
+(`delta = 0`)** while the census kept running, and `GET /memory/hints` /
+`/memory/search` returned exactly the same results as before the prune. The
+non-destructive branch was chosen on purpose for the live round; the deletes
+themselves are covered by the unit tests on both backends.
+
+Known limits: an unconsolidated backlog blocks the episodic pruning by design
+(run `POST /memory/consolidate` first), and an *unreachable* count of readers
+still sees only the newest reading per fact — the older readings are kept only
+while they are within `keepPerFact`.
 
 ## Next slices
 

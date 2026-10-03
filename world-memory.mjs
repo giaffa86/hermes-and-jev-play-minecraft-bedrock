@@ -75,6 +75,13 @@ export class WorldMemory {
     vectorTtlMs = 5000,
     vectorDims = 2048,
     maxVectorDocs = 2000,
+    // Il censimento rilegge lo stesso fatto a ogni giro (il round live del
+    // 03/10: 5523 letture identiche su 5654, ~280 righe/minuto). Ri-registrare
+    // una lettura identica entro questa finestra non aggiunge informazione: si
+    // tiene quella già in log. La finestra deve coprire il periodo di ricensimento
+    // (`STRUCTURE_RESCAN_MS` 60 s, censimento minerali ~15 s), altrimenti ogni
+    // ciclo cade appena fuori e riparte la crescita. `0` disattiva il filtro.
+    observationDedupeMs = 5 * 60 * 1000,
   } = {}) {
     if (!repo) throw new Error('WorldMemory needs a repository');
     this.repo = repo;
@@ -87,6 +94,7 @@ export class WorldMemory {
     this.vectorTtlMs = vectorTtlMs;
     this.vectorDims = vectorDims;
     this.maxVectorDocs = maxVectorDocs;
+    this.observationDedupeMs = observationDedupeMs;
     this._vector = null;        // VectorIndex o null
     this._vectorAt = 0;         // quando è stato costruito
     this._vectorDirty = false;  // una scrittura dopo l'ultima costruzione
@@ -743,6 +751,16 @@ export class WorldMemory {
   // (una lettura nuova smentisce la vecchia, che resta nel log).
   observe ({ subject, predicate, object, confidence = 1, observedAt = null, source = null, data = {} }) {
     if (!subject || !predicate || object == null) throw new Error('observe needs subject, predicate and object');
+    // Una rilettura identica (stesso fatto, stesso valore) non è un fatto nuovo:
+    // entro `observationDedupeMs` si tiene la lettura già registrata. Un valore
+    // *diverso* è invece un fatto a sé (la storia e le contraddizioni restano).
+    if (this.observationDedupeMs > 0) {
+      const now = observedAt ?? Date.now();
+      const existing = this.repo.observations({ subject, predicate, object: String(object), limit: 1 })[0];
+      if (existing && existing.source === source && now - existing.observedAt <= this.observationDedupeMs) {
+        return existing.id;
+      }
+    }
     // Il testo indicizzato include le osservazioni: un'osservazione nuova cambia
     // il documento del soggetto, quindi l'indice vettoriale va ricostruito.
     this._touchVector();
@@ -1146,6 +1164,42 @@ export class WorldMemory {
       this._touchVector();
       if (typeof this.repo.flush === 'function') this.repo.flush();
     }
+    return report;
+  }
+
+  // Retention del log delle osservazioni (l'ultimo strato che cresceva senza
+  // limite): il log è l'*evidenza*, non la conoscenza — `materialize()` conserva
+  // solo l'affermazione più recente per (soggetto, predicato, oggetto), quindi
+  // l'evidenza *superata* oltre la finestra è ridondante. Si tengono le
+  // `keepPerFact` osservazioni più recenti per fatto; nulla più giovane di
+  // `minAgeMs` viene toccato, e il dry-run è il default (la sessione non elimina
+  // dati senza un motivo esplicito).
+  pruneObservations ({ keepPerFact = 5, minAgeMs = 0, dryRun = true, now = Date.now() } = {}) {
+    const groups = new Map();
+    for (const obs of this.repo.observations({ limit: null })) {
+      const key = `${obs.subject}|${obs.predicate}|${obs.object}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(obs);
+    }
+    const report = {
+      ok: true, dryRun, at: now, keepPerFact, minAgeMs,
+      facts: groups.size, kept: 0, deleted: { observations: 0 },
+      skipped: { newest: 0, tooYoung: 0 }, details: [],
+    };
+    for (const [fact, entries] of groups) {
+      // Ordine esplicito (non quello di lettura): più recente prima, con
+      // tie-break sull'id per un esito deterministico a parità di millisecondo.
+      entries.sort((a, b) => b.observedAt - a.observedAt || (b.id > a.id ? 1 : -1));
+      entries.forEach((obs, index) => {
+        if (index < keepPerFact) { report.kept += 1; report.skipped.newest += 1; return; }
+        if (minAgeMs > 0 && now - obs.observedAt < minAgeMs) { report.skipped.tooYoung += 1; return; }
+        if (!dryRun) this.repo.removeObservation(obs.id);
+        report.deleted.observations += 1;
+        if (report.details.length < 20) report.details.push({ id: obs.id, fact, observedAt: obs.observedAt });
+      });
+    }
+    report.total = report.kept + report.deleted.observations + report.skipped.tooYoung;
+    if (!dryRun && report.deleted.observations && typeof this.repo.flush === 'function') this.repo.flush();
     return report;
   }
 

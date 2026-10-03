@@ -3203,3 +3203,45 @@ fallisce; `mine_*` entro il braccio e `craft_*` sul tavolo adiacente funzionano
 (`pillar_up` -> `no_headroom`, `dig_up` -> blocco protetto). Opzioni in
 `open-questions.md` (raccomandata: una azione mirata sui soli blocchi piazzati dal
 bot, oppure un `setblock` di console sui due blocchi delle sonde).
+## [2026-10-03] feat | Retention del log delle osservazioni: dedupe in scrittura e potatura dell'evidenza superata (P6)
+
+La memoria aveva ancora uno strato senza limite: il **log delle osservazioni**
+(P6). Il round live della retention episodica lo aveva misurato a 5372 righe, e
+il fronte lo ha chiuso nel modo corretto, cioè dalla causa radice.
+
+**Causa**: il censimento rilegge gli stessi blocchi a ogni giro. Live, il log
+conteneva **5654 righe per 32 fatti distinti** (5523 letture identiche, ~280
+righe al minuto).
+
+**Fix, due strati**:
+1. `observationDedupeMs` (default 5 min, `OBSERVATION_DEDUPE_MS`): una rilettura
+   identica (`subject|predicate|object` + `source`) dentro la finestra non crea
+   una riga nuova — si tiene quella già in log. Un valore **diverso** è sempre un
+   fatto nuovo, quindi storia e contraddizioni restano. La finestra copre il
+   periodo di ricensimento (`STRUCTURE_RESCAN_MS` 60 s, censimento minerali ~15 s).
+2. `pruneObservations({ keepPerFact = 5, minAgeMs = 0, dryRun = true })` +
+   `POST /memory/observations/prune`: tiene le `keepPerFact` letture più recenti
+   per fatto e rimuove l'evidenza superata. Non può cambiare la proiezione: la
+   `materialize()` legge solo la più recente. Dry-run per default;
+   `removeObservation(id)` nei due repository (JSON + SQLite).
+
+**Verifica**: `tests/memory-observations.test.mjs` 20 casi e
+`tests/memory-prune.test.mjs` 21 casi, per entrambi i backend (dedupe dentro/fuori
+finestra, fonte diversa, valore diverso, finestra a 0 = log append-only; retention
+con minAgeMs, proiezione invariata, report limitato); suite completa **1019 test**;
+`npm run wiki:lint` pulito.
+
+**Collaudo live** (container `hermes-jev-bedrock`, VM 100, BDS 1.26.52): dry-run
+`{}` -> `{facts: 32, kept: 131, deleted: {observations: 5523}}`; potatura reale
+`{keepPerFact: 5, dryRun: false}` -> log **5654 -> 131 righe** con gli altri
+conteggi (record, relazioni, missioni, action event) **identici** e
+`GET /memory/search?q=productive%20iron%20cave` che restituisce gli **stessi tre
+hit con gli stessi punteggi** (0.355) più gli stessi hint (`carrots` 1.2,
+`potatoes`). Dopo il deploy del dedupe il log è rimasto a **131 righe per altri
+180 s con `delta = 0`** mentre il censimento continuava (prima: ~840 righe nello
+stesso tempo).
+
+**Limiti residui**: un backlog non consolidato blocca per progetto la potatura
+episodica; il conteggio "fatti" è quello dei `(subject|predicate|object)` distinti.
+Vedi `docs/wiki/memory.md` (sezioni "Observation log" e "Retention of the
+observation log") e la riga 47.25 di `verification.md`.

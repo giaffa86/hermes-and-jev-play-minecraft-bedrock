@@ -231,6 +231,7 @@ export class SqliteMemoryRepository {
         confidence=excluded.confidence, observed_at=excluded.observed_at,
         source=excluded.source, data=excluded.data`);
     this._observationCount = this.db.prepare('SELECT COUNT(*) AS n FROM observation');
+    this._removeObservation = this.db.prepare('DELETE FROM observation WHERE id = ?');
   }
 
   static rowToRecord (row) {
@@ -401,6 +402,11 @@ export class SqliteMemoryRepository {
 
   observationCount () {
     return this._observationCount.get().n;
+  }
+
+  // Potatura del log: rimuove una singola osservazione (usata dalla retention).
+  removeObservation (id) {
+    return this._removeObservation.run(id).changes > 0;
   }
 
   // ---- edges -----------------------------------------------------------------

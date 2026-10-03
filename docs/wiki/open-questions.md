@@ -572,8 +572,14 @@ Still missing (the rest of the original gap):
   `minAgeMs` for the recent past — and **dry-run by default**. Live: 40 terminal
   missions, 8 consolidated (the only eligible ones), 32 protected; a real call
   with the default window deleted nothing and the counts plus the productivity
-  hints were unchanged. Still open: the **observation log** (5372 rows) is not
-  pruned, and an unconsolidated backlog blocks pruning by design. The
+  hints were unchanged. The **observation log** has its own retention too
+  (03/10/2026): a write-side dedupe (`observationDedupeMs`, default 5 min) stops
+  the census from appending the same reading again, and `pruneObservations` /
+  `POST /memory/observations/prune` drop the superseded evidence beyond
+  `keepPerFact` per fact — live the log went from **5654 rows to 131** with the
+  projection and the semantic-search scores identical, and stayed at 131 for
+  three further minutes while the census kept running. Still open: an
+  unconsolidated backlog blocks the episodic pruning by design. The
   consolidation write happens on every terminal patch (cheap but unconditional);
   recall is lexical-semantic, so a query must use the game's vocabulary (`iron` ≠
   `iron_ore`). The planner now consumes it (03/10/2026): the controller derives a

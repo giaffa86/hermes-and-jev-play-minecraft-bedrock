@@ -12,10 +12,10 @@ import { createWorldMemory, OBSERVATION_CONCEPT_KINDS } from '../world-memory.mj
 const quiet = { warn () {} };
 const BACKENDS = ['json', 'sqlite'];
 
-const withMemory = (backend, fn) => {
+const withMemory = (backend, fn, options = {}) => {
   const dir = mkdtempSync(join(tmpdir(), `mo-${backend}-`));
   try {
-    const wm = createWorldMemory({ dir, backend, logger: quiet });
+    const wm = createWorldMemory({ dir, backend, logger: quiet, ...options });
     return fn(wm, dir);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 };
@@ -40,13 +40,15 @@ for (const backend of BACKENDS) {
     assert.equal(OBSERVATION_CONCEPT_KINDS.contains, 'resource');
   }));
 
+  // La finestra di deduplica è una politica di crescita: con la finestra a 0 il
+  // log torna un registro grezzo di ogni lettura (append-only).
   test(`[${backend}] two identical observations in the same millisecond stay distinct`, () => withMemory(backend, (wm) => {
     wm.rememberConcept({ kind: 'resource', label: 'iron_ore' });
     const a = wm.observe({ subject: 'resource:iron_ore', predicate: 'node', object: 'seen', observedAt: 5000 });
     const b = wm.observe({ subject: 'resource:iron_ore', predicate: 'node', object: 'seen', observedAt: 5000 });
     assert.notEqual(a, b, 'nessuna sovrascrittura silenziosa');
     assert.equal(wm.observations({ subject: 'resource:iron_ore' }).length, 2);
-  }));
+  }, { observationDedupeMs: 0 }));
 
   test(`[${backend}] materialize projects the log into the graph, idempotently`, () => withMemory(backend, (wm) => {
     const site = wm.rememberResourceSite({ kind: 'cave', position: { x: 20, y: 40, z: 20 }, observations: ['iron_ore', 'coal'] });
@@ -83,7 +85,7 @@ for (const backend of BACKENDS) {
     assert.deepEqual(wm.relationsFrom(chest.id, { type: 'contains' }).map(e => e.to).sort(), ['resource:bread', 'resource:torch']);
     const bread = wm.observations({ subject: chest.id, object: 'bread' });
     assert.equal(bread.length, 2, 'la storia delle letture è conservata (provenienza)');
-  }));
+  }, { observationDedupeMs: 0 }));
 
   test(`[${backend}] structure detection and container reads keep their provenance`, () => withMemory(backend, (wm) => {
     const village = wm.rememberStructure({ type: 'village', position: { x: 100, y: 70, z: 100 }, confidence: 0.6, evidence: { score: 6 } });
@@ -132,4 +134,36 @@ for (const backend of BACKENDS) {
     assert.equal(reopened.relationsFrom(apple[0].subject, { type: 'contains' }).map(e => e.to).includes('resource:apple'), true);
     reopened.close();
   }));
+}
+
+// Deduplica in scrittura: il censimento rilegge gli stessi fatti a ogni giro
+// (round live del 03/10: 5523 letture identiche su 5654). Una rilettura identica
+// dentro la finestra non è informazione nuova; un valore diverso sì.
+for (const backend of BACKENDS) {
+  test(`[${backend}] an identical reading inside the dedupe window is not a new observation`, () => withMemory(backend, (wm) => {
+    const base = 1_000_000;
+    const first = wm.observe({ subject: 'cave_1', predicate: 'contains', object: 'iron_ore', observedAt: base, source: 'survey' });
+    const again = wm.observe({ subject: 'cave_1', predicate: 'contains', object: 'iron_ore', observedAt: base + 5000, source: 'survey' });
+    assert.equal(again, first, 'stessa lettura → stesso id, nessuna riga nuova');
+    assert.equal(wm.observationCount(), 1);
+
+    // Un valore diverso è un fatto a sé (la contraddizione resta nel log).
+    wm.observe({ subject: 'cave_1', predicate: 'contains', object: 'gold_ore', observedAt: base + 6000, source: 'survey' });
+    assert.equal(wm.observationCount(), 2, 'un valore diverso è una osservazione nuova');
+
+    // Oltre la finestra la stessa lettura torna a essere un evento nuovo.
+    wm.observe({ subject: 'cave_1', predicate: 'contains', object: 'iron_ore', observedAt: base + 60_001, source: 'survey' });
+    assert.equal(wm.observationCount(), 3, 'oltre la finestra si registra di nuovo');
+
+    // Una fonte diversa non è la stessa lettura.
+    wm.observe({ subject: 'cave_1', predicate: 'contains', object: 'iron_ore', observedAt: base + 60_100, source: 'human' });
+    assert.equal(wm.observationCount(), 4, 'una fonte diversa è una lettura diversa');
+  }, { observationDedupeMs: 60_000 }));
+
+  test(`[${backend}] the dedupe window can be disabled`, () => withMemory(backend, (wm) => {
+    const base = 2_000_000;
+    wm.observe({ subject: 'cave_2', predicate: 'contains', object: 'coal', observedAt: base });
+    wm.observe({ subject: 'cave_2', predicate: 'contains', object: 'coal', observedAt: base + 1 });
+    assert.equal(wm.observationCount(), 2, 'con la finestra a 0 il log è append-only');
+  }, { observationDedupeMs: 0 }));
 }

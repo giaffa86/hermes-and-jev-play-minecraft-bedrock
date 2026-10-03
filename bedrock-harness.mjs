@@ -12,6 +12,7 @@
 //        con reachable=1 ogni hit porta il verdetto di raggiungibilita' e `candidate` e' il primo raggiungibile)
 //   POST /memory/reindex {limit} -> ricostruisce l'indice vettoriale
 //   POST /memory/prune {keepMissions, keepActions, keepCheckpoints, minAgeMs, dryRun} -> retention
+//   POST /memory/observations/prune {keepPerFact, minAgeMs, dryRun} -> retention del log
 // Il controller sceglie solo chiavi restituite da /options; la validità è qui.
 import { createServer } from 'node:http';
 import { appendFileSync, mkdirSync } from 'node:fs';
@@ -104,7 +105,13 @@ const shutdownSignal = new AbortController();
 let connectionWorker = null;
 
 const MEMORY_DIR = process.env.MEMORY_DIR || 'runs/memory';
-const worldMemory = createWorldMemory({ dir: MEMORY_DIR });
+// Il censimento rilegge gli stessi blocchi a ogni giro: senza finestra di
+// deduplica il log delle osservazioni cresce di ~280 righe al minuto
+// (misurato live il 03/10: 5523 letture identiche su 5654).
+const worldMemory = createWorldMemory({
+  dir: MEMORY_DIR,
+  observationDedupeMs: process.env.OBSERVATION_DEDUPE_MS != null ? Number(process.env.OBSERVATION_DEDUPE_MS) : undefined,
+});
 worldMemory.hydrate();
 console.log(`world memory ready: ${JSON.stringify(worldMemory.summary())} (${MEMORY_DIR})`);
 // Flush periodico: la memoria sopravvive anche a un crash (flushed ogni 30 s a dirty).
@@ -585,6 +592,14 @@ server = createServer(async (req, res) => {
         keepMissions: payload.keepMissions ?? undefined,
         keepActions: payload.keepActions ?? undefined,
         keepCheckpoints: payload.keepCheckpoints ?? undefined,
+        minAgeMs: payload.minAgeMs ?? undefined,
+        dryRun: payload.dryRun !== false,
+      })];
+    }
+    else if (req.method === 'POST' && req.url === '/memory/observations/prune') {
+      const payload = body ? JSON.parse(body) : {};
+      response = [200, worldMemory.pruneObservations({
+        keepPerFact: payload.keepPerFact ?? undefined,
         minAgeMs: payload.minAgeMs ?? undefined,
         dryRun: payload.dryRun !== false,
       })];

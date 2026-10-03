@@ -297,6 +297,13 @@ export class JsonMemoryRepository {
     return this._observations.size;
   }
 
+  // Potatura del log: rimuove una singola osservazione (usata dalla retention).
+  removeObservation (id) {
+    const had = this._observations.delete(id);
+    if (had) this.dirty = true;
+    return had;
+  }
+
   flush () {
     if (!this.dirty || !this.dir) { this.dirty = false; return; }
     const file = this.file;

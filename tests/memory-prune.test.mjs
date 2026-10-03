@@ -17,10 +17,10 @@ import { createWorldMemory } from '../world-memory.mjs';
 const quiet = { warn () {} };
 const BACKENDS = ['json', 'sqlite'];
 
-const withMemory = (backend, fn) => {
+const withMemory = (backend, fn, options = {}) => {
   const dir = mkdtempSync(join(tmpdir(), `mc-prune-${backend}-`));
   try {
-    const wm = createWorldMemory({ dir, backend, logger: quiet });
+    const wm = createWorldMemory({ dir, backend, logger: quiet, ...options });
     return fn(wm, dir);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 };
@@ -202,3 +202,75 @@ test('the pruning report is JSON-serializable (the harness route returns it as i
     assert.equal(round.details[0].mission, 'm1', 'la finestra tiene la missione più recente (m2)');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// ---- retention del log delle osservazioni -------------------------------------
+// Il log è l'evidenza; la conoscenza è la sua proiezione. Si tengono le
+// `keepPerFact` letture più recenti per (soggetto, predicato, oggetto): la
+// proiezione usa comunque la più recente, quindi l'evidenza superata è ridondante.
+
+const logFact = (wm, { subject = 'cave_07', predicate = 'contains', object = 'iron_ore', times = [] }) => {
+  for (const at of times) wm.observe({ subject, predicate, object, observedAt: at, source: 'test' });
+};
+
+for (const backend of BACKENDS) {
+  test(`[${backend}] observation pruning is a dry-run by default and keeps the newest per fact`, () => withMemory(backend, (wm) => {
+    const base = Date.now();
+    logFact(wm, { times: [base - 4000, base - 3000, base - 2000, base - 1000] });
+    logFact(wm, { subject: 'cave_08', object: 'gold_ore', times: [base - 2000] });
+    assert.equal(wm.observationCount(), 5);
+
+    const dry = wm.pruneObservations({ keepPerFact: 2 });
+    assert.equal(dry.dryRun, true, 'senza dryRun:false non si cancella');
+    assert.equal(dry.facts, 2, 'due fatti distinti');
+    assert.equal(dry.kept, 3, '2 del primo fatto + 1 del secondo');
+    assert.equal(dry.deleted.observations, 2);
+    assert.equal(wm.observationCount(), 5, 'il dry-run non tocca il log');
+
+    const real = wm.pruneObservations({ keepPerFact: 2, dryRun: false });
+    assert.equal(real.deleted.observations, 2);
+    assert.equal(wm.observationCount(), 3);
+    const left = wm.observations({ subject: 'cave_07' }).map(o => o.observedAt);
+    assert.deepEqual(left, [base - 1000, base - 2000], 'restano le due letture più recenti, dal più recente');
+    assert.equal(wm.observations({ subject: 'cave_08' }).length, 1, 'l\'altro fatto è intatto');
+  }, { observationDedupeMs: 0 }));
+
+  test(`[${backend}] minAgeMs protects the recent evidence`, () => withMemory(backend, (wm) => {
+    const base = Date.now();
+    logFact(wm, { times: [base - 5000, base - 100] });
+
+    const report = wm.pruneObservations({ keepPerFact: 1, minAgeMs: 60000, dryRun: false });
+    assert.equal(report.deleted.observations, 0);
+    assert.equal(report.skipped.tooYoung, 1, 'la lettura superata ma recente resta');
+    assert.equal(wm.observationCount(), 2);
+  }, { observationDedupeMs: 0 }));
+
+  test(`[${backend}] pruning superseded evidence never changes the projection`, () => withMemory(backend, (wm) => {
+    const base = Date.now();
+    wm.rememberResourceSite({ id: 'cave_07', kind: 'cave', position: { x: 100, y: 64, z: 200 }, observations: ['iron_ore'] });
+    // Evidenza superata: due letture più vecchie dello stesso fatto.
+    wm.observe({ subject: 'cave_07', predicate: 'contains', object: 'gold_ore', observedAt: base - 1000, source: 'test' });
+    wm.observe({ subject: 'cave_07', predicate: 'contains', object: 'diamond', observedAt: base - 5000, source: 'test' });
+    wm.materialize();
+    const before = JSON.stringify(wm.getRecord('cave_07'));
+    assert.ok(before.includes('iron_ore'), 'il nodo ha la sua osservazione di risorsa');
+
+    const report = wm.pruneObservations({ keepPerFact: 0, dryRun: false });
+    assert.ok(report.deleted.observations >= 3, `evidenza potata (${report.deleted.observations})`);
+    assert.equal(wm.observationCount(), 0, 'il log è vuoto');
+    wm.materialize();
+    assert.equal(JSON.stringify(wm.getRecord('cave_07')), before, 'la proiezione (il nodo) non cambia');
+  }, { observationDedupeMs: 0 }));
+
+  test(`[${backend}] the observation pruning report is JSON-serializable and bounded`, () => withMemory(backend, (wm) => {
+    const base = Date.now();
+    const times = [];
+    for (let i = 0; i < 40; i++) times.push(base - (40 - i) * 1000);
+    logFact(wm, { times });
+    const report = JSON.parse(JSON.stringify(wm.pruneObservations({ keepPerFact: 5, dryRun: false })));
+    assert.equal(report.deleted.observations, 35);
+    assert.equal(report.kept, 5);
+    assert.equal(report.total, 40);
+    assert.equal(report.details.length, 20, 'i dettagli sono limitati a 20 voci');
+    assert.equal(wm.observationCount(), 5);
+  }, { observationDedupeMs: 0 }));
+}

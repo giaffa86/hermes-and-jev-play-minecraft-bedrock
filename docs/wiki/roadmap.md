@@ -426,9 +426,13 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
     recall~~ **done** (03/10: `vector-index.mjs` — a *derived* index over the
     current records with a TTL cache, `GET /memory/search` / `POST /memory/reindex`,
     comparative proof in `tests/memory-semantic.test.mjs`; SQLite stays the truth).
-    What is left: the **observation log** is still unbounded (the graph, missions
-    and hints have a retention path now: `pruneEpisodic` / `POST /memory/prune`,
-    dry-run by default, only consolidated terminal missions), and turning a
+    What is left: the **observation log** is bounded too now (03/10:
+    `observationDedupeMs` stops the census from re-appending an unchanged reading,
+    `pruneObservations` / `POST /memory/observations/prune` drop the superseded
+    evidence — live 5654 -> 131 rows with the projection unchanged, and flat
+    afterwards; the graph, missions and hints have `pruneEpisodic` /
+    `POST /memory/prune`, dry-run by default, only consolidated terminal
+    missions), and turning a
     **semantic hit into a real waypoint** *is* wired (03/10: `reachable=1` on
     `GET /memory/search` -> `placeCandidate` -> `applySemanticWaypoint`, with
     `reachability_unknown` treated as "not confirmed"; the live round shows the
