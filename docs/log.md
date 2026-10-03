@@ -3071,3 +3071,42 @@ entità e contenitori fuori dal componente, respawn del BDS, trigger di
 montaggio/commercio, crescita delle colture — quest'ultima risolta), test e prove
 live, modifiche principali, traccia documentale e i cinque task successivi ordinati
 per dipendenza tecnica.
+
+## [2026-10-03] feat | Il planner consuma il recall semantico (P6)
+
+Chiuso il limite dichiarato della riga 42.5 di `verification.md` e della pagina
+`memory.md` ("nothing in the planner reads `GET /memory/search` yet"). In
+`controller.mjs` il recall entra nel prompt del planner accanto agli indizi di
+provenienza di P0:
+
+- `recallQuery(goal)` costruisce la query dall'obiettivo in corso (obiettivo +
+  tipo del goal + nomi degli item target, tagliata a 200 caratteri), perché
+  l'harness non conosce l'obiettivo e il controller sì;
+- `semanticRecall(goal)` chiama `GET /memory/search?q=…&limit=3` **prima di ogni
+  `hermesPlan`** (avvio e replan) e logga l'evento `semantic_recall` con query,
+  hit (id + score) ed errore; non lancia mai: la rotta mancante o rotta lascia il
+  piano senza indizi (**fail-open**);
+- `semanticRecallLines(hits)` rende le righe nel blocco "Similar places from
+  memory (semantic recall — hints, re-verify on the spot)" con posizione, score
+  e flag `proven` quando la memoria ha un suggerimento di produttività: il recall
+  resta un indizio, mai un fatto.
+
+Test: `tests/controller-recall.test.mjs` (2 casi di integrazione con harness
+HTTP scriptato e finto binario `hermes` che registra il proprio `argv`, quindi
+l'asserzione legge il prompt esatto): il prompt del planner contiene le righe di
+recall e l'evento porta query + hit; con una rotta rotta il piano procede con
+`error` nell'evento e nessuna riga di recall. Suite completa: **989 test, 989
+pass** (era 987).
+
+Round live sul container `hermes-jev-bedrock` (VM 100, BDS 1.26.52; deploy del
+solo `controller.mjs` con `scp` + `docker cp` + md5 identico
+`227b9d023c82cef087a8e7e6b811797e`): la sonda diretta
+`GET /memory/search?q=dirt%20near%20home&limit=3` ha restituito tre documenti con
+il payload di produttività consolidato di P0; il giro
+`RUN_ID=recall-live-1 GOAL="Collect dirt near home" TARGETS={"dirt":2}
+JEV_MODEL=jev-latest` ha prodotto
+`semantic_recall {"query":"Collect dirt near home autonomous dirt","hits":[{"id":"home","score":0.342},{"id":"container_95_72_161","score":0.101},{"id":"resource_site_7_9","score":0.093}],"error":null}`,
+`PLAN Collect dirt near home`, `#1`/`#2 mine_dirt ok confirmedBy server_world`,
+`CANCELLED (exhausted) after 2 actions`, `exit=0` — nessuna regressione sul
+percorso normale. Resta aperto: trasformare un hit in un **waypoint reale**
+quando il goal è libero ("la grotta ricca").

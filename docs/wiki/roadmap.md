@@ -427,8 +427,11 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
     current records with a TTL cache, `GET /memory/search` / `POST /memory/reindex`,
     comparative proof in `tests/memory-semantic.test.mjs`; SQLite stays the truth).
     What is left: a **retention/pruning policy** for the episodic layer (missions,
-    action events and checkpoints only grow today) and **planner-side recall**
-    (nothing in the planner queries `GET /memory/search` yet). The graph, producers,
+    action events and checkpoints only grow today) and turning a semantic hit into
+    a **real waypoint** for a free-form goal. **Planner-side recall is wired**
+    (03/10: the controller queries `GET /memory/search` before every plan with a
+    goal-derived query and injects the hits as hints — fail-open,
+    `tests/controller-recall.test.mjs`). The graph, producers,
     chunk memory, missions, the goal/episodic controller wiring and the
     **episodic → semantic consolidation** (productivity hints on the target node)
     are implemented and unit-tested.

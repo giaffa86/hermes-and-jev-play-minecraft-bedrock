@@ -362,9 +362,11 @@ L2-normalized bag-of-words vector (2048 dims), `cosine()`, `documentText()` and
 - **Known limits**: lexical-semantic only (no synonym mapping — a query must use
   the game's vocabulary; `chest` matches only if the container record's `type` is
   `chest`, which is what the adapter stores), collisions are mitigated by 2048
-  dimensions but not impossible, and **nothing in the planner reads
-  `semanticSearch` yet**: today it is a harness/observability path plus the
-  comparative test.
+  dimensions but not impossible. **Consumed by the planner** since 03/10/2026:
+  `controller.mjs` derives the query from the running goal (`recallQuery`:
+  objective + goal type + target item names) and injects the top 3 hits in the
+  planner prompt next to the P0 hints; the call is fail-open (a broken route logs
+  `semantic_recall` with the error and the plan runs without hints).
 
 ## Next slices
 
@@ -383,10 +385,12 @@ L2-normalized bag-of-words vector (2048 dims), `cosine()`, `documentText()` and
 - ~~**Vector index**~~: implemented — see "Semantic recall (vector index)" above
   (derived index, `GET /memory/search`, comparative proof in
   `tests/memory-semantic.test.mjs`).
-- **Planner-side semantic recall**: nothing in the planner queries
-  `GET /memory/search` yet. Next step is to let a free-form request ("the rich
-  cave") produce candidate locations that the planner can turn into a waypoint,
-  with the same "hint, not fact" re-verification as the P0 hints.
+- ~~**Planner-side semantic recall**~~: implemented — the controller queries
+  `GET /memory/search` before every plan (goal-derived query, top 3 hits in the
+  prompt as hints next to the P0 productivity hints, fail-open, `semantic_recall`
+  event; integration tests in `tests/controller-recall.test.mjs`). Open follow-up:
+  turning a hit into a real waypoint when the goal is free-form ("the rich
+  cave") instead of only hinting at it.
 
 ## Related pages
 

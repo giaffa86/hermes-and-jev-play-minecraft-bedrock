@@ -541,9 +541,12 @@ Still missing (the rest of the original gap):
   iron rich cave near the mountain"* while the vector path returns the right cave
   first. Still open: retention/pruning policy for the episodic layer; the
   consolidation write happens on every terminal patch (cheap but unconditional);
-  **nothing in the planner reads `GET /memory/search` yet** (harness /
-  observability path only); recall is lexical-semantic, so a query must use the
-  game's vocabulary (`iron` ≠ `iron_ore`). See [memory](memory.md).
+  recall is lexical-semantic, so a query must use the game's vocabulary (`iron` ≠
+  `iron_ore`). The planner now consumes it (03/10/2026): the controller derives a
+  query from the running goal and puts the top 3 hits in the planner prompt as
+  hints next to the P0 productivity ones (fail-open, `semantic_recall` event,
+  `tests/controller-recall.test.mjs`, live on the container). Still open: turning
+  a hit into a real waypoint for a free-form goal. See [memory](memory.md).
 - **Drop collection regression** (02/10) — **resolved on 03/10**: it was a
   *geometry* case, not a broken `take_item_entity` handshake. The live event log of
   `p3-first-night-3` (03/10, 00:34:59→00:43:30) shows the pickup path working

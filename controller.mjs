@@ -243,7 +243,43 @@ function provenHintLines (observation, limit = 5) {
   return `Proven locations from past episodes (prefer them, but re-verify on the spot — these are hints, not facts): ${text}`;
 }
 
-async function hermesPlan(observation) {
+// P6 (indice vettoriale): il recall semantico entra nel prompt come **indizio**,
+// mai come fatto, esattamente come i suggerimenti di produttività di P0. La query
+// viene dal goal in corso: l'harness non conosce l'obiettivo, il controller sì.
+function recallQuery (goal) {
+  const parts = [goal?.objective, goal?.type, ...Object.keys(TARGETS ?? {})].filter(Boolean);
+  return parts.join(' ').trim().slice(0, 200);
+}
+
+function semanticRecallLines (hits, limit = 3) {
+  const rows = (hits ?? []).slice(0, limit).filter(h => h?.id);
+  if (!rows.length) return '';
+  const text = rows.map(h => {
+    const pos = h.position ? `${h.position.x},${h.position.z}` : '?';
+    const what = h.label ?? h.type ?? h.kind ?? 'place';
+    const hint = h.productivity ? ', proven' : '';
+    return `${what} at ${pos} (${h.score}${hint})`;
+  }).join('; ');
+  return `Similar places from memory (semantic recall — hints, re-verify on the spot): ${text}`;
+}
+
+// Il recall non deve mai bloccare un piano: se la rotta manca o risponde male si
+// prosegue senza indizi, con l'errore nel log.
+async function semanticRecall (goal) {
+  const query = recallQuery(goal);
+  if (!query) return [];
+  let hits = [];
+  let error = null;
+  try {
+    const out = await api('GET', `/memory/search?q=${encodeURIComponent(query)}&limit=3`);
+    if (Array.isArray(out?.hits)) hits = out.hits;
+    else error = out?.error ?? 'no_hits';
+  } catch (err) { error = err.message; }
+  log('semantic_recall', {query, hits: hits.map(h => ({id: h.id, score: h.score})), error});
+  return hits;
+}
+
+async function hermesPlan(observation, { recall = '' } = {}) {
   const skillList = [...gameplaySkills.keys()].join(', ');
   const curriculumHint = CURRICULUM ? nextMilestone(observation) : null;
   const prompt = [
@@ -255,6 +291,7 @@ async function hermesPlan(observation) {
     `Required targets: ${JSON.stringify(TARGETS)}`,
     `Optional "skill" field, one of the declarative gameplay skills: ${skillList}. Use it when the objective matches one of them; it is verified against harness state, not by you.`,
     provenHintLines(observation),
+    recall,
     'The harness exposes the currently valid actions (typical keys: goto_waypoint, dig_down, mine_<block>, collect_drop, craft_<item>, place_<item>, eat, flee, sleep, wait); the controller will pick one of them. Keep the objective to one sentence the controller can act on now.',
     `Observation: ${JSON.stringify(observation)}`,
   ].filter(Boolean).join('\n');
@@ -278,7 +315,7 @@ async function hermesPlan(observation) {
 
 // In modalità curriculum il piano è deterministico; Hermes resta il fallback
 // per gli errori del motore e per le situazioni ambigue.
-async function planForStep (observation, reason) {
+async function planForStep (observation, reason, goal = null) {
   if (CURRICULUM) {
     const milestone = nextMilestone(observation);
     if (milestone.status === 'met') return {met: true};
@@ -289,7 +326,8 @@ async function planForStep (observation, reason) {
     }
     log('curriculum_fallback', {reason, milestone});
   }
-  return hermesPlan(observation);
+  const recall = semanticRecallLines(await semanticRecall(goal));
+  return hermesPlan(observation, {recall});
 }
 
 // ---- comando umano via chat (M1-M3) ---------------------------------------------------------
@@ -549,7 +587,7 @@ if (goalContract) {
   }
 }
 
-let initialPlan = goal.plan || await planForStep(obs, 'start');
+let initialPlan = goal.plan || await planForStep(obs, 'start', goal);
 if (initialPlan?.met) {
   console.log('CURRICULUM GOAL already met');
   log('goal_met', {steps: 0, curriculum: CURRICULUM});
@@ -699,7 +737,7 @@ for (let step = 1; step <= MAX_STEPS; step++) {
     replanReason = null;
   }
   if (replanReason) {
-    const candidatePlan = await planForStep(obs, replanReason);
+    const candidatePlan = await planForStep(obs, replanReason, goal);
     if (candidatePlan?.met) { log('curriculum_goal_met', {step, reason: replanReason}); goalReached = true; break; }
     const sameSkill = candidatePlan?.skill && candidatePlan.skill === plan.skill;
     plan = candidatePlan;
