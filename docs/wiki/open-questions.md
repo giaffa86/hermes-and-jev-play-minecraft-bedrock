@@ -96,6 +96,26 @@ Last lint: 2026-10-03.
   `mine_owned` cannot claim them. Option A (the console edit) therefore remains
   the only way to remove those two specific blocks; option B now works for
   everything the bot places from now on.
+- **Resolved 2026-10-03 (no console edit, no world change)**: the room opened from
+  the inside. Two model gaps were in the way, both fixed and live-verified. (1) A
+  `green_carpet` in the **feet** cell was read as a wall: low surfaces
+  (`*_carpet`, `*_path`, `moss_carpet`) are now floor in `_standable`/`_solidAt`
+  while the head cell stays strict (row 47.27), and the bot walked the corridor
+  cell by cell — `goto_waypoint` to `{112,158}` → `{distance: 2, pathNodes: 7}`,
+  `standingOn: green_carpet`, then `{110,158}` and down to `y=72.62`, out of the
+  house. (2) Its own P5 probe block was mined (`mine_oak_log` on `(115,74,158)`,
+  confirmed by the server) and the P5 `crafting_table` probe is no longer in the
+  world either (verified live with `/explore/find` on 03/10); with the room open
+  the ledger cycle was completed end to end (craft → `place_crafting_table` at
+  `(106,71,151)` → 1 ledger record → `mine_owned` → ledger back to 0). The base
+  itself was never touched, so **(A)/(B)/(C) is moot for this room**: no
+  `setblock`, no dug floor, no chest. The remaining live blocker of the session
+  is a different one — a **closed door on the bot's cell** (a villager) and the
+  mounting/trade/swim captures, see rows 47.28 and the mount/trade sections.
+- **Still true**: the base furniture (beds, chests, planks) stays untouchable by
+  design, and `mine_owned` only claims what the ledger recorded — the pre-ledger
+  probes of this room are gone for another reason (the bot mined them or they
+  were removed during the first migration), not because the ledger knew them.
 
 ## Mounting a vehicle is never confirmed (2026-10-03)
 

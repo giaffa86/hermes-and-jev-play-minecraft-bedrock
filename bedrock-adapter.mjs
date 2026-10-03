@@ -4655,17 +4655,40 @@ export class BedrockAdapter {
     return -1;
   }
 
-  async _takeToCursor (slotIndex, count) {
+  // Preleva dall'inventario e mette sul cursore. Due cause note rendono il
+  // `take` fragile, entrambe documentate in BEDROCK.md §"Container mapping for
+  // take/place":
+  // 1. senza una finestra aperta il server risponde 49/50 (le richieste
+  //    `item_stack_request` valgono solo con un container aperto): è il motivo
+  //    per cui `_moveItemViaCursor` chiama `_ensureInventoryOpen()` prima di
+  //    ogni take. Era la causa live di `equip_shield` →
+  //    `shield_take_failed_50` (03/10, hotbar/2, stack_id 762);
+  // 2. un `place` fallito lascia l'item **sul cursore** lato server, e da lì
+  //    ogni take verso il cursore viene rifiutato con 50 finché non lo si
+  //    rimette in uno slot: rimedio documentato, rimetterlo e ritentare una
+  //    volta sola.
+  async _takeToCursor (slotIndex, count, { attempts = 2 } = {}) {
+    await this._ensureInventoryOpen();
     const item = this.inventorySlots[slotIndex];
     if (!item?.network_id) throw new Error('missing_ingredients');
     const info = this._invSlotAsSource(slotIndex);
     this.log('take_request', { slotIndex, name: this._slotItemName(item), count, stack_id: item.stack_id ?? null, has_stack_id: item.has_stack_id ?? null });
-    const response = await this._sendStackRequest([{
-      type_id: 'take', legacy_type_id: 0, count,
-      source: this._slotInfo(info.container, info.slot, item.stack_id || 0),
-      destination: this._slotInfo('cursor', 0, 0),
-    }]);
-    if (String(response.status) !== 'ok' && response.status !== 0) throw new Error(`take_failed_${response.status}`);
+    let response = null;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      response = await this._sendStackRequest([{
+        type_id: 'take', legacy_type_id: 0, count,
+        source: this._slotInfo(info.container, info.slot, this.inventorySlots[slotIndex]?.stack_id || 0),
+        destination: this._slotInfo('cursor', 0, 0),
+      }]).catch(() => null);
+      if (response && (String(response.status) === 'ok' || response.status === 0)) break;
+      const status = response?.status ?? 'timeout';
+      this.log('cursor_take_failed', { slotIndex, name: this._slotItemName(item), container: info.container, slot: info.slot, stack_id: item.stack_id ?? null, status, attempt });
+      if (status !== 49 && status !== 50) throw new Error(`take_failed_${status}`);
+      await this._returnCursorToInventory().catch(() => {});
+    }
+    if (!response || (String(response.status) !== 'ok' && response.status !== 0)) {
+      throw new Error(`take_failed_${response?.status ?? 'timeout'}`);
+    }
     this._applyStackResponse(response);
     this._cursor = { network_id: item.network_id, count, stack_id: this._responseSlotStack(response, 'cursor', 0) ?? 0 };
     return this._cursor.stack_id;
@@ -7407,6 +7430,10 @@ export class BedrockAdapter {
     if (this._openDoors.has(`${x},${y},${z}`)) return false;
     const block = this.world.blockAt({ x, y, z });
     if (!block || block.name === 'unknown') return true; // non caricato o ignoto: conservativo
+    // Una superficie da 1/16 non ferma il giocatore (auto-step): la trattiamo
+    // come attraversabile anche nella fisica locale, altrimenti la previsione
+    // di movimento rifiuta il passo e il bot non entra mai nel corridoio.
+    if (this._lowProfile(block)) return false;
     return block.boundingBox === 'block';
   }
 
@@ -7446,6 +7473,19 @@ export class BedrockAdapter {
     return block.boundingBox === 'empty';
   }
 
+  // Superfici basse che si calcano senza saltare: il tappeto (1/16) e i
+  // sentieri (15/16) sono pavimento, non muri, ma il registry li riporta come
+  // `boundingBox: 'block'` e il modello di movimento non ha l'auto-step che li
+  // supera (~0.6). Senza questa eccezione il bot resta chiuso dietro due
+  // `green_carpet` (visto dal vivo il 03/10: corridoio verso la porta rifiutato
+  // dal pathfinding). Restano fuori letto, lastre e scalini: sono alti 0.5-0.56
+  // e richiedono un salto, che il movimento non modella.
+  _lowProfile (block) {
+    const name = block?.name;
+    if (typeof name !== 'string') return false;
+    return /(_carpet|_path)$/.test(name) || name === 'moss_carpet';
+  }
+
   // Acqua di guado: la cella contiene acqua, quindi `_passable` la rifiuta (il
   // bot non nuota), ma se la cella sopra è libera il bot cammina sul fondo con
   // la testa fuori — nessun nuoto e nessun flag di protocollo da indovinare.
@@ -7481,7 +7521,7 @@ export class BedrockAdapter {
     // Un guado è calpestabile, il nuoto no: la cella dei piedi può contenere
     // acqua *solo* se quella della testa è libera (acqua profonda resta un muro,
     // M1 la renderà percorribile col nuoto).
-    if (!this._passableForPath(feet) && !this._wadeable(feet)) return false;
+    if (!this._passableForPath(feet) && !this._wadeable(feet) && !this._lowProfile(feet)) return false;
     if (!this._passableForPath(head)) return false;
     // Una cella con lava in orizzontale ai piedi non è una destinazione: il bot
     // non è equipaggiato per attraversarla (M4 la renderà una scelta gated).
@@ -7503,7 +7543,7 @@ export class BedrockAdapter {
     const below = this._blockForPath(x, y - 1, z);
     const names = { feet: feet?.name ?? null, head: head?.name ?? null, below: below?.name ?? null };
     const cell = { x, y, z };
-    if (!this._passableForPath(feet) && !this._wadeable(feet)) return { ok: false, reason: 'feet', cell, ...names };
+    if (!this._passableForPath(feet) && !this._wadeable(feet) && !this._lowProfile(feet)) return { ok: false, reason: 'feet', cell, ...names };
     if (!this._passableForPath(head)) return { ok: false, reason: 'head', cell, ...names };
     if (this._lavaAdjacent(x, y, z)) return { ok: false, reason: 'lava_adjacent', cell, ...names };
     if (below && landingHazard(below.name)) return { ok: false, reason: 'landing_hazard', cell, ...names };
@@ -7511,14 +7551,38 @@ export class BedrockAdapter {
     return { ok: true, reason: 'ok', cell, ...names };
   }
 
-  _collides (x, y, z) {
+  // Celle occupate *adesso* dal corpo del bot (piedi e testa, con larghezza e
+  // altezza del giocatore). La posizione è autorevole dal server: se la cella in
+  // cui il bot si trova fosse davvero un muro, il server non ce l'avrebbe
+  // lasciato. Senza questa eccezione il modello può *congelare* il bot dove sta:
+  // il 03/10 in un villaggio una porta chiusa addosso al bot (piedi e testa nella
+  // cella `wooden_door`) rendeva solidi i due blocchi del suo stesso corpo, ogni
+  // passo collideva e il bot non usciva più, senza alcun errore da leggere.
+  _selfCells () {
+    const feet = this._feet;
+    if (!feet) return null;
     const eps = 1e-9;
+    const cells = new Set();
+    for (let bx = Math.floor(feet.x - PLAYER_HALF_WIDTH + eps); bx <= Math.floor(feet.x + PLAYER_HALF_WIDTH - eps); bx++) {
+      for (let by = Math.floor(feet.y + eps); by <= Math.floor(feet.y + PLAYER_HEIGHT - eps); by++) {
+        for (let bz = Math.floor(feet.z - PLAYER_HALF_WIDTH + eps); bz <= Math.floor(feet.z + PLAYER_HALF_WIDTH - eps); bz++) {
+          cells.add(`${bx},${by},${bz}`);
+        }
+      }
+    }
+    return cells;
+  }
+
+  _collides (x, y, z, { ignoreSelf = false } = {}) {
+    const eps = 1e-9;
+    const self = ignoreSelf ? this._selfCells() : null;
     const minX = Math.floor(x - PLAYER_HALF_WIDTH + eps), maxX = Math.floor(x + PLAYER_HALF_WIDTH - eps);
     const minY = Math.floor(y + eps), maxY = Math.floor(y + PLAYER_HEIGHT - eps);
     const minZ = Math.floor(z - PLAYER_HALF_WIDTH + eps), maxZ = Math.floor(z + PLAYER_HALF_WIDTH - eps);
     for (let bx = minX; bx <= maxX; bx++) {
       for (let by = minY; by <= maxY; by++) {
         for (let bz = minZ; bz <= maxZ; bz++) {
+          if (self?.has(`${bx},${by},${bz}`)) continue;
           if (this._solidAt(bx, by, bz)) return true;
         }
       }
@@ -7533,14 +7597,14 @@ export class BedrockAdapter {
     for (const [ax, az] of [[dx, 0], [0, dz]]) {
       if (!ax && !az) continue;
       const nx = feet.x + ax, nz = feet.z + az;
-      if (!this._collides(nx, feet.y, nz)) {
+      if (!this._collides(nx, feet.y, nz, { ignoreSelf: true })) {
         feet.x = nx;
         feet.z = nz;
         continue;
       }
       this._collidedHorizontally = true;
       // Gradino di un blocco: prepara un salto se lo spazio sopra è libero.
-      if (this._onGround && !this._collides(nx, feet.y + 1, nz) && motion?.active && motion.jumpHeldTicks <= 0) {
+      if (this._onGround && !this._collides(nx, feet.y + 1, nz, { ignoreSelf: true }) && motion?.active && motion.jumpHeldTicks <= 0) {
         motion.jumpQueued = true;
         motion.jumpHeldTicks = 6;
         motion.jumpStart = true;
@@ -7709,6 +7773,17 @@ export class BedrockAdapter {
     const cx = Math.floor(feet.x) + stepX;
     const cz = Math.floor(feet.z) + stepZ;
     const cy = Math.floor(feet.y + 0.1);
+    // Prima la porta *addosso* al bot: se una porta si chiude sulla sua cella
+    // (un villager nel villaggio, 03/10) il server non gli lascia fare alcun
+    // passo — la fisica locale può anche perdonare la cella che occupa, ma il
+    // movimento lo rifiuta il server. Va aperta come quella davanti, con lo
+    // stesso click_block e la stessa conferma dal cambio di runtime id.
+    const fx = Math.floor(feet.x), fz = Math.floor(feet.z);
+    for (const y of [cy, cy + 1]) {
+      const key = `${fx},${y},${fz}`;
+      if (this._openDoors.has(key)) continue;
+      if (this._isDoorBlock(this.world.blockAt({ x: fx, y, z: fz }))) return { x: fx, y, z: fz };
+    }
     for (const y of [cy, cy + 1]) {
       const key = `${cx},${y},${cz}`;
       if (this._openDoors.has(key)) continue;
@@ -9046,21 +9121,28 @@ export class BedrockAdapter {
     if (!pieces.length) return { ok: false, error: 'no_armor_in_inventory' };
     const equipped = [];
     for (const piece of pieces) {
-      const info = this._invSlotAsSource(piece.index);
-      const take = await this._sendStackRequest([{
-        type_id: 'take', legacy_type_id: 0, count: 1,
-        source: this._slotInfo(info.container, info.slot, piece.stack_id),
-        destination: this._slotInfo('cursor', 0, 0),
-      }]).catch(() => null);
-      if (!take || (String(take.status) !== 'ok' && take.status !== 0)) continue;
-      this._applyStackResponse(take);
-      const cursorStack = this._responseSlotStack(take, 'cursor', 0) ?? 0;
+      let cursorStack = 0;
+      try {
+        cursorStack = await this._takeToCursor(piece.index, 1);
+      } catch (error) {
+        // Stessa primitiva dello scudo: un cursore sporco non deve far saltare
+        // silenziosamente l'armatura (il caso "place fallito" è documentato).
+        this.log('armor_take_failed', { item: piece.name, error: error.message });
+        continue;
+      }
       const place = await this._sendStackRequest([{
         type_id: 'place', legacy_type_id: 1, count: 1,
         source: this._slotInfo('cursor', 0, cursorStack),
         destination: this._slotInfo('armor', piece.armorSlot, 0),
       }]).catch(() => null);
       if (!place || (String(place.status) !== 'ok' && place.status !== 0)) {
+        this.log('armor_place_failed', {
+          item: piece.name,
+          slot: piece.armorSlot,
+          status: place?.status ?? 'timeout',
+          cursor_stack_id: this._cursor?.stack_id ?? null,
+          cursorStack,
+        });
         await this._returnCursorToInventory().catch(() => {});
         continue;
       }
@@ -9995,23 +10077,26 @@ export class BedrockAdapter {
     }
     if (this._openContainer) await this._closeContainer();
     this._offhandConfirmedAt = 0;
-    const info = this._invSlotAsSource(index);
-    const take = await this._sendStackRequest([{
-      type_id: 'take', legacy_type_id: 0, count: 1,
-      source: this._slotInfo(info.container, info.slot, this.inventorySlots[index]?.stack_id || 0),
-      destination: this._slotInfo('cursor', 0, 0),
-    }]).catch(() => null);
-    if (!take || (String(take.status) !== 'ok' && take.status !== 0)) {
-      return { ok: false, error: `shield_take_failed_${take?.status ?? 'timeout'}` };
+    let cursorStack = 0;
+    try {
+      cursorStack = await this._takeToCursor(index, 1);
+    } catch (error) {
+      const reason = String(error.message);
+      if (reason === 'missing_ingredients') return { ok: false, error: 'missing_shield' };
+      return { ok: false, error: `shield_take_failed_${reason.replace(/^take_failed_/, '')}` };
     }
-    this._applyStackResponse(take);
-    const cursorStack = this._responseSlotStack(take, 'cursor', 0) ?? 0;
     const place = await this._sendStackRequest([{
       type_id: 'place', legacy_type_id: 1, count: 1,
       source: this._slotInfo('cursor', 0, cursorStack),
       destination: this._slotInfo('offhand', 0, 0),
     }]).catch(() => null);
     if (!place || (String(place.status) !== 'ok' && place.status !== 0)) {
+      this.log('shield_place_failed', {
+        status: place?.status ?? 'timeout',
+        destination: 'offhand/0',
+        cursor_stack_id: this._cursor?.stack_id ?? null,
+        cursorStack,
+      });
       await this._returnCursorToInventory().catch(() => {});
       return { ok: false, error: `shield_place_failed_${place?.status ?? 'timeout'}` };
     }

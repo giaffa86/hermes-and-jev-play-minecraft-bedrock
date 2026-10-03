@@ -115,6 +115,10 @@ function spawnedAdapter () {
   adapter.client.write = () => {};
   adapter.position = { x: 0, y: 64.62, z: 0 };
   adapter._feet = { x: 0, y: 63, z: 0 };
+  // I take/place verso il cursore valgono solo con la finestra del giocatore
+  // aperta (`_takeToCursor`), quindi qui la si stubba.
+  adapter.openedWindows = 0;
+  adapter._ensureInventoryOpen = async () => { adapter.openedWindows++; };
   return adapter;
 }
 
@@ -716,6 +720,7 @@ test('_equipArmor takes from inventory and places into the armor slot', async ()
   const result = await adapter._equipArmor();
   assert.equal(result.ok, true);
   assert.deepEqual(result.equipped, [{ item: 'iron_chestplate', slot: 1 }]);
+  assert.equal(adapter.openedWindows, 1, 'la finestra del giocatore è aperta prima del take');
   assert.equal(actions.length, 2);
   assert.equal(actions[0][0].destination.slot_type.container_id, 'cursor');
   assert.equal(actions[1][0].destination.slot_type.container_id, 'armor');

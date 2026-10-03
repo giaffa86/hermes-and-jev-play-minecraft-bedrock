@@ -3324,3 +3324,80 @@ probe blocks of that room predate the ledger, so no action can claim them — se
 
 Docs: [redstone](wiki/redstone.md) R4, [memory](wiki/memory.md),
 [verification](wiki/verification.md) row 47.26.
+
+## [2026-10-03] fix | Low surfaces are floor: the bot walks out of the room that sealed it (P2)
+
+`green_carpet` blocks in the corridor cell (feet height) were read as
+`boundingBox: 'block'`, so the feet cell of the bot was a wall and the walkable
+component of the base room stayed one cell wide — every live round that needs
+walking was blocked by furniture, not by the world. New `_lowProfile(block)` in
+`bedrock-adapter.mjs` (`/(_carpet|_path)$/` plus `moss_carpet`) is consulted by
+`_standable`, `_standableWhy` and `_solidAt`: low surfaces (≈ 0.06–0.19 blocks,
+what a real client auto-steps onto) are **floor** in the feet cell, while the
+head cell stays strict (`_passable`/`_passableForPath` untouched) and slabs,
+stairs and beds stay solid on purpose (0.5–0.56 blocks need a real step-up the
+local model does not simulate; prismarine reports `bed` as a full block, so
+guessing was not an option).
+
+Live: the bot walked the corridor (`goto_waypoint` → `{ok:true, distance:2,
+pathNodes:7}`, `standingOn: green_carpet`), reached the door cell and stepped out
+of the house (`y 73 → 72.62`); the potato field 38 nodes away became reachable
+and the P2/P4 live backlog reopened. Tests: 3 new in
+`tests/bedrock-reachability.test.mjs` (head cell still a wall, no floor under a
+bare carpet, slab/bed unchanged).
+
+Docs: [headless-client](wiki/headless-client.md) §4.1,
+[verification](wiki/verification.md) row 47.27.
+
+## [2026-10-03] fix | Equipping needs an open inventory window (the shield take works live now) (P4)
+
+`equip_shield` failed live with `shield_take_failed_50` (three reproductions,
+4–6 ms): the client sent a well formed `item_stack_request` (`take`, hotbar slot
+2, `stack_id` 762) and BDS answered status 50. The cause was neither the cursor
+nor the packet shape — **the player-inventory window was never open**. The
+adapter already knew the rule in `_moveItemViaCursor` (*"I take/place valgono
+solo con una finestra aperta: senza container il server risponde 49/50"*), but
+the equip paths never opened it. `_takeToCursor(slotIndex, count, {attempts: 2})`
+now calls `await this._ensureInventoryOpen()` first (same route as the working
+swaps: `interact`/`open_inventory` + `container_open`), re-reads the item
+snapshot from the refreshed `inventorySlots`, retries once after giving a dirty
+cursor back (`_returnCursorToInventory`), and both `_equipShield` and
+`_equipArmor` use it, with typed errors (`shield_take_failed_*`,
+`armor_take_failed`) and cursor recovery after a failed place.
+
+Live: `take_shield` from the village chest → `{ok:true, item:'shield',
+count:1, inventoryDelta:1}`; `equip_shield` → the take succeeds and the failure
+moves to the `place` into `offhand`/0 (`shield_place_failed_50`,
+`cursor_stack_id` 776) — a destination-form problem the project already
+documents as needing a real-client capture, so the offhand place is the only
+part of the shield round still open. `raise_shield` and `_equipArmor` against a
+real `armor` destination remain untested live. Tests: 3 new in
+`tests/bedrock-shield.test.mjs` (17 total) plus the `_equipArmor` assertion in
+`tests/bedrock-survival.test.mjs`.
+
+Docs: [verification](wiki/verification.md) row 19.3.
+
+## [2026-10-03] fix | A door closed on the bot: open it, don't fight physics
+
+A villager closed the base door on the bot's cell: `GET /debug/geom` (enabled
+for this diagnosis) showed `wooden_door` on **both** the feet and the head cell
+with `standingOn: wooden_door`, and every `goto_waypoint` answered `stuck` while
+`/debug/path` proved that a 5-node path existed (`goalCount 8`, `start
+{90,73,163}`). Two causes, two fixes:
+
+1. the body's own cells counted as solid (`_collides` → `_solidAt`), so no
+   candidate position was ever free; `_selfCells()` plus
+   `_collides(..., { ignoreSelf: true })` (horizontal call sites only) exempt the
+   cells the bot occupies. Kept as an invariant of the local model, but live it
+   was **not** enough: the server itself refuses to move a player out of a
+   closed-door cell;
+2. `_doorAhead()` now checks the bot's **own** feet/head cell **first** (before
+   the cell in front): the existing `click_block` machinery opens it and the
+   door's runtime-id change confirms it (`[door_opened] { key: '90,73,163' }`),
+   after which movement resumes (`{ok:true, distance:1.95, pathNodes:5}`). No
+   world edit: a door opened, not broken.
+
+Tests: 3 new in `tests/bedrock-reachability.test.mjs` (25 total: own cell before
+the cell ahead, door ahead still found, `null` when free, no crossing into the
+neighbouring closed-door cell). Docs: [headless-client](wiki/headless-client.md)
+§4.1, [verification](wiki/verification.md) row 47.28.

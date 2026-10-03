@@ -419,3 +419,113 @@ test('placeCandidate promuove solo un luogo confermato camminabile', () => {
   assert.equal(blindPick.reason, 'reachability_unknown');
   assert.equal(blindPick.hits[0].reachability.detail.cells, 1, 'il dettaglio spiega perché il verdetto manca');
 });
+
+// Dal vivo (03/10) il bot è rimasto chiuso in casa perché il corridoio verso la
+// porta è coperto da due `green_carpet`: il registry li riporta come
+// `boundingBox: 'block'`, ma il giocatore ci cammina sopra. Il tappeto è
+// pavimento, non muro — sia nel pathfinding sia nella fisica locale.
+test('un corridoio di tappeti è percorribile: il tappeto è pavimento, non muro', () => {
+  const world = flatWorld({ minX: 0, maxX: 4, minZ: 0, maxZ: 0, floorY: 72, height: 3 });
+  world.set(1, 73, 0, { name: 'green_carpet', boundingBox: 'block' });
+  world.set(2, 73, 0, { name: 'green_carpet', boundingBox: 'block' });
+  const adapter = reachAdapter(world, { feet: { x: 0.5, y: 73, z: 0.5 } });
+
+  assert.equal(adapter._standable(1, 73, 0), true, 'la cella del tappeto è calpestabile');
+  assert.equal(adapter._standableWhy(1, 73, 0).reason, 'ok');
+  assert.equal(adapter._solidAt(1, 73, 0), false, 'nella fisica locale il tappeto non ferma il passo');
+
+  const reach = adapter.reachableCells();
+  assert.ok(reach.cells.has('1,73,0') && reach.cells.has('2,73,0'), 'il corridoio è attraversabile');
+  assert.equal(adapter.cellReachable({ x: 3.5, y: 73, z: 0.5 }), true, 'e la cella oltre il corridoio è raggiungibile');
+  assert.equal(adapter._reachabilityUsable(), true, 'il componente resta affidabile');
+});
+
+test('un tappeto all\'altezza della testa resta un muro, lastre e letti restano muri', () => {
+  const head = flatWorld({ minX: 0, maxX: 2, minZ: 0, maxZ: 0, floorY: 72, height: 3 });
+  head.set(1, 74, 0, { name: 'green_carpet', boundingBox: 'block' });
+  const adapter = reachAdapter(head, { feet: { x: 0.5, y: 73, z: 0.5 } });
+  assert.equal(adapter._standable(1, 73, 0), false, 'un tappeto a livello testa blocca');
+  assert.equal(adapter._standableWhy(1, 73, 0).reason, 'head');
+  assert.equal(adapter.cellReachable({ x: 1.5, y: 73, z: 0.5 }), false);
+
+  // Lastra e letto sono alti 0.5-0.56: servirebbe un salto, che il movimento non
+  // modella. Meglio un rifiuto esplicito che una destinazione mai confermata.
+  const tall = flatWorld({ minX: 0, maxX: 2, minZ: 0, maxZ: 0, floorY: 72, height: 3 });
+  tall.set(1, 73, 0, { name: 'oak_slab', boundingBox: 'block' });
+  tall.set(2, 73, 0, { name: 'bed', boundingBox: 'block' });
+  const tallAdapter = reachAdapter(tall, { feet: { x: 0.5, y: 73, z: 0.5 } });
+  assert.equal(tallAdapter._standable(1, 73, 0), false);
+  assert.equal(tallAdapter._standableWhy(1, 73, 0).reason, 'feet');
+  assert.equal(tallAdapter._standable(2, 73, 0), false);
+  assert.equal(tallAdapter._solidAt(1, 73, 0), true, 'la lastra resta solida nella fisica');
+  assert.equal(tallAdapter._solidAt(2, 73, 0), true, 'il letto resta solido nella fisica');
+});
+
+test('un tappeto senza pavimento sotto non è un appoggio', () => {
+  const world = flatWorld({ minX: 0, maxX: 1, minZ: 0, maxZ: 0, floorY: 72, height: 3 });
+  world.set(1, 73, 0, { name: 'green_carpet', boundingBox: 'block' });
+  world.set(1, 72, 0, AIR);
+  const adapter = reachAdapter(world, { feet: { x: 0.5, y: 73, z: 0.5 } });
+  assert.equal(adapter._standable(1, 73, 0), false);
+  assert.equal(adapter._standableWhy(1, 73, 0).reason, 'no_floor');
+});
+
+// Il bot può trovarsi *dentro* un blocco solido: una porta chiusa da un villager
+// addosso (villaggio, 03/10), o una cella che il modello legge come solida mentre
+// il server tiene lì il bot. La cella che il corpo occupa già non può fermare il
+// passo, altrimenti il bot resta congelato per sempre; le celle che non occupa
+// restano muri, porte comprese.
+// Il server non lascia muovere il bot fuori da una porta chiusa che lo contiene:
+// il movimento locale da solo non basta (provato live il 03/10). Prima si apre la
+// porta che il bot ha addosso, con lo stesso click_block della porta davanti.
+test('_doorAhead segnala per primo la porta chiusa che il bot ha addosso', () => {
+  const door = { name: 'wooden_door', boundingBox: 'block', diggable: true, hardness: 3 };
+  const world = flatWorld({ minX: 0, maxX: 3, minZ: 0, maxZ: 1, floorY: 72, height: 3 });
+  world.set(1, 73, 0, door);
+  world.set(1, 74, 0, door);
+  const adapter = reachAdapter(world, { feet: { x: 1.5, y: 73, z: 0.5 } });
+  adapter._motion = { active: true, yaw: 0 };
+  assert.deepEqual(adapter._doorAhead(), { x: 1, y: 73, z: 0 }, 'la porta occupata è il primo bersaglio');
+  // La porta davanti (yaw 0 = +z) viene comunque riconosciuta quando libera.
+  world.set(1, 73, 1, door);
+  world.set(1, 74, 1, door);
+  adapter._openDoors.add('1,73,0');
+  adapter._openDoors.add('1,74,0');
+  assert.deepEqual(adapter._doorAhead(), { x: 1, y: 73, z: 1 }, 'aperta quella addosso resta la porta davanti');
+  // Senza porte chiuse non c'è nulla da aprire (nessun click a vuoto).
+  const free = reachAdapter(flatWorld({ minX: 0, maxX: 3, minZ: 0, maxZ: 1, floorY: 72, height: 3 }), { feet: { x: 1.5, y: 73, z: 0.5 } });
+  free._motion = { active: true, yaw: 0 };
+  assert.equal(free._doorAhead(), null);
+});
+
+test('un bot dentro una porta chiusa esce dalla cella che occupa (ma non entra nella porta accanto)', () => {
+  const door = { name: 'wooden_door', boundingBox: 'block', diggable: true, hardness: 3 };
+  const world = flatWorld({ minX: 0, maxX: 3, minZ: 0, maxZ: 0, floorY: 72, height: 3 });
+  // Porta chiusa addosso al bot: piedi e testa nella cella della porta (x=1).
+  world.set(1, 73, 0, door);
+  world.set(1, 74, 0, door);
+  // Seconda porta chiusa a x=2: il bot non la occupa.
+  world.set(2, 73, 0, door);
+  world.set(2, 74, 0, door);
+  const adapter = reachAdapter(world, { feet: { x: 1.5, y: 73, z: 0.5 } });
+
+  // Per il pathfinding una porta è attraversabile (il movimento la aprirebbe con
+  // un'interazione), per la fisica locale chiusa è solida: è l'incoerenza che
+  // lascia il bot dentro la cella quando la porta si chiude addosso.
+  assert.equal(adapter._standable(1, 73, 0), true);
+  assert.equal(adapter._solidAt(1, 73, 0), true);
+  assert.equal(adapter._collides(1.5, 73, 0.5), true, 'senza eccezione il modello congelerebbe il bot dentro la porta');
+
+  // Con l'eccezione "celle già occupate dal corpo" il bot può uscire...
+  assert.equal(adapter._collides(1.1, 73, 0.5, { ignoreSelf: true }), false, 'lo spazio ad ovest è libero');
+  const startX = adapter._feet.x;
+  for (let i = 0; i < 12; i++) adapter._moveHorizontal(-0.1, 0);
+  assert.ok(adapter._feet.x < startX, 'il bot si muove');
+  assert.equal(Math.floor(adapter._feet.x), 0, 'ed è uscito dalla cella della porta');
+
+  // ...ma la porta chiusa accanto resta un muro: nessun passaggio attraverso.
+  assert.equal(adapter._collides(2.5, 73, 0.5, { ignoreSelf: true }), true, 'una porta non occupata non si attraversa');
+  const inside = reachAdapter(world, { feet: { x: 1.5, y: 73, z: 0.5 } });
+  for (let i = 0; i < 6; i++) inside._moveHorizontal(0.1, 0);
+  assert.equal(Math.floor(inside._feet.x), 1, 'il bot resta nella cella che occupa: non entra nella porta accanto');
+});

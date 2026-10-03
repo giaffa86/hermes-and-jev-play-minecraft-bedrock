@@ -13,7 +13,7 @@ const serializer = createSerializer('1.26.51');
 // `_sendStackRequest` è stub: registra le richieste e restituisce una risposta
 // con lo status voluto, così i test verificano la forma dei pacchetti senza un
 // server (la stessa forma che _equipArmor usa per le armature).
-function spawnedAdapter ({ stackStatus = 'ok', confirmOffhand = null } = {}) {
+function spawnedAdapter ({ stackStatus = 'ok', confirmOffhand = null, failTakes = 0 } = {}) {
   const adapter = new BedrockAdapter({ logger: { log () {} } });
   adapter.spawned = true;
   adapter.status = 'spawned';
@@ -47,6 +47,12 @@ function spawnedAdapter ({ stackStatus = 'ok', confirmOffhand = null } = {}) {
     adapter.stackRequests.push(actions);
     const action = actions[0];
     const take = action.type_id === 'take';
+    if (take && failTakes > 0) {
+      // Cursore sporco lato server: il take viene rifiutato con status 50 e
+      // l'item resta nello slot (nessuna copia locale stantia da aggiornare).
+      failTakes--;
+      return { status: 50, containers: [] };
+    }
     if (take && adapter.inventorySlots[0]) adapter.inventorySlots[0].count -= 1;
     if (!take && confirmOffhand) {
       // Il server conferma l'offhand con un mob_equipment: è la via autorevole.
@@ -91,6 +97,10 @@ function spawnedAdapter ({ stackStatus = 'ok', confirmOffhand = null } = {}) {
   adapter._slotInfo = (container, slot, stack = 0) => ({ slot_type: { container_id: container }, slot, stack_id: stack });
   adapter._invSlotAsSource = (index) => (index < 9 ? { container: 'hotbar', slot: index } : { container: 'hotbar_and_inventory', slot: index });
   adapter._returnCursorToInventory = async () => { adapter.returnedCursor = true; };
+  // I take/place valgono solo con una finestra aperta: la primitiva condivisa
+  // apre l'inventario del giocatore prima di ogni take.
+  adapter.openedWindows = 0;
+  adapter._ensureInventoryOpen = async () => { adapter.openedWindows++; };
   return adapter;
 }
 
@@ -210,6 +220,47 @@ test('_equipShield fails fast and typed without a shield, on a failed take and o
   assert.match(placeResult.error, /^shield_place_failed_/);
   assert.equal(failingPlace.returnedCursor, true, 'the cursor item is given back');
   assert.equal(failingPlace.offhand, null, 'no offhand state claimed');
+});
+
+test('_equipShield recovers a dirty cursor: a 50 take, give the cursor back, retry once', async () => {
+  const adapter = spawnedAdapter({ failTakes: 1, confirmOffhand: true });
+  adapter.inventorySlots = [{ network_id: 42, name: 'shield', count: 1, stack_id: 3 }];
+  adapter._refreshInventory();
+
+  const result = await adapter._equipShield(10);
+  assert.equal(result.ok, true, 'il secondo take riesce dopo il recupero del cursore');
+  assert.equal(result.equipped, 'shield');
+  assert.equal(adapter.openedWindows, 1, 'la finestra del giocatore è aperta prima del take');
+  assert.equal(adapter.returnedCursor, true, 'il cursore sporco viene rimesso nell\'inventario');
+  const takes = adapter.stackRequests.filter((a) => a[0]?.type_id === 'take');
+  assert.equal(takes.length, 2, 'un take rifiutato e un ritentativo');
+  assert.equal(adapter.offhand?.name, 'shield');
+  assert.equal(adapter.inventory.shield ?? 0, 0, "l'inventario non conta più lo scudo");
+});
+
+test('_equipShield with a persistently dirty cursor fails typed after a single retry', async () => {
+  const adapter = spawnedAdapter({ failTakes: 5 });
+  adapter.inventorySlots = [{ network_id: 42, name: 'shield', count: 1, stack_id: 3 }];
+  adapter._refreshInventory();
+
+  const result = await adapter._equipShield(10);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'shield_take_failed_50');
+  const takes = adapter.stackRequests.filter((a) => a[0]?.type_id === 'take');
+  assert.equal(takes.length, 2, 'due take al massimo: nessun retry infinito');
+  assert.equal(adapter.offhand, null, 'nessuno stato inventato');
+  assert.equal(adapter.inventory.shield, 1, "lo scudo resta nell'inventario");
+});
+
+test('_equipArmor usa la stessa primitiva: un take rifiutato non salta l\'armatura', async () => {
+  const adapter = spawnedAdapter({ failTakes: 1 });
+  adapter.inventorySlots = [{ network_id: 88, name: 'iron_helmet', count: 1, stack_id: 4 }];
+  adapter.armor = { helmet: null, chestplate: null, leggings: null, boots: null };
+  adapter._refreshInventory();
+
+  const result = await adapter._equipArmor();
+  assert.equal(result.ok, true, 'il recupero del cursore vale anche per le armature');
+  assert.equal(adapter.armor.helmet, 'iron_helmet');
 });
 
 test('_onMobEquipment tracks the offhand and ignores other windows', () => {

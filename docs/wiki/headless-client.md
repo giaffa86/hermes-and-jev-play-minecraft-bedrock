@@ -121,12 +121,21 @@ sending arbitrary coordinates (`move_player` is discarded / rewound).
 The adapter instead:
 
 1. **simulates physics locally** — walk at `0.2158` blocks/tick (≈ 4.317 m/s),
-   gravity `0.08` blocks/tick², jump `0.42`, collisions, steps, falls;
+   gravity `0.08` blocks/tick², jump `0.42`, collisions, steps, falls. Low
+   surfaces a real client auto-steps onto (`*_carpet`, `*_path`, `moss_carpet`,
+   ≈ 0.06–0.19 blocks high) count as **floor** in the feet cell (`_lowProfile`):
+   a rug is not a wall. The head cell stays strict, and slabs/stairs/beds (0.5–0.56)
+   stay solid on purpose — they need a real step-up the model does not simulate;
 2. sends a `player_auth_input` each tick with the simulated position, `move_vector`
    and intent flags, staying inside the server's rewind window (40 ticks);
 3. **plans with A\*** over the loaded world (support, ±1 steps, falls up to
    4 blocks) toward the nearest walkable node to the target;
-4. opens closed doors encountered along the way (`click_block` / `item_interact`);
+4. opens closed doors encountered along the way (`click_block` / `item_interact`),
+   **including the door cell the bot is standing in** — a villager can close a
+   door on the bot and the server then refuses every step out of that cell
+   (03/10); the body's own cells are also exempt from the collision test
+   (`_collides(..., { ignoreSelf: true })`), so a solid block in the cell the bot
+   occupies can never freeze the model;
 5. accepts server corrections beyond `0.75` blocks (`MAX_CORRECTION_DRIFT`) and
    realigns the tick anchor.
 
