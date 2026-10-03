@@ -12,6 +12,10 @@
 //   intents                  vocabolario di survival/intents.mjs
 //   planTargets              {item: minCount} suggeriti per il plan del harness
 //   allowDeath               se true, morire non fallisce la skill (default false)
+//   blocked                  motivo per cui la skill NON è eseguibile oggi (assente
+//                            quando lo è): la libreria dichiara i propri buchi
+//                            invece di farli dedurre dal nome. Il campo è
+//                            informativo — chi pianifica resta libero di tentare.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { INTENTS } from './intents.mjs';
@@ -28,6 +32,9 @@ export function validateSkill (def, where = 'skill') {
     else for (const intent of def.intents) {
       if (!INTENTS.includes(intent)) errors.push(`${where}: unknown intent "${intent}"`);
     }
+  }
+  if (def.blocked != null && (typeof def.blocked !== 'string' || !def.blocked)) {
+    errors.push(`${where}: blocked must be a non-empty string when present`);
   }
   if (def.planTargets != null) {
     if (typeof def.planTargets !== 'object' || Array.isArray(def.planTargets)) errors.push(`${where}: planTargets must be an object`);

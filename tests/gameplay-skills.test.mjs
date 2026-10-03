@@ -295,3 +295,76 @@ test('appendSkillRecord writes one JSON line per skill run', async () => {
   assert.equal(lines[0].failureReason, 'died');
   assert.equal(lines[1].success, true);
 });
+
+// ---- fluidi (M6) ---------------------------------------------------------------------
+
+const FLUID_IDS = [
+  'cross_water', 'survive_drowning', 'escape_lava', 'descend_waterfall',
+  'climb_waterfall', 'craft_bucket', 'bucket_and_place_water', 'boat_travel',
+  'brew_water_breathing',
+];
+
+test('the fluid skills load and declare their own blockers instead of hiding them', () => {
+  for (const id of FLUID_IDS) assert.ok(skills.has(id), `skill ${id}`);
+  // Le skill che dipendono dal nuoto o dal tavolo di alchimia dicono *perché*
+  // non sono eseguibili: chi legge la libreria non deve dedurlo dal nome.
+  for (const id of ['cross_water', 'survive_drowning', 'descend_waterfall', 'climb_waterfall', 'brew_water_breathing']) {
+    assert.equal(typeof skills.get(id).blocked, 'string', `${id} blocked`);
+    assert.ok(skills.get(id).blocked.length > 20, `${id} blocked reason`);
+  }
+  // `escape_lava`, `craft_bucket` e `bucket_and_place_water` sono eseguibili oggi.
+  for (const id of ['escape_lava', 'craft_bucket', 'bucket_and_place_water', 'boat_travel']) {
+    assert.equal(skills.get(id).blocked, undefined, `${id} non è bloccata`);
+  }
+  assert.ok(validateSkill({ id: 'x', description: 'x', blocked: '' }).some(error => error.includes('blocked must be a non-empty string')));
+  assert.deepEqual(validateSkill({ id: 'x', description: 'x', blocked: 'perché serve il nuoto' }), []);
+});
+
+test('the fluid skills verify on real observations, never on a claim', () => {
+  const bucket = skills.get('craft_bucket');
+  assert.equal(verifySkill(bucket, {}, { inventory: { iron_ingot: 3 } }).status, 'running');
+  assert.equal(verifySkill(bucket, {}, { inventory: { iron_ingot: 3, bucket: 1 } }).status, 'success');
+
+  const pour = skills.get('bucket_and_place_water');
+  assert.equal(verifySkill(pour, {}, { inventory: { water_bucket: 1 }, nearby: { lava: [{ distance: 3 }] } }).status, 'running');
+  assert.equal(verifySkill(pour, {}, { inventory: { bucket: 1 }, nearby: { obsidian: [{ distance: 3 }] } }).status, 'success');
+
+  const lava = skills.get('escape_lava');
+  assert.equal(verifySkill(lava, {}, { fluids: { inLava: true }, health: 8 }).status, 'running');
+  assert.equal(verifySkill(lava, { health: 8 }, { fluids: { inLava: false }, health: 8 }).status, 'success');
+  assert.equal(verifySkill(lava, {}, { health: 20 }).status, 'running', 'senza il dato fluido non si promuove nulla');
+});
+
+test('the spatial criteria compare the two observations instead of trusting a story', () => {
+  const down = skills.get('descend_waterfall');
+  const top = { position: { x: 0, y: 90, z: 0 }, health: 20, fluids: { air: 300 } };
+  const bottom = { position: { x: 0, y: 82, z: 0 }, health: 20, fluids: { air: 300 } };
+  assert.equal(verifySkill(down, top, bottom).status, 'success');
+  assert.equal(verifySkill(down, top, { position: { x: 0, y: 89, z: 0 }, health: 20 }).status, 'running');
+  assert.equal(verifySkill(down, top, { health: 20 }).status, 'running', 'senza posizione non si dichiara una discesa');
+
+  const up = skills.get('climb_waterfall');
+  assert.equal(verifySkill(up, top, bottom).status, 'running');
+  assert.equal(verifySkill(up, bottom, top).status, 'success');
+
+  const boat = skills.get('boat_travel');
+  // Lo spostamento si misura fra due osservazioni: senza `before` non c'è nulla
+  // da confrontare e la skill resta in corso, anche se la barca è in inventario.
+  assert.equal(verifySkill(boat, {}, { position: { x: 30, y: 64, z: 40 }, inventory: { oak_boat: 1 } }).status, 'running');
+  assert.equal(verifySkill(boat, { position: { x: 4, y: 64, z: 4 } }, { position: { x: 30, y: 64, z: 40 }, inventory: { oak_boat: 1 } }).status, 'success');
+  assert.equal(verifySkill(boat, { position: { x: 30, y: 64, z: 40 } }, { position: { x: 32, y: 64, z: 41 } }).status, 'running');
+
+  // Validazione: i tre criteri vogliono un numero positivo, `waterBreathing` un booleano.
+  assert.ok(validateCriteria({ descendedAtLeast: 0 }).some(error => error.includes('must be a positive number')));
+  assert.ok(validateCriteria({ movedAtLeast: -1 }).some(error => error.includes('must be a positive number')));
+  assert.ok(validateCriteria({ waterBreathing: 'sì' }).some(error => error.includes('must be a boolean')));
+  assert.deepEqual(validateCriteria({ allOf: [{ climbedAtLeast: 3 }, { waterBreathing: true }] }), []);
+});
+
+test('waterBreathing reads the server effect, in either shape the adapter exposes', () => {
+  const brew = skills.get('brew_water_breathing');
+  assert.equal(verifySkill(brew, {}, { fluids: { waterBreathing: { active: false } } }).status, 'running');
+  assert.equal(verifySkill(brew, {}, { fluids: { waterBreathing: { active: true, sources: [{ kind: 'effect' }] } } }).status, 'success');
+  assert.equal(verifySkill(brew, {}, { fluids: { waterBreathing: true } }).status, 'success');
+  assert.equal(verifySkill(brew, {}, { fluids: {} }).status, 'running');
+});

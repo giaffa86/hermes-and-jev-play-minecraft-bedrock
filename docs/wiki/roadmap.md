@@ -201,7 +201,8 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   **M0 (fluid awareness) + M1 partial (wading + simulated air budget) + M2
   (Water Breathing detection and the dive/work budget) + M3 (waterfalls and bubble
   columns) + M4 (lava: shores, destroyed loot, crossing gate) + M5 (buckets,
-  boats, brewing gate, lava bridge) implemented,
+  boats, brewing gate, lava bridge) + M6 (fluid skills, milestones, spatial
+  criteria) implemented,
   unit-tested and collaudato live 03/10** (`/observe.fluids`
   census, hazard ladder, `avoid_lava`, dig-neighbour refusal, lava repulsion in
   `_standable`, `airSource` with the simulated `AirMeter`; `/observe.dive` with the
@@ -329,7 +330,7 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    offline-verified since 03/10 (`fish_hook_hook` + dip fallback); the live round
    still has to confirm the bobber entity name and that the server really sends
    the event.
-6. **Fluids** (spec in [fluids](fluids.md)): **M0 + M1 partial + M2 + M3 + M4 + M5 done** (03/10 —
+6. **Fluids** (spec in [fluids](fluids.md)): **M0 + M1 partial + M2 + M3 + M4 + M5 + M6 done** (03/10 —
    fluid awareness: `/observe.fluids`, hazard ladder, `avoid_lava`, dig
    adjacency, lava repulsion; live round documented in [verification](verification.md)
    rows 47/47.1). M1's wading (shallow water traversal at `WADE_SPEED_FACTOR`)

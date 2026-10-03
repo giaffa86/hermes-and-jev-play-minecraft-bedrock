@@ -6,7 +6,10 @@
     "enter_nether": "enter_nether",
     "find_stronghold": "find_stronghold",
     "beat_the_dragon": "beat_the_dragon",
-    "redstone": "redstone_automation"
+    "redstone": "redstone_automation",
+    "bucket": "bucket",
+    "water_travel": "water_travel",
+    "nether_cross_lava": "nether_cross_lava"
   },
   "milestones": {
     "wood": {
@@ -139,6 +142,24 @@
       "requires": ["enter_end"],
       "skill": "beat_the_dragon",
       "description": "Destroy the end crystals and defeat the Ender Dragon."
+    },
+    "bucket": {
+      "requires": ["iron_age"],
+      "skill": "craft_bucket",
+      "description": "Craft a bucket from three iron ingots.",
+      "satisfiedWhen": { "inventoryTagGte": { "buckets": 1 } }
+    },
+    "water_travel": {
+      "requires": ["bucket"],
+      "skill": "boat_travel",
+      "description": "Travel across open water on a boat.",
+      "satisfiedWhen": null
+    },
+    "nether_cross_lava": {
+      "requires": ["water_travel"],
+      "skill": "bucket_and_place_water",
+      "description": "Cross a narrow lava gap with a water bucket (or a block bridge).",
+      "satisfiedWhen": null
     }
   }
 }

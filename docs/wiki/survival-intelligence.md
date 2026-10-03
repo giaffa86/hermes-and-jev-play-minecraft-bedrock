@@ -75,7 +75,7 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**977 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**984 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
 
 - **Fluids in the survival layer (M0, 2026-10-03)**: the governor vocabulary grew
@@ -225,6 +225,19 @@ ride itself waits on M1's swimming. The pathfinding column edges were left out o
 purpose: a descent into water the bot cannot leave is a trap, not an
 optimisation.
 
+- **Fluid skills and the four new criteria (M6, 2026-10-03)**: nine contracts in
+`skills/gameplay/fluids/` (crossing, drowning, escaping lava, the two waterfall
+columns, buckets, the water-on-lava pour, boat travel, brewing) and three
+milestones (`bucket` → `water_travel` → `nether_cross_lava`) make the fluid work
+reachable by `CURRICULUM`. Two schema decisions matter: a skill may declare a
+**`blocked`** reason (the five that wait on M1's swimming or on the brewing stand
+say so themselves instead of looking executable), and the verifier gained four
+criteria that read the observation instead of a story — `waterBreathing` (the
+server effect or the turtle helmet) and the spatial `descendedAtLeast` /
+`climbedAtLeast` / `movedAtLeast`, which compare the `before` and `after`
+positions and **fail** when the position is unknown. `water_travel` and
+`nether_cross_lava` keep `satisfiedWhen: null` on purpose: no static criterion can
+say "the bot crossed".
 - **Buckets, boats and the lava bridge (M5, 2026-10-03)**: `bedrock-bucket.mjs`
 keeps the three decisions apart — *is this a source* (`bucketSourceVerdict`: the
 block name, not `liquid_depth`, says `water` vs `flowing_water`), *what happens

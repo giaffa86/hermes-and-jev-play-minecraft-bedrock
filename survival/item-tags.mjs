@@ -45,6 +45,13 @@ const TAG_PREDICATES = {
   redstone_dust: name => name === 'redstone' || name === 'redstone_dust',
   redstone_parts: name => REDSTONE_PART_NAMES.has(name),
   hoppers: name => name === 'hopper',
+  // Fluidi (M6): secchi, barche e fiale. `water_bucket`/`lava_bucket`/... sono
+  // tutti secchi *pieni*: il tag conta i contenitori, non il contenuto (per
+  // quello ci sono i singoli item). Le barche Bedrock hanno una variante per
+  // legno e una con baule (`*_chest_boat`, `*_raft`).
+  buckets: name => name === 'bucket' || name.endsWith('_bucket'),
+  boats: name => name === 'boat' || /(_boat|_chest_boat|_raft)$/.test(name),
+  potions: name => name === 'potion' || name === 'splash_potion' || name === 'lingering_potion',
 };
 
 export const ITEM_TAGS = Object.keys(TAG_PREDICATES).sort();

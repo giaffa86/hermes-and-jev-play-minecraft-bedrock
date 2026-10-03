@@ -1,0 +1,10 @@
+{
+  "id": "boat_travel",
+  "description": "Craft and ride a boat across open water.",
+  "category": "fluids",
+  "preconditions": { "inventoryTagGte": { "boats": 1 } },
+  "success": { "movedAtLeast": 8 },
+  "intents": ["travel", "craft", "fluid"],
+  "planTargets": { "boat": 1 },
+  "notes": "`movedAtLeast` dice che il bot è finito altrove in barca, non che ha remato: la verifica del montaggio resta quella dell'azione (`mount_boat` confermato dal server). Serve acqua aperta (`boatVerdict`: 3 celle entro 16 blocchi) e una barca in inventario: nella stanza base non c'è né l'una né l'altra, quindi la skill resta non esercitabile live (limite ambientale, non di codice)."
+}

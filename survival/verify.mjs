@@ -17,6 +17,10 @@
 //   itemPreserved [item]            nessun item della lista è diminuito vs `before`
 //   inWater bool / notInLava bool   stato fluido corrente (osservazione `fluids`)
 //   airAtLeast n                    aria residua (quando il budget d'aria è noto)
+//   waterBreathing bool             respira sott'acqua (elmo di tartaruga o effetto)
+//   descendedAtLeast n              quota persa vs `before` (cascate, discese)
+//   climbedAtLeast n                quota guadagnata vs `before` (risalite, pillar)
+//   movedAtLeast n                  distanza orizzontale percorsa vs `before`
 //   allOf [criteri] | anyOf [criteri]
 //
 // Modulo puro (l'unico I/O è nel loader delle skill).
@@ -29,6 +33,18 @@ function observationOf (observation = {}) {
 
 function phaseOf (observation) {
   return observationOf(observation).time?.phase ?? null;
+}
+
+function positionOf (observation) {
+  const position = observationOf(observation).position;
+  if (!position) return null;
+  const { x, y, z } = position;
+  if (![x, y, z].every(value => Number.isFinite(value))) return null;
+  return { x, y, z };
+}
+
+function round2 (value) {
+  return Math.round(value * 100) / 100;
 }
 
 function nearestThreatDistance (observation) {
@@ -214,6 +230,48 @@ export function evaluateCriteria (criteria, observation, { before = null, contex
       ? { ok: true, evidence }
       : fail(`air ${air} < ${criteria.airAtLeast}`);
   }
+  // Fluidi (M6): i criteri spaziali. Il verifier vede due osservazioni
+  // (`before` e `after`) e le confronta: quanto si è scesi, quanto si è saliti e
+  // quanta strada orizzontale si è fatta. Nessuno dei tre legge un'opinione.
+  if ('descendedAtLeast' in criteria || 'climbedAtLeast' in criteria) {
+    const beforeY = positionOf(before)?.y ?? null;
+    const afterY = positionOf(after)?.y ?? null;
+    evidence.yBefore = beforeY;
+    evidence.yAfter = afterY;
+    if (beforeY == null || afterY == null) return fail('position unknown');
+    const delta = afterY - beforeY;
+    evidence.deltaY = round2(delta);
+    if ('descendedAtLeast' in criteria) {
+      return -delta >= criteria.descendedAtLeast
+        ? { ok: true, evidence }
+        : fail(`descended ${round2(-delta)} < ${criteria.descendedAtLeast}`);
+    }
+    return delta >= criteria.climbedAtLeast
+      ? { ok: true, evidence }
+      : fail(`climbed ${round2(delta)} < ${criteria.climbedAtLeast}`);
+  }
+  if ('movedAtLeast' in criteria) {
+    const from = positionOf(before);
+    const to = positionOf(after);
+    evidence.positionBefore = from ?? null;
+    evidence.positionAfter = to ?? null;
+    if (!from || !to) return fail('position unknown');
+    const moved = Math.hypot(to.x - from.x, to.z - from.z);
+    evidence.moved = round2(moved);
+    return moved >= criteria.movedAtLeast
+      ? { ok: true, evidence }
+      : fail(`moved ${round2(moved)} < ${criteria.movedAtLeast}`);
+  }
+  if ('waterBreathing' in criteria) {
+    const view = after.fluids?.waterBreathing;
+    // La vista può essere il booleano della percezione o l'oggetto dell'adapter
+    // (`{active, sources}`): entrambe le forme dicono la stessa cosa.
+    const active = view === true || view?.active === true;
+    evidence.waterBreathing = active;
+    return active === criteria.waterBreathing
+      ? { ok: true, evidence }
+      : fail(`waterBreathing ${active}, expected ${criteria.waterBreathing}`);
+  }
   if ('blockPoweredAt' in criteria) {
     const want = criteria.blockPoweredAt;
     const atLeast = Number.isFinite(want?.atLeast) ? want.atLeast : 1;
@@ -305,7 +363,8 @@ export const CRITERIA_KEYS = [
   'inventoryGte', 'inventoryTagGte', 'healthAtLeast', 'foodAtLeast', 'phaseIn',
   'dimension', 'nearbyBlock', 'bossDefeated', 'foodIncreased', 'healthIncreased', 'noHostileWithin',
   'threatDistanceIncreasedBy', 'nightSurvived', 'deathsAtLeast', 'itemPreserved',
-  'inWater', 'notInLava', 'airAtLeast',
+  'inWater', 'notInLava', 'airAtLeast', 'waterBreathing',
+  'descendedAtLeast', 'climbedAtLeast', 'movedAtLeast',
   'blockPoweredAt', 'circuitActive', 'circuitBuilt',
   'allOf', 'anyOf',
 ];
@@ -341,6 +400,11 @@ export function validateCriteria (criteria, where = 'criteria') {
     if (key === 'itemPreserved' && (!Array.isArray(value) || !value.length || value.some(item => typeof item !== 'string' || !item))) errors.push(`${where}.${key}: must be a non-empty array of item names`);
     if (key === 'nearbyBlock' && typeof value !== 'string' && (typeof value !== 'object' || !value?.name)) errors.push(`${where}.${key}: must be a block name or {name, within}`);
     if (key === 'bossDefeated' && value !== true) errors.push(`${where}.${key}: only true is verifiable (the boss bar cycle is a server signal, there is no static check for "not defeated")`);
+    if (key === 'waterBreathing' && typeof value !== 'boolean') errors.push(`${where}.${key}: must be a boolean`);
+    if ((key === 'descendedAtLeast' || key === 'climbedAtLeast' || key === 'movedAtLeast')
+      && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) {
+      errors.push(`${where}.${key}: must be a positive number`);
+    }
   }
   return errors;
 }

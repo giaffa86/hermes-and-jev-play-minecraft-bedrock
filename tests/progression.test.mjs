@@ -185,3 +185,47 @@ test('progressionSnapshot lists every milestone with its status', () => {
   assert.equal(table.satisfied, false);
   assert.equal(snapshot.length, Object.keys(graph.milestones).length);
 });
+
+test('the fluid tags group buckets, boats and potions', () => {
+  for (const tag of ['buckets', 'boats', 'potions']) assert.equal(isKnownTag(tag), true, tag);
+  assert.equal(itemMatchesTag('bucket', 'buckets'), true);
+  assert.equal(itemMatchesTag('minecraft:water_bucket', 'buckets'), true);
+  assert.equal(itemMatchesTag('bucket_of_milk', 'buckets'), false, 'non è un nome Bedrock');
+  assert.equal(itemMatchesTag('oak_boat', 'boats'), true);
+  assert.equal(itemMatchesTag('spruce_chest_boat', 'boats'), true);
+  assert.equal(itemMatchesTag('bamboo_raft', 'boats'), true);
+  assert.equal(itemMatchesTag('boat_planks', 'boats'), false, 'le assi non sono una barca');
+  assert.equal(itemMatchesTag('potion', 'potions'), true);
+  assert.equal(itemMatchesTag('splash_potion', 'potions'), true);
+  const inventory = { bucket: 1, water_bucket: 2, oak_boat: 1, potion: 2, obsidian: 9 };
+  assert.equal(tagCount(inventory, 'buckets'), 3, 'anche i secchi pieni contano');
+  assert.equal(tagCount(inventory, 'boats'), 1);
+  assert.equal(tagCount(inventory, 'potions'), 2);
+  assert.deepEqual(tagItems(inventory, 'buckets'), ['bucket', 'water_bucket']);
+});
+
+test('the fluid milestones chain from the iron age to the lava crossing', () => {
+  for (const id of ['bucket', 'water_travel', 'nether_cross_lava']) assert.ok(graph.milestones[id], `milestone ${id}`);
+  assert.deepEqual(graph.milestones.bucket.requires, ['iron_age']);
+  assert.equal(graph.milestones.bucket.skill, 'craft_bucket');
+  assert.deepEqual(graph.milestones.bucket.satisfiedWhen, { inventoryTagGte: { buckets: 1 } });
+  assert.deepEqual(graph.milestones.water_travel.requires, ['bucket']);
+  assert.equal(graph.milestones.water_travel.skill, 'boat_travel');
+  assert.equal(graph.milestones.water_travel.satisfiedWhen, null, 'una traversata in barca non si vede da un criterio statico: la chiude solo la skill verificata');
+  assert.deepEqual(graph.milestones.nether_cross_lava.requires, ['water_travel']);
+  assert.equal(graph.milestones.nether_cross_lava.skill, 'bucket_and_place_water');
+  // Le tre sono raggiungibili come obiettivo di curriculum, altrimenti il
+  // milestone esiste ma nessun `CURRICULUM=...` può chiederlo.
+  assert.equal(graph.goals.water_travel, 'water_travel');
+  assert.equal(graph.goals.bucket, 'bucket');
+  assert.equal(graph.goals.nether_cross_lava, 'nether_cross_lava');
+});
+
+test('the bucket milestone is satisfied by a crafted bucket, not by raw iron', () => {
+  const iron = resolveMilestone(graph, { goal: 'bucket', observation: { inventory: { iron_ingot: 3 }, nearby: {}, time: { phase: 'day' } } });
+  assert.equal(iron.status, 'next', 'il ferro non è un secchio: il milestone resta da fare');
+  assert.equal(iron.milestone, 'bucket');
+  assert.equal(iron.skill, 'craft_bucket');
+  const crafted = resolveMilestone(graph, { goal: 'bucket', observation: { inventory: { bucket: 1 }, nearby: {}, time: { phase: 'day' } } });
+  assert.equal(crafted.status, 'met');
+});

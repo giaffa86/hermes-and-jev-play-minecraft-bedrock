@@ -73,8 +73,9 @@ Last lint: 2026-10-03.
   were observed. No deliberate portal *search* either (the census radius is 32).
 - **Fluids** — **M0 (fluid awareness), M1 partial (wading + simulated air
   budget), M2 (breathing + dive budget), M3 (waterfalls + bubble columns), M4
-  (lava shores, destroyed loot, crossing gate) and M5 (buckets, boats, brewing
-  gate, lava bridge) implemented and collaudati live
+  (lava shores, destroyed loot, crossing gate), M5 (buckets, boats, brewing
+  gate, lava bridge) and M6 (fluid skills, milestones, spatial criteria)
+  implemented and collaudati live
   03/10**: the bot knows where water and
   lava are (`GET /observe.fluids`, census + hazard ladder), refuses digs that
   would open into a fluid, repels lava in `_standable` and can `avoid_lava` when
@@ -575,8 +576,9 @@ Still missing (the rest of the original gap):
 - **Fluids** (swimming, drowning/breathing, waterfalls, lava avoidance, buckets/
   boats/potions) — M0 + M1 partial (wading + simulated air) + M2 (breathing) + M3
   (waterfalls/bubble columns, detection and verdicts) + M4 (lava shores, destroyed
-  loot, crossing gate) + M5 (buckets, boats, brewing gate, lava bridge)
-  implemented and live 03/10; swimming motion and M6 still spec. Roadmap in [fluids](fluids.md);
+  loot, crossing gate) + M5 (buckets, boats, brewing gate, lava bridge) + M6
+  (fluid skills, milestones, spatial criteria) implemented and live 03/10; the
+  swimming motion is still the open blocker. Roadmap in [fluids](fluids.md);
   the blocker is the missing packet capture of a real player swimming.
 - **Goal-driven gameplay** — Goal Contract + task graph + 5 progressive
   benchmarks (16 logs, shelter+night, iron pickaxe, 5 diamonds, Nether portal).

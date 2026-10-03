@@ -1,0 +1,11 @@
+{
+  "id": "survive_drowning",
+  "description": "Get the head out of the water before the air budget runs out.",
+  "category": "fluids",
+  "preconditions": { "allOf": [{ "airAtLeast": 0 }] },
+  "success": { "allOf": [{ "inWater": false }, { "airAtLeast": 10 }] },
+  "intents": ["surface", "swim", "heal"],
+  "planTargets": {},
+  "blocked": "M1: `surface` is not implemented (the air budget is simulated and the bot cannot swim up). The criterion (`inWater: false` + air refilled) is honest but the escape itself does not exist yet.",
+  "notes": "M2 ha reso il budget d'aria una decisione reale (`divePlan`, `waterBreathing`); questa skill è la metà di *azione* che manca. `airAtLeast` legge il budget simulato quando il server non lo manda: un'aria ignota fa fallire il criterio, non lo promuove."
+}

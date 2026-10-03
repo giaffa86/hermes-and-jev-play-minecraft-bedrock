@@ -1,0 +1,11 @@
+{
+  "id": "descend_waterfall",
+  "description": "Ride a waterfall down instead of taking fall damage.",
+  "category": "fluids",
+  "preconditions": { "allOf": [{ "airAtLeast": 0 }] },
+  "success": { "allOf": [{ "descendedAtLeast": 3 }, { "healthAtLeast": 1 }] },
+  "intents": ["descend", "travel", "fluid"],
+  "planTargets": {},
+  "blocked": "M1/M3: the column detection and the landing verdict work, but the descent needs the swimming motion (`swimSupported` is false), so `descend_waterfall` refuses with `swimming_unavailable`.",
+  "notes": "`descendedAtLeast` conta i blocchi persi fra le due osservazioni: la discesa è provata dalla quota, non dal racconto. Anche la cascata deve atterrare in acqua o su terreno solido (`landingVerdict`): un atterraggio ignoto non è un atterraggio sicuro."
+}

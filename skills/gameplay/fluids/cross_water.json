@@ -1,0 +1,11 @@
+{
+  "id": "cross_water",
+  "description": "Cross a body of water and end up dry on the far side.",
+  "category": "fluids",
+  "preconditions": { "allOf": [{ "inWater": true }] },
+  "success": { "allOf": [{ "inWater": false }, { "movedAtLeast": 8 }] },
+  "intents": ["travel", "swim", "fluid"],
+  "planTargets": {},
+  "blocked": "M1: the swimming motion (buoyancy flags, water A* nodes, `swim_to`) is not implemented, so a bot that enters deep water cannot steer out of it. The criterion only says the bot ended dry 8+ blocks away: it is a proxy, not a proof of a crossing, because the verifier cannot see the path taken.",
+  "notes": "La skill esiste per essere pianificabile appena M1 sblocca il nuoto: oggi le precondizioni (`inWater`) non si verificano mai nella stanza base e il campo `blocked` lo dichiara. `movedAtLeast` misura lo spostamento orizzontale fra due osservazioni: da solo non distingue una traversata da una camminata sulla riva."
+}

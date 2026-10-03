@@ -1,0 +1,10 @@
+{
+  "id": "craft_bucket",
+  "description": "Craft a bucket from three iron ingots.",
+  "category": "fluids",
+  "preconditions": { "inventoryTagGte": { "iron_ingots": 3 } },
+  "success": { "inventoryTagGte": { "buckets": 1 } },
+  "intents": ["craft", "fluid"],
+  "planTargets": { "iron_ingot": 3 },
+  "notes": "Il criterio conta i secchi *pieni e vuoti* (tag `buckets`): quel che conta è avere un contenitore, il contenuto lo dicono i singoli item (`water_bucket`, `lava_bucket`). La ricetta deve arrivare dal server: senza `bucket` fra le ricette note l'azione risponde `craft_recipe_missing`, non un falso successo."
+}

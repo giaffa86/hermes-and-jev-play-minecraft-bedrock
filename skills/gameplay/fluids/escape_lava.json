@@ -1,0 +1,12 @@
+{
+  "id": "escape_lava",
+  "description": "Step out of lava (or away from it) and stay alive.",
+  "category": "fluids",
+  "preconditions": {},
+  "success": { "allOf": [{ "notInLava": true }, { "healthAtLeast": 1 }] },
+  "failure": { "deathsAtLeast": 1 },
+  "intents": ["escape", "travel", "fluid"],
+  "planTargets": {},
+  "allowDeath": false,
+  "notes": "Il criterio è una sicurezza: `notInLava` non promuove mai un successo quando lo stato fluido è ignoto, e la salute deve essere ancora positiva. La sponda scelta privilegia una cella con acqua accanto (`safeShorePlan`, M4): l'acqua spegne il fuoco, ma resta un'euristica."
+}

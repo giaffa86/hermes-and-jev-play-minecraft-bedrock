@@ -1,0 +1,10 @@
+{
+  "id": "bucket_and_place_water",
+  "description": "Pour a water bucket on a lava source to make obsidian and open a way across.",
+  "category": "fluids",
+  "preconditions": { "allOf": [{ "inventoryTagGte": { "buckets": 1 } }, { "nearbyBlock": { "name": "lava", "within": 8 } }] },
+  "success": { "nearbyBlock": { "name": "obsidian", "within": 8 } },
+  "intents": ["build", "fluid", "travel"],
+  "planTargets": { "water_bucket": 1 },
+  "notes": "Funziona solo su una lava **sorgente**: su lava che scorre l'acqua produce cobblestone (e spegne il flusso), quindi il criterio accetta solo l'ossidiana e un esito diverso non chiude la skill. Nel Nether l'acqua non si può piazzare: il verdetto puro rifiuta prima di ogni pacchetto (`water_in_nether`)."
+}

@@ -2966,3 +2966,46 @@ nessun tavolo, nessuna lava raggiungibile), quindi catena riempi→versa→ossid
 ponte e barca restano coperti dagli unit test; nessuna lava è stata fabbricata con
 `setblock` (mondo condiviso e resterebbe lava che scorre). Il tavolo di alchimia è
 pianificato ma mai cliccato.
+
+## [2026-10-03] feat | Fluidi M6: skill fluide, milestone del curriculum e criteri spaziali
+
+Sesta e ultima milestone fluidi, quella che porta il lavoro dentro la Survival
+Intelligence. Nove contratti in `skills/gameplay/fluids/` (`cross_water`,
+`survive_drowning`, `escape_lava`, `descend_waterfall`, `climb_waterfall`,
+`craft_bucket`, `bucket_and_place_water`, `boat_travel`, `brew_water_breathing`) e
+una decisione di schema: una skill può dichiarare un campo **`blocked`** con il
+motivo per cui non è eseguibile oggi. Le cinque che dipendono dal nuoto di M1 o dal
+tavolo di alchimia di M5 lo dicono da sole, invece di sembrare pronte. Tag nuovi
+(`buckets`, `boats`, `potions`) e quattro criteri nuovi nel verifier:
+`waterBreathing` (l'effetto del server o l'elmo di tartaruga, in entrambe le forme
+che l'adapter espone) e i tre spaziali `descendedAtLeast`/`climbedAtLeast`/
+`movedAtLeast`, che confrontano le due osservazioni (`before`/`after`) e **falliscono**
+se la posizione manca: "sono sceso di 8 blocchi" diventa una misura, non un racconto.
+
+Tre milestone in `knowledge/progression.json` — `bucket` (da `iron_age`, chiuso da
+`inventoryTagGte {buckets: 1}`), `water_travel` (da `bucket`, `satisfiedWhen: null`:
+una traversata in barca non si vede da un criterio statico, la chiude solo una skill
+verificata) e `nether_cross_lava` (da `water_travel`) — con le voci corrispondenti in
+`goals`, che è ciò che rende `CURRICULUM=bucket|water_travel|nether_cross_lava`
+instradabile.
+
+**Test**: 984 (erano 977) fra `tests/gameplay-skills.test.mjs` (i nove id, l'insieme
+`blocked` esatto e con motivazioni vere, i criteri su osservazioni reali, i criteri
+spaziali che rifiutano una posizione mancante) e `tests/progression.test.mjs` (tag,
+catena dei milestone, `satisfiedWhen` nullo, secchio che non nasce dal ferro grezzo).
+
+**Collaudo live** (VM 100, container `hermes-jev-bedrock`): `loadGameplaySkills()` →
+**35 skill, 9 fluide**; `loadProgression()` → **23 milestone** e 8 obiettivi di
+curriculum; `resolveMilestone('water_travel')` → `{status:'next', milestone:'wood',
+skill:'acquire_wood'}` (il nuovo goal si risolve **lungo la catena**, non con un
+errore); `verifySkill('descend_waterfall', {y:90}, {y:82})` → `success` con
+evidenza `{deltaY:-8}`; i tag contano `{water_bucket:2, oak_boat:1, potion:1}` come
+`buckets: 2, boats: 1, potions: 1`. Poi un giro vero (`RUN_ID=m6-live-1`,
+`CURRICULUM=water_travel`, `MAX_STEPS=2`): obiettivo accettato, primo piano
+`stone_age`, `#1 sleep -> night_skipped`, `#2 mine_cobblestone -> ok
+(confirmedBy: server_world)`, budget esaurito, `exit=0`.
+
+**Limiti**: le cinque skill bloccate restano non eseguibili (nuoto di M1, tavolo di
+alchimia di M5); `water_travel`/`nether_cross_lava` non hanno un criterio statico per
+scelta; `movedAtLeast` non distingue una traversata da una camminata sulla riva (la
+skill chiede anche `inWater: false` e lo dichiara).

@@ -1,0 +1,11 @@
+{
+  "id": "climb_waterfall",
+  "description": "Climb a waterfall or a bubble column to gain height safely.",
+  "category": "fluids",
+  "preconditions": { "allOf": [{ "airAtLeast": 0 }] },
+  "success": { "allOf": [{ "climbedAtLeast": 3 }, { "healthAtLeast": 1 }] },
+  "intents": ["ascend", "travel", "fluid"],
+  "planTargets": {},
+  "blocked": "M1/M3: same blocker as the descent — the column tactics are decided and verified (`columnTactic`, `_waitColumnTraversal` measures the delta) but the ascent needs swimming. A magma bubble column is refused outright (`sneak_not_supported`).",
+  "notes": "`climbedAtLeast` prova la risalita con la quota. Una colonna di magma verso l'alto fa danno senza accovacciarsi e il bot non ha il flag: meglio nessuna risalita che una risalita che brucia."
+}

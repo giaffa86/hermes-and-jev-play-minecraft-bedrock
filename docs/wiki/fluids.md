@@ -9,8 +9,8 @@ bubble columns, potions, underwater mining/fishing.
 Status: **M0 (fluid awareness) + M1 partial (wading and simulated air budget) +
 M2 (breathing and dive budget) + M3 (waterfalls and bubble columns) + M4 (lava:
 shores, destroyed loot, crossing gate) + M5 (buckets, boats, brewing gate, lava
-bridge) implemented, unit-tested and collaudato
-live** (03/10/2026); the swimming *physics* of M1
+bridge) + M6 (fluid skills, milestones, criteria) implemented, unit-tested and
+collaudato live** (03/10/2026); the swimming *physics* of M1
 (ballistic flags, water A*, `swim_to`) is **blocked** by a missing packet capture —
 see the M1 section, and M3's column **actions** inherit that same blocker while
 their detection and verdicts work. M6 still spec only (tracked in
@@ -20,7 +20,7 @@ Full raw source: [`docs/raw/FLUIDS_ROADMAP.md`](../raw/FLUIDS_ROADMAP.md).
 Sources: `bedrock-adapter.mjs` (movement, physics, digging, fishing),
 `bedrock-dive.mjs` (M2 decision), `bedrock-waterfall.mjs` (M3 columns),
 `bedrock-lava.mjs` (M4 lava verdicts), `bedrock-bucket.mjs` (M5 buckets, boats,
-brewing), `BEDROCK.md`
+brewing), `skills/gameplay/fluids/` (M6 skill contracts), `BEDROCK.md`
 (action status), [headless-client](headless-client.md) (perception/action model),
 [survival-intelligence](survival-intelligence.md) (governor/skills/verifier),
 [fishing](fishing.md), [companions](companions.md) (boats/riding).
@@ -629,7 +629,86 @@ world, and flowing lava would be left behind).
 - The water bucket is consumed by the first bridge cell even when the pour is not
   confirmed (the inventory delta is the only local truth available).
 
-## Milestones
+## M6 — Fluid skills, milestones and criteria (implemented, live 03/10/2026)
+
+### Implementation
+
+- **Nine skill contracts** in `skills/gameplay/fluids/`: `cross_water`,
+  `survive_drowning`, `escape_lava`, `descend_waterfall`, `climb_waterfall`,
+  `craft_bucket`, `bucket_and_place_water`, `boat_travel`,
+  `brew_water_breathing`. Each one declares preconditions, a success criterion the
+  verifier can evaluate on two observations, its intents and (when the capability
+  is genuinely missing) a **`blocked` reason** — the schema now accepts that field,
+  so the library announces its own holes instead of leaving them to be deduced
+  from the name. Five are blocked today (`cross_water`, `survive_drowning`,
+  `descend_waterfall`, `climb_waterfall` on M1's swimming motion,
+  `brew_water_breathing` on the unwritten brewing-stand interaction).
+- **Item tags** (`survival/item-tags.mjs`): `buckets` (`bucket` and every
+  `*_bucket`, filled or empty), `boats` (`boat`, `*_boat`, `*_chest_boat`,
+  `*_raft`) and `potions`.
+- **Four new verifier criteria** (`survival/verify.mjs`), all reading real
+  observation fields: `waterBreathing` (the server's effect or the turtle helmet,
+  in either shape the adapter exposes), and the three spatial ones —
+  `descendedAtLeast`, `climbedAtLeast` and `movedAtLeast` compare the `before` and
+  `after` observations, so "I went down 8 blocks" is a measurement, not a claim.
+  A missing position fails the criterion instead of passing it.
+- **Three milestones** in `knowledge/progression.json` — `bucket`
+  (`requires: [iron_age]`, satisfied by `inventoryTagGte {buckets: 1}`),
+  `water_travel` (`requires: [bucket]`, `satisfiedWhen: null`: a boat crossing is
+  not visible to a static criterion, so only the verified skill can close it) and
+  `nether_cross_lava` (`requires: [water_travel]`, skill
+  `bucket_and_place_water`) — plus the matching `goals` entries, which is what
+  makes `CURRICULUM=bucket|water_travel|nether_cross_lava` route to them.
+
+### Tests
+
+**984 tests** (was 977). `tests/gameplay-skills.test.mjs`: the nine ids load, the
+`blocked` set is exactly the five blocked skills and each reason is a sentence
+(not a placeholder), the criteria verify on real observations (`craft_bucket`
+needs the bucket item, `bucket_and_place_water` needs **obsidian** — not the pour
+— `escape_lava` refuses to promote without the fluid datum), the spatial criteria
+compare the two positions (a descent is not an ascent; without a position nothing
+is declared), and `waterBreathing` accepts both shapes. `tests/progression.test.mjs`:
+the tag grouping (`water_bucket` counts, `bucket_of_milk` is not a Bedrock name,
+`boat_planks` is not a boat), the milestone chain and its `requires`, the `null`
+`satisfiedWhen` of the travel milestone, and the bucket milestone refusing raw
+iron.
+
+### Live round (03/10/2026)
+
+In the deployed container: `loadGameplaySkills()` → **35 skills, 9 of them
+fluids**; `loadProgression()` → **23 milestones** and 8 curriculum goals
+(`bucket`, `water_travel`, `nether_cross_lava` included);
+`resolveMilestone(water_travel)` → `{status: 'next', milestone: 'wood', skill:
+'acquire_wood'}` — the new goal resolves **through the chain** to the first unmet
+prerequisite instead of erroring; `verifySkill(descend_waterfall, {y: 90},
+{y: 82})` → `success` with evidence `{yBefore: 90, yAfter: 82, deltaY: -8,
+health: 20}`; the tags count `{water_bucket: 2, oak_boat: 1, potion: 1}` as
+`buckets: 2`, `boats: 1`, `potions: 1`.
+
+Then a real curriculum round (`RUN_ID=m6-live-1`, `CURRICULUM=water_travel`,
+`MAX_STEPS=2`) ran against the BDS: `GOAL g1 [curriculum] Progress the Survival
+tech tree until the "water_travel" milestone is complete.`, first plan
+`stone_age`, `#1 sleep -> {slept: 'night_skipped'}`,
+`#2 mine_cobblestone -> {ok: true, confirmedBy: 'server_world', destroyedEvent:
+true}`, `step budget exhausted`, `CANCELLED (exhausted)`, `exit=0`. The new goal
+is therefore wired end-to-end: accepted, resolved to the prerequisite chain and
+executed with server confirmation.
+
+### Known limits
+
+- The five `blocked` skills are honest but they are still **not executable**: four
+  wait for M1's swimming motion and one for the brewing-stand interaction.
+- `water_travel` and `nether_cross_lava` have no static `satisfiedWhen`: they can
+  only be closed by a verified skill run, which is the honest shape (there is no
+  static fact that says "the bot crossed").
+- `movedAtLeast` measures displacement between two observations: it cannot tell a
+  crossing from a walk along the shore, which is why `cross_water` also requires
+  `inWater: false` and its notes say the criterion is a proxy.
+- `nearbyBlock` reads the adapter's nearby block list (capped): `obsidian` proves
+  the pour only because the new block is close enough to be in that list.
+
+### Milestones
 
 | # | Milestone | Content | Status |
 |---|---|---|---|
@@ -639,7 +718,7 @@ world, and flowing lava would be left behind).
 | M3 | Waterfalls & bubble columns | `findWaterfalls`/`findBubbleColumns`; `descend_waterfall`, `climb_waterfall`, `use_bubble_column`; pathfinding edges; `dig_down` prefers a nearby waterfall. | ◑ implemented + live partial 03/10/2026: detection (`findWaterfalls`/`findBubbleColumns` on the real census), the three actions with typed verdicts, the `onWaterfall` governor condition and the `dig_down` preference are implemented and unit-tested; live only the **refusal** path was observable (no waterfall exists in the loaded area: the only water is a 2-high pool), so the descent/climb themselves stay blocked by the M1 swimming blocker. Pathfinding column edges were deliberately **not** added yet (see the M3 section). |
 | M4 | Lava: avoid (cross later) | Absolute obstacle + repulsion; `move_to_safe`; lava-death marking; never mine into lava; bucket bridging (`place_water` → obsidian); Nether crossing gated behind `fire_resistance` + bridging. | ◑ implemented + live 03/10/2026: `bedrock-lava.mjs` (death verdict, water-preferring shore plan, gap measurement, crossing gate), the `move_to_safe`/`cross_lava` actions with typed refusals, the drop filter and the destroyed-loot verdict on `recover_loot` are implemented and unit-tested; live the bot has no reachable lava (nearest is 15.4 blocks below the base room) so only the refusals were observable — the bridge build and the real escape move stay unit-tested |
 | M5 | Buckets, boats, potions | `craft_bucket`/`craft_boat`; `fill_bucket`/`empty_bucket`/`place_water`; boat travel on open water via `mount_*`/`_rideToward`; brewing. | ◑ implemented + live 03/10/2026: `bedrock-bucket.mjs` (source/placement verdicts, bucket delta, boat gate, brew plan), `fill_bucket`/`fill_bottle`/`place_water`/`place_lava`/`craft_boat`/`mount_boat`/`brew_*` actions, `_bucketView` + `GET /observe.bucket`, and the **lava bridge** (`_bridgeLava`, which closes M4's `bridge_not_implemented`) are implemented and unit-tested; live every action answers a typed refusal in milliseconds (no bucket, no boat, no stand, no reachable lava) — the `craft_bucket`→`fill_bucket`→`place_water` chain, the boat ride and the brewing-stand interaction stay unit-tested (see the M5 section) |
-| M6 | Survival Intelligence integration | Gameplay skills in `skills/gameplay/fluids/`; progression milestones `bucket`, `water_travel`, gated `nether_cross_lava`; docs + tests. | ❌ not implemented |
+| M6 | Survival Intelligence integration | Gameplay skills in `skills/gameplay/fluids/`; progression milestones `bucket`, `water_travel`, gated `nether_cross_lava`; docs + tests. | ◑ implemented + live 03/10/2026: 9 skill contracts (`skills/gameplay/fluids/`), the tags `buckets`/`boats`/`potions`, four new verifier criteria (`waterBreathing`, `descendedAtLeast`, `climbedAtLeast`, `movedAtLeast`), the `blocked` field on the skill schema, the three milestones + the matching `CURRICULUM` goals; live the container loads 35 skills (9 fluids), resolves `CURRICULUM=water_travel` through the new chain (`wood` → … → `bucket` → `water_travel`) and closes a run with real actions. The five skills that depend on swimming/brewing declare their own `blocked` reason instead of pretending to be executable |
 
 ## Key risks / open questions
 
@@ -666,6 +745,9 @@ world, and flowing lava would be left behind).
   cell), but it has **never been exercised live**: no lava is reachable from the
   base room, so the happy path is unit-tested only. The gate still refuses
   anything wider than 4 cells or `truncated`.
+- The M6 skills that wait on the swimming motion (M1) or on the brewing stand
+  (M5) say so in their own `blocked` field: a planning pass can read the reason
+  without a human having to remember it.
 - The brewing stand is the one M5 hole: the plan is computed and honest
   (`brew_not_implemented` with the missing list and the three steps), the
   container interaction is not written.

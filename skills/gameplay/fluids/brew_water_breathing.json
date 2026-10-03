@@ -1,0 +1,11 @@
+{
+  "id": "brew_water_breathing",
+  "description": "Brew a water breathing potion and have the effect active.",
+  "category": "fluids",
+  "preconditions": { "allOf": [{ "nearbyBlock": { "name": "brewing_stand", "within": 8 } }, { "inventoryTagGte": { "potions": 1 } }] },
+  "success": { "waterBreathing": true },
+  "intents": ["heal", "fluid"],
+  "planTargets": { "potion": 1 },
+  "blocked": "M5 left the brewing-stand interaction unwritten: `brew_<effect>` answers `brew_not_implemented` with the full plan (stand, blaze powder, awkward potion, pufferfish). The criterion is real (the effect is read from the server's `mob_effect`), the brewing is not.",
+  "notes": "`waterBreathing` legge l'effetto che il *server* ha mandato (o l'elmo di tartaruga), non l'intenzione: senza effetto attivo il criterio resta falso. È lo stesso segnale che fa tacere la regola `drowning` nel governor (M2)."
+}
