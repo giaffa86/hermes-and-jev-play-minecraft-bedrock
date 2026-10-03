@@ -698,6 +698,17 @@ Still missing (the rest of the original gap):
   The current count lives in [roadmap](roadmap.md) (488 at 2026-10-02).
 - `verification.md` had duplicate row numbers (39/40 reused for the fluids rows);
   renumbered to 41–58 and all internal references updated.
+- **Language drift in `log.md`**: this repo requires all docs in English
+  (`AGENTS.md`: "Keep all docs in English"), but 47 of the 116 `log.md` entries
+  (~2.2k lines, from "Saluto proattivo dell'umano" through the R0–R6 / N0–N7 /
+  M2–M6 / P2 round / P6 fronts) are written in Italian, while the older entries
+  are English; `wiki-lint` does not check language. Correcting it means
+  translating ~2.2k lines of a historical record whose facts already live in the
+  English wiki pages, so it is recorded here rather than rewritten unilaterally —
+  **decision pending with the user**. The entry *type* set drifted the same way
+  and the `log.md` header now lists every type in use (`feat`, `fix`, `verify`,
+  `report` joined the original four), because `ingest`/`query`/`lint`/`doc` no
+  longer covered what the entries record.
 - **Historical privacy leak (public repo)**: earlier commits still on the
   published fork contain private LAN IPs, the environment SSH username and links
   to the private Proxmox wiki pages. A later "privacy scrub" commit removed them
