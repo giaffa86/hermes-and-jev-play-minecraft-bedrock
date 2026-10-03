@@ -3401,3 +3401,40 @@ Tests: 3 new in `tests/bedrock-reachability.test.mjs` (25 total: own cell before
 the cell ahead, door ahead still found, `null` when free, no crossing into the
 neighbouring closed-door cell). Docs: [headless-client](wiki/headless-client.md)
 §4.1, [verification](wiki/verification.md) row 47.28.
+
+## [2026-10-03] fix | `_moveTo` arrives at the reachable cell, not at the planner's stale coordinates
+
+Live, a long `goto_waypoint` reported `path_failed` although the bot had arrived:
+the waypoint call freezes `target.y` from the starting position
+(`{ x, y: this.position?.y, z }`), and `_updateMotionState` accepts arrival only
+within ±3 blocks vertically. Climbing out of a cave onto the village floor is a
+7-block change, so the check could never be satisfied: the bot stood 0.5 blocks
+from the waypoint while the action retried three times and failed after **28.5 s**.
+
+A second live probe showed the same class of defect on the horizontal axis: from
+the cave mouth the **first** complete candidate was the cell 2.18 blocks away
+(stop distance 2) while the exact cell was four blocks lower, so the action spent
+8.1 s and failed again.
+
+Fix, in `_moveTo` only (the A* and the neighbour model are untouched):
+
+- arrival is measured on the cell the path actually reaches (`path.at(-1)`) —
+  the stale `y` of the request no longer decides success;
+- among complete paths the candidate closest to the requested coordinates wins,
+  instead of the first one in score order;
+- `_findGoalNodes(target, { limit })` takes a limit (default 8, unchanged
+  elsewhere) and `_moveTo` asks for 16, so the exact-but-lower cell is not cut
+  off by the vertical penalty of the score;
+- the result now carries `goal` (the cell reached) next to the unchanged
+  `distance` to the requested coordinates.
+
+Live after the fix, same two calls that had failed: `{ok:true, distance:4.05,
+pathNodes:28, goal:{x:73,y:72,z:153}}` in 12.8 s and `{ok:true, distance:1.8,
+pathNodes:3, goal:{x:76,y:65,z:127}}` in 0.6 s.
+
+Tests: 2 new in `tests/bedrock-movement.test.mjs` (a pit under the waypoint, a
+deliberately wrong `y`), both checked to fail against the previous
+implementation; suite 466 → 1055. Residual limit: arrival is accepted inside the
+vertical tolerance, so the action can return while the bot is still a couple of
+blocks in the air. Docs: [headless-client](wiki/headless-client.md) §4.1,
+[verification](wiki/verification.md) row 47.29.

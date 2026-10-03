@@ -7984,7 +7984,7 @@ export class BedrockAdapter {
     };
   }
 
-  _findGoalNodes (target) {
+  _findGoalNodes (target, { limit = 8 } = {}) {
     const gx = Math.floor(target.x), gz = Math.floor(target.z);
     // La quota di riferimento è quella del bersaglio: con quella dei piedi un
     // drop sotto il bot verrebbe "raggiunto" senza scendere.
@@ -8005,7 +8005,7 @@ export class BedrockAdapter {
       if (candidates.length && r >= 1) break;
     }
     candidates.sort((a, b) => a.score - b.score);
-    return candidates.slice(0, 8).map(({ x, y, z }) => ({ x, y, z }));
+    return candidates.slice(0, limit).map(({ x, y, z }) => ({ x, y, z }));
   }
 
   _findGoalNode (target) {
@@ -8125,26 +8125,46 @@ export class BedrockAdapter {
     let lastFeet = null;
     while (Date.now() < deadline) {
       const start = this._startNode();
-      const candidates = this._findGoalNodes(target);
+      // Il limite più alto del default (8) serve a non perdere la cella esatta
+      // quando sta più in basso: la penalità verticale del punteggio la spinge
+      // fuori dai primi otto posti (live 03/10, il fondo del pozzo).
+      const candidates = this._findGoalNodes(target, { limit: 16 });
       if (!candidates.length) throw new Error('target_not_found');
+      // Fra i percorsi completi vince la cella che finisce più vicino alla
+      // destinazione chiesta: il primo candidato per punteggio può stare appena
+      // fuori dalla distanza di arresto (live 03/10: le celle vicine al bot erano a
+      // 2,18 blocchi dal waypoint mentre quella esatta era quattro blocchi più in
+      // basso, quindi l'arrivo non era mai soddisfacibile e l'azione finiva
+      // `path_failed` dopo tre tentativi inutili).
+      const skipDistance = node => Math.hypot(node.x + 0.5 - target.x, node.z + 0.5 - target.z);
       let chosen = null;
       let bestPartial = null;
       for (const goal of candidates) {
         const path = this._findPath(start, goal);
         if (!path || !path.length) continue;
         const end = path.at(-1);
-        if (end.x === goal.x && end.y === goal.y && end.z === goal.z) { chosen = { goal, path }; break; }
-        // Percorso parziale: conserva il più lungo come ripiego (sezioni non ancora caricate).
-        if (!bestPartial || path.length > bestPartial.path.length) bestPartial = { goal, path };
+        if (end.x !== goal.x || end.y !== goal.y || end.z !== goal.z) {
+          // Percorso parziale: conserva il più lungo come ripiego (sezioni non ancora caricate).
+          if (!bestPartial || path.length > bestPartial.path.length) bestPartial = { goal, path };
+          continue;
+        }
+        if (chosen && skipDistance(goal) >= skipDistance(chosen.goal)) continue;
+        chosen = { goal, path };
       }
       if (!chosen) chosen = bestPartial;
       if (!chosen) throw new Error('path_failed');
       const { goal, path } = chosen;
-      const outcome = await this._startMotion(path, goal, { ...target }, stop, deadline);
+      // L'arrivo si misura sulla cella che il percorso raggiunge davvero, non sulla
+      // y chiesta dal planner: `goto_waypoint` la congela dalla posizione di
+      // partenza, quindi un dislivello > 3 blocchi — uscire da una grotta verso il
+      // villaggio — rendeva il controllo verticale insoddisfacibile (live 03/10:
+      // il bot è arrivato a destinazione e l'azione ha finito `path_failed` in 28,5 s).
+      const endNode = path.at(-1);
+      const outcome = await this._startMotion(path, goal, { x: endNode.x + 0.5, y: endNode.y, z: endNode.z + 0.5 }, stop, deadline);
       this._stopMotion();
       if (outcome === 'goal') {
         const distance = Math.hypot(this.position.x - target.x, this.position.y - target.y, this.position.z - target.z);
-        return { ok: true, distance: +distance.toFixed(2), pathNodes: path.length };
+        return { ok: true, distance: +distance.toFixed(2), pathNodes: path.length, goal: { x: goal.x, y: goal.y, z: goal.z } };
       }
       if (outcome === 'timeout') throw new Error('movement timeout');
       const feet = this._feet;

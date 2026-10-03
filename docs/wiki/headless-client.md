@@ -129,7 +129,13 @@ The adapter instead:
 2. sends a `player_auth_input` each tick with the simulated position, `move_vector`
    and intent flags, staying inside the server's rewind window (40 ticks);
 3. **plans with A\*** over the loaded world (support, ±1 steps, falls up to
-   4 blocks) toward the nearest walkable node to the target;
+   4 blocks) toward the nearest walkable node to the target — and **arrival is
+   measured on the cell the path actually reaches**, among the complete
+   candidates the one closest to the target: the planner's `y` is frozen from the
+   starting position (`goto_waypoint`), so a 4+ block climb or drop used to make
+   the arrival check unsatisfiable and burn three attempts into `path_failed`
+   (live 03/10, cave floor → village). The result carries `goal`, the cell that
+   was reached, next to `distance` to the requested coordinates;
 4. opens closed doors encountered along the way (`click_block` / `item_interact`),
    **including the door cell the bot is standing in** — a villager can close a
    door on the bot and the server then refuses every step out of that cell

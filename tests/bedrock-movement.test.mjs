@@ -120,6 +120,62 @@ test('goal resolution snaps to the standable node nearest to the target', () => 
   assert.equal(adapter._standable(4, GROUND_Y + 1, 3), true);
 });
 
+test('_moveTo sceglie la cella dentro la tolleranza, non la prima per punteggio (fondo del pozzo)', async () => {
+  // Live 03/10: il waypoint stava sopra un buco; le celle raggiungibili più
+  // vicine per punteggio erano sul bordo a 2,18 blocchi (appena fuori dalla
+  // distanza di arresto) mentre la cella esatta era quattro blocchi più in basso
+  // a 0,71 blocchi dal bersaglio. Il primo candidato completo non permetteva
+  // quindi di soddisfare l'arrivo e l'azione finiva `path_failed` dopo tre
+  // tentativi inutili.
+  const world = fakeWorld(); world.fillFloor(-2, 10, -4, 4);
+  for (let x = 5; x <= 7; x++) for (let z = -1; z <= 1; z++) {
+    world.blocks.delete(`${x},${GROUND_Y},${z}`); // il pozzo: via il pavimento
+    world.blocks.add(`${x},${GROUND_Y - 4},${z}`); // fondo calpestabile a GROUND_Y - 3
+  }
+  const adapter = physicsAdapter(world);
+  place(adapter, 0.5, GROUND_Y + 1, 0.5);
+  adapter.client = { write () {} };
+  adapter._authTickInterval = setInterval(() => adapter._authTick(), 5);
+  try {
+    const target = { x: 6, y: GROUND_Y + 1 + 1.62, z: 0 };
+    const result = await adapter._moveTo(target, 1.0, 5000);
+    assert.equal(result.ok, true, 'la cella esatta è dentro la tolleranza e va raggiunta');
+    assert.deepEqual(result.goal, { x: 6, y: GROUND_Y - 3, z: 0 }, 'il bersaglio scelto è il fondo del pozzo');
+    // L'arrivo è accettato con la tolleranza verticale di `_updateMotionState`,
+    // quindi il bot può essere ancora a mezz'aria: la discesa si completa nei tick
+    // successivi (la fisica continua a girare).
+    for (let i = 0; i < 40; i++) adapter._physicsStep();
+    assert.equal(adapter._feet.y, GROUND_Y - 3, 'scende nel pozzo invece di fermarsi sul bordo');
+  } finally {
+    clearInterval(adapter._authTickInterval);
+    adapter._authTickInterval = null;
+    adapter._motion = null;
+  }
+});
+
+test('_moveTo accetta un bersaglio con la y sbagliata: conta la cella raggiungibile', async () => {
+  // Live 03/10: il bot esce da una grotta (y 65) verso il villaggio (y 72) e
+  // `goto_waypoint` — che congela la y dalla posizione di partenza — finiva
+  // `path_failed` dopo 28,5 s con il bot già arrivato, perché il controllo
+  // verticale di `_updateMotionState` (±3) non poteva più essere soddisfatto.
+  const world = fakeWorld(); world.fillFloor(-2, 12, -2, 12);
+  const adapter = physicsAdapter(world);
+  place(adapter, 0.5, GROUND_Y + 1, 0.5);
+  adapter.client = { write () {} };
+  adapter._authTickInterval = setInterval(() => adapter._authTick(), 5);
+  try {
+    const bogus = { x: 6, y: GROUND_Y + 8, z: 0.5 };
+    const result = await adapter._moveTo(bogus, 1.0, 5000);
+    assert.equal(result.ok, true, 'la y irraggiungibile non deve far fallire l\'azione');
+    const reached = Math.hypot(adapter._feet.x - 6, adapter._feet.z - 0.5);
+    assert.ok(reached <= 1.05, 'si ferma entro la distanza di arresto dal bersaglio');
+  } finally {
+    clearInterval(adapter._authTickInterval);
+    adapter._authTickInterval = null;
+    adapter._motion = null;
+  }
+});
+
 test('_moveTo drives the tick loop to a distant target on open ground', async () => {
   const world = fakeWorld(); world.fillFloor(-2, 12, -2, 12);
   const adapter = physicsAdapter(world);
