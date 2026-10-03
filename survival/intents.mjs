@@ -45,6 +45,12 @@ const KEY_INTENTS = {
   sense_redstone: ['sense', 'redstone'],
   set_repeater_delay: ['toggle', 'redstone'],
   teardown_circuit: ['build', 'redstone'],
+  // Nether (N1): raggiungere un portale è viaggio, costruirlo e accenderlo è
+  // costruzione (l'entrata vera e propria è `enter_portal`, che è viaggio).
+  goto_portal: ['travel'],
+  enter_portal: ['travel'],
+  build_portal: ['build'],
+  light_portal: ['build'],
 };
 
 const PREFIX_INTENTS = [

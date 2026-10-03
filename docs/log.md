@@ -2540,3 +2540,58 @@ thrown egg}` e `/observe.portals` ha catturato l'entità in volo a 14,3 → 15,7
 test unitari; il verdetto "incoming" non è mai stato innescato da un proiettile
 ostile reale (la schivata è N3); `gazedAtEnderman` è solo rilevazione, non
 disciplina (N5); il censimento è limitato a raggio 32/limite 64.
+
+## [2026-10-03] feat | Nether N1: il portale — raggiungere, costruire, accendere, entrare
+
+Implementato N1 (`docs/wiki/nether.md`): quattro azioni sull'adapter con geometria
+pura in `bedrock-nether.mjs`.
+
+- **Geometria** (`planPortalFrame`, `checkPortalFrame`): cornice classica 4×5
+  (14 ossidiana con gli angoli, `withCorners: false` → 10), interno 2×3 su due
+  assi, cella di accensione (il blocco della riga in basso che il click deve
+  colpire, con la sua faccia) e cella d'ingresso. `checkPortalFrame` verifica una
+  cornice già in piedi contro il mondo vero (ossidiana intorno, aria o `portal`
+  dentro) e riporta `missing`/`blocked` con la cella colpevole: un candidato non
+  diventa un portale per somiglianza. `portalSiteBlocked` rifiuta un sito
+  occupato o sospeso (solo la riga in basso vuole terreno) e
+  `portalFrameCandidates` deriva i candidati dall'ossidiana vista, così
+  `light_portal` funziona anche su una cornice che il bot non ha costruito.
+- **Azioni** (`bedrock-adapter.mjs`): `goto_portal` (cammina verso il `portal`
+  più vicino dal censimento N0, filtrato dalla raggiungibilità),
+  `build_portal` (primo sito libero attorno al bot, **mai dentro di lui**,
+  piazzamento dal basso verso l'alto), `light_portal` (trova la cornice, equipaggia
+  l'accendino e clicca la cella di accensione con la transazione `click_block`,
+  poi attende un blocco `portal`) e `enter_portal` (entra nella colonna e attende
+  che il server cambi dimensione). `enter_portal` **non indovina**: la conferma è
+  `this.dimension`, aggiornata dal packet `change_dimension`; senza cambio la
+  risposta è `dimension_unchanged`. Rifiuti tipizzati ovunque
+  (`no_portal_known`, `portal_unreachable`, `move_failed`, `missing_materials`,
+  `no_portal_site`, `portal_frame_incomplete`, `missing_flint_and_steel`,
+  `no_portal_frame`, `portal_not_lit`), nessun budget di pathfinding bruciato su
+  un obiettivo impossibile. La transazione del click è stata estratta in
+  `_itemUseOnBlockTransaction` e riusata dal ripianto dei semi (una sola
+  definizione del gesto "usa l'oggetto su un blocco").
+- **Opzioni e intenti**: `goto_portal`/`enter_portal` compaiono solo con un
+  portale visto **e** raggiungibile, `build_portal` richiede 14 ossidiana,
+  `light_portal` accendino più una cornice spenta; `survival/intents.mjs` mappa
+  `goto_portal`/`enter_portal` → `travel` e `build_portal`/`light_portal` →
+  `build`, così la skill `enter_nether` (criterio `dimension: nether`) ha azioni
+  da eseguire. `/observe.portals` espone anche `portalFrame` (ultimo cantiere).
+- **Test**: 830 verdi. 5 casi puri nuovi in `tests/bedrock-nether.test.mjs`
+  (geometria, verifica con buco/interno occupato/già acceso, sito occupato o
+  sospeso, candidati), 6 in `tests/bedrock-nether-adapter.test.mjs` (rifiuti,
+  cammino, entrata che aspetta il server, cantiere completo e a metà,
+  accensione reale con conferma, gating delle opzioni) e 4 asserzioni di intenti
+  in `tests/gameplay-skills.test.mjs`. La fixture del mondo ora restituisce
+  **celle intere** come `findBlocks` in produzione: le distanze N0 sono state
+  ribasate (1.6/3.5/5.5/7.5) e l'errore `+0.5` sul bersaglio di avvicinamento
+  che le posizioni-centro nascondevano è stato corretto.
+- **Collaudo live (03/10/2026, BDS 1.26.52)**: `GET /observe.portals` →
+  `portals.nether.count 0`, `portalFrame null`, `ready true` (~14 ms);
+  `goto_portal` e `enter_portal` → `no_portal_known` (13 ms); `build_portal` →
+  `missing_materials {obsidian: need 14, have 0}` (13 ms); `light_portal` →
+  `missing_flint_and_steel` (14 ms); `/options` invariato (nessuna chiave
+  portale). Una ricerca `block:portal` su 125 colonne caricate riporta
+  `found 0`: la base non ha ossidiana né un portale, quindi il round live copre i
+  **rifiuti** e il percorso felice resta coperto dai soli test unitari (limite
+  dichiarato in `docs/wiki/nether.md`).

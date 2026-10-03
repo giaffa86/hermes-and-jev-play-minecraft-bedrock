@@ -11,6 +11,7 @@ import {
   summarizePortals, summarizeHazards, projectileThreat, projectileIncoming,
   gazeVector, gazeAngle, gazedAtEnderman, netherHazard,
   PROJECTILE_TYPES, ENDERMAN_GAZE_TOLERANCE_DEG,
+  planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates,
 } from '../bedrock-nether.mjs';
 
 const at = (x, y, z) => ({ x, y, z });
@@ -252,4 +253,114 @@ test('netherHazard ranks fire above magma and stays inert with no danger', () =>
   const far = netherHazard({ fireDistance: 9, magmaDistance: 7 });
   assert.equal(far.level, 'low');
   assert.deepEqual(far.reasons, ['fire_in_range', 'magma_in_range']);
+});
+
+// --- N1: geometria del portale ---------------------------------------------
+
+const flatWorld = (cells, { name = 'obsidian' } = {}) => {
+  const map = new Map(Object.entries(cells));
+  return (position) => map.get(`${position.x},${position.y},${position.z}`) ?? name;
+};
+
+test('planPortalFrame builds the classic 4x5 ring and the ignition cell', () => {
+  const plan = planPortalFrame({ origin: at(10, 71, 20) });
+  assert.equal(plan.ok, true);
+  assert.equal(plan.axis, 'x');
+  assert.equal(plan.frame.length, 14);
+  assert.equal(plan.interior.length, 6);
+  assert.deepEqual(plan.needs, { obsidian: 14 });
+  // Gli angoli sono 4 e i lati 10; l'interno è 2×3 a partire dall'origine.
+  assert.equal(plan.frame.filter(cell => cell.corner).length, 4);
+  assert.deepEqual(plan.interior.map(c => `${c.x},${c.y},${c.z}`).sort(), [
+    '10,71,20', '10,72,20', '10,73,20',
+    '11,71,20', '11,72,20', '11,73,20',
+  ]);
+  // La riga in basso sta sotto l'interno, la riga in alto 3 blocchi sopra.
+  assert.equal(plan.frame.some(c => c.position.y === 70 && c.position.x === 10), true);
+  assert.equal(plan.frame.some(c => c.position.y === 74 && c.position.x === 11), true);
+  assert.deepEqual(plan.ignition, { position: at(10, 70, 20), face: 1, cell: at(10, 71, 20) });
+  assert.deepEqual(plan.entry, at(10, 71, 20));
+  // Le celle del piano sono cornice + interno, ognuna una volta sola.
+  assert.equal(plan.cells.length, 20);
+  assert.equal(new Set(plan.cells.map(c => `${c.x},${c.y},${c.z}`)).size, 20);
+});
+
+test('planPortalFrame supports the z axis, the minimal frame and rejects bad input', () => {
+  const plan = planPortalFrame({ origin: at(10, 71, 20), axis: 'z' });
+  assert.equal(plan.ok, true);
+  assert.equal(plan.frame.length, 14);
+  // Con l'asse z l'interno si allarga lungo z e la cornice resta sullo stesso x.
+  assert.equal(plan.interior.every(cell => cell.x === 10), true);
+  assert.deepEqual(plan.interior.map(c => c.z).sort(), [20, 20, 20, 21, 21, 21]);
+  const minimal = planPortalFrame({ origin: at(0, 64, 0), withCorners: false });
+  assert.equal(minimal.ok, true);
+  assert.equal(minimal.frame.length, 10);
+  assert.deepEqual(minimal.needs, { obsidian: 10 });
+  assert.equal(minimal.frame.every(cell => !cell.corner), true);
+  assert.equal(planPortalFrame({}).error, 'missing_origin');
+  assert.equal(planPortalFrame({ origin: at(0, 64, 0), axis: 'y' }).error, 'unknown_axis: y');
+  assert.equal(planPortalFrame({ origin: at(0, 64, 0), interiorHeight: 2 }).error, 'interior_too_small');
+});
+
+// Una cornice completa con l'interno d'aria: da qui parte ogni caso di
+// verifica, cambiando solo la cella che interessa.
+const aFrameWorld = (overrides = {}) => flatWorld({
+  '-1,70,0': 'obsidian', '0,70,0': 'obsidian', '1,70,0': 'obsidian', '2,70,0': 'obsidian',
+  '-1,74,0': 'obsidian', '0,74,0': 'obsidian', '1,74,0': 'obsidian', '2,74,0': 'obsidian',
+  '-1,71,0': 'obsidian', '-1,72,0': 'obsidian', '-1,73,0': 'obsidian',
+  '2,71,0': 'obsidian', '2,72,0': 'obsidian', '2,73,0': 'obsidian',
+  '0,71,0': 'air', '1,71,0': 'air', '0,72,0': 'air', '1,72,0': 'air', '0,73,0': 'air', '1,73,0': 'air',
+  ...overrides,
+}, { name: 'air' });
+
+test('checkPortalFrame wants obsidian around and air inside, and reports what is lit', () => {
+  const plan = planPortalFrame({ origin: at(0, 71, 0) });
+  const check = checkPortalFrame(plan, aFrameWorld());
+  assert.equal(check.ok, true);
+  assert.equal(check.lit, false);
+  assert.deepEqual(check.frame.missing, []);
+  assert.deepEqual(check.interior.blocked, []);
+  // Un buco nella cornice: `ok: false` e la cella colpevole nominata.
+  const broken = checkPortalFrame(plan, aFrameWorld({ '-1,72,0': 'air' }));
+  assert.equal(broken.ok, false);
+  assert.equal(broken.frame.ok, false);
+  assert.deepEqual(broken.frame.missing, [{ position: at(-1, 72, 0), name: 'air' }]);
+  // Un interno occupato blocca l'accensione (e non è "un buco nella cornice").
+  const blocked = checkPortalFrame(plan, aFrameWorld({ '1,71,0': 'stone' }));
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.frame.ok, true);
+  assert.deepEqual(blocked.interior.blocked, [{ position: at(1, 71, 0), name: 'stone' }]);
+  // Un portale già acceso è valido e dichiarato.
+  const lit = checkPortalFrame(plan, aFrameWorld({ '0,71,0': 'portal' }));
+  assert.equal(lit.ok, true);
+  assert.equal(lit.lit, true);
+});
+
+test('portalSiteBlocked refuses cells that are taken or unsupported', () => {
+  const plan = planPortalFrame({ origin: at(0, 71, 0) });
+  // Il terreno sta sotto la riga in basso (y=69); la cornice si piazza in aria.
+  const supported = (position) => (position.y === 69 ? 'stone' : 'air');
+  assert.deepEqual(portalSiteBlocked(plan, supported), []);
+  // Senza terreno sotto la riga in basso restano quattro celle di appoggio
+  // mancanti (le colonne poggiano su celle del piano, piazzate prima).
+  const noSupport = portalSiteBlocked(plan, flatWorld({}, { name: 'air' }));
+  assert.equal(noSupport.every(entry => entry.reason === 'no_support'), true);
+  assert.equal(noSupport.length, 4);
+  const occupied = portalSiteBlocked(plan, (position) => (position.y === 69 || position.x === 1 && position.y === 71 ? 'stone' : 'air'));
+  assert.equal(occupied.some(entry => entry.reason === 'occupied' && entry.position.x === 1), true);
+  assert.equal(portalSiteBlocked({ ok: false, error: 'missing_origin' }, supported)[0].reason, 'invalid_plan');
+});
+
+test('portalFrameCandidates derives candidate frames from obsidian blocks', () => {
+  const blocks = [{ name: 'obsidian', position: at(10, 70, 20) }];
+  const plans = portalFrameCandidates(blocks);
+  // Il blocco può essere la prima colonna della riga in basso (shift 0), quella
+  // accanto (1) o l'angolo sinistro (-1), su due assi.
+  assert.equal(plans.length, 6);
+  assert.equal(plans.every(plan => plan.ok), true);
+  const exact = plans.filter(plan => plan.origin.x === 10 && plan.origin.y === 71 && plan.origin.z === 20);
+  assert.equal(exact.length, 2);
+  assert.deepEqual(exact.map(plan => plan.axis).sort(), ['x', 'z']);
+  // Un blocco senza posizione non genera geometria inventata.
+  assert.deepEqual(portalFrameCandidates([{ name: 'obsidian' }]), []);
 });

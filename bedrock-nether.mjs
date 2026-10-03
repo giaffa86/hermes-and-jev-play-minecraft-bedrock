@@ -353,3 +353,170 @@ export function netherHazard ({
   if (!reasons.length) return { level: 'none', reasons: [] };
   return { level: 'low', reasons };
 }
+
+// --- N1: geometria del portale -------------------------------------------
+// Un portale non è un blocco magico da trovare: è una cornice di ossidiana con
+// un'interno d'aria che si accende con l'accendino. Qui c'è solo la geometria
+// (pura): dove stanno le 14 celle della cornice, dove sta la cella da accendere
+// e cosa manca perché il portale sia valido.
+export const PORTAL_BLOCK = 'portal';
+export const PORTAL_FRAME_BLOCK = 'obsidian';
+export const PORTAL_IGNITER = 'flint_and_steel';
+export const PORTAL_INTERIOR_WIDTH = 2;
+export const PORTAL_INTERIOR_HEIGHT = 3;
+// Gli angoli della cornice non servono al gioco: 14 = cornice completa,
+// 10 = la stessa cornice senza i quattro angoli (entrambe valide).
+export const PORTAL_FRAME_NEEDS_FULL = { obsidian: 14 };
+export const PORTAL_FRAME_NEEDS_MINIMAL = { obsidian: 10 };
+const PORTAL_REPLACEABLE = new Set(['air', 'cave_air', 'void_air', 'unknown']);
+
+export function portalBlockName (name) {
+  return normalizeNetherName(name);
+}
+
+// Cornice completa per un interno `interiorWidth` × `interiorHeight` il cui
+// angolo in basso a sinistra (la cella interna dove il bot entra) è `origin`.
+export function planPortalFrame ({
+  origin = null,
+  axis = 'x',
+  withCorners = true,
+  interiorWidth = PORTAL_INTERIOR_WIDTH,
+  interiorHeight = PORTAL_INTERIOR_HEIGHT,
+} = {}) {
+  if (!origin || origin.x == null || origin.y == null || origin.z == null) return { ok: false, error: 'missing_origin' };
+  if (axis !== 'x' && axis !== 'z') return { ok: false, error: `unknown_axis: ${axis}` };
+  if (!(interiorWidth >= 2) || !(interiorHeight >= 3)) return { ok: false, error: 'interior_too_small' };
+  const step = axis === 'x' ? { x: 1, z: 0 } : { x: 0, z: 1 };
+  const interior = [];
+  for (let dy = 0; dy < interiorHeight; dy++) {
+    for (let d = 0; d < interiorWidth; d++) {
+      interior.push({ x: origin.x + step.x * d, y: origin.y + dy, z: origin.z + step.z * d });
+    }
+  }
+  const bottomY = origin.y - 1;
+  const topY = origin.y + interiorHeight;
+  const frame = [];
+  const seen = new Set();
+  const push = (position, corner = false) => {
+    const key = `${position.x},${position.y},${position.z}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    frame.push({ position, corner });
+  };
+  // Riga in basso e riga in alto: dall'angolo sinistro all'angolo destro.
+  for (let d = -1; d <= interiorWidth; d++) {
+    const corner = d === -1 || d === interiorWidth;
+    push({ x: origin.x + step.x * d, y: bottomY, z: origin.z + step.z * d }, corner);
+    push({ x: origin.x + step.x * d, y: topY, z: origin.z + step.z * d }, corner);
+  }
+  // Le due colonne laterali, interno escluso (le righe coprono gli angoli).
+  for (let dy = 0; dy < interiorHeight; dy++) {
+    push({ x: origin.x - step.x, y: origin.y + dy, z: origin.z - step.z });
+    push({ x: origin.x + step.x * interiorWidth, y: origin.y + dy, z: origin.z + step.z * interiorWidth });
+  }
+  const kept = withCorners ? frame : frame.filter(cell => !cell.corner);
+  const needs = withCorners ? PORTAL_FRAME_NEEDS_FULL : PORTAL_FRAME_NEEDS_MINIMAL;
+  return {
+    ok: true,
+    axis,
+    origin,
+    withCorners,
+    width: interiorWidth + 2,
+    height: interiorHeight + 2,
+    interior,
+    frame: kept,
+    // Per accendere si clicca la faccia superiore della cornice sotto la prima
+    // colonna interna: è da lì che parte il blocco `portal`.
+    ignition: { position: { x: origin.x, y: bottomY, z: origin.z }, face: 1, cell: { ...origin } },
+    // La cella su cui il bot cammina per entrare: quella interna in basso.
+    entry: { ...origin },
+    needs: { ...needs },
+    cells: [...kept.map(cell => cell.position), ...interior],
+  };
+}
+
+// La cornice è valida? Ossidiana intorno, interno d'aria (o già accesa). Il
+// verdetto su una cella illeggibile è "manca", non "va bene".
+export function checkPortalFrame ({ frame = [], interior = [] } = {}, blockAt = () => null) {
+  const nameOf = (position) => {
+    const name = blockAt(position);
+    return portalBlockName(name);
+  };
+  const missing = [];
+  for (const cell of frame) {
+    const name = nameOf(cell.position);
+    if (name !== PORTAL_FRAME_BLOCK && name !== 'crying_obsidian') missing.push({ position: cell.position, name });
+  }
+  const blocked = [];
+  let lit = false;
+  for (const cell of interior) {
+    const name = nameOf(cell);
+    if (name === PORTAL_BLOCK) { lit = true; continue; }
+    if (!PORTAL_REPLACEABLE.has(name)) blocked.push({ position: cell, name });
+  }
+  return {
+    ok: missing.length === 0 && blocked.length === 0,
+    lit,
+    frame: { ok: missing.length === 0, missing },
+    interior: { ok: blocked.length === 0, blocked },
+  };
+}
+
+// Un cantiere libero per quella cornice? Le celle della cornice devono essere
+// aria e le celle in basso devono avere un supporto solido sotto.
+export function portalSiteBlocked (plan, blockAt = () => null) {
+  if (!plan?.ok) return [{ reason: 'invalid_plan', name: plan?.error ?? null }];
+  const blocked = [];
+  const nameOf = (position) => portalBlockName(blockAt(position));
+  // Una cella di appoggio che è essa stessa un passo del piano non è "senza
+  // supporto": la si piazza prima (dal basso verso l'alto) e diventa il supporto.
+  const planned = new Set(plan.frame.map(cell => `${cell.position.x},${cell.position.y},${cell.position.z}`));
+  const bottomY = plan.origin.y - 1;
+  for (const cell of plan.frame) {
+    const name = nameOf(cell.position);
+    if (!PORTAL_REPLACEABLE.has(name)) blocked.push({ position: cell.position, name, reason: 'occupied' });
+    // Solo la riga in basso poggia sul terreno: le colonne poggiano sulla riga
+    // in basso e la riga in alto è sostenuta dalle colonne (nessun blocco
+    // fluttuante, nessun supporto inventato per l'interno).
+    if (cell.position.y !== bottomY) continue;
+    const base = { x: cell.position.x, y: cell.position.y - 1, z: cell.position.z };
+    if (planned.has(`${base.x},${base.y},${base.z}`)) continue;
+    const below = nameOf(base);
+    if (PORTAL_REPLACEABLE.has(below)) blocked.push({ position: base, name: below, reason: 'no_support', for: cell.position });
+  }
+  for (const cell of plan.interior) {
+    const name = nameOf(cell);
+    if (!PORTAL_REPLACEABLE.has(name)) blocked.push({ position: cell, name, reason: 'occupied' });
+  }
+  return blocked;
+}
+
+// Un blocco di ossidiana visto nel mondo può essere l'inizio di *questa*
+// cornice: da qui nascono i candidati, che vanno poi verificati con
+// `checkPortalFrame` contro il mondo vero (nessuna geometria inventata).
+export function portalFrameCandidates (blocks = [], {
+  withCorners = true,
+  interiorWidth = PORTAL_INTERIOR_WIDTH,
+  interiorHeight = PORTAL_INTERIOR_HEIGHT,
+} = {}) {
+  const plans = [];
+  const seen = new Set();
+  for (const block of blocks) {
+    const position = block?.position ?? block;
+    if (!position || position.x == null) continue;
+    for (const axis of ['x', 'z']) {
+      for (const shift of [-1, 0, 1]) {
+        const origin = axis === 'x'
+          ? { x: position.x - shift, y: position.y + 1, z: position.z }
+          : { x: position.x, y: position.y + 1, z: position.z - shift };
+        const plan = planPortalFrame({ origin, axis, withCorners, interiorWidth, interiorHeight });
+        if (!plan.ok) continue;
+        const key = `${axis}|${origin.x},${origin.y},${origin.z}|${withCorners}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        plans.push(plan);
+      }
+    }
+  }
+  return plans;
+}

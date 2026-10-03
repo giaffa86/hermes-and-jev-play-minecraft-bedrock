@@ -251,12 +251,16 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   executor and the semantic-goal interpreter. Proposal in
   [goal-achievement](goal-achievement.md) /
   [`raw/GOAL_ACHIEVEMENT_MINECRAFT.txt`](../raw/GOAL_ACHIEVEMENT_MINECRAFT.txt).
-- **Nether / End** — **N0 (awareness + hazards) implemented, unit-tested and
-  live-tested 03/10**: portal/fire/magma/spawner census (`GET /observe.portals`),
+- **Nether / End** — **N0 (awareness + hazards) and N1 (portal reach/build/light/
+  enter) implemented and unit-tested; N0 live-checked 03/10, N1 live-checked for
+  the typed refusals**: portal/fire/magma/spawner census (`GET /observe.portals`),
   projectile tracking (`projectileThreat`/`projectileIncoming`), enderman gaze
-  sensing (`gazedAtEnderman`), `waterEvaporates`/`bedsExplode` and seven
-  governor rules. Still missing: the portal action, the ghast dodge, piglin
-  bartering, gaze *discipline*, fortress/stronghold/End actions and a
+  sensing (`gazedAtEnderman`), `waterEvaporates`/`bedsExplode`, seven governor
+  rules, and the four portal actions (`goto_portal`, `build_portal`,
+  `light_portal`, `enter_portal`) with pure frame geometry (`planPortalFrame`,
+  `checkPortalFrame`, `portalSiteBlocked`, `portalFrameCandidates`). Still
+  missing: the live happy path (the base has no obsidian), the ghast dodge,
+  piglin bartering, gaze *discipline*, fortress/stronghold/End actions and a
   `bossDefeated` verifier. Roadmap in
   [nether](nether.md) / [`raw/NETHER_ROADMAP.md`](../raw/NETHER_ROADMAP.md). The
   progression chain (incl. the fixed `beat_the_dragon`) is already in
@@ -337,10 +341,11 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    → Nether portal) as `CURRICULUM` goals run end-to-end. Depends on the
    AI-player Goal Manager (milestone 1).
 9. **Nether / End** (spec in [nether](nether.md)): N0 done (portal/fire/magma/
-   spawner census, projectile + gaze sensing, governor rules) and live-checked in
-   the Overworld; next is N1 (locate or build a portal), then N2/N3 (survive the
-   Nether, dodge ghast fireballs), N4/N5 (piglin bartering, enderman gaze
-   discipline), N6/N7 (fortress, blaze rods, End).
+   spawner census, projectile + gaze sensing, governor rules) and N1 done (portal
+   reach/build/light/enter, unit-tested; live only for the typed refusals because
+   the base has no obsidian), both live-checked in the Overworld; next is N2/N3
+   (survive the Nether, dodge ghast fireballs), N4/N5 (piglin bartering,
+   enderman gaze discipline), N6/N7 (fortress, blaze rods, End).
 10. **Exploration** (spec in [exploration](exploration.md)): M1 core, M2
     (route replay) and M4 (observable targets) are implemented and live-exercised
     (`exploration.mjs` target resolution + spiral planner + report + replay +

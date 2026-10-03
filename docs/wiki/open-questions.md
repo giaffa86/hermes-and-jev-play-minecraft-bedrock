@@ -65,7 +65,12 @@ Last lint: 2026-10-03.
   counter and a way to fight from range. Nothing is implemented yet.
 - **Advanced shelter** — no wall/shelter building actions.
 - **Nether portal** — the bot *sees* a portal since N0 (`GET /observe.portals`,
-  `_netherCensus`) but cannot walk to one, build one or light it yet (N1).
+  `_netherCensus`) and since N1 it can walk to it, build a frame (14 obsidian,
+  bottom-up, never inside itself), light it with flint and steel and step in
+  waiting for the server's dimension change. What is missing is the **live happy
+  path**: the base has no obsidian and no loaded portal, so live only the typed
+  refusals (`no_portal_known`, `missing_materials`, `missing_flint_and_steel`)
+  were observed. No deliberate portal *search* either (the census radius is 32).
 - **Fluids** — **M0 (fluid awareness) and M1 partial (wading + simulated air
   budget) implemented and collaudati live 03/10**: the bot knows where water and
   lava are (`GET /observe.fluids`, census + hazard ladder), refuses digs that
@@ -348,11 +353,13 @@ Still missing (the rest of the original gap):
   `nether_portal → … → enter_end → beat_the_dragon` chain and the goal points to
   the real milestone. The underlying Nether capabilities are still missing — see
   [nether](nether.md).
-- **No Nether/End capabilities (N0 done)**: N0 (awareness and hazards) is
+- **No Nether/End capabilities (N0/N1 done)**: N0 (awareness and hazards) is
   implemented, unit-tested and live-checked 03/10 — portal/fire/magma/spawner
   census, projectile tracking, enderman gaze sensing, `waterEvaporates`/
-  `bedsExplode` and seven governor rules, all *perception only*. Still missing:
-  portal actions (`goto_portal`/`build_portal`/`light_portal`), the ghast dodge,
+  `bedsExplode` and seven governor rules, all *perception only*; N1 adds the four
+  portal actions (`goto_portal`, `build_portal`, `light_portal`, `enter_portal`)
+  with pure frame geometry and typed refusals, live-checked for the refusals.
+  Still missing:
   piglin bartering, gaze **discipline**, fortress/stronghold/End actions and a
   `bossDefeated` verifier criterion. Roadmap in [nether](nether.md).
 - **Crafting** only one item at a time; special recipes (smithing, anvil, looms)

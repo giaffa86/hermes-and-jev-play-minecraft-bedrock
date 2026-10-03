@@ -15,7 +15,7 @@ import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, d
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
 import { loadCircuits, planCircuit, circuitSiteBlocked, circuitSafety, forbiddenBlock, checkCircuitSuccess, circuitAnchor, expectedDelayTicks, measureCircuitDelay, TICK_MS, MAX_CIRCUIT_STEPS, MAX_CIRCUIT_COMPONENTS, MIN_CLOCK_TICKS } from './circuits.mjs';
 import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
-import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT } from './bedrock-nether.mjs';
+import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName } from './bedrock-nether.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -136,6 +136,12 @@ const LAVA_AVOID_RANGE = +(process.env.LAVA_AVOID_RANGE || 8);
 const NETHER_RESCAN_MS = +(process.env.NETHER_RESCAN_MS || 10000);
 const NETHER_SCAN_RADIUS = +(process.env.NETHER_SCAN_RADIUS || DEFAULT_NETHER_RADIUS);
 const NETHER_SCAN_LIMIT = +(process.env.NETHER_SCAN_LIMIT || DEFAULT_NETHER_LIMIT);
+// N1: azioni sul portale. Entrare in un portale è un movimento, non un
+// teletrasporto: si cammina dentro la colonna e si aspetta che sia il server a
+// cambiare dimensione (la conferma è `this.dimension`, mai una sensazione).
+const PORTAL_APPROACH_RANGE = +(process.env.PORTAL_APPROACH_RANGE || 2.5);
+const PORTAL_ENTER_TIMEOUT_MS = +(process.env.PORTAL_ENTER_TIMEOUT_MS || 15000);
+const PORTAL_FRAME_RADIUS = +(process.env.PORTAL_FRAME_RADIUS || 6);
 // Occasioni: raggio della scansione delle ore di valore. Deve combaciare con
 // ORE_INTEREST_RANGE di world-events.mjs: tutto ciò che genera un evento
 // VALUABLE_ORE_SEEN è anche un'opzione mine_<ore>.
@@ -1262,7 +1268,195 @@ export class BedrockAdapter {
     // Le celle servono solo alla diagnostica (`/observe.portals`): tenerle fuori
     // da /observe evita di gonfiare la percezione del controller.
     if (cells) view.cells = census.rows;
+    // Ultimo cantiere di portale (N1): diagnostica per il round live e per
+    // `/observe` senza dover rileggere il mondo.
+    view.portalFrame = this._lastPortalFrame ?? null;
     return view;
+  }
+
+  // --- N1: azioni sul portale -------------------------------------------------
+  // Il portale più vicino fra quelli visti dal censimento N0 (posizione in
+  // blocchi): senza un portale caricato non c'è nulla da raggiungere.
+  _nearestPortal () {
+    return this._netherView().portals?.nether?.nearest ?? null;
+  }
+
+  // Aprire un inventario o accendere un portale sono lo stesso gesto: un click
+  // su una faccia di un blocco con l'oggetto in mano. La transazione è identica
+  // a quella del ripianto dei semi, quindi vive qui una volta sola.
+  _itemUseOnBlockTransaction (held, position, face = 1, clickPos = { x: 0.5, y: 1, z: 0.5 }) {
+    return {
+      legacy: { legacy_request_id: 0 },
+      actions: [],
+      data: {
+        action_type: 'click_block',
+        trigger_type: 'player_input',
+        block_position: position,
+        face,
+        hotbar_slot: this.selectedHotbar,
+        hand: 'main_hand',
+        held_item: held,
+        player_pos: { ...this.position },
+        click_pos: clickPos,
+        block_runtime_id: this.world.runtimeIdAt(position) >>> 0,
+        client_prediction: 'success',
+        client_cooldown_state: 'off',
+      },
+    };
+  }
+
+  // Una cornice già in piedi attorno al bot (ossidiana intorno, interno d'aria
+  // o già acceso): i candidati nascono dai blocchi di ossidiana visti e solo
+  // `checkPortalFrame` decide, contro il mondo vero.
+  _findPortalFrame ({ radius = PORTAL_FRAME_RADIUS, limit = 24 } = {}) {
+    if (typeof this.world?.findBlocks !== 'function' || !this.position) return null;
+    const obsidian = this.world.findBlocks(PORTAL_FRAME_BLOCK, this.position, radius, limit);
+    if (!obsidian?.length) return null;
+    const blockAt = (position) => this.world.blockAt(position)?.name ?? null;
+    for (const plan of portalFrameCandidates(obsidian)) {
+      const check = checkPortalFrame(plan, blockAt);
+      if (check.ok) return { plan, check, obsidian: obsidian.length };
+    }
+    return null;
+  }
+
+  // Dove può stare una cornice: davanti al bot, mai addosso. I candidati sono
+  // ordinati per distanza e il primo sito libero vince (deterministico).
+  _portalBuildSite ({ withCorners = true } = {}) {
+    const feet = this._feet;
+    if (!feet || typeof this.world?.blockAt !== 'function') return null;
+    const base = { x: Math.floor(feet.x), y: Math.floor(feet.y), z: Math.floor(feet.z) };
+    const occupied = new Set([`${base.x},${base.y},${base.z}`, `${base.x},${base.y + 1},${base.z}`]);
+    const blockAt = (position) => this.world.blockAt(position)?.name ?? null;
+    const candidates = [];
+    for (let dx = -3; dx <= 3; dx++) {
+      for (let dz = -3; dz <= 3; dz++) {
+        if (dx === 0 && dz === 0) continue;
+        for (const axis of ['x', 'z']) {
+          // La cornice nasce un blocco sopra i piedi: la riga in basso poggia sul
+          // terreno e il primo blocco di `portal` sta all'altezza della testa,
+          // cioè dove il bot entra con un passo (comportamento vanilla: si entra
+          // camminando, non scavando).
+          candidates.push({ axis, distance: Math.abs(dx) + Math.abs(dz), origin: { x: base.x + dx, y: base.y + 1, z: base.z + dz } });
+        }
+      }
+    }
+    candidates.sort((a, b) => a.distance - b.distance || (a.axis === 'x' ? -1 : 1));
+    for (const candidate of candidates) {
+      const plan = planPortalFrame({ origin: candidate.origin, axis: candidate.axis, withCorners });
+      if (!plan.ok) continue;
+      // La sicurezza del bot prima di tutto: la cornice non deve contenere le
+      // celle che il bot occupa (né lo spazio per la testa).
+      if (plan.cells.some(cell => occupied.has(`${cell.x},${cell.y},${cell.z}`))) continue;
+      if (portalSiteBlocked(plan, blockAt).length) continue;
+      return plan;
+    }
+    return null;
+  }
+
+  async _gotoPortal ({ timeoutMs = 45000 } = {}) {
+    const portal = this._nearestPortal();
+    if (!portal?.position) return { ok: false, error: 'no_portal_known', hint: 'nessun blocco `portal` nel raggio del censimento' };
+    const center = { x: portal.position.x + 0.5, y: portal.position.y, z: portal.position.z + 0.5 };
+    if (this._reachabilityUsable() && !this.approachReachable(portal.position, { range: PORTAL_APPROACH_RANGE, dy: 2 })) {
+      return { ok: false, error: 'portal_unreachable', portal: { ...portal.position }, distance: portal.distance };
+    }
+    if (this._pointDistance(center) > PORTAL_APPROACH_RANGE) {
+      try { await this._moveTo(center, PORTAL_APPROACH_RANGE, timeoutMs); }
+      catch (error) {
+        this.log('portal_approach_failed', { message: error.message });
+        return { ok: false, error: 'move_failed', portal: { ...portal.position }, message: error.message };
+      }
+    }
+    return { ok: true, portal: { ...portal.position }, distance: this._pointDistance(center) };
+  }
+
+  // Entrare è camminare dentro la colonna del portale e aspettare che il server
+  // cambi dimensione: la conferma è `this.dimension` (packet `change_dimension`).
+  async _enterPortal ({ timeoutMs = PORTAL_ENTER_TIMEOUT_MS } = {}) {
+    const portal = this._nearestPortal();
+    if (!portal?.position) return { ok: false, error: 'no_portal_known' };
+    const before = this.dimension;
+    const center = { x: portal.position.x + 0.5, y: portal.position.y, z: portal.position.z + 0.5 };
+    if (this._pointDistance(center) > PORTAL_APPROACH_RANGE) {
+      const approach = await this._gotoPortal({});
+      if (!approach.ok) return { ...approach, stage: 'approach' };
+    }
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (this.dimension !== before) return { ok: true, from: before, to: this.dimension, portal: { ...portal.position } };
+      try { await this._moveTo(center, 0.6, 2500); } catch (error) { this.log('portal_step_failed', { message: error.message }); }
+      await delay(200);
+    }
+    return { ok: false, error: 'dimension_unchanged', from: before, to: this.dimension, portal: { ...portal.position } };
+  }
+
+  async _buildPortal ({ withCorners = true, axis = null } = {}) {
+    const needs = withCorners ? PORTAL_FRAME_NEEDS_FULL : PORTAL_FRAME_NEEDS_MINIMAL;
+    const have = this.inventory[PORTAL_FRAME_BLOCK] || 0;
+    if (have < needs.obsidian) {
+      return { ok: false, error: 'missing_materials', missing: [{ item: PORTAL_FRAME_BLOCK, need: needs.obsidian, have }] };
+    }
+    let plan = null;
+    if (axis === 'x' || axis === 'z') {
+      const site = this._portalBuildSite({ withCorners });
+      plan = site && site.axis === axis ? site : null;
+    } else {
+      plan = this._portalBuildSite({ withCorners });
+    }
+    if (!plan) return { ok: false, error: 'no_portal_site', axis: axis ?? null };
+    const placed = [];
+    const failed = [];
+    // Dal basso verso l'alto: ogni blocco poggia su una cornice già piazzata
+    // (o sul terreno), così il server ha sempre un supporto valido.
+    const order = [...plan.frame].sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x || a.position.z - b.position.z);
+    for (const cell of order) {
+      const support = { x: cell.position.x, y: cell.position.y - 1, z: cell.position.z };
+      const result = await this._placeAtCell(PORTAL_FRAME_BLOCK, PORTAL_FRAME_BLOCK, cell.position, support, 1);
+      if (result?.ok) placed.push({ ...cell.position });
+      else failed.push({ position: { ...cell.position }, error: result?.error ?? 'unknown' });
+      // Una cornice a metà non si lascia dietro: si ferma e si riporta.
+      if (failed.length) break;
+    }
+    this._lastPortalFrame = { ok: failed.length === 0, axis: plan.axis, origin: plan.origin, placed: placed.length, failed: failed.length, at: Date.now() };
+    if (failed.length) {
+      return { ok: false, error: 'portal_frame_incomplete', axis: plan.axis, origin: plan.origin, placed: placed.length, failed };
+    }
+    return { ok: true, axis: plan.axis, origin: plan.origin, placed: placed.length, needs, ignition: plan.ignition, entry: plan.entry };
+  }
+
+  async _lightPortal ({ timeoutMs = 8000, radius = PORTAL_FRAME_RADIUS } = {}) {
+    if ((this.inventory[PORTAL_IGNITER] || 0) < 1) return { ok: false, error: 'missing_flint_and_steel', item: PORTAL_IGNITER };
+    const found = this._findPortalFrame({ radius });
+    if (!found) return { ok: false, error: 'no_portal_frame', radius };
+    if (found.check.lit) return { ok: true, lit: true, already: true, origin: found.plan.origin, axis: found.plan.axis };
+    let slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === PORTAL_IGNITER && s.count > 0);
+    if (slotIndex < 0) return { ok: false, error: 'missing_flint_and_steel', item: PORTAL_IGNITER };
+    if (slotIndex > 8) {
+      try { slotIndex = await this._moveSlotToHotbar(slotIndex); }
+      catch (error) { return { ok: false, error: `igniter_equip_failed: ${error.message}` }; }
+    }
+    this._selectHotbarSlot(slotIndex);
+    const held = this.inventorySlots[this.selectedHotbar];
+    const ignition = found.plan.ignition;
+    const look = this._lookAt({ x: ignition.position.x + 0.5, y: ignition.position.y + 0.5, z: ignition.position.z + 0.5 });
+    await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+    await delay(120);
+    await this._queueAuthInput({
+      yaw: look.yaw,
+      pitch: look.pitch,
+      transaction: this._itemUseOnBlockTransaction(held, ignition.position, ignition.face),
+    });
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const lit = found.plan.interior.some(cell => portalBlockName(this.world.blockAt(cell)?.name) === PORTAL_BLOCK);
+      if (lit) {
+        this._refreshNearby();
+        return { ok: true, lit: true, origin: found.plan.origin, axis: found.plan.axis, ignition: { ...ignition.position } };
+      }
+      await delay(100);
+    }
+    return { ok: false, error: 'portal_not_lit', origin: found.plan.origin, ignition: { ...ignition.position } };
   }
 
   // Proprietà di stato di un blocco in una posizione (leva aperta, repeater
@@ -1591,6 +1785,26 @@ export class BedrockAdapter {
       // Nel Nether e nell'End il letto esplode: l'opzione non va offerta affatto,
       // altrimenti il planner sceglie un'azione che si autodistrugge.
       if (bed && !bedsExplode(this.dimension)) o.push({ key: 'sleep', description: `Sleep in the bed at ${JSON.stringify(bed.position)} (${bed.distance} blocks away) before the night is dangerous` });
+    }
+    // N1: portale. Camminare verso un portale ha senso solo se il censimento ne
+    // ha visto uno (e la raggiungibilità lo conferma); costruire e accendere
+    // richiedono le mani nell'inventario, non la speranza.
+    const portal = this._nearestPortal();
+    if (portal?.position) {
+      const reachable = !this._reachabilityUsable() || this.approachReachable(portal.position, { range: PORTAL_APPROACH_RANGE, dy: 2 });
+      if (reachable) {
+        o.push({ key: 'goto_portal', description: `Walk to the nether portal at ${JSON.stringify(portal.position)} (${portal.distance} blocks away)` });
+        if (portal.distance != null && portal.distance <= PORTAL_APPROACH_RANGE + 1) {
+          o.push({ key: 'enter_portal', description: 'Step into the portal and wait for the dimension change' });
+        }
+      }
+    }
+    if ((this.inventory[PORTAL_FRAME_BLOCK] || 0) >= PORTAL_FRAME_NEEDS_FULL.obsidian) {
+      o.push({ key: 'build_portal', description: `Build a nether portal frame from ${this.inventory[PORTAL_FRAME_BLOCK]} obsidian (light it afterwards with flint and steel)` });
+    }
+    if ((this.inventory[PORTAL_IGNITER] || 0) >= 1) {
+      const frame = this._findPortalFrame({ radius: PORTAL_FRAME_RADIUS });
+      if (frame && !frame.check.lit) o.push({ key: 'light_portal', description: `Light the nether portal frame at ${JSON.stringify(frame.plan.origin)}` });
     }
     // Recupero post-morte: il loot e gli orb EXP sono rimasti dov'è morto.
     if (this.deathSite && this.position) {
@@ -2080,6 +2294,14 @@ export class BedrockAdapter {
         result = await this._flee();
       } else if (key === 'avoid_lava') {
         result = await this._avoidLava();
+      } else if (key === 'goto_portal') {
+        result = await this._gotoPortal({});
+      } else if (key === 'enter_portal') {
+        result = await this._enterPortal({});
+      } else if (key === 'build_portal') {
+        result = await this._buildPortal({});
+      } else if (key === 'light_portal') {
+        result = await this._lightPortal({});
       } else if (key === 'go_home' || key === 'retreat') {
         result = await this._goHome();
       } else if (key === 'equip_armor') {

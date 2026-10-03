@@ -69,6 +69,12 @@ test('option keys map to the shared intent vocabulary', () => {
   assert.deepEqual(optionIntents('eat'), ['eat', 'heal']);
   assert.deepEqual(optionIntents('mine_oak_log'), ['mine']);
   assert.deepEqual(optionIntents('attack_zombie'), ['fight']);
+  // Nether (N1): camminare verso un portale — e attraversarlo — è viaggio,
+  // costruirlo e accenderlo è costruzione.
+  assert.deepEqual(optionIntents('goto_portal'), ['travel']);
+  assert.deepEqual(optionIntents('enter_portal'), ['travel']);
+  assert.deepEqual(optionIntents('build_portal'), ['build']);
+  assert.deepEqual(optionIntents('light_portal'), ['build']);
   assert.deepEqual(optionIntents('place_crafting_table'), ['build']);
   assert.deepEqual(optionIntents('goto_waypoint'), ['travel']);
   assert.deepEqual(optionIntents('wait'), ['wait']);

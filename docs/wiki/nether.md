@@ -6,8 +6,10 @@ Roadmap for taking the bot from the first Nether portal to the End while
 gaze**, collect **blaze rods** and **ender pearls**, craft eyes of ender, find the
 stronghold, open the End portal, and (stretch) defeat the **Ender Dragon**.
 
-Status: **N0 (awareness and hazards) implemented, unit-tested and partially
-collaudato live (03/10/2026); N1–N7 still spec only**.
+Status: **N0 (awareness and hazards) and N1 (portal reach/build/light/enter)
+implemented and unit-tested; both have a live round (03/10/2026), N1 partial
+because the live world has no obsidian and no loaded portal; N2–N7 still spec
+only**.
 `knowledge/progression.json` now has the full chain and the
 `beat_the_dragon → enter_nether` contradiction is fixed: `beat_the_dragon` is a
 real milestone requiring `enter_end`. Full raw source:
@@ -20,9 +22,12 @@ Sources: `knowledge/progression.json`, `skills/gameplay/progression/*`,
 
 ## Current state
 
-- **`enter_nether` is not implemented**: the skill exists (`success: {dimension:
-  nether}`) but there is **no portal action** — no `place_obsidian`, no
-  `light_portal`/`flint_and_steel`, no "find a nearby `portal`".
+- **`enter_nether` actions exist since N1**: `goto_portal`, `build_portal`,
+  `light_portal`, `enter_portal` ([adapter](architecture-evolution.md)), con
+  geometria pura in `bedrock-nether.mjs` (`planPortalFrame`, `checkPortalFrame`,
+  `portalSiteBlocked`, `portalFrameCandidates`). La skill `enter_nether`
+  (`success: {dimension: nether}`) ha ora le azioni che le servono; quello che
+  manca nel mondo live è l'**ossidiana** (e un portale caricato).
 - **Projectile tracking**: ✅ since N0 — `_onEntityMove` keeps `prev` for
   projectile entities and `_netherView().projectile` answers "is one coming at
   me" ([`bedrock-nether.mjs`](../../bedrock-nether.mjs), `projectileThreat`).
@@ -67,7 +72,7 @@ New item tags: `gold_ingots`, `obsidian`, `blaze_rods`, `blaze_powder`,
 | # | Milestone | Content | Status |
 |---|---|---|---|
 | N0 | Nether awareness & hazards | `_refreshNearby` (portal, end_portal_frame, magma, spawner, fire); `/observe.portals`; projectile sensing (`projectileIncoming`); gaze sensing (`gazedAtEnderman`); governor rules. | ◑ implemented + live (03/10/2026), see below |
-| N1 | Portal locate/build/light/enter | `goto_portal`, `build_portal`, `light_portal`, `enter_portal`; prefer reusing a nearby portal; verify `portal` block then `dimension: nether`. | ❌ not implemented |
+| N1 | Portal locate/build/light/enter | `goto_portal`, `build_portal`, `light_portal`, `enter_portal`; prefer reusing a nearby portal; verify `portal` block then `dimension: nether`. | ◑ implemented + live partial (03/10/2026), see below |
 | N2 | Nether survival | fire/lava avoidance (fluids), minimal nether hub, fall handling (no water), never sleep/place water. | ❌ not implemented |
 | N3 | Ghast avoidance | track fireballs, dodge perpendicular to the trajectory (or deflect), never flee into lava. | ❌ not implemented |
 | N4 | Piglin bartering | wear gold armour for neutrality; `barter_piglin` (gold in hand → `item_use_on_entity` → collect drops); never hit piglins. | ❌ not implemented |
@@ -154,6 +159,94 @@ whole suite at this point. The unit tests are the only place where the
   simply not in the view (N1 has to search for it deliberately).
 - `portalKind('nether_portal')` returns `null` on purpose: the Bedrock block is
   named `portal`.
+
+## N1 — The portal: reach, build, light, enter (implemented, live partial 03/10/2026)
+
+### Implementation
+
+Geometry lives in [`bedrock-nether.mjs`](../../bedrock-nether.mjs) and is pure:
+
+- `planPortalFrame({origin, axis, withCorners, interiorWidth, interiorHeight})`
+  returns the classic 4×5 ring — 14 obsidian with the corners, 10 without — plus
+  the interior (2×3), the `ignition` cell (the bottom-row block a lit click has
+  to hit, with its face) and the `entry` cell. The frame is built **bottom-up**
+  so every block is placed against an already-placed support.
+- `checkPortalFrame(plan, blockAt)` verifies a frame that is already standing:
+  obsidian around, air (or `portal`) inside, and reports `missing`/`blocked` with
+  the guilty cell. It is the only thing that decides whether a candidate is a
+  portal — against the real world, never against a hopeful pattern match.
+- `portalSiteBlocked(plan, blockAt)` refuses a site that is occupied or floats
+  (only the bottom row needs ground; the columns stand on the bottom row).
+- `portalFrameCandidates(blocks)` derives candidate frames from the obsidian
+  blocks the bot can see (each block can be a bottom-row column or a corner, on
+  both axes), so `light_portal` works on a frame it did not build.
+
+The adapter turns that into four actions (`bedrock-adapter.mjs`):
+
+| Action | What it does | Typed refusals |
+| --- | --- | --- |
+| `goto_portal` | walks to the nearest known `portal` block (census N0), reachability-gated | `no_portal_known`, `portal_unreachable`, `move_failed` |
+| `build_portal` | picks the first free site around the bot (never inside it), places the frame bottom-up | `missing_materials`, `no_portal_site`, `portal_frame_incomplete` |
+| `light_portal` | finds a standing frame, clicks the ignition cell with flint and steel, waits for a `portal` block | `missing_flint_and_steel`, `no_portal_frame`, `portal_not_lit` |
+| `enter_portal` | walks into the portal column and waits for `this.dimension` to change | `no_portal_known`, `dimension_unchanged` |
+
+`enter_portal` never guesses: the success is the server's `change_dimension`
+packet (already tracked at `start_game`/`change_dimension`). `goto_portal` and
+`enter_portal` appear in `/options` only when the census sees a portal *and* the
+reachability says the bot can stand next to it; `build_portal` needs 14 obsidian,
+`light_portal` needs flint and steel **and** a frame that is not lit yet.
+`/observe.portals` also reports `portalFrame` (the last build attempt).
+
+Survival intents: `goto_portal`/`enter_portal` → `travel`, `build_portal`/
+`light_portal` → `build` (`survival/intents.mjs`).
+
+### Tests
+
+- `tests/bedrock-nether.test.mjs`: 5 new cases (17 total) — ring geometry and
+  ignition cell, z axis and the minimal 10-obsidian frame, `checkPortalFrame`
+  with a complete/holed/occupied/already-lit frame, `portalSiteBlocked`
+  (occupied, no support, invalid plan), `portalFrameCandidates`.
+- `tests/bedrock-nether-adapter.test.mjs`: 6 new cases (17 total) — typed
+  refusals, `goto_portal` walking to the block centre, `portal_unreachable`,
+  `enter_portal` waiting for the dimension change (and staying honest when it
+  does not come), `build_portal` site choice/bottom-up order/half frame,
+  `light_portal` click transaction and confirmation, `/options` gating.
+- The world fixture of that file now returns **integer cell positions**, like
+  production `findBlocks`; the N0 distances were re-baselined accordingly (the
+  old centre-based positions hid a `+0.5` error in the approach target).
+
+### Live round (03/10/2026, BDS 1.26.52)
+
+| Probe | Result |
+| --- | --- |
+| `GET /observe.portals` | `portals.nether.count 0`, `portalFrame null`, `ready true` (~14 ms) |
+| `POST /act goto_portal` | `no_portal_known` (13 ms) |
+| `POST /act enter_portal` | `no_portal_known` (13 ms) |
+| `POST /act build_portal` | `missing_materials {obsidian: need 14, have 0}` (13 ms) |
+| `POST /act light_portal` | `missing_flint_and_steel` (14 ms) |
+| `GET /options` | no portal key offered (nothing to reach, build or light) |
+
+An exploration search for `block:portal` over 125 loaded columns (radius 48)
+reported `found 0`: the base has no portal and no obsidian, so the live round can
+only exercise the **refusals**. Each one is immediate (13–14 ms) and typed —
+no pathfinder budget burned on an impossible goal.
+
+### Known limits (N1)
+
+- The **happy path is unit-only**: no obsidian and no loaded portal live, so
+  `build_portal`/`light_portal`/`enter_portal` success was never observed on the
+  server. That is the first thing to do inside the Nether (or with obsidian in
+  the inventory).
+- Building consumes a real inventory (14 obsidian) and cannot be undone; the
+  action refuses to start without the full material instead of leaving a half
+  frame (the same rule as `build_hut`).
+- `enter_portal` walks into the column; the walk-in height (bottom row at feet
+  level, first `portal` block at head level) matches the vanilla layout, but the
+  live confirmation of “the server teleports me” is still missing.
+- No portal *search* yet: `goto_portal` uses the N0 census (radius 32), so a
+  portal further away is invisible until N1 grows a deliberate search (the
+  `find_block` mission already exists and can locate an unlit frame by
+  `obsidian`).
 
 ## Dependencies and risks
 

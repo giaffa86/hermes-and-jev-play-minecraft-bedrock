@@ -5,6 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BedrockAdapter } from '../bedrock-adapter.mjs';
+import { planPortalFrame } from '../bedrock-nether.mjs';
 
 // Mondo finto: quattro celle d'aria sopra un pavimento di pietre, più le celle
 // passate esplicitamente. `findBlocks` filtra per nome (o suffisso `_<nome>`,
@@ -28,7 +29,9 @@ function netherAdapter (cells = {}, { feet = { x: 0.5, y: 71, z: 0.5 }, dimensio
     const { name, properties = {} } = typeof def === 'string' ? { name: def } : def;
     blocks.set(`${x},${y},${z}`, {
       name,
-      position: { x: x + 0.5, y, z: z + 0.5 },
+      // Come in produzione: `findBlocks` restituisce il blocco con la cella
+      // intera (`blockAt` prismarine), non il centro.
+      position: { x, y, z },
       getProperties: () => properties,
     });
   };
@@ -81,17 +84,19 @@ test('_netherView sees portals, fire and spawners around the bot', () => {
     '8,71,0': 'portal',
   });
   const view = adapter._netherView({ cells: true });
-  assert.equal(view.fireDistance, 2);
-  assert.equal(view.magmaDistance, 4);
-  assert.equal(view.spawnerDistance, 6);
-  assert.equal(view.portalDistance, 8);
+  // Distanze da celle intere (come in produzione): il fuoco a (2,71,0) sta a
+  // 1,6 blocchi dai piedi del bot a (0.5,71,0.5), non a 2.
+  assert.equal(view.fireDistance, 1.6);
+  assert.equal(view.magmaDistance, 3.5);
+  assert.equal(view.spawnerDistance, 5.5);
+  assert.equal(view.portalDistance, 7.5);
   assert.equal(view.portals.nether.count, 1);
   assert.equal(view.hazard.level, 'critical');
   assert.equal(view.cells.length, 4);
   // I pericoli sono nella vista senza `cells`, solo l'elenco delle celle è extra.
   const compact = adapter._netherView();
   assert.equal(compact.cells, undefined);
-  assert.equal(compact.fireDistance, 2);
+  assert.equal(compact.fireDistance, 1.6);
 });
 
 test('_netherView detects fire under the feet and in the head cell', () => {
@@ -206,4 +211,205 @@ test('sleep stays available in the overworld', () => {
   adapter._isNight = () => true;
   const keys = adapter.options().map(option => option.key);
   assert.equal(keys.includes('sleep'), true);
+});
+
+// --- N1: azioni sul portale ------------------------------------------------
+// Fixture delle azioni: movimento, piazzamento, click e inventario osservabili.
+function portalAdapter (cells = {}, { inventory = {}, feet = { x: 0.5, y: 71, z: 0.5 }, dimension = 'overworld' } = {}) {
+  const adapter = netherAdapter(cells, { feet, dimension });
+  adapter.inventory = { ...inventory };
+  adapter.inventorySlots = Object.entries(inventory).map(([name, count]) => ({ name, count }));
+  adapter.selectedHotbar = 0;
+  adapter._slotItemName = (slot) => slot?.name ?? null;
+  adapter._selectHotbarSlot = () => {};
+  adapter._moveSlotToHotbar = async (index) => index;
+  adapter._reachabilityUsable = () => false;
+  adapter._refreshNearby = () => {};
+  // In produzione `blockAt` restituisce sempre un blocco (aria compresa): la
+  // fixture torna `null` per le celle non definite, quindi si normalizza qui.
+  const rawBlockAt = adapter.world.blockAt;
+  adapter.world.blockAt = (position) => rawBlockAt(position) ?? { name: 'air', position: { ...position } };
+  adapter.events = { moves: [], placed: [], transactions: [] };
+  adapter._moveTo = async (target) => { adapter.events.moves.push({ ...target }); return true; };
+  adapter._queueAuthInput = async (payload) => { if (payload?.transaction) adapter.events.transactions.push(payload.transaction); };
+  adapter._placeAtCell = async (item, block, target, support, face) => {
+    adapter.events.placed.push({ item, block, target: { ...target }, support: { ...support }, face });
+    adapter.inventory[item] = Math.max(0, (adapter.inventory[item] || 0) - 1);
+    return { ok: true };
+  };
+  return adapter;
+}
+
+test('_gotoPortal is typed when no portal is loaded and moves when there is one', async () => {
+  const empty = portalAdapter();
+  assert.equal(empty._nearestPortal(), null);
+  const none = await empty._gotoPortal({});
+  assert.equal(none.ok, false);
+  assert.equal(none.error, 'no_portal_known');
+  assert.equal(empty.events.moves.length, 0);
+
+  const adapter = portalAdapter({ '4,71,0': 'portal' });
+  const nearest = adapter._nearestPortal();
+  assert.deepEqual(nearest.position, { x: 4, y: 71, z: 0 });
+  const result = await adapter._gotoPortal({});
+  assert.equal(result.ok, true);
+  assert.equal(result.portal.x, 4);
+  assert.equal(adapter.events.moves.length, 1);
+  // La destinazione è il centro del blocco di portale, non un angolo.
+  assert.equal(adapter.events.moves[0].x, 4.5);
+});
+
+test('_gotoPortal refuses a portal outside the walkable component', async () => {
+  const adapter = portalAdapter({ '4,71,0': 'portal' });
+  adapter._reachabilityUsable = () => true;
+  adapter.approachReachable = () => false;
+  const result = await adapter._gotoPortal({});
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'portal_unreachable');
+  assert.equal(adapter.events.moves.length, 0);
+});
+
+test('_enterPortal waits for the server dimension change, not for a feeling', async () => {
+  const adapter = portalAdapter({ '2,71,0': 'portal' });
+  adapter._moveTo = async (target) => {
+    adapter.events.moves.push({ ...target });
+    return true;
+  };
+  // Nessun cambio di dimensione: il verdetto resta onesto.
+  const stuck = await adapter._enterPortal({ timeoutMs: 150 });
+  assert.equal(stuck.ok, false);
+  assert.equal(stuck.error, 'dimension_unchanged');
+  assert.equal(stuck.from, 'overworld');
+  assert.equal(stuck.to, 'overworld');
+
+  // Il server cambia dimensione durante il passo: conferma dal pacchetto.
+  const travelling = portalAdapter({ '2,71,0': 'portal' });
+  travelling._moveTo = async () => { travelling.dimension = 'nether'; return true; };
+  const crossed = await travelling._enterPortal({ timeoutMs: 1500 });
+  assert.deepEqual([crossed.ok, crossed.from, crossed.to], [true, 'overworld', 'nether']);
+
+  const noPortal = portalAdapter();
+  assert.equal((await noPortal._enterPortal({ timeoutMs: 50 })).error, 'no_portal_known');
+});
+
+test('_buildPortal needs the obsidian, picks a free site and reports a half frame', async () => {
+  const poor = portalAdapter({}, { inventory: { obsidian: 4 } });
+  const missing = await poor._buildPortal({});
+  assert.equal(missing.ok, false);
+  assert.equal(missing.error, 'missing_materials');
+  assert.deepEqual(missing.missing, [{ item: 'obsidian', need: 14, have: 4 }]);
+  assert.equal(poor.events.placed.length, 0);
+
+  const rich = portalAdapter({}, { inventory: { obsidian: 20 } });
+  const built = await rich._buildPortal({});
+  assert.equal(built.ok, true);
+  assert.equal(built.placed, 14);
+  // Una cornice completa piazzata dal basso verso l'alto, sul terreno del
+  // fixture (stone a y=70) e mai dentro il bot.
+  assert.equal(rich.events.placed.length, 14);
+  assert.equal(rich.events.placed[0].target.y, rich.events.placed.at(-1).target.y - 4);
+  assert.equal(rich.events.placed.some(cell => cell.target.x === 0 && cell.target.z === 0), false);
+  assert.equal(rich.events.placed.every(cell => cell.support.y === cell.target.y - 1), true);
+  assert.equal(rich.inventory.obsidian, 6);
+  assert.equal(rich._lastPortalFrame.placed, 14);
+  assert.equal(rich._netherView().portalFrame.placed, 14);
+  // Un piazzamento che non viene confermato ferma il cantiere invece di
+  // lasciare una cornice a metà nel mondo.
+  const flaky = portalAdapter({}, { inventory: { obsidian: 20 } });
+  let count = 0;
+  flaky._placeAtCell = async (item, block, target) => {
+    count++;
+    flaky.events.placed.push({ item, block, target: { ...target } });
+    return count === 3 ? { ok: false, error: 'place_not_confirmed' } : { ok: true };
+  };
+  const broken = await flaky._buildPortal({});
+  assert.equal(broken.ok, false);
+  assert.equal(broken.error, 'portal_frame_incomplete');
+  assert.equal(broken.placed, 2);
+  assert.equal(broken.failed.length, 1);
+  assert.equal(flaky.events.placed.length, 3);
+});
+
+test('_buildPortal refuses a site that is not free', async () => {
+  // Tutte le celle intorno al bot occupate da pietra: nessun cantiere.
+  const cells = {};
+  for (let x = -3; x <= 3; x++) {
+    for (let z = -3; z <= 3; z++) {
+      for (let y = 71; y <= 75; y++) {
+        if (x === 0 && z === 0 && y <= 72) continue;
+        cells[`${x},${y},${z}`] = 'stone';
+      }
+    }
+  }
+  const adapter = portalAdapter(cells, { inventory: { obsidian: 20 } });
+  const result = await adapter._buildPortal({});
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'no_portal_site');
+  assert.equal(adapter.events.placed.length, 0);
+});
+
+test('_lightPortal needs the igniter, finds the frame and confirms the lit portal', async () => {
+  const plan = planPortalFrame({ origin: { x: 2, y: 71, z: 0 } });
+  const frameCells = {};
+  for (const cell of plan.frame) frameCells[`${cell.position.x},${cell.position.y},${cell.position.z}`] = 'obsidian';
+  for (const cell of plan.interior) frameCells[`${cell.x},${cell.y},${cell.z}`] = 'air';
+
+  const noFlint = portalAdapter(frameCells);
+  assert.equal((await noFlint._lightPortal({})).error, 'missing_flint_and_steel');
+
+  const noFrame = portalAdapter({}, { inventory: { flint_and_steel: 1 } });
+  assert.equal((await noFrame._lightPortal({})).error, 'no_portal_frame');
+
+  const adapter = portalAdapter(frameCells, { inventory: { flint_and_steel: 1 } });
+  // Il click del finto server accende il portale: le celle interne diventano
+  // `portal` solo dopo la transazione (altrimenti il verdetto resta onesto).
+  let lit = false;
+  const rawBlockAt = adapter.world.blockAt;
+  const interiorKey = new Set(plan.interior.map(cell => `${cell.x},${cell.y},${cell.z}`));
+  adapter.world.blockAt = (position) => {
+    if (lit && interiorKey.has(`${position.x},${position.y},${position.z}`)) return { name: 'portal', position: { ...position } };
+    return rawBlockAt(position);
+  };
+  const rawQueue = adapter._queueAuthInput;
+  adapter._queueAuthInput = async (payload) => { await rawQueue(payload); if (payload?.transaction) lit = true; };
+  const result = await adapter._lightPortal({ timeoutMs: 500 });
+  assert.equal(result.ok, true);
+  assert.equal(result.ignition.x, 2);
+  assert.equal(result.ignition.y, 70);
+  // Un click, su un blocco vero e con l'accendino in mano: nessuna scorciatoia.
+  assert.equal(adapter.events.transactions.length, 1);
+  assert.equal(adapter.events.transactions[0].data.action_type, 'click_block');
+  assert.equal(adapter.events.transactions[0].data.block_position.x, 2);
+  assert.equal(adapter.events.transactions[0].data.block_position.y, 70);
+  assert.equal(adapter.events.transactions[0].data.held_item.name, 'flint_and_steel');
+
+  // Una cornice già accesa non si riaccende.
+  const already = portalAdapter({ ...frameCells, '2,71,0': 'portal' }, { inventory: { flint_and_steel: 1 } });
+  const second = await already._lightPortal({ timeoutMs: 200 });
+  assert.deepEqual([second.ok, second.lit, second.already], [true, true, true]);
+  assert.equal(already.events.transactions.length, 0);
+});
+
+test('the portal actions only show up in /options when the ingredients exist', () => {
+  const bare = portalAdapter();
+  const bareKeys = bare.options().map(option => option.key);
+  assert.equal(bareKeys.includes('goto_portal'), false);
+  assert.equal(bareKeys.includes('enter_portal'), false);
+  assert.equal(bareKeys.includes('build_portal'), false);
+  assert.equal(bareKeys.includes('light_portal'), false);
+
+  const withPortal = portalAdapter({ '2,71,0': 'portal' });
+  const portalKeys = withPortal.options().map(option => option.key);
+  assert.equal(portalKeys.includes('goto_portal'), true);
+  assert.equal(portalKeys.includes('enter_portal'), true);
+
+  const builder = portalAdapter({}, { inventory: { obsidian: 14 } });
+  assert.equal(builder.options().map(option => option.key).includes('build_portal'), true);
+
+  const plan = planPortalFrame({ origin: { x: 2, y: 71, z: 0 } });
+  const frameCells = {};
+  for (const cell of plan.frame) frameCells[`${cell.position.x},${cell.position.y},${cell.position.z}`] = 'obsidian';
+  for (const cell of plan.interior) frameCells[`${cell.x},${cell.y},${cell.z}`] = 'air';
+  const lighter = portalAdapter(frameCells, { inventory: { flint_and_steel: 1 } });
+  assert.equal(lighter.options().map(option => option.key).includes('light_portal'), true);
 });

@@ -75,7 +75,7 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**818 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**830 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
 
 - **Fluids in the survival layer (M0, 2026-10-03)**: the governor vocabulary grew
@@ -193,6 +193,13 @@ off. Live: `/observe.nearby` now reports `potatoes growth 7/7/6/6, mature true/f
 `carrots growth 7`; `harvest_potatoes` fails in 0.01 s with `drop_unreachable`
 (the only fields are outside the bot's walkable component), `harvest_wheat` with
 `no_crop_found`.
+- **Portal actions (N1, 2026-10-03)**: the four actions
+  (`goto_portal`/`build_portal`/`light_portal`/`enter_portal`) are mapped to the
+  `travel`/`build` intents in `survival/intents.mjs`, so a curriculum step that
+  asks for `enter_nether` has something to execute. The frame geometry is pure
+  (`planPortalFrame`/`checkPortalFrame`/`portalSiteBlocked`/
+  `portalFrameCandidates`) and `enter_portal` confirms itself from the server's
+  dimension packet, not from the bot's own opinion.
 - **Nether hazards in the survival layer (N0, 2026-10-03)**: `perceiveNether()`
 normalises a new `observation.nether` block (portal/fire/magma/spawner
 distances, the most urgent incoming projectile, the enderman being stared at,
