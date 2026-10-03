@@ -78,6 +78,52 @@ function cellKey (cell) {
 // non è "pericoloso da costruire", è un circuito che non si costruisce.
 const DANGEROUS_ITEMS = new Set(['tnt', 'trapped_chest', 'tripwire_hook', 'tripwire', 'sculk_shrieker', 'respawn_anchor']);
 
+// R6 — limiti e sicurezza. Gli stessi blocchi non si *piazzano* mai, nemmeno con
+// `place_<item>`: un blueprint con una trappola è un errore di progetto, un bot
+// che piazza TNT per sbaglio è un incidente. I blocchi di comando non esistono
+// nemmeno in inventario (`allow-cheats=false` sulla base), ma il divieto è
+// esplicito: non si costruiscono, non si rompono, non si azionano.
+export const FORBIDDEN_BLOCKS = new Set([
+  'tnt', 'trapped_chest', 'tripwire_hook', 'tripwire', 'sculk_shrieker', 'respawn_anchor', 'end_crystal',
+  'command_block', 'chain_command_block', 'repeating_command_block', 'structure_block', 'structure_void',
+  'jigsaw', 'barrier', 'light_block', 'bedrock', 'fire', 'soul_fire', 'lava',
+]);
+
+const FORBIDDEN_PARTS = new Set([...FORBIDDEN_BLOCKS].map(name => name.replace(/^(chain_|repeating_)/, '')));
+
+// Il nome può arrivare da un oggetto in inventario (`tnt`) o da una cella del
+// mondo (`minecraft:tnt`, `lit_tnt`): la normalizzazione è qui, così l'adapter
+// non duplica la regola.
+export function forbiddenBlock (name) {
+  const key = String(name ?? '').replace(/^minecraft:/i, '').toLowerCase();
+  if (!key) return null;
+  if (FORBIDDEN_BLOCKS.has(key) || FORBIDDEN_PARTS.has(key)) return key;
+  return null;
+}
+
+// Limite di dimensione del cantiere. `MAX_CIRCUIT_STEPS` limita i passi,
+// `MAX_CIRCUIT_COMPONENTS` limita i componenti che *lavorano* (repeater,
+// comparator, observer, pistoni, dispenser, hopper): una parete di pietra non è
+// un circuito, una fila di 40 repeater è lag. Leva e lampada non contano.
+export const MAX_CIRCUIT_COMPONENTS = 24;
+const LAG_COMPONENTS = new Set([
+  'repeater', 'unpowered_repeater', 'powered_repeater', 'comparator', 'unpowered_comparator', 'powered_comparator',
+  'observer', 'piston', 'sticky_piston', 'dispenser', 'dropper', 'hopper', 'crafter',
+]);
+
+export function lagComponent (name) {
+  const key = String(name ?? '').replace(/^minecraft:/i, '').toLowerCase();
+  return LAG_COMPONENTS.has(key) ? key : null;
+}
+
+// Un clock dichiarato non può essere più veloce di così: un repeater a 1 tick
+// satura il BDS ("lag" nella spec di R6). Otto tick = 400 ms.
+export const MIN_CLOCK_TICKS = 8;
+
+// Il bot non deve sostare nel percorso di un pistone, nemmeno per il test.
+export const PISTON_SAFETY_DISTANCE = 3;
+const PISTON_BLOCKS = new Set(['piston', 'sticky_piston', 'piston_arm_collision', 'sticky_piston_arm_collision']);
+
 // ---------------------------------------------------------------- validazione
 
 export function validateCircuit (def, where = 'circuit') {
@@ -133,6 +179,8 @@ export function validateCircuit (def, where = 'circuit') {
       if (step.facing != null && normalizeFacing(step.facing) == null) errors.push(`${at}: unknown facing "${step.facing}"`);
       if (step.label != null && typeof step.label !== 'string') errors.push(`${at}: label must be a string`);
       if (DANGEROUS_ITEMS.has(step.item)) errors.push(`${at}: dangerous item "${step.item}" (a circuit with traps is never built)`);
+      const forbidden = forbiddenBlock(step.item) ?? forbiddenBlock(step.block);
+      if (forbidden && !DANGEROUS_ITEMS.has(step.item)) errors.push(`${at}: forbidden block "${forbidden}" (R6: no traps, no command blocks, no lava)`);
       const key = step.offset.join(',');
       if (cells.has(key)) errors.push(`${at}: duplicate cell [${step.offset.join(',')}]`);
       else cells.set(key, i);
@@ -158,6 +206,27 @@ export function validateCircuit (def, where = 'circuit') {
   for (const [item, count] of Object.entries(used)) {
     if (need[item] == null) errors.push(`${where}: steps need ${item} but requires does not declare it`);
     else if (need[item] < count) errors.push(`${where}.requires.${item}: ${need[item]} < ${count} steps need it`);
+  }
+
+  // R6: dimensione e velocità. Il conto è sui componenti che lavorano (un
+  // repeater consuma `repeater` ma diventa `unpowered_repeater`).
+  if (Array.isArray(steps)) {
+    const components = steps.filter(s => s && lagComponent(placedAs(s.block ?? s.item))).length;
+    if (components > MAX_CIRCUIT_COMPONENTS) {
+      errors.push(`${where}: too many redstone components (${components} > ${MAX_CIRCUIT_COMPONENTS})`);
+    }
+  }
+  if (def.clock === true) {
+    if (!Array.isArray(def.post) || def.post.length === 0) {
+      errors.push(`${where}.clock: a declared clock needs at least one repeater post`);
+    } else {
+      const ticks = expectedDelayTicks(def);
+      if (ticks != null && ticks < MIN_CLOCK_TICKS) {
+        errors.push(`${where}.clock: ${ticks} ticks is too fast for a running clock (min ${MIN_CLOCK_TICKS})`);
+      }
+    }
+  } else if (def.clock != null && typeof def.clock !== 'boolean') {
+    errors.push(`${where}.clock: must be a boolean`);
   }
 
   if (def.trigger != null) {
@@ -346,6 +415,47 @@ export function circuitSiteBlocked (plan, world) {
     if (under?.boundingBox === 'empty') blocked.push({ label: step.label, cell: step.support, name: underName, reason: 'no_support' });
   }
   return blocked;
+}
+
+// R6 — sicurezza del bot. Due controlli puri, entrambi sulle celle assolute del
+// piano: (1) il cantiere non può contenere le celle che il bot occupa (piedi,
+// testa e blocco su cui sta) — piazzare un blocco dentro di sé non funziona mai
+// e il server lo rifiuta, ma il rifiuto deve arrivare *prima* del primo
+// movimento; (2) il bot non deve sostare nel percorso di un pistone del
+// circuito, perché il trigger viene azionato davvero e il pistone spinge.
+export function botCells (feet) {
+  if (!feet || !Number.isFinite(feet.x) || !Number.isFinite(feet.y) || !Number.isFinite(feet.z)) return [];
+  const x = Math.floor(feet.x);
+  const y = Math.floor(feet.y);
+  const z = Math.floor(feet.z);
+  return [`${x},${y},${z}`, `${x},${y + 1},${z}`, `${x},${y - 1},${z}`];
+}
+
+// Le celle che i pistoni del piano spingerebbero, nella direzione dichiarata.
+export function pistonPath (plan) {
+  const out = [];
+  for (const step of plan?.steps ?? []) {
+    const block = placedAs(step.block ?? step.item);
+    if (!PISTON_BLOCKS.has(block)) continue;
+    const facing = FORWARD[step.facing] ?? FORWARD.south;
+    for (let i = 1; i <= PISTON_SAFETY_DISTANCE; i++) {
+      out.push({ label: step.label, cell: { x: step.cell.x + facing.x * i, y: step.cell.y, z: step.cell.z + facing.z * i } });
+    }
+  }
+  return out;
+}
+
+export function circuitSafety (plan, { feet = null } = {}) {
+  const found = [];
+  if (!plan?.steps) return found;
+  const mine = new Set(botCells(feet));
+  for (const step of plan.steps) {
+    if (mine.has(cellKey(step.cell))) found.push({ label: step.label, cell: step.cell, reason: 'bot_in_the_way' });
+  }
+  for (const entry of pistonPath(plan)) {
+    if (mine.has(cellKey(entry.cell))) found.push({ label: entry.label, cell: entry.cell, reason: 'bot_in_piston_path' });
+  }
+  return found;
 }
 
 export const EMPTY_BLOCKS = new Set(['air', 'cave_air', 'void_air']);

@@ -2440,3 +2440,47 @@ blocker di pickup già noto), l'unico cobblestone a tiro **è** il muro della ba
 e una `redstone_lamp` richiede glowstone del Nether. Limiti dichiarati anche su
 `_craftableNow`, che vede solo il crafting (non la fusione: cobblestone → stone,
 che `auto_door` chiede) e offre solo il primo materiale mancante.
+
+## [2026-10-03] feat | Redstone R6: limiti e sicurezza (divieti, tetti di lag, bot fuori dal cantiere)
+
+R6 era l'ultima voce "spec only" dell'area redstone e non è una feature ma un
+insieme di regole: ogni regola è imposta nel codice, ha un test, e quelle sondabili
+sul server sono state sondate. `circuits.mjs` guadagna `FORBIDDEN_BLOCKS` (TNT,
+`trapped_chest`, `tripwire[_hook]`, `sculk_shrieker`, `respawn_anchor`,
+`end_crystal`, i tre command block, structure block/void, `jigsaw`, `barrier`,
+`bedrock`, `fire`, `soul_fire`, `lava`), `forbiddenBlock(name)` (normalizza
+`minecraft:` e il case), `lagComponent(name)`, `MAX_CIRCUIT_COMPONENTS = 24`,
+`MIN_CLOCK_TICKS = 8`, `PISTON_SAFETY_DISTANCE = 3`, `botCells(feet)`,
+`pistonPath(plan)` e `circuitSafety(plan, {feet})`; `validateCircuit` rifiuta un
+passo proibito e un blueprint `clock: true` senza post o più veloce di 8 tick, e
+conta i soli componenti che *lavorano* (leva e lampada non contano: una parete di
+pietra non è un circuito, venticinque repeater sono lag). `bedrock-adapter.mjs`:
+`_placeAtCell` rifiuta **prima** di cercare lo slot (`forbidden_block` +
+`forbidden_place`), `DIG_PROTECTED` copre command block, `barrier`, bedrock, end
+crystal e fuoco (il bot non li rompe, oltre a non piazzarli), `_useRedstone`
+limita lo **stesso** input a un toggle per `REDSTONE_TOGGLE_MIN_INTERVAL_MS`
+(default 500, `redstone_toggle_too_soon` con il `waitMs` residuo) ed è esente per
+il cantiere (`guard: false`: trigger e ripristino sono due click voluti e
+contigui, e il trigger finisce sempre a riposo), `_buildCircuit` risponde
+`circuit_unsafe_for_bot` se il piano passa per le celle del bot o per la corsa di
+un pistone, e `GET /observe.circuits.limits` pubblica `{maxSteps 48,
+maxComponents 24, minClockTicks 8, toggleMinIntervalMs 500}`. `bedrock-harness.mjs`
+espone la rotta gated `POST /debug/forbidden-place` (chiama `_placeAtCell`
+direttamente, aggirando le opzioni, e riporta `before`/`after` della cella) — 789
+test verdi (6 casi puri nuovi + 4 di adapter).
+
+Collaudo live 03/10 (container diagnostico `jev-r6` su VM 100, `BEDROCK_DEBUG=1`,
+API :3078, produzione ferma per liberare l'account): `observe.circuits.limits` →
+`{48, 24, 8, 500}`; `POST /debug/forbidden-place {"block":"tnt"}` →
+`{"ok":false,"error":"forbidden_block","block":"tnt"}` con la cella bersaglio
+`crafting_table` **prima e dopo**; stessa risposta per
+`minecraft:chain_command_block` (nome normalizzato) e `respawn_anchor`; la sonda di
+controllo con `torch` **supera** il divieto e fallisce più tardi sul supporto
+(`unexpected_block_crafting_table`), quindi i tre rifiuti sono opera del divieto e
+non di un errore generico; `build_circuit_lamp_switch` → `missing_materials`
+(`redstone_lamp` 1/0, `lever` 1/0) e `build_circuit_delay_line` → `missing_materials`
+con la lista completa; `use_redstone` ×2 → `no_redstone_input` (la stanza della base
+non ha leve, quindi il rate limit resta coperto solo dai test unitari). Limite
+dichiarato: `bot_in_piston_path` è raggiungibile solo da un piano sintetico, perché
+nessun blueprint costruibile muove un pistone; i tetti sono per blueprint, non
+globali; i nomi vietati sono una lista, non un motore di regole.

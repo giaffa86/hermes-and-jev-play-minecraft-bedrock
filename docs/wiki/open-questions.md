@@ -259,9 +259,20 @@ Still missing (the rest of the original gap):
   the loaded radius, Deep Dark/Ancient City never observed live).
 - **Placement** only on a top face adjacent to the bot; no scaling/orientation.
 - **Redstone awareness (R0), oriented placement (R1), interaction/sensing (R2),
-  primitive circuits (R3), measured verification/teardown (R4) and the
-  progression integration (R5) done (03/10); R6 (limits, safety rules, runbook)
-  still missing.**
+  primitive circuits (R3), measured verification/teardown (R4), the
+  progression integration (R5) and the limits/safety layer (R6) done (03/10).**
+  R6 turned the last spec bullet into code: `FORBIDDEN_BLOCKS`/`forbiddenBlock`
+  refuse TNT, traps, command blocks, barriers, bedrock, end crystals and lava
+  **twice** (blueprint validation and `_placeAtCell`, which gives up before
+  touching the inventory — live: `forbidden_block` with the target cell unchanged,
+  control probe on a torch), `DIG_PROTECTED` covers the unbreakable administrivia,
+  `MAX_CIRCUIT_COMPONENTS` (24 lag components) / `MIN_CLOCK_TICKS` (8) /
+  `REDSTONE_TOGGLE_MIN_INTERVAL_MS` (500, the same input cannot be toggled twice in
+  a row) cap the lag a circuit can cause, `circuitSafety` keeps the bot out of its
+  own site and out of a piston path, and `GET /observe.circuits.limits` publishes
+  all of it. The toggle rate limit is **unit-tested only** (the base room has no
+  lever and plan C forbids adding one) and `bot_in_piston_path` is only reachable
+  by a synthetic plan, because no buildable blueprint moves a piston yet.
   `bedrock-redstone.mjs` now owns the vocabulary (components, sources, outputs,
   `tnt` hazard) and reads state through `powerOf`/`facingOf`/`blockProperties`
   (`null` when unreadable — never "off" by assumption); the component list is in

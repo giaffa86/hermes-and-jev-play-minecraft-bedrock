@@ -12,6 +12,7 @@ import {
   CIRCUIT_FACINGS, FORWARD, addOffset, circuitAnchor, circuitSiteBlocked, checkCircuitSuccess,
   expectedDelayTicks, loadCircuits, placedAs, planCircuit, rotateOffset, validateCircuit, EMPTY_BLOCKS,
   measureCircuitDelay, TICK_MS, DEFAULT_DELAY_TOLERANCE_MS,
+  FORBIDDEN_BLOCKS, MAX_CIRCUIT_COMPONENTS, MIN_CLOCK_TICKS, botCells, circuitSafety, forbiddenBlock, pistonPath,
 } from '../circuits.mjs';
 import { facingMatches, normalizeFacing } from '../bedrock-redstone.mjs';
 
@@ -273,4 +274,137 @@ test('loadCircuits fallisce al load con il motivo di un blueprint rotto', () => 
   writeFileSync(join(twin, 'b.json'), JSON.stringify(def));
   const dup = (() => { try { loadCircuits(twin); return null; } catch (e) { return e; } })();
   assert.match(dup.message, /duplicate circuit id "twin"/);
+});
+
+// --- R6: limiti e sicurezza -------------------------------------------------
+
+test('R6: forbiddenBlock riconosce trappole, blocchi di comando e lava', () => {
+  assert.equal(forbiddenBlock('tnt'), 'tnt');
+  assert.equal(forbiddenBlock('minecraft:tnt'), 'tnt');
+  assert.equal(forbiddenBlock('TNT'), 'tnt');
+  assert.equal(forbiddenBlock('command_block'), 'command_block');
+  assert.equal(forbiddenBlock('chain_command_block'), 'chain_command_block');
+  assert.equal(forbiddenBlock('repeating_command_block'), 'repeating_command_block');
+  assert.equal(forbiddenBlock('respawn_anchor'), 'respawn_anchor');
+  assert.equal(forbiddenBlock('lava'), 'lava');
+  assert.equal(forbiddenBlock('lever'), null);
+  assert.equal(forbiddenBlock('redstone_lamp'), null);
+  assert.equal(forbiddenBlock('obsidian'), null);
+  assert.equal(forbiddenBlock(null), null);
+  for (const name of ['tnt', 'trapped_chest', 'command_block', 'barrier', 'bedrock', 'end_crystal']) {
+    assert.equal(FORBIDDEN_BLOCKS.has(name), true, `${name} deve essere vietato`);
+  }
+});
+
+// Un blueprint di prova ben formato: leva su un blocco di cobblestone (trigger),
+// `count` repeater in fila verso sud e una lampada in fondo.
+function repeaterLine (count, { clock = false, id = 'line', post = null } = {}) {
+  const steps = [
+    { item: 'cobblestone', offset: [0, -1, 0] },
+    { item: 'lever', offset: [0, 0, 0], supportOffset: [0, -1, 0], face: 1 },
+  ];
+  const requires = { cobblestone: 1, lever: 1, repeater: count, redstone_lamp: 1 };
+  for (let i = 0; i < count; i++) {
+    steps.push({
+      item: 'repeater', block: 'unpowered_repeater', offset: [0, 0, i + 1],
+      supportOffset: [0, -1, i + 1], facing: 'south',
+    });
+  }
+  steps.push({ item: 'redstone_lamp', offset: [0, 0, count + 1], supportOffset: [0, -1, count + 1] });
+  return {
+    schemaVersion: 1, id, description: 'linea di repeater',
+    ...(clock ? { clock: true, post: post ?? [{ action: 'set_repeater_delay', offset: [0, 0, 1], delay: 3 }] } : {}),
+    requires, steps,
+    trigger: { offset: [0, 0, 0] },
+    success: [
+      { offset: [0, 0, 0], property: 'open_bit', expected: true },
+      { offset: [0, 0, count + 1], property: 'name', expected: 'lit_redstone_lamp' },
+    ],
+  };
+}
+
+test('R6: validateCircuit rifiuta un blueprint proibito, anche se il trigger lo richiederebbe', () => {
+  const base = {
+    schemaVersion: 1, id: 'trap', description: 'trappola',
+    requires: { tnt: 1, lever: 1 },
+    steps: [
+      { item: 'tnt', offset: [0, 0, 0] },
+      { item: 'lever', offset: [0, 1, 0], supportOffset: [0, 0, 0], face: 1 },
+    ],
+    trigger: { offset: [0, 1, 0] },
+    success: [{ offset: [0, 1, 0], property: 'open_bit', expected: true }],
+  };
+  assert.match(validateCircuit(base).join('\n'), /dangerous item "tnt"/);
+  // Lo stesso blueprint con la lava è rifiutato dal divieto R6, non da `DANGEROUS_ITEMS`.
+  const lava = {
+    ...base,
+    id: 'lava_pit', requires: { lava: 1, lever: 1 },
+    steps: [{ item: 'lava', offset: [0, 0, 0] }, base.steps[1]],
+  };
+  assert.match(validateCircuit(lava).join('\n'), /forbidden block "lava"/);
+});
+
+test('R6: validateCircuit limita il numero di componenti redstone', () => {
+  // Solo i componenti che lavorano contano: leva e lampada no.
+  assert.deepEqual(validateCircuit(repeaterLine(MAX_CIRCUIT_COMPONENTS)), [], '24 repeater passano');
+  const tooMany = validateCircuit(repeaterLine(MAX_CIRCUIT_COMPONENTS + 1)).join('\n');
+  assert.match(tooMany, /too many redstone components \(\d+ > \d+\)/);
+});
+
+test('R6: un clock dichiarato deve essere lento abbastanza', () => {
+  // Tre repeater a 1 tick = 6 tick: troppo veloce per un clock che resta acceso.
+  const fast = repeaterLine(3, {
+    clock: true, id: 'blink',
+    post: [
+      { action: 'set_repeater_delay', offset: [0, 0, 1], delay: 0 },
+      { action: 'set_repeater_delay', offset: [0, 0, 2], delay: 0 },
+      { action: 'set_repeater_delay', offset: [0, 0, 3], delay: 0 },
+    ],
+  });
+  assert.equal(expectedDelayTicks(fast), 3);
+  assert.ok(expectedDelayTicks(fast) < MIN_CLOCK_TICKS);
+  assert.match(validateCircuit(fast).join('\n'), /too fast for a running clock/);
+  const slow = repeaterLine(3, {
+    clock: true, id: 'blink',
+    post: [
+      { action: 'set_repeater_delay', offset: [0, 0, 1], delay: 3 },
+      { action: 'set_repeater_delay', offset: [0, 0, 2], delay: 3 },
+    ],
+  });
+  assert.equal(expectedDelayTicks(slow), 8);
+  assert.ok(expectedDelayTicks(slow) >= MIN_CLOCK_TICKS);
+  assert.deepEqual(validateCircuit(slow), [], '8 tick bastano');
+  assert.match(validateCircuit(repeaterLine(2, { clock: true, post: [], id: 'blink' })).join('\n'), /needs at least one repeater post/);
+  assert.match(validateCircuit({ ...slow, clock: 'yes' }).join('\n'), /clock: must be a boolean/);
+});
+
+test('R6: botCells sono piedi, testa e appoggio; pistonPath è la corsa del pistone', () => {
+  const cell = (c) => `${c.x},${c.y},${c.z}`;
+  assert.deepEqual(botCells({ x: 0.5, y: 71.2, z: 0.5 }), ['0,71,0', '0,72,0', '0,70,0']);
+  assert.deepEqual(botCells(null), []);
+  const plan = planCircuit({
+    schemaVersion: 1, id: 'push', description: 'pistone',
+    requires: { piston: 1, lever: 1 },
+    steps: [
+      { item: 'piston', offset: [0, 0, 0], facing: 'south' },
+      { item: 'lever', offset: [0, 1, 0], supportOffset: [0, 0, 0], face: 1 },
+    ],
+    trigger: { offset: [0, 1, 0] },
+    success: [{ offset: [0, 1, 0], property: 'open_bit', expected: true }],
+  }, { origin: { x: 0, y: 71, z: 0 }, facing: 'south' });
+  const path = pistonPath(plan);
+  assert.equal(path.length, 3, 'tre celle davanti al pistone');
+  assert.deepEqual(path.map(p => cell(p.cell)), ['0,71,1', '0,71,2', '0,71,3']);
+  // Il bot davanti al pistone è in pericolo.
+  const unsafe = circuitSafety(plan, { feet: { x: 0.5, y: 71, z: 2.5 } });
+  assert.deepEqual(unsafe.map(u => u.reason), ['bot_in_piston_path']);
+  assert.deepEqual(unsafe[0].cell, { x: 0, y: 71, z: 2 });
+  // Il bot sulle celle del cantiere è un ostruzionismo.
+  // Con i piedi sulla leva il bot occupa due celle del piano: i piedi (la leva)
+  // e la testa (il suo spazio).
+  const onSite = circuitSafety(plan, { feet: { x: 0.5, y: 71, z: 0.5 } });
+  assert.deepEqual(onSite.map(u => u.reason), ['bot_in_the_way', 'bot_in_the_way']);
+  assert.deepEqual(onSite.map(u => cell(u.cell)), ['0,71,0', '0,72,0']);
+  assert.deepEqual(circuitSafety(plan, { feet: { x: 8.5, y: 71, z: 8.5 } }), []);
+  assert.deepEqual(circuitSafety(null, { feet: { x: 0.5, y: 71, z: 0.5 } }), []);
 });

@@ -13,7 +13,7 @@ import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
 import { detectStructures } from './structures.mjs';
 import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT } from './bedrock-fluids.mjs';
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
-import { loadCircuits, planCircuit, circuitSiteBlocked, checkCircuitSuccess, circuitAnchor, expectedDelayTicks, measureCircuitDelay, TICK_MS } from './circuits.mjs';
+import { loadCircuits, planCircuit, circuitSiteBlocked, circuitSafety, forbiddenBlock, checkCircuitSuccess, circuitAnchor, expectedDelayTicks, measureCircuitDelay, TICK_MS, MAX_CIRCUIT_STEPS, MAX_CIRCUIT_COMPONENTS, MIN_CLOCK_TICKS } from './circuits.mjs';
 import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
@@ -42,6 +42,9 @@ const PLAYER_HEIGHT = 1.8;
 const PATH_MAX_NODES = 5000;    // tetti di ricerca A*
 // R4: quanti cambi redstone tenere in traccia per misurare un ritardo.
 const REDSTONE_TRACE_LIMIT = +(process.env.REDSTONE_TRACE_LIMIT || 32);
+// R6: intervallo minimo fra due azionamenti dello stesso input. Serve a non
+// costruire un clock "a mano" e a non tempestare il server di blocchi update.
+const REDSTONE_TOGGLE_MIN_INTERVAL_MS = +(process.env.REDSTONE_TOGGLE_MIN_INTERVAL_MS || 500);
 const MAX_CORRECTION_DRIFT = 0.75; // oltre questa distanza la correzione è autoritativa su X/Z
 // BDS 1.26.52: se il respawn non si completa entro questo tempo, si riconnette
 // (nuovo login = unico recovery noto dalla morte bloccata). Vedi _survivalTick.
@@ -58,7 +61,7 @@ const TOOL_HARVEST_RANK = { wooden: 1, golden: 1, stone: 2, copper: 2, iron: 3, 
 const HARVEST_TOOL_RANK = { 941: 1, 956: 1, 946: 2, 951: 2, 961: 3, 966: 4, 971: 5 };
 // Blocchi funzionali o costruiti che dig_down non deve mai scavare per errore
 // (tavoli, contenitori, stazioni): il passo verrebbe rifiutato invece che distruggerli.
-const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|_bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$|farmland$|_fence$|_fence_gate$|wheat$|carrots$|potatoes$|beetroots$|melon_stem$|pumpkin_stem$|sweet_berry_bush$|nether_wart$|redstone_wire$|redstone_block$|lever$|_button$|pressure_plate$|_repeater$|_comparator$|observer$|piston$|dispenser$|dropper$|lamp$|daylight_detector$|tripwire_hook$|target$|crafter$|sculk_sensor$)/;
+const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|_bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$|farmland$|_fence$|_fence_gate$|wheat$|carrots$|potatoes$|beetroots$|melon_stem$|pumpkin_stem$|sweet_berry_bush$|nether_wart$|redstone_wire$|redstone_block$|lever$|_button$|pressure_plate$|_repeater$|_comparator$|observer$|piston$|dispenser$|dropper$|lamp$|daylight_detector$|tripwire_hook$|tripwire$|target$|crafter$|sculk_sensor$|sculk_shrieker$|command_block$|structure_block$|structure_void$|jigsaw$|barrier$|bedrock$|end_crystal$|fire$|soul_fire$)/;
 // Redstone (R0): un circuito non è un ostacolo da scavare ma un impianto della
 // base. I minerali di redstone restano **fuori** da DIG_PROTECTED (si estraggono
 // con `mine_redstone_ore`), i componenti no.
@@ -217,6 +220,9 @@ export class BedrockAdapter {
     // con la sorgente e, per i cantieri, l'id del circuito. Serve al teardown
     // per non toccare mai un blocco che non è suo.
     this._placedBlocks = new Map();
+    // La cella dell'ultimo toggle redstone: un clock "fatto a mano" che aziona
+    // la stessa leva due volte in pochi ms è lag, e R6 lo vieta.
+    this._lastRedstoneToggleAt = new Map();
     // R4: traccia degli ultimi cambi redstone osservati ({position, name, power,
     // at}), base della misura del ritardo di un circuito.
     this._redstoneTrace = [];
@@ -3664,6 +3670,14 @@ export class BedrockAdapter {
   // `face` del blocco `support`. Generalizzazione di `_placeBlock` per barricade.
   // `opts.yaw`/`opts.pitch` forzano l'orientamento (piazzamento orientato di R1).
   async _placeAtCell (itemName, blockName, target, support, face, clickPos = { x: 0.5, y: 1, z: 0.5 }, opts = {}) {
+    // R6: alcuni blocchi non si piazzano mai, qualunque sia il chiamante — TNT e
+    // trappole trasformano un cantiere in un incidente, i blocchi di comando non
+    // sono nemmeno parte del gioco sulla base (`allow-cheats=false`).
+    const forbidden = forbiddenBlock(blockName) ?? forbiddenBlock(itemName);
+    if (forbidden) {
+      this.log('forbidden_place', { item: itemName, block: blockName, target: { ...target } });
+      return { ok: false, error: 'forbidden_block', block: forbidden, position: { ...target } };
+    }
     let slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && s.count > 0);
     if (slotIndex < 0) {
       try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
@@ -3861,6 +3875,13 @@ export class BedrockAdapter {
       invalid: this._circuitError,
       last: this._circuitLast,
       owned: this._ownedCircuitCells().length,
+      // R6: i limiti sono una proprietà osservabile, non una nota in un file.
+      limits: {
+        maxSteps: MAX_CIRCUIT_STEPS,
+        maxComponents: MAX_CIRCUIT_COMPONENTS,
+        minClockTicks: MIN_CLOCK_TICKS,
+        toggleMinIntervalMs: REDSTONE_TOGGLE_MIN_INTERVAL_MS,
+      },
     };
   }
 
@@ -4068,6 +4089,11 @@ export class BedrockAdapter {
     if (plan.missing.length) return { ok: false, error: 'missing_materials', id, missing: plan.missing, requires: def.requires };
     const blocked = circuitSiteBlocked(plan, cell => this.world.blockAt(cell));
     if (blocked.length) return { ok: false, error: 'circuit_site_blocked', id, blocked: blocked.slice(0, 8) };
+    // R6 (sicurezza del bot): il cantiere non può contenere le celle che il bot
+    // occupa e il bot non deve stare nel percorso di un pistone: il trigger
+    // viene azionato davvero.
+    const unsafe = circuitSafety(plan, { feet: this._feet });
+    if (unsafe.length) return { ok: false, error: 'circuit_unsafe_for_bot', id, unsafe: unsafe.slice(0, 8) };
 
     const occupied = new Set(plan.steps.map(s => `${s.cell.x},${s.cell.y},${s.cell.z}`));
     const placed = [];
@@ -4139,7 +4165,7 @@ export class BedrockAdapter {
       : null;
     if (plan.trigger) {
       const triggeredAt = Date.now();
-      const on = await this._useRedstone({ position: plan.trigger.cell, restore: false, timeoutMs });
+      const on = await this._useRedstone({ position: plan.trigger.cell, restore: false, timeoutMs, guard: false });
       // La verifica si fa con il trigger ancora attivo: è quello lo stato che il
       // blueprint descrive. Il ripristino viene dopo e viene letto anche lui.
       if (on.ok) success = checkCircuitSuccess(def, { origin: plan.origin, facing: dir, read: cell => this.world.blockAt(cell) });
@@ -4158,7 +4184,7 @@ export class BedrockAdapter {
           output: plan.measure.output,
         };
       }
-      const off = on.ok ? await this._useRedstone({ position: plan.trigger.cell, restore: false, timeoutMs }) : null;
+      const off = on.ok ? await this._useRedstone({ position: plan.trigger.cell, restore: false, timeoutMs, guard: false }) : null;
       trigger = {
         cell: plan.trigger.cell,
         item: plan.trigger.item,
@@ -4208,12 +4234,25 @@ export class BedrockAdapter {
   // click rilegge il censimento (forzato) per riportare quali output si sono
   // accesi: un input che non muove nulla resta un successo, ma si vede che gli
   // effetti sono vuoti.
-  async _useRedstone ({ position = null, restore = true, timeoutMs = 2500 } = {}) {
+  async _useRedstone ({ position = null, restore = true, timeoutMs = 2500, guard = true } = {}) {
     const census = this._redstoneCensus();
     if (!census.ready) return { ok: false, error: 'redstone_unknown' };
     const row = position ? componentAt(census, position) : this._pickRedstoneInput();
     if (!row) return { ok: false, error: 'no_redstone_input', position: position ?? null };
     if (!isRedstoneInput(row)) return { ok: false, error: 'not_an_input', name: row.name, position: row.position };
+    // R6 (lag): lo stesso input non si aziona due volte in pochi millisecondi.
+    // Un clock a 1 tick satura il BDS, e un "clock" costruito a colpi di
+    // `use_redstone` è esattamente questo. Il cantiere è esente (`guard: false`)
+    // perché il suo trigger e il ripristino sono due click voluti e contigui.
+    if (guard) {
+      const key = `${row.position.x},${row.position.y},${row.position.z}`;
+      const last = this._lastRedstoneToggleAt.get(key) ?? 0;
+      const waitMs = REDSTONE_TOGGLE_MIN_INTERVAL_MS - (Date.now() - last);
+      if (waitMs > 0) {
+        return { ok: false, error: 'redstone_toggle_too_soon', name: row.name, position: row.position, waitMs };
+      }
+      this._lastRedstoneToggleAt.set(key, Date.now());
+    }
     if (this._reachabilityUsable() && !this.approachReachable(row.position, { range: 3.5, dy: 2 })) {
       return { ok: false, error: 'input_unreachable', name: row.name, position: row.position, distance: row.distance };
     }

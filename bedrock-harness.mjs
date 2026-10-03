@@ -249,6 +249,17 @@ server = createServer(async (req, res) => {
       const limit = Number(u.searchParams.get('limit') || 1200);
       response = [200, adapter.reachReport({ limit: Number.isFinite(limit) && limit > 0 ? limit : 1200 })];
     }
+    else if (process.env.BEDROCK_DEBUG && req.method === 'POST' && req.url === '/debug/forbidden-place') {
+      // R6: prova che il divieto di piazzare TNT/blocchi di comando regge anche
+      // chiamando il piazzamento direttamente, senza passare dalle opzioni.
+      const payload = body ? JSON.parse(body) : {};
+      const block = payload?.block ?? 'tnt';
+      const feet = adapter._feet ?? { x: 0, y: 64, z: 0 };
+      const cell = { x: Math.floor(feet.x), y: Math.floor(feet.y), z: Math.floor(feet.z) + 1 };
+      const before = adapter.world.blockAt(cell)?.name ?? null;
+      const result = await adapter._placeAtCell(block, block, cell, { x: cell.x, y: cell.y - 1, z: cell.z }, 1);
+      response = [200, { requested: block, cell, before, after: adapter.world.blockAt(cell)?.name ?? null, result }];
+    }
     else if (process.env.BEDROCK_DEBUG && req.method === 'GET' && req.url.startsWith('/debug/packet-debug')) {
       // Arma la cattura dei pacchetti in arrivo (richiede PACKET_DEBUG=1):
       // permette di registrare la risposta del server a un'azione puntuale

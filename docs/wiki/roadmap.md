@@ -231,7 +231,16 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   and the six declarative skills make circuits *reachable* from the progression,
   the new `circuitBuilt` criterion verifies a build instead of an inventory, and
   the materials bridge turns "missing 1 lever" into the option `craft_lever`
-  when the bot can actually craft it. The
+  when the bot can actually craft it. **R6** is the safety milestone: the
+  forbidden blocks (TNT, traps, command blocks, barriers, bedrock, crystals, lava)
+  are refused twice — at blueprint validation and right inside `_placeAtCell`,
+  before the inventory is touched — `DIG_PROTECTED` covers the unbreakable
+  administrivia, `MAX_CIRCUIT_COMPONENTS`/`MIN_CLOCK_TICKS`/
+  `REDSTONE_TOGGLE_MIN_INTERVAL_MS` cap lag, `circuitSafety` keeps the bot out of
+  its own site and out of a piston path, and `GET /observe.circuits.limits`
+  publishes the numbers; the live probes (`forbidden_block` on TNT/command
+  block/respawn anchor with the world unchanged, control probe on a torch) were run
+  03/10 on a diagnostic container. The
   full live build round is still blocked from three sides: mining
   the only cobblestone in reach edits the base, the room's drops fall into the
   cavity under its floor (`reachable: false`), and a `redstone_lamp` needs
@@ -291,7 +300,7 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    milestones are therefore parked with a documented blocker; the next
    macro-area is **Redstone R0** (below), a deviation to record in the final
    report.
-7. **Redstone** (R0+R1+R2+R3+R4+R5 done 03/10, spec in [redstone](redstone.md)): R0 (protect
+7. **Redstone** (R0+R1+R2+R3+R4+R5+R6 done 03/10, spec in [redstone](redstone.md)): R0 (protect
    redstone in `DIG_PROTECTED`, `/observe.redstone`, state-aware search) is
    implemented, unit-tested and collaudato live (see [verification](verification.md)
    row 47.2); **R1** oriented placement + repeater delay is implemented and
@@ -309,8 +318,15 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    on the BDS; it shares the live blocker of R1/R2/R3/R4: no component is
    obtainable in the base room without editing the base (cobblestone = the room's
    own wall), the drops land in the cavity under its floor, and a
-   `redstone_lamp` needs glowstone. Next is **R6** (limits, safety rules and the
-   runbook: no command blocks, no TNT/traps, lag and size caps, bot safety).
+   `redstone_lamp` needs glowstone. **R6** (limits, safety rules and the
+   runbook: no command blocks, no TNT/traps, lag and size caps, bot safety) is
+   implemented, unit-tested and live-probed (row 47.8): the forbidden blocks are
+   refused both at load time and inside `_placeAtCell`, the lag caps and the
+   toggle rate limit are declared and published by `/observe.circuits.limits`,
+   and `circuitSafety` keeps the bot out of its own site and out of a piston path.
+   The redstone macro-area is therefore **complete as specified (R0–R6)**; what is
+   missing is a *live build* of a full circuit, which needs the base-edits question
+   to be answered (m01403) or materials imported from outside the room.
 8. **Goal Contract** (proposal in [goal-achievement](goal-achievement.md)):
    schema + status machine over the existing progression graph, then the 5
    progressive benchmarks (16 logs → shelter+night → iron pickaxe → 5 diamonds

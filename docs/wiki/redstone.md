@@ -6,10 +6,10 @@ hopper item transport, dispensers and (stretch) crafters. It builds on the
 verified primitives (placement, `click_block` interaction, containers, crafting,
 digging) while never breaking the base's own circuits.
 
-Status: **R0, R1, R2, R3, R4 and R5 implemented and unit-tested (R0 also
-collaudato live); the live component round is blocked by the standing "no base
-edits" rule (03/10/2026); R6 spec only** (tracked in [roadmap](roadmap.md) and
-[open-questions](open-questions.md)). Full raw source:
+Status: **R0, R1, R2, R3, R4, R5 and R6 implemented and unit-tested (R0 and the
+R6 safety limits also collaudati live); the live component round is blocked by
+the standing "no base edits" rule (03/10/2026)** (tracked in
+[roadmap](roadmap.md) and [open-questions](open-questions.md)). Full raw source:
 [`docs/raw/REDSTONE_ROADMAP.md`](../raw/REDSTONE_ROADMAP.md).
 
 Sources: `bedrock-adapter.mjs` (placement, interaction, digging, `DIG_PROTECTED`),
@@ -602,6 +602,97 @@ yet*.
   documented), but it also means `CURRICULUM=redstone_automation` cannot be
   closed through them.
 
+## R6 — Limits, safety and rules (implemented, live 03/10/2026)
+
+The last milestone is not a feature: it is the set of rules that keep a
+redstone-capable bot from being a hazard. Every rule is enforced in code, has a
+unit test, and the ones that can be probed on the live server were probed there.
+
+### What is forbidden, and where the refusal happens
+
+`circuits.mjs` exports `FORBIDDEN_BLOCKS` (`tnt`, `trapped_chest`,
+`tripwire_hook`, `tripwire`, `sculk_shrieker`, `respawn_anchor`, `end_crystal`,
+the three command blocks, structure blocks/void, `jigsaw`, `barrier`, `bedrock`,
+`fire`, `soul_fire`, `lava`) and `forbiddenBlock(name)`, which normalises
+`minecraft:` prefixes and lower case. Two independent layers use it:
+
+- **Blueprint layer** — `validateCircuit` rejects a step that places a forbidden
+  block (`forbidden block "lava" (R6: no traps, no command blocks, no lava)`) on
+  top of the pre-existing `dangerous item` rule, so a trap blueprint cannot even
+  be loaded into the catalogue.
+- **Primitive layer** — `_placeAtCell` refuses **before** it looks at the
+  inventory (`forbidden_block` in the result, `forbidden_place` in the event log,
+  nothing written in the world), so a forbidden block never gets placed even if a
+  future caller bypasses the catalogue. The same names were added to
+  `DIG_PROTECTED`, so the bot never *breaks* a command block, a barrier, bedrock
+  or a crystal either.
+
+### No running clocks, no lag
+
+- `MAX_CIRCUIT_STEPS = 48` caps the steps of a blueprint and a new
+  `MAX_CIRCUIT_COMPONENTS = 24` caps the components that *do work* (repeater,
+  comparator, observer, pistons, dispenser, dropper, hopper, crafter — via the new
+  pure helper `lagComponent`, also exported for tests). A wall of stone is not a
+  circuit; forty repeaters are lag.
+- `MIN_CLOCK_TICKS = 8` plus the `clock: true` declaration: a blueprint that
+  declares a clock must have at least one repeater post and its declared delay
+  (`expectedDelayTicks`) cannot be shorter than eight ticks (400 ms).
+- `_useRedstone` rate-limits the **same input cell** to one toggle per
+  `REDSTONE_TOGGLE_MIN_INTERVAL_MS` (default 500 ms, env override), answering
+  `redstone_toggle_too_soon` with the remaining `waitMs`. This is what stops a
+  "clock" built out of repeated `use_redstone` calls. The circuit builder is
+  exempt (`guard: false`) because its trigger and its restore are two deliberate,
+  adjacent clicks — and the builder always ends with the trigger at rest.
+
+### Safety of the bot itself
+
+`circuitSafety(plan, {feet})` (pure, in `circuits.mjs`) returns the plan cells
+that coincide with the cells the bot occupies — feet, head and the block it stands
+on (`botCells`) — and the cells along a piston's push path
+(`pistonPath`, `PISTON_SAFETY_DISTANCE = 3`), reported as `bot_in_the_way` and
+`bot_in_piston_path`. `_buildCircuit` checks it right after the site check and
+answers `circuit_unsafe_for_bot` with the offending cells, before the first
+movement or placement. With the anchor taken one step in front of the feet the bot
+can never stand *inside* a normal blueprint, so this is a guard against future
+anchors, not a live constraint.
+
+### Observable limits
+
+`GET /observe.circuits.limits` publishes the numbers the bot is enforcing
+(`maxSteps`, `maxComponents`, `minClockTicks`, `toggleMinIntervalMs`), so a
+running agent can be audited without reading the source.
+
+### Live round (03/10/2026, VM 100 / BDS 1.26.52)
+
+The diagnostic container (`jev-r6`, `BEDROCK_DEBUG=1`, API :3078, production
+stopped to free the account) ran the read-only probes:
+
+| Probe | Result |
+|---|---|
+| `GET /observe.circuits.limits` | `{"maxSteps":48,"maxComponents":24,"minClockTicks":8,"toggleMinIntervalMs":500}` |
+| `POST /debug/forbidden-place {"block":"tnt"}` | `forbidden_block`, cell in front of the bot `crafting_table` before **and** after |
+| `POST /debug/forbidden-place {"block":"minecraft:chain_command_block"}` | `forbidden_block`, normalised name `chain_command_block` |
+| `POST /debug/forbidden-place {"block":"respawn_anchor"}` | `forbidden_block` |
+| control: `POST /debug/forbidden-place {"block":"torch"}` | passes the ban and fails later on the support (`unexpected_block_crafting_table`) — the ban is what stopped the others |
+| `POST /act build_circuit_lamp_switch` / `_delay_line` | `missing_materials` with the full `missing` list (typed refusal, no site damage) |
+| `POST /act use_redstone` ×2 | `no_redstone_input`: the base room has no lever, so the toggle guard could only be exercised by unit tests |
+
+The gated debug route `POST /debug/forbidden-place` was added for this round: it
+calls `_placeAtCell` directly (bypassing the options) and reports `before`/`after`
+for the target cell, which is exactly the evidence the guard needs.
+
+### Known limits (R6)
+
+- The toggle rate limit is **unit-tested only**: the base room has no lever, and
+  adding one would break plan C (no base edits).
+- `circuitSafety`'s `bot_in_piston_path` branch is exercised by unit tests with a
+  synthetic piston plan; no buildable blueprint moves a piston today
+  (`auto_harvest` is the piston blueprint and it is still declared blocked).
+- The caps are per blueprint, not global: several small circuits in the same chunk
+  are all validated independently.
+- Forbidden names are a list, not a rule engine: a new block added by a Minecraft
+  update is allowed until someone adds it.
+
 ## Proposed vocabulary
 
 - **Actions**: `build_circuit_<id>`, `use_redstone`, `set_repeater_delay`,
@@ -628,7 +719,7 @@ yet*.
 | R3 | Primitive circuits | Declarative `circuits/*.json` blueprints (`lamp_switch`, `delay_line`, `auto_lamp`, `auto_door`, `auto_harvest`, `auto_dispense`, `hopper_chain`, `crafter_pulse`) + `build_circuit_<id>` bounded action. | ◑ `circuits.mjs` + 8 blueprints (4 buildable, 4 declared with a reason) + `build_circuit_<id>` implemented, unit-tested (19 cases) and live-refused (catalogue, gating, `circuits.jsonl`); the acceptance *build* needs a redstone lamp (Nether) and is blocked by plan C |
 | R4 | Verify, teardown, guardrails | Deterministic circuit verifier; `teardown_circuit` limited to bot-built blocks; rollback on partial failure; no redstone edits outside owned circuits. | ◑ measured delay (`measureCircuitDelay` from the `_redstoneTrace`, `required`/`toleranceMs` per blueprint), placed-block ledger, `teardown_circuit[_<id>]` limited to circuit cells the bot placed (a cell someone else changed is skipped), rollback of a half-built site; unit-tested (24 + 21 cases) and live-verified on the empty/refused paths |
 | R5 | Automation & integration | Gameplay skills `skills/gameplay/redstone/`; progression milestones `redstone_ore`/`redstone_basics`/`redstone_automation`; integrate farming (`auto_harvest`), storage (`hopper_chain`), defense (`auto_lamp`), fluids (water stream). | ◑ 6 declarative skills + the 3 chained milestones + goal alias `redstone` + the `circuitBuilt` verifier criterion + the materials bridge (`craft_<item>` for a blueprint's first craftable missing material, `build_circuit_<id>` when nothing is missing); unit-tested (progression, criteria, skills, curriculum scenario, materials bridge) and live-resolved on the BDS (graph loads, `CURRICULUM=redstone_automation` drives `stone_age`); the live *build* is blocked by the room (unreachable drops, base wall, Nether glowstone) |
-| R6 | Limits & docs | No command blocks, no TNT/traps, lag/size caps, bot-safety, runbook/wiki updates. | ❌ not implemented |
+| R6 | Limits & docs | No command blocks, no TNT/traps, lag/size caps, bot-safety, runbook/wiki updates. | ◑ implemented, unit-tested (5 pure + 4 adapter cases) and live-probed: `FORBIDDEN_BLOCKS` + `forbiddenBlock` enforce twice (blueprint validation and `_placeAtCell`), `DIG_PROTECTED` covers command blocks/barriers/bedrock/crystals, `MAX_CIRCUIT_COMPONENTS`/`MIN_CLOCK_TICKS`/`REDSTONE_TOGGLE_MIN_INTERVAL_MS` cap lag, `circuitSafety` covers bot cells and piston paths, `/observe.circuits.limits` publishes the numbers; live: `forbidden_block` on TNT/command block/respawn anchor with the world unchanged, control probe on a torch, `missing_materials` on both buildable circuits, `no_redstone_input` on `use_redstone` |
 
 ## Key risks / open questions
 
@@ -652,8 +743,10 @@ yet*.
   only on the wire's `redstone_signal`.
 - Redstone is a scarce resource (the base's supply came from a broken chest);
   inventory must be census'd and materials returned via teardown.
-- Large circuits / fast clocks hurt the shared BDS TPS; size caps and forced
-  shutdown of clocks.
+- Large circuits / fast clocks hurt the shared BDS TPS: **R6 answered with size
+  caps, a minimum clock delay, a toggle rate limit and an always-restored trigger**
+  (`/observe.circuits.limits`); what remains unmeasured is the *actual* TPS impact
+  of a legal circuit (nothing near the caps has been built yet).
 
 ## Related pages
 

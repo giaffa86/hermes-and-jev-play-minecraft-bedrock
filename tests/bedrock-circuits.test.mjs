@@ -391,3 +391,78 @@ test('_facingFromYaw legge la direzione del cantiere dallo sguardo', () => {
   adapter._lastYaw = undefined;
   assert.equal(adapter._facingFromYaw(), 'south');
 });
+
+// --- R6: limiti e sicurezza -------------------------------------------------
+
+test('R6: _placeAtCell rifiuta un blocco vietato prima di toccare l\'inventario', async () => {
+  const { adapter, blocks, events } = circuitAdapter({ inventory: { tnt: 1 } });
+  const real = BedrockAdapter.prototype._placeAtCell;
+  const res = await real.call(adapter, 'tnt', 'tnt', { x: 0, y: 71, z: 1 }, { x: 0, y: 70, z: 1 }, 1);
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'forbidden_block');
+  assert.equal(res.block, 'tnt');
+  assert.deepEqual(res.position, { x: 0, y: 71, z: 1 });
+  assert.equal(events.placed.length, 0, 'nessun piazzamento');
+  assert.equal(blocks.has('0,71,1'), false, 'nessun blocco scritto nel mondo');
+  assert.equal(events.logs.filter(l => l.type === 'forbidden_place').length, 1);
+  // Anche il nome normalizzato dal server non aggira la regola.
+  const cmd = await real.call(adapter, 'command_block', 'minecraft:chain_command_block', { x: 0, y: 71, z: 1 }, { x: 0, y: 70, z: 1 }, 1);
+  assert.equal(cmd.error, 'forbidden_block');
+});
+
+test('R6: build_circuit rifiuta un piano che passa per le celle del bot', async () => {
+  const { adapter, events } = circuitAdapter({ inventory: { ...LAMP_SWITCH } });
+  // Il piano normale parte davanti ai piedi, quindi il bot non è mai "in mezzo":
+  // la guardia si prova con un piano costruito ad arte sulle celle occupate.
+  adapter._circuitPlan = () => ({
+    ok: true, id: 'lamp_switch', facing: 'south', origin: { x: 0, y: 71, z: 0 }, anchor: { x: 0, y: 71, z: 0 },
+    steps: [{ index: 0, label: 'lamp', item: 'redstone_lamp', block: 'redstone_lamp', cell: { x: 0, y: 71, z: 0 }, support: { x: 0, y: 70, z: 0 }, face: 1, facing: null, clickPos: { x: 0.5, y: 1, z: 0.5 } }],
+    need: { redstone_lamp: 1 }, missing: [], trigger: null, success: [], post: [], measure: null, buildable: true, blocked: [],
+  });
+  const res = await adapter._buildCircuit('lamp_switch', { facing: 'south' });
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'circuit_unsafe_for_bot');
+  assert.deepEqual(res.unsafe, [{ label: 'lamp', cell: { x: 0, y: 71, z: 0 }, reason: 'bot_in_the_way' }]);
+  assert.equal(events.placed.length, 0, 'non si muove e non piazza nulla');
+});
+
+test('R6: lo stesso input non si aziona due volte in pochi ms (niente clock a mano)', async () => {
+  const adapter = new BedrockAdapter({ logger: { log () {} } });
+  const blocks = new Map();
+  const clicks = [];
+  adapter._redstoneCensus = () => ({ ready: true, components: [{ position: { x: 0, y: 71, z: 1 }, name: 'lever', distance: 1 }] });
+  adapter.world.blockAt = ({ x, y, z }) => blocks.get(`${x},${y},${z}`) ?? null;
+  blocks.set('0,71,1', { name: 'lever', position: { x: 0, y: 71, z: 1 }, getProperties: () => ({ open_bit: false }) });
+  adapter._reachabilityUsable = () => false;
+  adapter._redstoneView = () => ({ ready: true, components: [], inputs: [], outputs: [], active: [] });
+  adapter._noteRedstoneUpdate = () => {};
+  adapter._clickRedstoneInput = async (position, on) => {
+    clicks.push({ position: { ...position }, on });
+    blocks.set('0,71,1', { name: 'lever', position: { x: 0, y: 71, z: 1 }, getProperties: () => ({ open_bit: on }) });
+    return { ok: true };
+  };
+  const real = BedrockAdapter.prototype._useRedstone;
+  adapter._lastRedstoneToggleAt = new Map();
+
+  const first = await real.call(adapter, { position: { x: 0, y: 71, z: 1 } });
+  assert.equal(first.ok, true);
+  const second = await real.call(adapter, { position: { x: 0, y: 71, z: 1 } });
+  assert.equal(second.ok, false);
+  assert.equal(second.error, 'redstone_toggle_too_soon');
+  assert.ok(second.waitMs > 0 && second.waitMs <= 500, `waitMs ragionevole (${second.waitMs})`);
+  assert.equal(clicks.length, 2, 'il secondo comando non è partito');
+
+  // Il cantiere è esente: trigger e ripristino sono due click voluti e contigui.
+  const unguarded = await real.call(adapter, { position: { x: 0, y: 71, z: 1 }, restore: false, guard: false });
+  assert.equal(unguarded.ok, true);
+  const off = await real.call(adapter, { position: { x: 0, y: 71, z: 1 }, restore: false, guard: false });
+  assert.equal(off.ok, true);
+  assert.equal(clicks.length, 4);
+});
+
+test('R6: /observe.circuits pubblica i limiti di sicurezza', () => {
+  const { adapter } = circuitAdapter({});
+  const view = adapter._circuitsView();
+  assert.deepEqual(view.limits, { maxSteps: 48, maxComponents: 24, minClockTicks: 8, toggleMinIntervalMs: 500 });
+  assert.equal(adapter.observe().circuits.limits.maxComponents, 24);
+});
