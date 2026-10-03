@@ -3901,6 +3901,44 @@ export class BedrockAdapter {
     this.busy = true;
     const started = Date.now();
     let result;
+    let watchdog = null;
+    // Un'azione che non ritorna — la morte del bot a metà di una lettura di
+    // contenitori lascia l'attesa appesa — terrebbe il lock `busy` per sempre e
+    // renderebbe l'API inutilizzabile (finding live 03/10/2026). Il watchdog
+    // risponde con un errore tipizzato e libera il lock: il pezzo di azione
+    // rimasto in volo resta un zombie dichiarato, non un blocco dell'API.
+    try {
+      result = await Promise.race([
+        this._runAction(key),
+        new Promise(resolve => {
+          watchdog = setTimeout(() => resolve({
+            ok: false,
+            error: 'action_timeout',
+            action: key,
+            timeoutMs: +(process.env.HARNESS_ACTION_TIMEOUT_MS || 180000),
+          }), +(process.env.HARNESS_ACTION_TIMEOUT_MS || 180000));
+        }),
+      ]);
+      if (result?.error === 'action_timeout') this.log('action_timeout', { action: key, ms: Date.now() - started });
+    } catch (error) {
+      // Una rejection non gestita dentro il corpo non deve uscire dalla rotta:
+      // diventa lo stesso errore tipizzato di un'eccezione catturata.
+      result = { ok: false, error: error?.message ?? String(error) };
+    } finally {
+      if (watchdog) clearTimeout(watchdog);
+      this.busy = false;
+    }
+    const entry = { action: key, result, position: this.pos(), ms: Date.now() - started };
+    this.recent.push(entry);
+    if (this.recent.length > 8) this.recent.shift();
+    this.log('action', entry);
+    return result;
+  }
+
+  // Il corpo dell'azione, separato dal lock e dal watchdog: `result` è locale e
+  // un'eccezione diventa un errore tipizzato.
+  async _runAction (key) {
+    let result;
     try {
       if (key === 'wait') {
         await new Promise(r => setTimeout(r, 2000));
@@ -4100,18 +4138,19 @@ export class BedrockAdapter {
         result = await this._reelIn();
       } else if (key === 'fish') {
         result = await this._fish();
+      } else if (key === 'ride') {
+        // `ride` non è una chiave a sé: da montati si guida con `goto_waypoint`
+        // (che passa a `_rideToward`). Un errore tipizzato lo dice, invece di
+        // far sembrare l'azione inesistente.
+        result = { ok: false, error: this.riding ? 'no_ride_destination' : 'not_riding', hint: 'while mounted, steer with goto_waypoint' };
+      } else if (key === 'follow_player') {
+        result = { ok: false, error: 'no_player_target', hint: 'follow_player is offered only when a nearby player has been named' };
       } else {
         result = { ok: false, error: 'unknown_action', reason: `unknown or invalid action ${key}` };
       }
     } catch (e) {
       result = { ok: false, error: e.message };
-    } finally {
-      this.busy = false;
     }
-    const entry = { action: key, result, position: this.pos(), ms: Date.now() - started };
-    this.recent.push(entry);
-    if (this.recent.length > 8) this.recent.shift();
-    this.log('action', entry);
     return result;
   }
 

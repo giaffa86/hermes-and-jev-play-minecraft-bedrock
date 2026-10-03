@@ -3009,3 +3009,49 @@ evidenza `{deltaY:-8}`; i tag contano `{water_bucket:2, oak_boat:1, potion:1}` c
 alchimia di M5); `water_travel`/`nether_cross_lava` non hanno un criterio statico per
 scelta; `movedAtLeast` non distingue una traversata da una camminata sulla riva (la
 skill chiede anche `inWater: false` e lo dichiara).
+
+## [2026-10-03] verify | Round live P2: riding bloccato dal server, lock `busy` che non si liberava
+
+Round live capability-per-capability sul bot reale (container `hermes-jev-bedrock`,
+BDS 1.26.52), con il metodo dell'**evidenza osservata** invece della dichiarazione.
+
+**Riding**: `mount_donkey` su un donkey sellato a 0.75 blocchi finisce
+`mount_not_confirmed` dopo 20-26 s; il log eventi mostra 10 `interact
+{target:'donkey', distance:0.75}` e la risposta del server è **l'inventario della
+sella del donkey** (`inventory_slot {window_id:2, slot:0, item:'saddle:1:579'}` più
+un `inventory_content` per `anvil_input`), mai un `set_entity_link`. Provate due
+forme di pacchetto (la `inventory_transaction` vanilla con `item_use_on_entity` e un
+`interact` nudo con `action_id: 0`, che il mapper 1.26.51 non nomina): entrambe
+ignorate. Il trasporto non è il problema — la stessa transazione con
+`action_type:'attack'` uccide entità live. Ipotesi: serve una cattura pacchetti di un
+client reale che monta. `dismount` → `{ok:true, alreadyDismounted:true}`.
+
+**Rifiuti tipizzati raccolti** (tutti in millisecondi): `shear_sheep` →
+`missing_shears`; `tame_wolf` → `missing_feed {bone}`; `tame_cat` →
+`missing_feed {raw_cod/raw_salmon}`; `breed_pig` → `need_2_feed {carrot}`; `fish` →
+`missing_fishing_rod`; `take_item` → `item_not_in_container`; `deposit_item` →
+`missing_item`. **Un successo reale**: `eat` → `{ok:true, item:'carrot', food:20,
+health:20}` in 1741 ms (cibo 19 → 20, la carota è sparita dall'inventario: la prova
+è il delta). **Finding nuovo**: i 4 contenitori trovati (chest (105,72,138), barrel
+(111,72,160), chest (95,72,161), chest (95,73,161)) falliscono tutti con
+`container_read_failed: movement timeout` — il componente BFS li dice raggiungibili,
+il cammino reale no (30 s per tentativo).
+
+**Bug corretto (trovato perché il bot è morto a metà azione)**: il lock `busy` non si
+liberava più. La morte durante una `read_container` ha lasciato la promise dell'azione
+appesa per sempre: `adapter.busy` restava `true` e **tutta** l'API rispondeva
+`{ok:false, error:'busy'}` (anche `wait`) fino al riavvio del container — e nessun
+evento `action` era nel log, prova che il `finally` non veniva raggiunto. Ora
+`executeAction` è guardie + watchdog + log e il corpo è `_runAction(key)`:
+`Promise.race` con un timer `HARNESS_ACTION_TIMEOUT_MS` (default 180000) che risolve
+`{ok:false, error:'action_timeout'}` e logga `action_timeout`; il `finally` azzera il
+timer e libera il lock, e una rejection non gestita diventa un errore tipizzato.
+Nuovo `tests/bedrock-action-lock.test.mjs` (3 casi). **Suite 987/987.**
+
+**Corretti anche due errori di diagnostica**: `ride` e `follow_player` rispondevano
+`unknown_action`; ora `not_riding`/`no_ride_destination` e `no_player_target` con
+hint (verificato live dopo il deploy: md5 adapter `a3fee1bbbd257e2883e95502e483c2d2`).
+
+**Limiti**: i percorsi felici di riding, taming, tosatura, pesca e contenitori
+restano non esercitabili (servono una cattura di client reale, un osso, 2 lingotti di
+ferro, una canna da pesca e contenitori dentro il componente camminabile).

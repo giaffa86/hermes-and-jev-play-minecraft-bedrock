@@ -55,6 +55,39 @@ Last lint: 2026-10-03.
   stay documented as environment-blocked. Until an answer arrives the plan in
   force is **(C)**: no change to the base, offline verification only.
 
+## Mounting a vehicle is never confirmed (2026-10-03)
+
+- `mount_donkey` on a saddled donkey 0.75 blocks away ends `mount_not_confirmed`
+  after 20-26 s: the server receives 10 `interact` (`item_use_on_entity`, action
+  `interact`) and answers by opening the **donkey's saddle inventory**
+  (`inventory_slot {window_id: 2, slot: 0, item: 'saddle:1:579'}` plus an
+  `inventory_content` for `anvil_input`) instead of linking the rider — no
+  `set_entity_link` ever arrives. Adding a bare `interact` packet with
+  `action_id: 0` changes nothing (the 1.26.51 mapper only names 3..6). The
+  transport is not the problem: the same transaction with `action_type: 'attack'`
+  kills entities live.
+- Hypothesis: BDS 1.26.52 expects a trigger only a real client produces (a
+  different ordering or a second interaction) — the same class of blocker as the
+  trade window (`trade_not_opened`). Next step: a packet capture from a real
+  client mounting a saddled donkey (a human player; see the multiplayer blocker).
+- Mitigation in place: the readiness filter refuses fast (`vehicle_unreachable`
+  from the room, `no_boat_nearby` without a boat) instead of spending 20-26 s, and
+  `ride`/`follow_player` answer `not_riding`/`no_player_target` with a hint
+  instead of `unknown_action`.
+
+## Containers outside the walkable component (2026-10-03)
+
+- The bot discovers 4 real containers (chest (105,72,138), barrel (111,72,160),
+  chest (95,72,161), chest (95,73,161)) and every `read_container` burns 30 s and
+  ends `container_read_failed: movement timeout`. The reachability filter removes
+  *offered* keys, and an explicit `/act read_container` still runs; here the BFS
+  component says the neighbourhood is reachable, but the actual walk fails — the
+  primitive answers *graph* reachability, not "a path the local walker can
+  execute" (probable culprits: a fall/stair edge, or the target cell having no
+  free approach side). Worth checking whether the approach cell can be validated
+  before the walk (the typed `container_unreachable` error already exists; row
+  42.3 of [verification](verification.md) shows it in the boxed-in case).
+
 ## Missing Bedrock capabilities (for the full first-night milestone)
 
 - **Food beyond crops** — requires the furnace/smelting chain (exists, needs live

@@ -53,6 +53,35 @@ Riding is now wired (`mount_<vehicle>`, `dismount`, `_rideToward`):
   `bamboo_raft`) and minecarts (`…_minecart`); `isRideableType` adds the
   ride-tameable mounts (`horse`/`donkey`/`mule`/`llama`/`nautilus`).
 
+### Live round (2026-10-03): the server does not confirm the mount
+
+`mount_donkey` against the live BDS 1.26.52 donkey (saddled, 0.75 blocks away)
+ends with `mount_not_confirmed` after 20-26 s. The evidence says the packet
+arrives: the event log shows 10 `interact {target: 'donkey', distance: 0.75}` and
+the server answers with the **donkey's saddle inventory**
+(`inventory_slot {window_id: 2, slot: 0, item: 'saddle:1:579'}` plus an
+`inventory_content` for `anvil_input`) instead of linking the rider — no
+`set_entity_link` ever arrives. Both shapes were tried: the vanilla
+`inventory_transaction` with `transaction_type: 'item_use_on_entity'` (what
+`_interactEntity` sends) and the bare `interact` packet with `action_id: 0`
+(absent from the 1.26.51 map, which only names 3..6); both are ignored. The
+transport is not the problem — the same `inventory_transaction` with
+`action_type: 'attack'` kills entities live. The working hypothesis is that BDS
+1.26.52 expects a trigger we cannot reconstruct without a packet capture from a
+real client that mounts (no human player ever joins: see the multiplayer blocker).
+`dismount` answers `{ok: true, alreadyDismounted: true}` when riding is unknown.
+
+Companion refusals observed live in the same round: `shear_sheep` →
+`missing_shears`, `tame_wolf` → `missing_feed {bone}`, `tame_cat` →
+`missing_feed {raw_cod/raw_salmon}`, `breed_pig` → `need_2_feed {carrot}` (the
+inventory was empty after a death), `fish` → `missing_fishing_rod`. All of them are
+typed and immediate — a missing tool is reported instead of a fake success.
+
+Two misleading errors were fixed in the same round: `ride` and `follow_player`
+answered `unknown_action` (they are not standalone keys — while mounted the bot is
+steered with `goto_waypoint`, and `follow_player` needs a plan target). They now
+answer `not_riding` / `no_ride_destination` and `no_player_target` with a hint.
+
 ### Still not implemented
 
 - **Saddle** equipping for `horse`/`donkey`/`mule` (they need a saddle to be

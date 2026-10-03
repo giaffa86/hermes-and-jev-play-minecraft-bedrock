@@ -128,6 +128,15 @@ which answers with a typed error if the action is no longer possible. Without th
 a killed run's leftover action made the next run burn its entire step budget in
 seconds of instant `busy` replies (live, 2026-10-03).
 
+The lock is also **bounded from inside**: `executeAction` races the action body
+(`_runAction`) against a watchdog, so an action whose promise never settles — the
+bot died in the middle of a `read_container` (live, 2026-10-03) and the await hung
+forever — ends as `{ok: false, error: 'action_timeout', action, timeoutMs}` with an
+`action_timeout` log entry, and the `finally` still releases the lock. Without the
+watchdog the whole API answered `busy` (even `wait`) until the container was
+restarted. `HARNESS_ACTION_TIMEOUT_MS` (default 180000) is the ceiling; a rejected
+body is returned as a typed error, never as an unhandled rejection.
+
 ## What System Two does *not* do
 
 Despite the "planner" name, Hermes does **not** decompose the macro task into
