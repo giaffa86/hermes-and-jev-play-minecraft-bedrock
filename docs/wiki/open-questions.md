@@ -284,6 +284,24 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
 
 ## Live verification pending
 
+- **Companion taming: the code is right, the world is out of stock (2026-10-03).**
+  After the naming fix (`cod`/`salmon`, see [companions](companions.md)) the live
+  calls are typed and instant — `tame_cat` → `missing_feed {cod/salmon}`,
+  `feed_pig` → `missing_feed {carrot}`, `shear_sheep` → `missing_shears`,
+  `take_carrot` → `item_not_in_container` — but the **positive** path (feed →
+  approach → `interact` → `tamed`) cannot run because there is nothing left to
+  feed with. `read_container` around the village now reports the fish chest
+  `(73,71,153)` **empty**, the potato chest `(72,72,152)` **empty** and `(95,72,165)`
+  **empty** (the base chests `(90,73,160)`, `(90,72,160)`, `(91,73,160)`,
+  `(91,72,160)`, `(111,72,160)` are intact). The only reads that reach the report
+  are windows that opened successfully, so these are genuinely empty containers.
+  Cause **not determined**: `_takeFromContainer` takes **one stack** per call
+  (`take_cod` delivered 6, `take_salmon` 9), which cannot account for 2216
+  potatoes, 235 carrots, 214 wheat and 2 shears disappearing between the take
+  tests and this reading. Two tameable cats are in range (28.5 blocks at
+  `132.5,73,136.7` and 28.6 at `99.0,74,182.9`, both `tamed: false`), so the round
+  is ready the moment raw fish exists again — via a fishing rod, a re-stocked
+  chest, or a world whose store has not been emptied.
 - `eat`, `take_<item>` and `deposit_<item>` are covered by unit tests but not yet
   verified live. `read_container` **was verified live on 03/10** (6 chests/barrels).
 - Farming leftovers: `attack_<animal>` (skipped live, would kill a base animal),

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { createRequire } from 'node:module';
 import { BedrockAdapter } from '../bedrock-adapter.mjs';
 import {
   bestFood, isHostileType, entityHeight, normalizeEntityType,
@@ -8,6 +9,8 @@ import {
   isFarmAnimalType, animalFeed, cropForSeed, isCropBlock, isFarmlandBlock,
   isTameableType, isRideTameableType, isCompanionType, tameFeed,
   PLANTABLE_ITEMS,
+  ANIMAL_FEED_MAP, TAME_FEED_MAP, SEED_TO_CROP_MAP, CROP_MAX_GROWTH_MAP,
+  BUCKET_INGREDIENTS, SHIELD_INGREDIENTS, FOODS,
 } from '../bedrock-survival.mjs';
 
 // ---- regole pure --------------------------------------------------------------------
@@ -55,7 +58,9 @@ test('farm animal classification and feed/crop maps', () => {
 
 test('companion classification: food-tame, ride-tame, axolotl/nautilus', () => {
   assert.deepEqual(tameFeed('wolf'), ['bone']);
-  assert.deepEqual(tameFeed('cat'), ['raw_cod', 'raw_salmon']);
+  // Nomi **server** (Bedrock): `cod`/`salmon`, non i `raw_cod`/`raw_salmon` di Java.
+  // Live 03/10: con i nomi Java `tame_cat` rispondeva `missing_feed` avendo 9 salmoni.
+  assert.deepEqual(tameFeed('cat'), ['cod', 'salmon']);
   assert.deepEqual(tameFeed('parrot'), ['wheat_seeds', 'melon_seeds', 'pumpkin_seeds', 'beetroot_seeds']);
   assert.deepEqual(tameFeed('horse'), []); // cavalcabile: nessun cibo
   assert.equal(isTameableType('parrot'), true);
@@ -68,6 +73,31 @@ test('companion classification: food-tame, ride-tame, axolotl/nautilus', () => {
   assert.equal(isCompanionType('parrot'), true);
   assert.equal(isCompanionType('cow'), false);
   assert.equal(isCompanionType('zombie'), false);
+});
+
+// Ogni nome nelle tabelle di gioco deve esistere nel registry del server.
+// Classe di difetto trovata live il 03/10 (taming impossibile perché la tabella
+// usava `raw_cod`/`raw_salmon`, nomi di Java) e offline (`beetroots` invece di
+// `beetroot` per la coltura): il registry è l'unica autorità sui nomi.
+test('every item and crop-block name in the gameplay tables exists in the Bedrock registry', () => {
+  const require = createRequire(import.meta.url);
+  const registry = require('prismarine-registry')('bedrock_1.26.51');
+  assert.ok(registry, 'registry bedrock_1.26.51 non disponibile');
+  const items = new Set([
+    ...Object.values(TAME_FEED_MAP).flat(),
+    ...Object.values(ANIMAL_FEED_MAP),
+    ...FOODS,
+    ...PLANTABLE_ITEMS,
+    ...Object.keys(BUCKET_INGREDIENTS),
+    ...Object.keys(SHIELD_INGREDIENTS),
+  ]);
+  const missingItems = [...items].filter((name) => !registry.itemsByName[name]);
+  assert.deepEqual(missingItems, [], `item inesistenti in Bedrock: ${missingItems.join(', ')}`);
+  const blocks = new Set([...Object.values(SEED_TO_CROP_MAP), ...Object.keys(CROP_MAX_GROWTH_MAP)]);
+  const missingBlocks = [...blocks].filter((name) => !registry.blocksByName[name]);
+  assert.deepEqual(missingBlocks, [], `blocchi inesistenti in Bedrock: ${missingBlocks.join(', ')}`);
+  assert.equal(items.has('raw_cod'), false, 'raw_cod è un nome Java: in Bedrock è cod');
+  assert.equal(blocks.has('beetroots'), false, 'beetroots è un nome Java: in Bedrock è beetroot');
 });
 
 test('bestFood prefers cooked food and skips unsafe or precious items', () => {

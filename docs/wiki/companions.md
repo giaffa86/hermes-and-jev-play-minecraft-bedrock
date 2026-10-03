@@ -13,7 +13,7 @@ Sources: `bedrock-survival.mjs`, `bedrock-adapter.mjs`, `BEDROCK.md`
 | Ride-tameable | `horse`, `donkey`, `mule`, `llama`, `nautilus` | `tame_<type>`: mount repeatedly with an empty hand until the mount stops bucking | `tamed` (flags bit 28) |
 | Attractable (not tameable) | `axolotl` | none — follows a player holding a bucket of tropical fish; can be caught in a bucket | none (no `tamed`/`trusting` flag) |
 
-Feeds (`TAME_FEED`): `wolf`→`bone`; `cat`/`ocelot`→`raw_cod`/`raw_salmon`;
+Feeds (`TAME_FEED`): `wolf`→`bone`; `cat`/`ocelot`→`cod`/`salmon`;
 `parrot`→`wheat_seeds`/`melon_seeds`/`pumpkin_seeds`/`beetroot_seeds`.
 
 The **nautilus** is the recently added aquatic companion (it has its own armor
@@ -72,10 +72,32 @@ real client that mounts (no human player ever joins: see the multiplayer blocker
 `dismount` answers `{ok: true, alreadyDismounted: true}` when riding is unknown.
 
 Companion refusals observed live in the same round: `shear_sheep` →
-`missing_shears`, `tame_wolf` → `missing_feed {bone}`, `tame_cat` →
-`missing_feed {raw_cod/raw_salmon}`, `breed_pig` → `need_2_feed {carrot}` (the
-inventory was empty after a death), `fish` → `missing_fishing_rod`. All of them are
-typed and immediate — a missing tool is reported instead of a fake success.
+`missing_shears`, `tame_wolf` → `missing_feed {bone}`, `breed_pig` →
+`need_2_feed {carrot}` (the inventory was empty after a death), `fish` →
+`missing_fishing_rod`. All of them are typed and immediate — a missing tool is
+reported instead of a fake success.
+
+**The cat's food was a Java name (fixed 03/10/2026).** The first live `tame_cat`
+of the campaign answered `missing_feed {feed: raw_cod/raw_salmon}` while the bot
+was carrying **nine salmon**: the table used the Java spellings, so taming a cat
+or an ocelot was impossible no matter what the inventory held. Evidence for the
+repair, in order of authority:
+
+- the prismarine registry for `bedrock_1.26.51` (the same loader as
+  `bedrock-world.mjs`) has no `raw_cod`/`raw_salmon` and no `beetroots` block —
+  the server-side names are `cod`, `salmon`, `beetroot`;
+- the server's own behaviour pack agrees: `vanilla_1.26.10/entities/cat.json`
+  declares `"minecraft:tameable".tame_items: ["fish", "salmon"]`, where `fish` is
+  Bedrock's legacy id for `cod` (the pack is read-only reference, not an edit);
+- live, after the deploy, the same two calls answer `missing_feed {feed:
+  cod/salmon}` (the refusal now names an item that exists), and `/observe.nearby`
+  carries a `beetroot` bucket — the crop census and `DIG_PROTECTED` used the Java
+  plural too, so beetroot could never be found, harvested or protected;
+- offline, a **registry guard test** (`tests/bedrock-survival.test.mjs`) checks
+  every item name in `TAME_FEED_MAP`, `ANIMAL_FEED_MAP`, `FOODS`,
+  `PLANTABLE_ITEMS`, `BUCKET_INGREDIENTS`, `SHIELD_INGREDIENTS` and every block
+  name in `SEED_TO_CROP_MAP`/`CROP_MAX_GROWTH_MAP` against the registry, and
+  asserts that `raw_cod` and `beetroots` never come back.
 
 Two misleading errors were fixed in the same round: `ride` and `follow_player`
 answered `unknown_action` (they are not standalone keys — while mounted the bot is
@@ -94,11 +116,25 @@ answer `not_riding` / `no_ride_destination` and `no_player_target` with a hint.
 
 ## Verification status
 
-Implemented and unit-tested (383 green tests, 2026-10-03). **Live verification pending**:
-on the 03/10 round there were no companions near the bot, so `tame_<companion>`
-was not exercised live; `feed_pig`/`breed_pig` (the closest farming actions)
-were verified instead. The `tamed` vs `owner_eid` (runtime id vs unique id)
-signal for tameable animals still needs a live confirmation.
+Implemented and unit-tested (the registry guard test in
+`tests/bedrock-survival.test.mjs`, 2026-10-03). **Live verification pending**:
+on the first 03/10 round there were no companions near the bot, so
+`tame_<companion>` was not exercised live; `feed_pig`/`breed_pig` (the closest
+farming actions) were verified instead. The `tamed` vs `owner_eid` (runtime id vs
+unique id) signal for tameable animals still needs a live confirmation.
+
+**Round 03/10/2026 (later): the food table is now right, the positive path is not
+run yet.** After the naming fix the live calls answer `tame_cat` →
+`missing_feed {feed: cod/salmon}` and `tame_ocelot` → the same, `feed_pig` →
+`missing_feed {feed: carrot}`, `shear_sheep` → `missing_shears` — every refusal is
+typed and instant. The positive tame (eat the feed, walk to the animal, `interact`,
+read `tamed`/`trusting`) is blocked by the **world**, not the code: the village
+chest that held the only `cod`/`salmon` (`73,71,153`) now reads empty, as do the
+potato chest `(72,72,152)` and the rest of the village store, so no raw fish,
+carrot or shears remain in reach and there is nothing to feed with. Recorded in
+[open questions](open-questions.md). While the feed is missing the `_tameAnimal`
+chain beyond item lookup (approach within 4.5 blocks, `item_use_on_entity
+interact`, `tamed` confirmation) stays covered by unit tests only.
 
 ## Related pages
 

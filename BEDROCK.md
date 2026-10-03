@@ -368,9 +368,10 @@ unit-tested.
 
 - **Crop cycle**: `mine_<crop>` (already working) harvests mature crops, then
   `plant_<seed>` re-sows on free `farmland`. The seed→crop map (`wheat_seeds`→
-  `wheat`, `carrot`→`carrots`, `potato`→`potatoes`, `beetroot_seeds`→`beetroots`,
+  `wheat`, `carrot`→`carrots`, `potato`→`potatoes`, `beetroot_seeds`→`beetroot`,
   `melon_seeds`/`pumpkin_seeds`→stems, `sweet_berries`, `nether_wart`) lives in
-  `bedrock-survival.mjs` (`SEED_TO_CROP`). Maturity (`growth` metadata) is not
+  `bedrock-survival.mjs` (`SEED_TO_CROP`). Crop blocks use the **server** names,
+  which are not always the Java ones (`beetroot`, singular, has no `beetroots`). Maturity (`growth` metadata) is not
   yet distinguished: `mine_*` harvests whatever crop is present.
 - **Farm animals**: `add_entity`/`set_entity_data` track passive animals; the
   flags metadata now exposes `baby`/`tempted`/`inlove` (bits 11/6/7),

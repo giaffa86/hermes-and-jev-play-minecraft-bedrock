@@ -4,7 +4,38 @@ Append-only record of wiki operations. Prefix: `## [YYYY-MM-DD] <type> | <title>
 where `<type>` is one of `ingest`, `query`, `lint`, `doc`, `feat`, `fix`,
 `verify`, `report` (the last four joined as the wiki grew).
 
-## [2026-10-03] lint | Deployment parity between HEAD and the live container
+## [2026-10-03] fix | Bedrock item names in the gameplay tables: `cod`/`salmon` and `beetroot`
+
+Found live while running the companion round: `POST /act {tame_cat}` answered
+`missing_feed {feed: 'raw_cod/raw_salmon'}` **with nine salmon in the inventory** —
+the cat/ocelot food table carried the Java names, so taming was impossible whatever
+the bot was holding. Two more names in the same tables were Java spellings:
+`SEED_TO_CROP.beetroot_seeds → 'beetroots'` and `CROP_MAX_GROWTH.beetroots`, plus
+the crop census list and the `DIG_PROTECTED` pattern in `bedrock-adapter.mjs` —
+Bedrock's block is `beetroot` (singular), so a beetroot crop could never be found,
+harvested or protected.
+
+Authority, in order: the prismarine registry for `bedrock_1.26.51` (the loader
+`bedrock-world.mjs` already uses) has no `raw_cod`/`raw_salmon` item and no
+`beetroots` block, while `cod`, `salmon`, `beetroot` all exist; and the server's own
+behaviour pack agrees — `vanilla_1.26.10/entities/cat.json` declares
+`"minecraft:tameable".tame_items: ["fish", "salmon"]`, with `fish` the legacy id of
+`cod` (read from CT 108 through the Proxmox broker, read-only).
+
+Fixed `TAME_FEED` (cat/ocelot) and the two beetroot entries; after the deploy the
+same calls answer `missing_feed {feed: 'cod/salmon'}` and `/observe.nearby` exposes a
+`beetroot` bucket. Added a **registry guard test** in
+`tests/bedrock-survival.test.mjs`: every item name of `TAME_FEED_MAP`,
+`ANIMAL_FEED_MAP`, `FOODS`, `PLANTABLE_ITEMS`, `BUCKET_INGREDIENTS`,
+`SHIELD_INGREDIENTS` and every block name of `SEED_TO_CROP_MAP`,
+`CROP_MAX_GROWTH_MAP` must exist in `itemsByName`/`blocksByName`, and `raw_cod` and
+`beetroots` must never come back. Suite 466 → **1058**.
+
+Limit recorded: the **positive** tame (feed → approach → `interact` → `tamed`) is
+still unverified live — the village chest that held the only `cod`/`salmon`
+(`73,71,153`) now reads empty, so nothing can be fed. See
+[companions](wiki/companions.md) and [open questions](wiki/open-questions.md).
+
 
 `md5sum` of every git-tracked file outside `docs/` and `tests/` compared against
 `/app` inside the live container (`hermes-jev-bedrock`, VM 100): 119 local paths,

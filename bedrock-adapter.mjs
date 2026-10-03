@@ -67,7 +67,7 @@ const TOOL_HARVEST_RANK = { wooden: 1, golden: 1, stone: 2, copper: 2, iron: 3, 
 const HARVEST_TOOL_RANK = { 941: 1, 956: 1, 946: 2, 951: 2, 961: 3, 966: 4, 971: 5 };
 // Blocchi funzionali o costruiti che dig_down non deve mai scavare per errore
 // (tavoli, contenitori, stazioni): il passo verrebbe rifiutato invece che distruggerli.
-const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|_bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$|farmland$|_fence$|_fence_gate$|wheat$|carrots$|potatoes$|beetroots$|melon_stem$|pumpkin_stem$|sweet_berry_bush$|nether_wart$|redstone_wire$|redstone_block$|lever$|_button$|pressure_plate$|_repeater$|_comparator$|observer$|piston$|dispenser$|dropper$|lamp$|daylight_detector$|tripwire_hook$|tripwire$|target$|crafter$|sculk_sensor$|sculk_shrieker$|command_block$|structure_block$|structure_void$|jigsaw$|barrier$|bedrock$|end_crystal$|fire$|soul_fire$)/;
+const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|_bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$|farmland$|_fence$|_fence_gate$|wheat$|carrots$|potatoes$|beetroot$|melon_stem$|pumpkin_stem$|sweet_berry_bush$|nether_wart$|redstone_wire$|redstone_block$|lever$|_button$|pressure_plate$|_repeater$|_comparator$|observer$|piston$|dispenser$|dropper$|lamp$|daylight_detector$|tripwire_hook$|tripwire$|target$|crafter$|sculk_sensor$|sculk_shrieker$|command_block$|structure_block$|structure_void$|jigsaw$|barrier$|bedrock$|end_crystal$|fire$|soul_fire$)/;
 // Redstone (R0): un circuito non è un ostacolo da scavare ma un impianto della
 // base. I minerali di redstone restano **fuori** da DIG_PROTECTED (si estraggono
 // con `mine_redstone_ore`), i componenti no.
@@ -876,7 +876,7 @@ export class BedrockAdapter {
   _refreshNearby () {
     if (!this.position) return;
     this.nearbyBlocks = {};
-    for (const name of ['dirt', 'grass_block', 'stone', 'cobblestone', 'coal_ore', 'deepslate_coal_ore', 'iron_ore', 'deepslate_iron_ore', 'copper_ore', 'oak_log', 'spruce_log', 'cherry_log', 'potatoes', 'carrots', 'wheat', 'beetroots']) {
+    for (const name of ['dirt', 'grass_block', 'stone', 'cobblestone', 'coal_ore', 'deepslate_coal_ore', 'iron_ore', 'deepslate_iron_ore', 'copper_ore', 'oak_log', 'spruce_log', 'cherry_log', 'potatoes', 'carrots', 'wheat', 'beetroot']) {
       // Per le colture lo stato di crescita entra nell'osservazione: matura/acerba
       // è ciò che decide se l'azione di raccolta è lecita, e senza numero non si
       // distingue "maturità ignota" da "acerba"

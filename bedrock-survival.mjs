@@ -144,8 +144,8 @@ const ANIMAL_FEED = {
 const TAMEABLE_TYPES = new Set(['wolf', 'cat', 'ocelot', 'parrot']);
 const TAME_FEED = {
   wolf: ['bone'],
-  cat: ['raw_cod', 'raw_salmon'],
-  ocelot: ['raw_cod', 'raw_salmon'],
+  cat: ['cod', 'salmon'],
+  ocelot: ['cod', 'salmon'],
   parrot: ['wheat_seeds', 'melon_seeds', 'pumpkin_seeds', 'beetroot_seeds'],
 };
 
@@ -161,7 +161,7 @@ const COMPANION_TYPES = new Set([...TAMEABLE_TYPES, ...RIDE_TAMEABLE_TYPES, 'axo
 // Da item piantabile (seme od ortaggio) alla coltura che appare sul terreno.
 const SEED_TO_CROP = {
   wheat_seeds: 'wheat',
-  beetroot_seeds: 'beetroots',
+  beetroot_seeds: 'beetroot',
   carrot: 'carrots',
   potato: 'potatoes',
   melon_seeds: 'melon_stem',
@@ -235,7 +235,7 @@ const CROP_MAX_GROWTH = {
   wheat: 7,
   carrots: 7,
   potatoes: 7,
-  beetroots: 7,
+  beetroot: 7,
   melon_stem: 7,
   pumpkin_stem: 7,
   sweet_berry_bush: 7,
