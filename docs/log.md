@@ -2484,3 +2484,59 @@ non ha leve, quindi il rate limit resta coperto solo dai test unitari). Limite
 dichiarato: `bot_in_piston_path` è raggiungibile solo da un piano sintetico, perché
 nessun blueprint costruibile muove un pistone; i tetti sono per blueprint, non
 globali; i nomi vietati sono una lista, non un motore di regole.
+
+## [2026-10-03] feat | Nether N0: consapevolezza (portali, fuoco, proiettili, sguardo) + 7 regole del governor
+
+Prima milestone della macro-area Nether/End (`docs/wiki/nether.md`). N0 è solo
+*percezione*: nessuna azione nuova porta il bot verso un portale o schiva un
+ghast.
+
+**Modulo puro `bedrock-nether.mjs`** (nessun I/O): `portalKind`/`hazardKind`
+(`portal` → nether, `end_portal`/`end_gateway` → end, `end_portal_frame` →
+frame; `fire`/`soul_fire` → fire, `magma` → magma), `isFireBlock`,
+`isSpawnerBlock`, `isProjectileType` (20 tipi: fireball/small_fireball/
+dragon_fireball/wither_skull/arrow/thrown_trident/snowball/egg/ender_pearl/
+llama_spit/shulker_bullet/pozioni/xp_bottle/fishing_hook/firework_rocket/
+wind_charge/evoker_fang…), `isEndermanType`, `isNetherDimension`/`isEndDimension`,
+`waterEvaporates`, `bedsExplode`, `summarizePortals`, `summarizeHazards`,
+`projectileThreat` (velocità **oppure** due campioni; `known: false` quando non
+sa, mai un falso "tutto libero"), `projectileIncoming` (il più urgente),
+`gazeVector`/`gazeAngle`/`gazedAtEnderman` (occhi 2,55 blocchi sopra i piedi,
+tolleranza 8°), `netherHazard` (scala critical/high/medium/low).
+**Bug reale trovato dai test**: `isProjectileType`/`isEndermanType`
+normalizzavano con `toLowerCase()` e non riconoscevano gli id namespaced
+(`minecraft:arrow`); ora usano `normalizeNetherName`.
+
+**Adapter**: `_netherCensus({force})` con lo stesso TTL dei fluidi
+(`NETHER_RESCAN_MS` 10 s, raggio 32, limite 64; mai in cache su un mondo non
+caricato) e `_netherView({force,cells})` esposto da `observe().nether` e dalla
+rotta `GET /observe.portals`. `_onEntityMove` conserva `entity.prev` **solo** per
+i tipi proiettile; `_sleepInBed` rifiuta la dimensione dove i letti esplodono
+(`beds_explode_here`) e l'opzione `sleep` non viene nemmeno offerta.
+
+**Layer survival**: `perceiveNether()` (forma "ignota" se il campo manca),
+`perceive()` che la include, pesi di rischio (`on_fire` +50, `magma_contact`
++35, `projectile_incoming` +45/+30, `gazed_at_enderman` +12 solo nel Nether/End,
+`spawner_nearby` +6), bisogno `escape`, 8 condizioni nuove e **7 regole** in
+`knowledge/survival-rules.json`: `on_fire` (98), `projectile_incoming` (96),
+`magma_contact` (95), `fire_adjacent` (92), `fire_near` (72),
+`gazed_at_enderman` (62), `spawner_nearby` (58).
+
+**Test**: `tests/bedrock-nether.test.mjs` (12 casi), 
+`tests/bedrock-nether-adapter.test.mjs` (10) e `tests/survival-nether.test.mjs`
+(7) — suite completa **818/818**. `npm run wiki:lint` pulito.
+
+**Collaudo live** (BDS 1.26.52, container `hermes-jev-bedrock`): `GET
+/observe.portals` → `dimension overworld`, `isNether false`, `inFire false`,
+nessun portale/spawner, `hazard {level none}`, `scanned 0`, `ready true`, **5
+chiamate in 56 ms** (censimento in cache); `GET /observe` porta `nether` e il
+governor resta `{mode normal, risk 0, needs [continue_progression]}` con
+`/options` invariato (24 opzioni); **proiettili live**: `throw_egg` → `{ok true,
+thrown egg}` e `/observe.portals` ha catturato l'entità in volo a 14,3 → 15,7 →
+18,4 blocchi con `projectile: null` (correttamente non in arrivo).
+
+**Limiti dichiarati**: il bot non ha mai lasciato l'Overworld, quindi `inFire`,
+`magma`, `beds_explode_here` e i rami `isNether`/`isEnd` sono coperti solo dai
+test unitari; il verdetto "incoming" non è mai stato innescato da un proiettile
+ostile reale (la schivata è N3); `gazedAtEnderman` è solo rilevazione, non
+disciplina (N5); il censimento è limitato a raggio 32/limite 64.

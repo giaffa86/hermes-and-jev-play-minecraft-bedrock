@@ -75,7 +75,7 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**780 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**818 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
 
 - **Fluids in the survival layer (M0, 2026-10-03)**: the governor vocabulary grew
@@ -193,6 +193,20 @@ off. Live: `/observe.nearby` now reports `potatoes growth 7/7/6/6, mature true/f
 `carrots growth 7`; `harvest_potatoes` fails in 0.01 s with `drop_unreachable`
 (the only fields are outside the bot's walkable component), `harvest_wheat` with
 `no_crop_found`.
+- **Nether hazards in the survival layer (N0, 2026-10-03)**: `perceiveNether()`
+normalises a new `observation.nether` block (portal/fire/magma/spawner
+distances, the most urgent incoming projectile, the enderman being stared at,
+`waterEvaporates`/`bedsExplode`) and stays `known: false` when the field is
+missing, so an old observation never raises a false alarm. Risk weights:
+`on_fire` +50, `magma_contact` +35, `projectile_incoming` +45 (or +30 when it is
+still seconds away), `gazed_at_enderman` +12 **only in the Nether/End**,
+`spawner_nearby` +6. Eight conditions (`inFire`, `fireWithin`, `magmaWithin`,
+`projectileIncoming`, `gazedAtEnderman`, `inNether`, `inEnd`, `spawnerWithin`)
+and seven rules: `on_fire` (98), `projectile_incoming` (96), `magma_contact`
+(95), `fire_adjacent` (92), `fire_near` (72), `gazed_at_enderman` (62),
+`spawner_nearby` (58). A quiet Overworld produces nothing, and the bot refuses
+to sleep in a dimension where beds explode (`beds_explode_here`). What is
+*missing* is the acting half: no dodge, no portal action, no barter.
 
 - **Offline (deterministic, no model)**: `tests/controller-curriculum.test.mjs`
 drives `CURRICULUM=first_night` against a staged fake harness (one valid action

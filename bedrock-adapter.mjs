@@ -15,6 +15,7 @@ import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, d
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
 import { loadCircuits, planCircuit, circuitSiteBlocked, circuitSafety, forbiddenBlock, checkCircuitSuccess, circuitAnchor, expectedDelayTicks, measureCircuitDelay, TICK_MS, MAX_CIRCUIT_STEPS, MAX_CIRCUIT_COMPONENTS, MIN_CLOCK_TICKS } from './circuits.mjs';
 import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
+import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT } from './bedrock-nether.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -129,6 +130,12 @@ const FLUID_SCAN_RADIUS = +(process.env.FLUID_SCAN_RADIUS || DEFAULT_FLUID_RADIU
 const FLUID_SCAN_LIMIT = +(process.env.FLUID_SCAN_LIMIT || DEFAULT_FLUID_LIMIT);
 // Distanza oltre la quale la lava non è più un motivo per offrire `avoid_lava`.
 const LAVA_AVOID_RANGE = +(process.env.LAVA_AVOID_RANGE || 8);
+// Nether/End (N0 di docs/wiki/nether.md): portali, fuoco, magma e spawner sono
+// un censimento a parte (TTL proprio), non righe di `nearby` che il controller
+// paga a ogni osservazione.
+const NETHER_RESCAN_MS = +(process.env.NETHER_RESCAN_MS || 10000);
+const NETHER_SCAN_RADIUS = +(process.env.NETHER_SCAN_RADIUS || DEFAULT_NETHER_RADIUS);
+const NETHER_SCAN_LIMIT = +(process.env.NETHER_SCAN_LIMIT || DEFAULT_NETHER_LIMIT);
 // Occasioni: raggio della scansione delle ore di valore. Deve combaciare con
 // ORE_INTEREST_RANGE di world-events.mjs: tutto ciò che genera un evento
 // VALUABLE_ORE_SEEN è anche un'opzione mine_<ore>.
@@ -828,6 +835,8 @@ export class BedrockAdapter {
     // La vista redstone segue la percezione (ha un TTL proprio, quindi durante il
     // pathfinding non costa nulla).
     this._redstoneCensus();
+    // Portali, fuoco, magma e spawner: censimento a TTL, non righe di `nearby`.
+    this._netherCensus();
     this._scanValuableOres();
     this._maybeRememberDiscoveries();
   }
@@ -1136,6 +1145,126 @@ export class BedrockAdapter {
     return view;
   }
 
+  // ---- Nether/End: portali, pericoli, proiettili e sguardo (N0) ---------------
+  // Censimento portali/pericoli con TTL proprio (come fluidi e redstone): un mondo
+  // appena connesso senza colonne caricate non è un mondo senza portali, quindi in
+  // quel caso non si mette in cache e si dichiara `ready: false`.
+  _netherCensus ({ force = false } = {}) {
+    const now = Date.now();
+    if (!force && this._netherScan && now - this._netherScanAt < NETHER_RESCAN_MS) return this._netherScan;
+    const rows = [];
+    if (this.position && typeof this.world?.findBlocks === 'function') {
+      for (const name of ['portal', 'end_portal', 'end_gateway', 'end_portal_frame', 'fire', 'soul_fire', 'magma', 'mob_spawner']) {
+        for (const block of this.world.findBlocks(name, this.position, NETHER_SCAN_RADIUS, NETHER_SCAN_LIMIT)) {
+          rows.push({ name, position: block?.position ?? block });
+        }
+      }
+    }
+    const from = this._feet ?? this.position;
+    const loaded = this.world?.loaded?.size ?? null;
+    const ready = loaded !== 0;
+    const census = {
+      portals: summarizePortals(rows, from),
+      hazards: summarizeHazards(rows, from),
+      rows,
+      scanned: rows.length,
+      loaded,
+      ready,
+      at: now,
+    };
+    if (!ready) return census;
+    this._netherScan = census;
+    this._netherScanAt = now;
+    return this._netherScan;
+  }
+
+  // Proiettili percepiti (palla di fuoco del ghast, frecce, perle…). La velocità
+  // non arriva da `move_entity`: si stima dalle due ultime posizioni osservate,
+  // quindi `prev` viene tenuto solo per questi tipi.
+  _projectileRows (range = 24) {
+    const rows = [];
+    for (const entity of this.entities.values()) {
+      if (!entity.position || !isProjectileType(entity.type)) continue;
+      const distance = this._entityDistance(entity);
+      if (distance > range) continue;
+      rows.push({
+        type: entity.type,
+        position: { ...entity.position },
+        previous: entity.prev ? { position: { ...entity.prev.position }, at: entity.prev.at } : null,
+        distance: +distance.toFixed(1),
+      });
+    }
+    rows.sort((a, b) => a.distance - b.distance);
+    return rows;
+  }
+
+  // Vista compatta per /observe: dove sono i portali, quanto è vicino il fuoco,
+  // cosa sta arrivando e se il bot sta guardando un enderman.
+  _netherView ({ force = false, cells = false } = {}) {
+    const feet = this._feet
+      ? { x: Math.floor(this._feet.x), y: Math.floor(this._feet.y + 0.1), z: Math.floor(this._feet.z) }
+      : null;
+    const head = feet ? { x: feet.x, y: feet.y + 1, z: feet.z } : null;
+    const nameAt = cell => (cell ? this.world?.blockAt?.(cell)?.name ?? null : null);
+    const standingOnFire = isFireBlock(this.standingOn);
+    const inFire = isFireBlock(nameAt(feet));
+    const headInFire = isFireBlock(nameAt(head));
+    const census = this._netherCensus({ force });
+    const from = this._feet ?? this.position;
+    const projectiles = this._projectileRows();
+    const threat = projectileIncoming({ projectiles, from, now: Date.now() });
+    const endermans = [];
+    for (const entity of this.entities.values()) {
+      if (!entity.position || !isEndermanType(entity.type)) continue;
+      if (this._entityDistance(entity) > 24) continue;
+      endermans.push({ type: entity.type, position: { ...entity.position } });
+    }
+    const dimension = this.dimension;
+    const view = {
+      dimension,
+      isNether: isNetherDimension(dimension),
+      isEnd: isEndDimension(dimension),
+      waterEvaporates: waterEvaporates(dimension),
+      bedsExplode: bedsExplode(dimension),
+      inFire: inFire || headInFire || standingOnFire,
+      feetInFire: inFire,
+      headInFire,
+      standingOnFire,
+      fireDistance: census.hazards.fireDistance,
+      magmaDistance: census.hazards.magmaDistance,
+      spawnerDistance: census.hazards.spawnerDistance,
+      portals: census.portals,
+      portalDistance: census.portals.portalDistance,
+      endPortalDistance: census.portals.endPortalDistance,
+      endFrameDistance: census.portals.endFrameDistance,
+      projectiles: projectiles.slice(0, 4).map(p => ({ type: p.type, distance: p.distance, position: p.position })),
+      projectile: threat
+        ? {
+          type: threat.type,
+          distance: threat.distance,
+          missDistance: threat.missDistance,
+          timeToImpactMs: threat.timeToImpactMs,
+          speed: threat.speed,
+          source: threat.source,
+        }
+        : null,
+      enderman: gazedAtEnderman({ from: this.position ?? from, yaw: this._lastYaw, pitch: this._lastPitch, endermans }),
+      hazard: netherHazard({
+        dimension,
+        inFire: inFire || headInFire || standingOnFire,        fireDistance: census.hazards.fireDistance,
+        magmaDistance: census.hazards.magmaDistance,
+        inLava: feet ? this._fluidKindAt(feet.x, feet.y, feet.z) === 'lava' : false,
+      }),
+      scanned: census.scanned,
+      ready: census.ready !== false,
+      at: census.at,
+    };
+    // Le celle servono solo alla diagnostica (`/observe.portals`): tenerle fuori
+    // da /observe evita di gonfiare la percezione del controller.
+    if (cells) view.cells = census.rows;
+    return view;
+  }
+
   // Proprietà di stato di un blocco in una posizione (leva aperta, repeater
   // alimentato, delay, facing…): `null` quando il blocco o lo stato non sono
   // leggibili, così un valore ignoto non viene mai scambiato per "spento".
@@ -1329,6 +1458,7 @@ export class BedrockAdapter {
       structures: this.structures.slice(0, 8),
       structureSurvey: this._structureSurvey,
       fluids: this._fluidsView(),
+      nether: this._netherView(),
       redstone: this._redstoneView(),
       circuits: this._circuitsView(),
       ores: (this.valuableOres ?? []).slice(0, 8),
@@ -1458,7 +1588,9 @@ export class BedrockAdapter {
     }
     if (this._isNight()) {
       const bed = this._findBed();
-      if (bed) o.push({ key: 'sleep', description: `Sleep in the bed at ${JSON.stringify(bed.position)} (${bed.distance} blocks away) before the night is dangerous` });
+      // Nel Nether e nell'End il letto esplode: l'opzione non va offerta affatto,
+      // altrimenti il planner sceglie un'azione che si autodistrugge.
+      if (bed && !bedsExplode(this.dimension)) o.push({ key: 'sleep', description: `Sleep in the bed at ${JSON.stringify(bed.position)} (${bed.distance} blocks away) before the night is dangerous` });
     }
     // Recupero post-morte: il loot e gli orb EXP sono rimasti dov'è morto.
     if (this.deathSite && this.position) {
@@ -5774,6 +5906,11 @@ export class BedrockAdapter {
     const runtimeId = String(packet.runtime_entity_id ?? '');
     const entity = this.entities.get(runtimeId);
     if (!entity || !entity.position) return;
+    // Solo per i proiettili: la posizione precedente è la sorgente della velocità
+    // stimata (N0), quindi va conservata prima di sovrascriverla.
+    if (isProjectileType(entity.type)) {
+      entity.prev = { position: { ...entity.position }, at: entity.lastAt || Date.now() };
+    }
     if (packet.position) {
       entity.position = { x: packet.position.x, y: packet.position.y, z: packet.position.z };
     } else if (packet.flags && typeof packet.flags === 'object') {
@@ -7724,6 +7861,9 @@ export class BedrockAdapter {
   // sonno (flag resting nei metadata). Fallisce se è giorno o se ci sono mostri.
   async _sleepInBed ({ approachTimeoutMs = 25000, confirmMs = 3000 } = {}) {
     if (this.sleeping) return { ok: true, alreadySleeping: true };
+    // Nel Nether e nell'End un letto esplode: non è un'azione vietata per
+    // prudenza, è un'esplosione garantita. Il rifiuto è tipizzato e immediato.
+    if (bedsExplode(this.dimension)) return { ok: false, error: 'beds_explode_here', dimension: this.dimension };
     if (!this._isNight()) return { ok: false, error: 'not_night' };
     const bed = this._findBed();
     if (!bed) return { ok: false, error: 'no_bed' };

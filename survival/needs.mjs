@@ -33,6 +33,11 @@ export function deriveNeeds (perception = {}, risk = {}) {
   }
   // Contatto con la lava: fuga immediata, è più urgente di ogni altra cura.
   if (perception.fluids?.inLava === true) add('escape');
+  // Fuoco addosso, magma sotto i piedi o proiettile in arrivo (N0): come la
+  // lava, sono pericoli meccanici e la prima cura è uscirne.
+  if (perception.nether?.inFire === true) add('escape');
+  if (Number.isFinite(perception.nether?.magmaWithin) && perception.nether.magmaWithin <= 1.5) add('escape');
+  if (perception.nether?.projectileIncoming === true) add('escape');
   if (food != null && food <= 14 && perception.hasFood) add('eat');
   if (hurt) add('heal');
   if (perception.night && perception.bedAvailable) add('sleep');

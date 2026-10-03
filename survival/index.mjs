@@ -9,7 +9,7 @@
 // Vedi docs/SURVIVAL-INTELLIGENCE.md per l'architettura e per come estendere
 // regole, skill e milestone.
 
-export { perceive, perceiveThreats, threatSeverity, MAX_HEALTH, MAX_FOOD } from './perception.mjs';
+export { perceive, perceiveNether, perceiveFluids, perceiveThreats, threatSeverity, MAX_HEALTH, MAX_FOOD } from './perception.mjs';
 export { assessRisk, riskLevelForScore, RISK_LEVELS } from './risk.mjs';
 export { deriveNeeds, NEED_PRIORITY, NEEDS } from './needs.mjs';
 export { evaluateSurvival, summarizeSurvival, EMERGENCY_PRIORITY, CAUTION_PRIORITY } from './governor.mjs';

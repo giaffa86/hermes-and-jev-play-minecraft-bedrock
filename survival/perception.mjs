@@ -65,6 +65,72 @@ export function perceiveFluids (fluids = null) {
   };
 }
 
+// Nether/End (N0): fuoco, magma, spawner, portali, proiettili in arrivo e
+// sguardo verso un enderman. Come per i fluidi, un'osservazione senza `nether`
+// (harness vecchio, fixture) non dichiara allarmi: `known: false`.
+export function perceiveNether (nether = null) {
+  if (!nether || typeof nether !== 'object') {
+    return {
+      known: false, dimension: null, isNether: false, isEnd: false,
+      waterEvaporates: false, bedsExplode: false,
+      inFire: false, headInFire: false, standingOnFire: false,
+      fireDistance: null, fireWithin: null, magmaDistance: null, magmaWithin: null,
+      spawnerDistance: null, spawnerWithin: null, portalDistance: null,
+      endPortalDistance: null, endFrameDistance: null, portalCount: 0,
+      projectile: null, projectileIncoming: false, projectileDistance: null,
+      enderman: null, gazeKnown: false, hazard: null, ready: false,
+    };
+  }
+  const num = (value) => (Number.isFinite(value) ? value : null);
+  const shot = nether.projectile && typeof nether.projectile === 'object'
+    ? {
+      type: nether.projectile.type ?? null,
+      distance: num(nether.projectile.distance),
+      missDistance: num(nether.projectile.missDistance),
+      timeToImpactMs: num(nether.projectile.timeToImpactMs),
+      speed: num(nether.projectile.speed),
+    }
+    : null;
+  const enderman = nether.enderman && typeof nether.enderman === 'object'
+    ? {
+      type: nether.enderman.type ?? null,
+      distance: num(nether.enderman.distance),
+      angleDeg: num(nether.enderman.angleDeg),
+      gazed: nether.enderman.gazed === true,
+    }
+    : null;
+  const fireDistance = num(nether.fireDistance);
+  const magmaDistance = num(nether.magmaDistance);
+  return {
+    known: true,
+    dimension: nether.dimension ?? null,
+    isNether: nether.isNether === true,
+    isEnd: nether.isEnd === true,
+    waterEvaporates: nether.waterEvaporates === true,
+    bedsExplode: nether.bedsExplode === true,
+    inFire: nether.inFire === true || nether.headInFire === true || nether.standingOnFire === true,
+    headInFire: nether.headInFire === true,
+    standingOnFire: nether.standingOnFire === true,
+    fireDistance,
+    fireWithin: fireDistance,
+    magmaDistance,
+    magmaWithin: magmaDistance,
+    spawnerDistance: num(nether.spawnerDistance),
+    spawnerWithin: num(nether.spawnerDistance),
+    portalDistance: num(nether.portalDistance),
+    endPortalDistance: num(nether.endPortalDistance),
+    endFrameDistance: num(nether.endFrameDistance),
+    portalCount: num(nether.portals?.nether?.count) ?? 0,
+    projectile: shot,
+    projectileIncoming: shot != null,
+    projectileDistance: shot?.distance ?? null,
+    enderman,
+    gazeKnown: enderman != null && typeof nether.enderman?.gazed === 'boolean',
+    hazard: nether.hazard ?? null,
+    ready: nether.ready !== false,
+  };
+}
+
 export function perceiveThreats (entities = []) {
   const threats = [];
   for (const entity of entities) {
@@ -139,6 +205,7 @@ export function perceive (observation = {}) {
     lootNearby: Array.isArray(observation.drops) && observation.drops.length > 0,
     dropCount: Array.isArray(observation.drops) ? observation.drops.length : 0,
     fluids: perceiveFluids(observation.fluids),
+    nether: perceiveNether(observation.nether),
     inventorySummary: {
       logs: tagCount(inventory, 'logs'),
       planks: tagCount(inventory, 'planks'),

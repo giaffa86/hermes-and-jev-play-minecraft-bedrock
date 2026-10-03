@@ -15,14 +15,19 @@ export const CONDITION_KEYS = [
   'hostileWithin', 'hostileSeverityAtLeast', 'hostileTypeWithin',
   // Fluidi (M0 di docs/wiki/fluids.md).
   'inWater', 'headInWater', 'inLava', 'lavaWithin', 'airBelow',
+  // Nether/End (N0 di docs/wiki/nether.md).
+  'inFire', 'fireWithin', 'magmaWithin', 'projectileIncoming', 'gazedAtEnderman',
+  'inNether', 'inEnd', 'spawnerWithin',
 ];
 
 const BOOLEAN_KEYS = new Set([
   'night', 'timeKnown', 'bedAvailable', 'hasFood', 'weaponInInventory',
   'pickaxeInInventory', 'sleeping', 'dead', 'lootNearby',
   'inWater', 'headInWater', 'inLava',
+  // Nether/End (N0).
+  'inFire', 'projectileIncoming', 'gazedAtEnderman', 'inNether', 'inEnd',
 ]);
-const NUMBER_KEYS = new Set(['healthMax', 'healthBelow', 'foodMax', 'foodBelow', 'hostileWithin', 'lavaWithin', 'airBelow']);
+const NUMBER_KEYS = new Set(['healthMax', 'healthBelow', 'foodMax', 'foodBelow', 'hostileWithin', 'lavaWithin', 'airBelow', 'fireWithin', 'magmaWithin', 'spawnerWithin']);
 const PHASES = ['day', 'dusk', 'night', 'dawn'];
 
 export function validateRule (rule, index = 0) {
@@ -108,6 +113,31 @@ export function evaluateCondition (key, value, perception = {}) {
       }
       return true;
     }
+    // Nether/End (N0): le condizioni leggono la perception normalizzata, quindi
+    // un'osservazione senza `nether` (o con censimento non pronto) non fa scattare
+    // nulla. `gazedAtEnderman: true` è vero solo se lo sguardo è stato misurato.
+    case 'inFire':
+      return perception.nether?.inFire === value;
+    case 'inNether':
+      return perception.nether?.isNether === value;
+    case 'inEnd':
+      return perception.nether?.isEnd === value;
+    case 'projectileIncoming':
+      return perception.nether?.projectileIncoming === value;
+    case 'gazedAtEnderman':
+      return (perception.nether?.enderman?.gazed === true) === value;
+    case 'fireWithin': {
+      const distance = perception.nether?.fireWithin;
+      return Number.isFinite(distance) && distance <= value;
+    }
+    case 'magmaWithin': {
+      const distance = perception.nether?.magmaWithin;
+      return Number.isFinite(distance) && distance <= value;
+    }
+    case 'spawnerWithin': {
+      const distance = perception.nether?.spawnerWithin;
+      return Number.isFinite(distance) && distance <= value;
+    }
     // Fluidi: le condizioni leggono la perception normalizzata, mai l'osservazione
     // grezza. `lavaWithin`/`airBelow` sono distanze/soglie numeriche; l'aria ignota
     // (null) non fa scattare nulla.
@@ -149,7 +179,12 @@ export function evaluateRules (rules = [], perception = {}) {
 // I/O: carica e valida il file JSON delle regole.
 export async function loadSurvivalRules (url) {
   const { readFileSync } = await import('node:fs');
-  const data = JSON.parse(readFileSync(url, 'utf8'));
+  let data;
+  try {
+    data = JSON.parse(readFileSync(url, 'utf8'));
+  } catch (error) {
+    throw new Error(`cannot read survival rules from ${url}: ${error.message}`);
+  }
   const rules = Array.isArray(data) ? data : data.rules;
   const errors = validateRules(rules);
   if (errors.length) throw new Error(`invalid survival rules:\n${errors.join('\n')}`);

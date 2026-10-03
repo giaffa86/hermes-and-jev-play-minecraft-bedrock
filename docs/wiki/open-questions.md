@@ -64,7 +64,8 @@ Last lint: 2026-10-03.
   arrows (`craft_arrows`: flint + stick + feather) would add a safe creeper
   counter and a way to fight from range. Nothing is implemented yet.
 - **Advanced shelter** — no wall/shelter building actions.
-- **Nether portal** — not implemented.
+- **Nether portal** — the bot *sees* a portal since N0 (`GET /observe.portals`,
+  `_netherCensus`) but cannot walk to one, build one or light it yet (N1).
 - **Fluids** — **M0 (fluid awareness) and M1 partial (wading + simulated air
   budget) implemented and collaudati live 03/10**: the bot knows where water and
   lava are (`GET /observe.fluids`, census + hazard ladder), refuses digs that
@@ -347,9 +348,12 @@ Still missing (the rest of the original gap):
   `nether_portal → … → enter_end → beat_the_dragon` chain and the goal points to
   the real milestone. The underlying Nether capabilities are still missing — see
   [nether](nether.md).
-- **No Nether/End capabilities**: no portal action (`goto_portal`/`build_portal`/
-  `light_portal`), no fire/lava or ghast-fireball hazard, no piglin bartering, no
-  enderman gaze discipline, no fortress/stronghold/End actions, and no
+- **No Nether/End capabilities (N0 done)**: N0 (awareness and hazards) is
+  implemented, unit-tested and live-checked 03/10 — portal/fire/magma/spawner
+  census, projectile tracking, enderman gaze sensing, `waterEvaporates`/
+  `bedsExplode` and seven governor rules, all *perception only*. Still missing:
+  portal actions (`goto_portal`/`build_portal`/`light_portal`), the ghast dodge,
+  piglin bartering, gaze **discipline**, fortress/stronghold/End actions and a
   `bossDefeated` verifier criterion. Roadmap in [nether](nether.md).
 - **Crafting** only one item at a time; special recipes (smithing, anvil, looms)
   not implemented.

@@ -1,7 +1,63 @@
 {
   "version": 1,
-  "comment": "Regole di sopravvivenza deterministiche. Condizioni disponibili (AND): healthMax, healthBelow, foodMax, foodBelow, phase, night, timeKnown, bedAvailable, hasFood, weaponInInventory, pickaxeInInventory, sleeping, dead, lootNearby, hostileWithin, hostileSeverityAtLeast, hostileTypeWithin, inWater, headInWater, inLava, lavaWithin, airBelow. Vedi docs/SURVIVAL-INTELLIGENCE.md.",
+  "comment": "Regole di sopravvivenza deterministiche. Condizioni disponibili (AND): healthMax, healthBelow, foodMax, foodBelow, phase, night, timeKnown, bedAvailable, hasFood, weaponInInventory, pickaxeInInventory, sleeping, dead, lootNearby, hostileWithin, hostileSeverityAtLeast, hostileTypeWithin, inWater, headInWater, inLava, lavaWithin, airBelow, inFire, fireWithin, magmaWithin, projectileIncoming, gazedAtEnderman, inNether, inEnd, spawnerWithin. Vedi docs/SURVIVAL-INTELLIGENCE.md.",
   "rules": [
+    {
+      "id": "on_fire",
+      "priority": 98,
+      "when": { "inFire": true },
+      "intents": ["escape", "heal", "eat"],
+      "objective": "Put out the fire: step away from the flame and into open ground, then recover health",
+      "preferredSkills": ["nether_survival", "escape_hostile"]
+    },
+    {
+      "id": "projectile_incoming",
+      "priority": 96,
+      "when": { "projectileIncoming": true },
+      "intents": ["escape", "shelter"],
+      "objective": "A projectile is inbound: break the straight line to it (move sideways or behind cover) instead of standing still",
+      "preferredSkills": ["nether_survival"]
+    },
+    {
+      "id": "magma_contact",
+      "priority": 95,
+      "when": { "magmaWithin": 1.5 },
+      "intents": ["escape", "heal"],
+      "objective": "Step off the magma block: it burns through boots and health is not worth the shortcut",
+      "preferredSkills": ["nether_survival", "avoid_lava"]
+    },
+    {
+      "id": "fire_adjacent",
+      "priority": 92,
+      "when": { "fireWithin": 2 },
+      "intents": ["escape", "shelter"],
+      "objective": "Move away from the fire next to you before continuing",
+      "preferredSkills": ["nether_survival"]
+    },
+    {
+      "id": "fire_near",
+      "priority": 72,
+      "when": { "fireWithin": 6 },
+      "intents": ["escape", "shelter"],
+      "objective": "Keep distance from the flames while working in this area",
+      "preferredSkills": ["nether_survival"]
+    },
+    {
+      "id": "gazed_at_enderman",
+      "priority": 62,
+      "when": { "gazedAtEnderman": true },
+      "intents": ["escape", "travel"],
+      "objective": "Look away from the enderman and walk off: holding its gaze in the Nether or the End starts a fight the bot cannot win",
+      "preferredSkills": ["nether_survival"]
+    },
+    {
+      "id": "spawner_nearby",
+      "priority": 58,
+      "when": { "spawnerWithin": 8 },
+      "intents": ["escape", "travel", "mine"],
+      "objective": "Do not linger next to a spawner: light it up or leave, otherwise the mobs keep coming",
+      "preferredSkills": ["nether_survival"]
+    },
     {
       "id": "lava_contact",
       "priority": 100,

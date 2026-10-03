@@ -251,9 +251,13 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   executor and the semantic-goal interpreter. Proposal in
   [goal-achievement](goal-achievement.md) /
   [`raw/GOAL_ACHIEVEMENT_MINECRAFT.txt`](../raw/GOAL_ACHIEVEMENT_MINECRAFT.txt).
-- **Nether / End** — `enter_nether` has no portal action; no fire/lava hazard,
-  no ghast projectile dodge, no piglin bartering, no enderman gaze discipline,
-  no fortress/stronghold/End actions, no `bossDefeated` verifier. Roadmap in
+- **Nether / End** — **N0 (awareness + hazards) implemented, unit-tested and
+  live-tested 03/10**: portal/fire/magma/spawner census (`GET /observe.portals`),
+  projectile tracking (`projectileThreat`/`projectileIncoming`), enderman gaze
+  sensing (`gazedAtEnderman`), `waterEvaporates`/`bedsExplode` and seven
+  governor rules. Still missing: the portal action, the ghast dodge, piglin
+  bartering, gaze *discipline*, fortress/stronghold/End actions and a
+  `bossDefeated` verifier. Roadmap in
   [nether](nether.md) / [`raw/NETHER_ROADMAP.md`](../raw/NETHER_ROADMAP.md). The
   progression chain (incl. the fixed `beat_the_dragon`) is already in
   `knowledge/progression.json`.
@@ -332,10 +336,11 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    progressive benchmarks (16 logs → shelter+night → iron pickaxe → 5 diamonds
    → Nether portal) as `CURRICULUM` goals run end-to-end. Depends on the
    AI-player Goal Manager (milestone 1).
-9. **Nether / End** (spec in [nether](nether.md)): start at N0/N1 (locate or
-   build a portal, `/observe.portals`, fire/lava + projectile/gaze sensing),
-   then N2/N3 (survive the Nether, dodge ghast fireballs), N4/N5 (piglin
-   bartering, enderman gaze discipline), N6/N7 (fortress, blaze rods, End).
+9. **Nether / End** (spec in [nether](nether.md)): N0 done (portal/fire/magma/
+   spawner census, projectile + gaze sensing, governor rules) and live-checked in
+   the Overworld; next is N1 (locate or build a portal), then N2/N3 (survive the
+   Nether, dodge ghast fireballs), N4/N5 (piglin bartering, enderman gaze
+   discipline), N6/N7 (fortress, blaze rods, End).
 10. **Exploration** (spec in [exploration](exploration.md)): M1 core, M2
     (route replay) and M4 (observable targets) are implemented and live-exercised
     (`exploration.mjs` target resolution + spiral planner + report + replay +

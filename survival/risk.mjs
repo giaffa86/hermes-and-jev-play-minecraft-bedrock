@@ -106,6 +106,50 @@ export function assessRisk (perception = {}) {
     push(reasons, 'low_health_near_hostile');
   }
 
+  // Nether/End (N0): fuoco, magma, proiettili in arrivo e sguardo verso un
+  // enderman. Il fuoco addosso è un danno per tick, non un rischio statistico:
+  // pesa quasi come un ostile critico, mentre la lava resta il massimo.
+  const nether = perception.nether || {};
+  if (nether.known === true) {
+    if (nether.inFire === true) {
+      score += 50;
+      push(reasons, 'on_fire');
+    } else if (Number.isFinite(nether.fireWithin) && nether.fireWithin <= 2) {
+      score += 40;
+      push(reasons, 'fire_adjacent');
+    } else if (Number.isFinite(nether.fireWithin) && nether.fireWithin <= 5) {
+      score += 20;
+      push(reasons, 'fire_near');
+    } else if (Number.isFinite(nether.fireWithin) && nether.fireWithin <= 10) {
+      score += 6;
+      push(reasons, 'fire_in_range');
+    }
+    if (Number.isFinite(nether.magmaWithin)) {
+      if (nether.magmaWithin <= 1.5) {
+        score += 35;
+        push(reasons, 'on_magma');
+      } else if (nether.magmaWithin <= 4) {
+        score += 18;
+        push(reasons, 'magma_near');
+      }
+    }
+    if (nether.projectileIncoming === true) {
+      const eta = Number.isFinite(nether.projectile?.timeToImpactMs) ? nether.projectile.timeToImpactMs : null;
+      score += eta != null && eta <= 1000 ? 45 : 30;
+      push(reasons, 'projectile_incoming');
+    }
+    if (nether.enderman?.gazed === true) {
+      // Inutile nel Overworld (un enderman non si arrabbia se lo guardi lì),
+      // decisivo nel Nether e nell'End.
+      score += nether.isNether || nether.isEnd ? 12 : 0;
+      if (nether.isNether || nether.isEnd) push(reasons, 'gazed_at_enderman');
+    }
+    if (Number.isFinite(nether.spawnerWithin) && nether.spawnerWithin <= 8) {
+      score += 6;
+      push(reasons, 'spawner_nearby');
+    }
+  }
+
   score = Math.max(0, Math.min(100, Math.round(score)));
   return {
     level: riskLevelForScore(score),
