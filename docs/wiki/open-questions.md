@@ -111,7 +111,10 @@ Last lint: 2026-10-03.
   itself was never touched, so **(A)/(B)/(C) is moot for this room**: no
   `setblock`, no dug floor, no chest. The remaining live blocker of the session
   is a different one — a **closed door on the bot's cell** (a villager) and the
-  mounting/trade/swim captures, see rows 47.28 and the mount/trade sections.
+  mounting/trade/swim/fishing captures, see rows 47.28 and the mount/trade sections
+  (fishing: the server sends **no** bite event to this client — five `fish` runs,
+  `grep -c fish_bite` = 0, hook despawns after ~40 s; see row 28 and
+  [fishing](fishing.md)).
 - **Still true**: the base furniture (beds, chests, planks) stays untouchable by
   design, and `mine_owned` only claims what the ledger recorded — the pre-ledger
   probes of this room are gone for another reason (the bot mined them or they

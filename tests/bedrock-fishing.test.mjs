@@ -141,6 +141,16 @@ test('the numeric event id 13 and the tease id 14 are understood', () => {
   assert.equal(adapter.logs.filter(e => e.type === 'fish_bite').length, 1);
 });
 
+test('a bite is registered even when the hook runtime id is unknown', () => {
+  const adapter = fishAdapter({ ys: [62.98] });
+  adapter._onEntityEvent({ runtime_entity_id: '9999', event_id: 'fish_hook_hook' });
+  assert.ok(adapter._fishBiteAt > 0, 'il morso non deve dipendere dalla risoluzione dell entita');
+  const bite = adapter.logs.filter(e => e.type === 'fish_bite');
+  assert.equal(bite.length, 1);
+  assert.equal(bite[0].runtimeId, '9999');
+  assert.equal(bite[0].entityType, null);
+});
+
 test('the dip fallback needs two consecutive samples under the resting level', async () => {
   const adapter = fishAdapter({ ys: [62.98, 62.98, 62.98, 62.70, 62.68, 62.68] });
   const result = await adapter._fish({ biteWindowMs: 1500, settleTimeoutMs: 900, settleSamples: 2 });

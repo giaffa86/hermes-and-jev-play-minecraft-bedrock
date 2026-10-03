@@ -5,7 +5,7 @@ Synthetic close-out of the priority campaign run against the goal contract
 below is backed by a repo commit, a unit test file or a live probe recorded in
 [verification](verification.md).
 
-Session shape: **65 commits**, suite **466 → 1068 tests** (`node --test
+Session shape: **66 commits**, suite **466 → 1069 tests** (`node --test
 tests/*.test.mjs`, 79 files), 14 of 23 goal tasks complete, 1 skipped as an
 environmental blocker.
 
@@ -56,8 +56,13 @@ environmental blocker.
   possible again (crops and the containers were then verified live). What remains
   out of reach is no longer geometry: the mount/trade/swim confirmations need a
   real-client capture, and the farm census has no cow and no sheep.
-- **Fishing**: bite detection rewritten from the `fish_hook_hook` event (the cast
-  descent used to be read as a bite); live only `missing_fishing_rod`.
+- **Fishing**: the supply chain is proven live (chest string → `craft_spruce_planks`
+  → `craft_stick` → **`craft_fishing_rod`**), the bobber floats in the village pond
+  (`fishing_hook` at y=75 over a 256-block body of water) — but the **bite never
+  arrives**: five `fish` runs answer `note:'no_bite'`, `grep -c fish_bite` over the
+  event log is 0, the hook despawns after ~40 s. The `_onEntityEvent` guard that
+  swallowed a bite (entity resolution before the event id) is fixed and tested; the
+  missing signal needs a real-client capture, like the mount/trade/offhand family.
 - **Trading (`p2-trade-timeout`)**: the budget defect is fixed and tested
   (`_waitTradeResult`/`_tradeAt`); the window still never opens
   (`trade_not_opened` with the vanilla `npc_open` packet and the `item_interact`

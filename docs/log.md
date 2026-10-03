@@ -4,6 +4,25 @@ Append-only record of wiki operations. Prefix: `## [YYYY-MM-DD] <type> | <title>
 where `<type>` is one of `ingest`, `query`, `lint`, `doc`, `feat`, `fix`,
 `verify`, `report` (the last four joined as the wiki grew).
 
+## [2026-10-03] fix | The fishing bite never arrives: the guard that swallowed it, and what the live cast measured
+
+A live fishing round (rod crafted from chest string, 3×3 bench) proved the cast chain and
+then measured the gap: `cast_rod` → `{ok:true, bobber:{x:72.1,y:75.1,z:178.1},
+waterAt:{x:72,y:74,z:176}}`, the `fishing_hook` entity tracked at y=75 on the water surface
+for 48 s — and **five `fish` runs all answering `{ok:true, note:'no_bite',
+biteDetected:false, biteSource:null}`** with `grep -c fish_bite` over the whole event log
+at **0**. The hook despawns about 40 s after the cast, nothing caught. So the server sends
+neither `fish_hook_hook` (13) nor `fish_hook_tease` (14) to this client: the same family as
+the mount/trade/offhand confirmations, and the next step is a packet capture of a real
+player fishing.
+
+Real defect found on the way: `_onEntityEvent` resolved the entity from
+`runtime_entity_id` **before** looking at the event id, so a hook whose runtime id was not
+in the entity map dropped the bite silently. The fishing branches now come first (the
+entity is only needed for the log payload). New case in `tests/bedrock-fishing.test.mjs`
+(14 tests, was 13) asserting that a bite from an unknown runtime id is still registered —
+**falsified** against the old order. Suite 1068 → **1069**.
+
 ## [2026-10-03] fix | The 3×3 crafting window, stale container contents, and a bounded storage read
 
 Three defects from the same live round on the deployed container, each one found by doing

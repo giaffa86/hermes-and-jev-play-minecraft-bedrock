@@ -62,25 +62,40 @@ delta, never by a model's opinion; `biteSource` reports which signal fired.
 ## Verification status
 
 The pure module and the adapter wiring are covered by unit tests
-(`tests/bedrock-fishing.test.mjs`, 13 tests: 7 for the pure module, 6 for the
-adapter's `_fish`). **The live round on the real BDS is still pending**, in
-particular:
+(`tests/bedrock-fishing.test.mjs`, 14 tests: 7 for the pure module, 7 for the
+adapter's `_fish`). **The live round ran on 03/10/2026** and closed the supply
+chain up to the cast:
 
-- the Bedrock entity name for the bobber (`fishing_hook`) and whether the BDS
-  sends `add_entity`/`remove_entity` for it (the cast confirmation depends on it);
-- whether `fish_hook_hook` actually arrives on the live connection (offline it is
-  handled, tested and logged — only a real bite proves the server sends it);
-- whether a reachable body of water exists near the base.
+- `take_string` (42 from a chest the scan had hidden before), then
+  `craft_spruce_planks` → `craft_stick` → **`craft_fishing_rod`** through the 3×3
+  workbench path (the very path of rows 47.32/47.33), after which
+  `GET /observe.fishing` flips to `{available: true, rod: true}`;
+- the bobber's Bedrock entity type **is** `fishing_hook` and the harness tracks it
+  (`cast_rod` → `{ok:true, bobber:{x:72.1,y:75.1,z:178.1}, waterAt:{x:72,y:74,z:176}}`,
+  the entity read at y=75 for 48 s, bobbing on the water surface of a 256-block
+  body of water 4 blocks from the shore);
+- **no bite signal ever arrives**: five `fish` runs answer
+  `{ok:true, note:'no_bite', biteDetected:false, biteSource:null}`, `grep -c fish_bite`
+  over the whole event log is **0**, and the hook despawns about 40 s after the
+  cast with nothing caught. So the question “does `fish_hook_hook` arrive?” now has
+  a measured answer: **not to this client**, over eight observed minutes of casting.
 
-Bite detection is no longer on that list: the offline half is closed (the cast
-descent is not a bite; the protocol event and the double-sample dip are both
-covered). `REEL_GRACE_MS` is exported by the pure module but still unused by the
+The same class as the mount/trade/offhand confirmations: the server wants a trigger
+only the vanilla client produces, so the next step is a packet capture of a real
+player fishing. A fix found on the way is already in: `_onEntityEvent` resolved the
+entity **before** the fishing branches, so a hook whose runtime id was not in the
+entity map dropped the bite silently — the fishing ids (13/14) are now handled
+first (`tests/bedrock-fishing.test.mjs` 13 → 14, the new case falsified against the
+old order). `REEL_GRACE_MS` is exported by the pure module but still unused by the
 adapter — the grace period is implicit in the settle + bite-window phases.
 
 ## Open questions
 
-- Is there a reachable body of water near the base? If not, fishing needs an
-  artificial pond (bucket, stretch) or stays a secondary food source.
+- Is there a reachable body of water near the base? **Answered live 03/10: yes** — the
+  village pond (256 water blocks, the nearest at 4 blocks from the bot) is reachable
+  and the rod can be crafted from the string found in the base chests, so fishing is
+  a real food source once the bite is understood (see the open question above).
+  No artificial pond is needed.
 - Should `mine_cobweb` be added for string (only if a cave/mineshaft is nearby)?
   `attack_spider`/`attack_cave_spider` already exist as the primary string source.
 - Optional: a declarative skill `skills/gameplay/survival/fish.json` or attach

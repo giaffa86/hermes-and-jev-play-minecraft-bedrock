@@ -8569,24 +8569,28 @@ export class BedrockAdapter {
   _onEntityEvent (packet) {
     const runtimeId = String(packet.runtime_entity_id ?? '');
     const entity = this.entities.get(runtimeId);
+    // Morso della pesca: il server manda `fish_hook_hook` (13) sul bobber quando
+    // un pesce ha abboccato, e `fish_hook_tease` (14) quando si avvicina senza
+    // abboccare. È il segnale esatto: l'affondo del bobber resta un fallback.
+    // Va gestito **prima** della risoluzione dell'entità: live 03/10 quattro
+    // `fish` di fila sono finiti `no_bite` e nel log non c'era nessun
+    // `fish_bite`, perché l'id del bobber non era nella mappa delle entità e la
+    // guardia scartava l'evento prima di registrarlo.
+    if (packet.event_id === 'fish_hook_hook' || packet.event_id === 13) {
+      this._fishBiteAt = Date.now();
+      this.log('fish_bite', { runtimeId, entityType: entity?.type ?? null });
+      return;
+    }
+    if (packet.event_id === 'fish_hook_tease' || packet.event_id === 14) {
+      this._fishTeaseAt = Date.now();
+      this.log('fish_tease', { runtimeId, entityType: entity?.type ?? null });
+      return;
+    }
     if (!entity) return;
     if (packet.event_id === 'death_animation' || packet.event_id === 3) {
       entity.health = 0;
       entity.deadAt = Date.now();
       this.log('entity_death', { entityType: entity.type, runtimeId });
-      return;
-    }
-    // Morso della pesca: il server manda `fish_hook_hook` (13) sul bobber quando
-    // un pesce ha abboccato, e `fish_hook_tease` (14) quando si avvicina senza
-    // abboccare. È il segnale esatto: l'affondo del bobber resta un fallback.
-    if (packet.event_id === 'fish_hook_hook' || packet.event_id === 13) {
-      this._fishBiteAt = Date.now();
-      this.log('fish_bite', { runtimeId, entityType: entity.type });
-      return;
-    }
-    if (packet.event_id === 'fish_hook_tease' || packet.event_id === 14) {
-      this._fishTeaseAt = Date.now();
-      this.log('fish_tease', { runtimeId, entityType: entity.type });
       return;
     }
   }
