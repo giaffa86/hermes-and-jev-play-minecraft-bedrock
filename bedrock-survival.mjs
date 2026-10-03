@@ -287,6 +287,8 @@ export const FARM_ANIMAL_TYPE_COUNT = FARM_ANIMAL_TYPES.size;
 export const MILKABLE_TYPE_COUNT = MILKABLE_TYPES.size;
 // Materiali per craftare un secchio vuoto (Bedrock: 3 lingotti di ferro).
 export const BUCKET_INGREDIENTS = { iron_ingot: 3 };
+// Materiali per lo scudo (Bedrock: 1 lingotto di ferro + 6 assi, legno qualsiasi).
+export const SHIELD_INGREDIENTS = { iron_ingot: 1, planks: 6 };
 export const FOODS = [...FOOD_PRIORITY];
 export const PLANTABLE_ITEMS = Object.keys(SEED_TO_CROP);
 export const ANIMAL_FEED_MAP = { ...ANIMAL_FEED };

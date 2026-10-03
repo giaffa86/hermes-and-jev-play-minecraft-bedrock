@@ -358,8 +358,12 @@ Still missing (the rest of the original gap):
   See [human-command](human-command.md#proactive-greeting-6-attention-system).
 - **Defense completions** — first slice implemented and mostly live-verified
   (`place_torch`, `craft_*_sword`, `retreat`/`go_home`, `close_door`/`barricade`,
-  `equip_armor`, armor points); only the **shield** (stretch) remains. See
-  [verification](verification.md) rows 32–38 and [roadmap](roadmap.md).
+  `equip_armor`, armor points). The **shield** is now implemented too (row 19.3:
+  `craft_shield`, `equip_shield` on the offhand, `raise_shield`/`lower_shield`
+  with the `start_using_item` flag) but the live equipping round is still open:
+  it needs an iron ingot + 6 planks the cage cannot mine, and a hostile that
+  reaches the bot. See [verification](verification.md) rows 32–38 and 19.3,
+  [roadmap](roadmap.md).
 - **Fishing** — **implemented, bite detection rewritten 03/10**: the bite is no
   longer a local heuristic but the server's `fish_hook_hook` event (numeric id
   `13`), logged as `fish_bite` (`fish_hook_tease`, id `14`, logs `fish_tease` and

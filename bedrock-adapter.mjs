@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BedrockWorld } from './bedrock-world.mjs';
 import { trackNethernetClient, closeBedrockClient } from './bedrock-lifecycle.mjs';
-import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isMilkableType, isTameableType, isRideTameableType, isCompanionType, isRideableType, animalFeed, tameFeed, cropForSeed, cropMaturity, seedForCrop, isCropBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS, BUCKET_INGREDIENTS } from './bedrock-survival.mjs';
+import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isMilkableType, isTameableType, isRideTameableType, isCompanionType, isRideableType, animalFeed, tameFeed, cropForSeed, cropMaturity, seedForCrop, isCropBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS, BUCKET_INGREDIENTS, SHIELD_INGREDIENTS } from './bedrock-survival.mjs';
 import { professionName, normalizeProfession, professionMatches, pickBestTrade } from './bedrock-trading.mjs';
 import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
 import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
@@ -103,8 +103,9 @@ const ORE_INTEREST_RANGE = 24;
 const ORE_SCAN_TTL_MS = 5000;        // la percezione gira molte volte al secondo
 const ORE_SCAN_MOVE_TOLERANCE = 8;   // ...e comunque non riusare una lista di 8 blocchi fa
 const CHECKPOINT_MIN_DISTANCE = 48;   // checkpoint sparsi: ogni ~48 blocchi di viaggio
-// Slot esposti da un baule/botte singolo (i bauli doppi ne espongono 54).
-const CONTAINER_SLOT_COUNT = 27;
+// Raggio entro cui alzare lo scudo ha senso (il blocco vale per gli attacchi
+// che arrivano davanti al bot).
+const SHIELD_THREAT_RANGE = +(process.env.SHIELD_THREAT_RANGE || 8);
 
 // Chat in uscita (M5): il bot scrive nel canale `chat` con un pacchetto `text`.
 // Tetto di lunghezza e intervallo minimo per non floodare il server.
@@ -186,6 +187,8 @@ export class BedrockAdapter {
     this._lastPitch = 0;
     this._motion = null;
     this.riding = null;                // { riddenEntityId, at } quando il bot è montato
+    this.offhand = null;               // { name, count } dell'offhand (scudo), conferma dal server
+    this.shieldUp = false;             // l'ultimo frame auth dichiarava l'uso dell'item
     this._ridingForward = false;       // vettore avanti continuo mentre cavalca
     this._ridingYaw = 0;               // yaw verso cui cavalcare
     this._openDoors = new Set();       // celle di porte aperte (fisica passabile)
@@ -613,7 +616,7 @@ export class BedrockAdapter {
       });
       client.on('mob_equipment', packet => {
         if (String(packet.runtime_entity_id) !== String(client.entityId)) return;
-        this.selectedHotbar = packet.selected_slot;
+        this._onMobEquipment(packet);
       });
 
       this.client.on('add_item_entity', (packet) => {
@@ -1199,6 +1202,13 @@ export class BedrockAdapter {
           this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
         o.push({ key: 'craft_bucket', description: `Craft a bucket from ${BUCKET_INGREDIENTS.iron_ingot} iron ingots (uses a crafting table)` });
       }
+      // Scudo: 1 lingotto di ferro + 6 assi (legno qualsiasi).
+      const planksForShield = Object.keys(this.inventory).filter(n => /_planks$/.test(n)).reduce((s, n) => s + this.inventory[n], 0);
+      if (this.recipes.has('shield') && (this.inventory.iron_ingot || 0) >= SHIELD_INGREDIENTS.iron_ingot &&
+          planksForShield >= SHIELD_INGREDIENTS.planks &&
+          this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
+        o.push({ key: 'craft_shield', description: `Craft a shield from ${SHIELD_INGREDIENTS.iron_ingot} iron ingot and ${SHIELD_INGREDIENTS.planks} planks (uses a crafting table)` });
+      }
       if (this.recipes.has('fishing_rod') && (this.inventory.stick || 0) >= FISHING_ROD_INGREDIENTS.stick &&
           (this.inventory.string || 0) >= FISHING_ROD_INGREDIENTS.string &&
           this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
@@ -1351,6 +1361,21 @@ export class BedrockAdapter {
         if (seen.size >= 4) break;
       }
     }
+    // Scudo: indossalo nell'offhand e alzalo quando un ostile è a tiro. Alzarlo
+    // ha senso solo con il lato server che riduce il danno, quindi l'opzione
+    // compare solo con uno scudo equipaggiato e un ostile raggiungibile.
+    if (this._offhandItem() === 'shield') {
+      if (this.shieldUp) {
+        o.push({ key: 'lower_shield', description: 'Lower the shield' });
+      } else {
+        const threat = this._hostiles().find(e => this._entityDistance(e) <= SHIELD_THREAT_RANGE);
+        if (threat) {
+          o.push({ key: 'raise_shield', description: `Raise the shield against the ${threat.type} (${this._entityDistance(threat).toFixed(1)} blocks away)` });
+        }
+      }
+    } else if ((this.inventory.shield || 0) > 0) {
+      o.push({ key: 'equip_shield', description: 'Equip the shield in the offhand' });
+    }
     // Pesca: canna in mano e acqua raggiungibile dalla riva.
     if ((this.inventory.fishing_rod || 0) > 0) {
       const spot = this._findFishingSpot();
@@ -1437,6 +1462,12 @@ export class BedrockAdapter {
         result = await this._dismount();
       } else if (key === 'shear_sheep') {
         result = await this._shearSheep();
+      } else if (key === 'equip_shield') {
+        result = await this._equipShield();
+      } else if (key === 'raise_shield') {
+        result = await this._raiseShield();
+      } else if (key === 'lower_shield') {
+        result = await this._lowerShield();
       } else if (key === 'read_container') {
         result = await this._readContainers();
       } else if (key.startsWith('take_')) {
@@ -3803,7 +3834,7 @@ export class BedrockAdapter {
   }
 
   _sendAuthInput ({ yaw = 0, pitch = 0, moveVector = null, blockAction = null,
-    transaction = null, itemStackRequest = null, tick = null } = {}) {
+    transaction = null, itemStackRequest = null, tick = null, useItem = false } = {}) {
     if (!this.client) return;
     this.tick = tick != null ? tick : this._advanceTick();
     const position = { ...this.position };
@@ -3830,6 +3861,9 @@ export class BedrockAdapter {
     if (blockAction?.length) inputData.push('block_action');
     if (transaction) inputData.push('item_interact');
     if (itemStackRequest) inputData.push('item_stack_request');
+    // Scudo (e altri item "use"): il binario 53 è il modo con cui il client
+    // dichiara di tenere premuto l'uso; il server da lì applica il blocco.
+    if (useItem) inputData.push('start_using_item');
     const yawRad = yaw * Math.PI / 180, pitchRad = pitch * Math.PI / 180;
     this.client.write('player_auth_input', {
       pitch,
@@ -3871,6 +3905,17 @@ export class BedrockAdapter {
 
   _doorKey (position) {
     return `${Math.floor(position.x)},${Math.floor(position.y)},${Math.floor(position.z)}`;
+  }
+
+  // Equipaggiamento rimandato dal server per il bot: serve il selected_slot
+  // (hotbar) e, per l'offhand, la conferma autorevole di cosa c'è nello slot
+  // della mano secondaria (vedi _equipShield).
+  _onMobEquipment (packet) {
+    this.selectedHotbar = packet.selected_slot;
+    if (packet.window_id !== 'offhand') return;
+    const name = packet.item?.name || (packet.item?.network_id != null ? this.world.registry?.items[packet.item.network_id]?.name : null);
+    this.offhand = packet.item?.count ? { name: name || null, count: packet.item.count, network_id: packet.item.network_id ?? null } : null;
+    this._offhandConfirmedAt = Date.now();
   }
 
   _onBlockUpdate (position, runtimeId) {
@@ -6031,6 +6076,98 @@ export class BedrockAdapter {
       }
     }
     return { ok: false, error: 'milk_not_confirmed', type: wanted };
+  }
+
+  // ---- scudo -------------------------------------------------------------------------
+
+  // Cosa c'è nella mano secondaria. Lo stato è locale finché il server non
+  // rimanda un `mob_equipment` per l'offhand (che lo riallinea).
+  _offhandItem () {
+    return this.offhand?.name || null;
+  }
+
+  // Indossa lo scudo nell'offhand: `take` sul cursor + `place` su 'offhand'
+  // (container_id 34), la stessa forma di _equipArmor. Il server rimanda un
+  // `mob_equipment` per la mano secondaria: se arriva, la conferma è
+  // autorevole (`confirmedBy: mob_equipment`); altrimenti vale la risposta
+  // degli stack request (`confirmedBy: stack_response`), e il `take`/`place`
+  // non ok è un errore tipizzato — mai un successo dichiarato.
+  async _equipShield (timeoutMs = 1500) {
+    if (this._offhandItem() === 'shield') return { ok: true, equipped: 'shield', already: true };
+    if ((this.inventory.shield || 0) < 1) return { ok: false, error: 'missing_shield' };
+    let index = this.inventorySlots.findIndex(s => this._slotItemName(s) === 'shield' && s.count > 0);
+    if (index < 0) {
+      try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
+      index = this.inventorySlots.findIndex(s => this._slotItemName(s) === 'shield' && s.count > 0);
+      if (index < 0) return { ok: false, error: 'missing_shield' };
+    }
+    if (this._openContainer) await this._closeContainer();
+    this._offhandConfirmedAt = 0;
+    const info = this._invSlotAsSource(index);
+    const take = await this._sendStackRequest([{
+      type_id: 'take', legacy_type_id: 0, count: 1,
+      source: this._slotInfo(info.container, info.slot, this.inventorySlots[index]?.stack_id || 0),
+      destination: this._slotInfo('cursor', 0, 0),
+    }]).catch(() => null);
+    if (!take || (String(take.status) !== 'ok' && take.status !== 0)) {
+      return { ok: false, error: `shield_take_failed_${take?.status ?? 'timeout'}` };
+    }
+    this._applyStackResponse(take);
+    const cursorStack = this._responseSlotStack(take, 'cursor', 0) ?? 0;
+    const place = await this._sendStackRequest([{
+      type_id: 'place', legacy_type_id: 1, count: 1,
+      source: this._slotInfo('cursor', 0, cursorStack),
+      destination: this._slotInfo('offhand', 0, 0),
+    }]).catch(() => null);
+    if (!place || (String(place.status) !== 'ok' && place.status !== 0)) {
+      await this._returnCursorToInventory().catch(() => {});
+      return { ok: false, error: `shield_place_failed_${place?.status ?? 'timeout'}` };
+    }
+    this._applyStackResponse(place);
+    this._cursor = null;
+    this.offhand = { name: 'shield', count: 1, network_id: null };
+    this._refreshInventory();
+    const confirmed = await this._waitOffhandConfirm(timeoutMs);
+    this.log('shield_equip', { status: place.status, confirmedBy: confirmed ? 'mob_equipment' : 'stack_response' });
+    return { ok: true, equipped: 'shield', confirmedBy: confirmed ? 'mob_equipment' : 'stack_response' };
+  }
+
+  async _waitOffhandConfirm (timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (this.offhand?.name === 'shield' && this._offhandConfirmedAt) return true;
+      await delay(100);
+    }
+    return false;
+  }
+
+  // Alza lo scudo: il frame auth dichiara l'uso dell'item con il binario
+  // `start_using_item`. Il server non manda un ack dedicato, quindi la
+  // conferma osservabile è il pacchetto inviato (log `shield_up`) più, in
+  // combattimento, il danno ridotto; qui non si inventa un flag di stato.
+  async _raiseShield () {
+    if (this._offhandItem() !== 'shield') return { ok: false, error: 'shield_not_equipped' };
+    if (this.shieldUp) return { ok: true, raised: true, already: true };
+    const threat = this._hostiles().find(e => this._entityDistance(e) <= SHIELD_THREAT_RANGE);
+    let yaw = this.yaw ?? 0;
+    let pitch = this.pitch ?? 0;
+    if (threat?.position) {
+      const look = this._lookAt({ x: threat.position.x, y: threat.position.y + entityHeight(threat.type) * 0.5, z: threat.position.z });
+      yaw = look.yaw;
+      pitch = look.pitch;
+    }
+    await this._queueAuthInput({ yaw, pitch, useItem: true });
+    this.shieldUp = true;
+    this.log('shield_up', { item: 'shield', target: threat?.type ?? null });
+    return { ok: true, raised: true, target: threat?.type ?? null };
+  }
+
+  async _lowerShield () {
+    if (!this.shieldUp) return { ok: true, raised: false, already: true };
+    await this._queueAuthInput({ yaw: this.yaw ?? 0, pitch: this.pitch ?? 0 });
+    this.shieldUp = false;
+    this.log('shield_down', { item: this._offhandItem() });
+    return { ok: true, raised: false };
   }
 
   // ---- pesca --------------------------------------------------------------------------

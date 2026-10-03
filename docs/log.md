@@ -1605,3 +1605,46 @@ live resta bloccato dall'ambiente.
 - **Doc**: `verification.md` nuova riga 19.2 + lista "still not implemented"
   aggiornata, `open-questions.md` (due punti sul latte), `roadmap.md` (riga
   farming, leftovers, prossimi passi).
+
+## [2026-10-03] feat | Scudo: craft/equip/raise/lower (P4.3, offline + evidenza gate live)
+
+- **Implementazione** (`bedrock-survival.mjs`, `bedrock-adapter.mjs`):
+  `SHIELD_INGREDIENTS = { iron_ingot: 1, planks: 6 }`; opzione `craft_shield`
+  (ricetta reale + tavolo + 1 lingotto + 6 assi di legno qualsiasi), opzione
+  `equip_shield` (scudo in inventario, offhand libera), `raise_shield` (scudo
+  equipaggiato + ostile entro `SHIELD_THREAT_RANGE`, default 8) e
+  `lower_shield` (solo a scudo alzato).
+- **Equipaggiamento**: `_equipShield()` muove l'item nell'offhand con la stessa
+  forma di `_equipArmor` — `take` sul cursor + `place` sul container `offhand`
+  (id 34) — e conferma dal pacchetto `mob_equipment` che il server rimanda per
+  la mano secondaria (`confirmedBy: mob_equipment`), altrimenti dalla forma
+  della risposta degli stack request (`confirmedBy: stack_response`). Errori
+  tipizzati: `missing_shield`, `shield_take_failed_*`, `shield_place_failed_*`,
+  con il cursor restituito all'inventario quando il `place` fallisce. Il nuovo
+  `_onMobEquipment(packet)` traccia `selected_slot` e lo stato dell'offhand.
+- **Alzare lo scudo**: `_raiseShield()`/`_lowerShield()` dichiarano l'uso
+  dell'item nel frame `player_auth_input` con il flag `start_using_item`
+  (binario 53, presente nello schema 1.26.51: il test serializza il frame con il
+  serializer live). Non si inventa uno stato di successo: la conferma
+  osservabile è il pacchetto + il log `shield_up`, e lo scudo va abbassato
+  esplicitamente.
+- **Test**: `tests/bedrock-shield.test.mjs` (14 casi: dati, opzioni per tutti e
+  quattro i comandi, forma dei due stack request, conferma autorevole via
+  `mob_equipment`, errori tipizzati, frame auth con/senza `start_using_item` e
+  serializzazione, tracking dell'offhand, dispatch). Suite completa **588 test,
+  588 pass, 0 fail**.
+- **Evidenza live (BDS 1.26.52, container `hermes-jev-bedrock`, 03/10)**: i gate
+  tengono sul server reale — `/options` (11 chiavi) non offre nulla dello scudo
+  (nessuno scudo e nessun lingotto di ferro in inventario), `POST /act
+  equip_shield` → `missing_shield` in 0.025 s, `raise_shield` →
+  `shield_not_equipped` in 0.014 s, `lower_shield` →
+  `{ok:true,raised:false,already:true}` in 0.021 s, `craft_shield` →
+  `missing_ingredients` in 0.018 s (quindi la ricetta `shield` **esiste** nei
+  crafting data del server, non è `craft_recipe_missing`).
+- **Blocker del round live** (documentato, non un difetto): per equipaggiare e
+  alzare lo scudo servono 1 lingotto di ferro + 6 assi e un ostile che arrivi al
+  bot; nella gabbia il ferro non è raggiungibile e il combattimento non è
+  testabile a distanza utile. Resta la stessa domanda A/B/C in vigore **(C)**.
+- **Doc**: `verification.md` nuova riga 19.3 + lista "still not implemented"
+  aggiornata, `open-questions.md` (bullet difesa), `roadmap.md` (riga
+  `DEFENSE-TASK.md` + leftovers), `AGENTS.md` (`SHIELD_THREAT_RANGE`).
