@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "lamp_switch",
+  "description": "A lever on top of a redstone lamp: flip the lever and the lamp lights up.",
+  "requires": { "redstone_lamp": 1, "lever": 1 },
+  "buildable": true,
+  "steps": [
+    { "item": "redstone_lamp", "offset": [0, 0, 0], "label": "lamp" },
+    { "item": "lever", "offset": [0, 1, 0], "supportOffset": [0, 0, 0], "face": 1, "label": "lever" }
+  ],
+  "trigger": { "offset": [0, 1, 0] },
+  "success": [
+    { "offset": [0, 1, 0], "property": "open_bit", "expected": true },
+    { "offset": [0, 0, 0], "property": "name", "expected": "lit_redstone_lamp" }
+  ],
+  "notes": "In Bedrock a lit lamp is the block `lit_redstone_lamp`, so the check is on the block name rather than on a property."
+}

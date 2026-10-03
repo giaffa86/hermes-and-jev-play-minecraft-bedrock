@@ -2236,3 +2236,81 @@ File: `bedrock-redstone.mjs`, `bedrock-adapter.mjs`, `bedrock-harness.mjs`,
 → ◑), `docs/wiki/roadmap.md` (macro-area + voce 7 → R3),
 `docs/wiki/open-questions.md` (bullet redstone + voce spec-only),
 `docs/wiki/survival-intelligence.md` (748 test + bullet R2).
+
+## [2026-10-03] feat | Redstone R3: circuiti dichiarativi (`circuits/*.json` + `build_circuit_<id>`)
+
+Un circuito non è più codice: è un documento che il bot valida, pianifica,
+costruisce, aziona, verifica e riporta.
+
+**Implementazione.** Nuovo modulo puro `circuits.mjs` (`CIRCUIT_SCHEMA_VERSION
+= 1`): `validateCircuit` rifiuta *prima* che il bot si muova un supporto
+piazzato dopo il passo che lo usa, una cella duplicata, un materiale non
+dichiarato o sottodichiarato (`requires.repeater: 2 < 3 step`), un trigger o un
+check su una cella che nessun passo piazza, un `post` su qualcosa che non è un
+repeater, un delay fuori 0..3, più di `MAX_CIRCUIT_STEPS = 48` passi e **qualunque
+oggetto pericoloso** (`DANGEROUS_ITEMS`: `tnt`, `trapped_chest`, `tripwire_hook`,
+`sculk_shrieker`, `respawn_anchor`) — un circuito con trappole non si costruisce
+mai; `loadCircuits()` fallisce all'avvio su un file rotto (come le skill) e
+rifiuta gli id duplicati. La rotazione è derivata dallo sguardo del bot
+(`ROTATIONS`: south identità, north `[-x,y,-z]`, east `[z,y,x]`, west `[-z,y,-x]`,
+la "destra" segue `FORWARD`), `circuitAnchor(feet, facing)` mette il cantiere **un
+passo davanti** al bot, `planCircuit` calcola celle/supporti/trigger/check/post
+assoluti e i materiali mancanti, `circuitSiteBlocked` classifica le celle
+(`occupied`/`no_support`/`usable_block`: un baule è un supporto che il
+piazzamento aprirebbe), `checkCircuitSuccess` confronta le proprietà e
+**rifiuta il successo vuoto** (`empty: true` ⇒ `ok: false`).
+
+Otto blueprint in `circuits/`: quattro costruibili (`lamp_switch`, `delay_line`
+con i delay impostati dopo il piazzamento e `expectedDelayTicks: 6`, `auto_lamp`
+senza trigger né check di stato — il `verifyNote` dice perché: l'uscita segue
+l'ora del giorno —, `auto_door` con cancello) e quattro dichiarati e **rifiutati
+con motivazione** (`auto_harvest` → M1 fluidi e direzione dell'hopper;
+`auto_dispense` → un clock è un loop acceso e il teardown è R4; `hopper_chain` →
+l'hopper sta *su* un baule; `crafter_pulse` → serve un impulso e il verifier R5).
+
+L'adapter guadagna `_circuitCatalogue`, `_circuitsView`, `_facingFromYaw`,
+`_circuitOptions` (offre solo i blueprint costruibili con materiali e sito
+liberi), `_approachFor` (si avvicina solo se la cella non è già a portata),
+`_placeCircuitStep` (mira la cella e **rifiuta** `orientation_not_confirmed`
+quando il server non onora la direzione: per i componenti il retry di R1
+minerebbe, e `DIG_PROTECTED` lo vieta) e `_buildCircuit`: materiali → sito →
+piazzamento in ordine → delay dei repeater → censimento forzato → trigger →
+verifica **con il trigger ancora attivo** → secondo toggle di ripristino (esito
+in `trigger.restored`). Esiti tipizzati: `unknown_circuit`, `circuit_not_buildable`,
+`missing_materials`, `circuit_site_blocked`, `circuit_incomplete`,
+`circuit_delay_not_confirmed`, `<errore del trigger>`, `circuit_verify_failed`.
+`observe().circuits` espone catalogo e ultimo report; il harness appende **un
+record per tentativo** in `runs/<run>/circuits.jsonl` (anche i rifiuti prima del
+cantiere), come `skills.jsonl`.
+
+**Test.** `tests/circuits.test.mjs` (10 casi: catalogo, ogni messaggio di
+validazione, rigidità della rotazione, `circuitAnchor` nelle quattro direzioni,
+piano, sito — incluso il falso positivo del supporto——, check, `loadCircuits` su
+directory temporanee) e `tests/bedrock-circuits.test.mjs` (9 casi: due costruzioni
+complete `lamp_switch` e `delay_line` con delay `[0,1,2]`, ripristino del trigger,
+`missing_materials`, `circuit_site_blocked` (`occupied`, `usable_block`),
+`circuit_incomplete` su `place_not_confirmed`, rifiuto della direzione sbagliata,
+`auto_lamp` che non si dichiara verificato, gating delle opzioni, `_facingFromYaw`)
+con un finto server che consuma l'inventario, scrive il blocco con la direzione
+che decide lui e accende la lampada collegata. **767 test verdi**.
+
+**Collaudo live** (VM 100, container `hermes-jev-bedrock`, BDS 1.26.52, bot a
+(115.5, 74.62, 159.47)): `GET /observe.circuits` → `count: 8`, `buildable:
+[auto_door, auto_lamp, delay_line, lamp_switch]`, i quattro dichiarati con la loro
+motivazione, `invalid: null`; `/options` non offre nessun `build_circuit_*` (in
+stanza non ci sono materiali redstone); `build_circuit_lamp_switch` →
+`{ok:false, error:'missing_materials', missing:[{redstone_lamp,1,0},{lever,1,0}]}`,
+`build_circuit_auto_harvest` → `circuit_not_buildable` (+motivo),
+`build_circuit_nope` → `unknown_circuit` (+8 id noti) — tutte in millisecondi e
+tutte registrate in `runs/demo/circuits.jsonl`. La *costruzione* di accettazione
+del roadmap (`lamp_switch`, `delay_line`) non è eseguibile live: una
+`redstone_lamp` richiede glowstone (Nether) e le quattro redstone dust, e il
+piano C vieta di toccare il cobblestone della base — stesso blocker ambientale di
+R1/R2, coperto dai test con il server modellato.
+
+**Doc.** `docs/wiki/redstone.md` (status, sezione R3, milestone R3 → ◑, voce del
+vocabolario, rischi), `docs/wiki/verification.md` (nuova riga 47.5),
+`docs/wiki/roadmap.md` (macro-area + voce 7 → R4), `docs/wiki/open-questions.md`
+(tre punti), `docs/wiki/survival-intelligence.md` (767 test + bullet R3),
+`docs/index.md` (riga redstone), `AGENTS.md` (`circuits/*.json` nella project
+shape e nella regola "data, not code").

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "auto_lamp",
+  "description": "A daylight detector on a stone base feeding a lamp: the lamp follows the light level.",
+  "requires": { "cobblestone": 1, "daylight_detector": 1, "redstone_lamp": 1 },
+  "buildable": true,
+  "steps": [
+    { "item": "cobblestone", "offset": [0, 0, 0], "label": "base" },
+    { "item": "daylight_detector", "offset": [0, 1, 0], "supportOffset": [0, 0, 0], "face": 1, "label": "detector" },
+    { "item": "redstone_lamp", "offset": [0, 0, 1], "label": "lamp" }
+  ],
+  "success": [],
+  "verifyNote": "the output follows the time of day, so the success check cannot be decided from the block state alone: the live round reads /observe.time and the lamp together",
+  "notes": "Bedrock has a separate block id for the inverted detector (`daylight_detector_inverted`) that no item places, so this blueprint builds the normal one: the lamp lights during the day. Spec deviation, documented on purpose rather than papered over."
+}

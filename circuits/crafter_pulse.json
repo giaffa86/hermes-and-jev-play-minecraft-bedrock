@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "crafter_pulse",
+  "description": "A lever next to a crafter: pulse it and the crafter tries to craft its recipe.",
+  "requires": { "crafter": 1, "lever": 1 },
+  "buildable": false,
+  "blocked": "the crafter needs a pulse (a lever holds the signal high) and its state needs the R5 verifier",
+  "steps": [
+    { "item": "crafter", "offset": [0, 0, 0], "facing": "south", "label": "crafter" },
+    { "item": "lever", "offset": [0, 1, 0], "supportOffset": [0, 0, 0], "face": 1, "label": "lever" }
+  ],
+  "trigger": { "offset": [0, 1, 0] },
+  "notes": "Bedrock 1.21+ has the crafter; the BDS in use (1.26.52) is new enough, but a lever is not a pulse source."
+}

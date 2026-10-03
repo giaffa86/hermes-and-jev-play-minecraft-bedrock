@@ -39,6 +39,13 @@ mkdirSync(`runs/${RUN}`, { recursive: true });
 // Il nome dell'evento resta in `type`: il payload può portare un `type` (tipo
 // dell'entità, canale chat) che altrimenti lo sovrascriverebbe.
 const eventLog = (type, data) => appendFileSync(`runs/${RUN}/events.jsonl`, JSON.stringify({ t: Date.now(), ...data, type }) + '\n');
+// R3: un cantiere redstone lascia un record per run, come le skill verificabili
+// (`skills.jsonl`): l'esito di un circuito si legge dal file e non dalla memoria
+// di chi lo ha lanciato.
+const circuitLog = (key, report) => {
+  appendFileSync(`runs/${RUN}/circuits.jsonl`, JSON.stringify({ t: Date.now(), action: key, ...report }) + '\n');
+  eventLog('circuit', { action: key, id: report.id, ok: report.ok, error: report.error ?? null });
+};
 
 // M4: scansione di un target osservabile nei chunk caricati. Blocchi: la palette
 // delle sezioni (un nome ignoto semplicemente non trova nulla). Entità: il
@@ -508,7 +515,15 @@ server = createServer(async (req, res) => {
       const payload = body ? JSON.parse(body) : {};
       response = [200, adapter.sendChat(payload.message, { type: payload.type })];
     }
-    else if (req.method === 'POST' && req.url === '/act') { const { key } = JSON.parse(body); response = [200, await adapter.executeAction(key)]; }
+    else if (req.method === 'POST' && req.url === '/act') {
+      const { key } = JSON.parse(body);
+      const result = await adapter.executeAction(key);
+      // Ogni tentativo finisce nel registro: anche i rifiuti prima del cantiere
+      // (materiali mancanti, sito occupato) servono a leggere la run dopo.
+      if (result?.circuit) circuitLog(key, result.circuit);
+      else if (key?.startsWith('build_circuit_')) circuitLog(key, { id: key.slice('build_circuit_'.length), ok: false, error: result?.error ?? 'failed' });
+      response = [200, result];
+    }
     else response = [404, { error: 'unknown route' }];
 
     // Solo lettura: griglia camminabile attorno al bot e validità della risalita.

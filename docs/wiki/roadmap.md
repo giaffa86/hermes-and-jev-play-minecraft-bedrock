@@ -216,10 +216,17 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   correct, `set_repeater_delay[_n]`); **R2 (interaction + sensing) implemented and
   unit-tested, live-sensed 03/10** (`use_redstone` toggle → verify the input *and*
   the downstream outputs → restore, `sense_redstone`, in-place cache on
-  `update_block`, `blockPoweredAt`/`circuitActive`) — the packet capture the roadmap predicted
+  `update_block`, `blockPoweredAt`/`circuitActive`); **R3 (declarative circuits)
+  implemented, unit-tested and live-refused 03/10** (`circuits/*.json` blueprints
+  validated at load, `planCircuit`/`circuitSiteBlocked`/`checkCircuitSuccess` pure,
+  `build_circuit_<id>` places in order, sets the repeater delays, triggers,
+  verifies and restores, `GET /observe.circuits`, `runs/<run>/circuits.jsonl`) —
+  the packet capture the roadmap predicted
   was **not** needed, the state is read back from the world instead. Building and
-  using circuits is R2+; the full live R1 round is one permission away (mining the
-  only cobblestone in reach edits the base).
+  using circuits is R3-done; **R4** (deterministic verifier, `teardown_circuit`,
+  rollback) is next. The full live build round is blocked from two sides: mining
+  the only cobblestone in reach edits the base, and a `redstone_lamp` needs
+  glowstone from the Nether.
 - **Goal Contract** — thin slice implemented (`survival/goal-contract.mjs`,
   opt-in via `GOAL_CONTRACT`/`MAX_DEATHS`/`PRESERVE_ITEMS`; status logged). Still
   missing: the persistent Goal Manager/queue, a `target`-driven `obtain_item`
@@ -275,15 +282,19 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    milestones are therefore parked with a documented blocker; the next
    macro-area is **Redstone R0** (below), a deviation to record in the final
    report.
-7. **Redstone** (R0+R1+R2 done 03/10, spec in [redstone](redstone.md)): R0 (protect
+7. **Redstone** (R0+R1+R2+R3 done 03/10, spec in [redstone](redstone.md)): R0 (protect
    redstone in `DIG_PROTECTED`, `/observe.redstone`, state-aware search) is
    implemented, unit-tested and collaudato live (see [verification](verification.md)
    row 47.2); **R1** oriented placement + repeater delay is implemented and
    unit-tested (row 47.3) — place → read → correct, no packet capture needed;
    **R2** interaction + sensing is implemented, unit-tested and live-sensed
-   (row 47.4). Next is **R3** (declarative `circuits/*.json` + `build_circuit_<id>`),
-   which shares the live blocker of R1/R2: no component is obtainable in the base
-   room without editing the base (cobblestone = the room's own wall).
+   (row 47.4); **R3** declarative circuits (`circuits/*.json` + `circuits.mjs` +
+   `build_circuit_<id>` + `runs/<run>/circuits.jsonl`) is implemented,
+   unit-tested and live-refused (row 47.5: catalogue, gating and typed refusals
+   on the BDS). Next is **R4** (deterministic verifier that *measures* the delay,
+   `teardown_circuit`, rollback), which also shares the live blocker of R1/R2/R3:
+   no component is obtainable in the base room without editing the base
+   (cobblestone = the room's own wall) and a `redstone_lamp` needs glowstone.
 8. **Goal Contract** (proposal in [goal-achievement](goal-achievement.md)):
    schema + status machine over the existing progression graph, then the 5
    progressive benchmarks (16 logs → shelter+night → iron pickaxe → 5 diamonds

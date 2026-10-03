@@ -6,14 +6,15 @@ hopper item transport, dispensers and (stretch) crafters. It builds on the
 verified primitives (placement, `click_block` interaction, containers, crafting,
 digging) while never breaking the base's own circuits.
 
-Status: **R0, R1 and R2 implemented and unit-tested (R0 also collaudato live);
-the live component round is blocked by the standing "no base edits" rule
-(03/10/2026); R3–R6 spec only** (tracked in [roadmap](roadmap.md) and
+Status: **R0, R1, R2 and R3 implemented and unit-tested (R0 also collaudato
+live); the live component round is blocked by the standing "no base edits" rule
+(03/10/2026); R4–R6 spec only** (tracked in [roadmap](roadmap.md) and
 [open-questions](open-questions.md)). Full raw source:
 [`docs/raw/REDSTONE_ROADMAP.md`](../raw/REDSTONE_ROADMAP.md).
 
 Sources: `bedrock-adapter.mjs` (placement, interaction, digging, `DIG_PROTECTED`),
 `bedrock-redstone.mjs` (R0: component vocabulary, `powerOf`, `redstoneView`),
+`circuits.mjs` + `circuits/*.json` (R3: declarative blueprints and their builder),
 `bedrock-world.mjs` (block-state decoding, `findBlocksByState`), `BEDROCK.md`
 (action status), [survival-intelligence](survival-intelligence.md)
 (skills/verifier/progression), [fishing](fishing.md), [fluids](fluids.md) (water
@@ -300,13 +301,122 @@ The bot can now **command** redstone and **sense** it continuously.
   (a click is instantaneous, so a wooden button's pulse is observed, not held);
   the `circuitActive` criterion is a summary, not a topology check.
 
+## R3 — Primitive circuits (implemented, unit-tested and live-refused 03/10/2026)
+
+A circuit is now **data, not code**: `circuits/*.json` declares what to build and
+`build_circuit_<id>` builds, triggers and verifies it.
+
+- **The blueprint is a document** (`circuits.mjs`, `CIRCUIT_SCHEMA_VERSION = 1`):
+  `id`, `description`, `requires`, `anchor {offset, minClear}`, `steps
+  [{item, block, offset, supportOffset, face, facing, delay, label}]`, `trigger`,
+  `success [{offset, property, expected}]`, `post [{action, offset, delay}]`,
+  optional `buildable: false` + `blocked` + `dependsOn`. `validateCircuit`
+  rejects the impossible *before* the bot moves: a step whose support is placed
+  later (`order N`), a duplicate cell, an undeclared or under-declared material
+  (`requires.repeater: 2 < 3 steps need it`), a trigger or a success check on a
+  cell no step places, a `post` on something that is not a repeater, a delay
+  outside 0..3, too many steps (`MAX_CIRCUIT_STEPS = 48`) — and any **dangerous
+  item** (`DANGEROUS_ITEMS`: `tnt`, `trapped_chest`, `tripwire_hook`,
+  `sculk_shrieker`, `respawn_anchor`): a circuit with traps is never built.
+  `loadCircuits()` fails at start-up on a broken file (the gameplay-skill
+  discipline) and rejects duplicate ids.
+- **Rotation is rigid and derived from the bot's own gaze**: `FORWARD`/`ROTATIONS`
+  map south=identity, north=`[-x,y,-z]`, east=`[z,y,x]`, west=`[-z,y,-x]` — the
+  blueprint's "forward" is the direction the bot faces, its "right" follows
+  (`south → east`), and the Y is never rotated. `circuitAnchor(feet, facing)` puts
+  the work site **one step in front of the bot** (never inside it), so the same
+  blueprint is buildable facing any of the four cardinal directions.
+- **`planCircuit(def, {origin, facing, available})`** is pure: it returns the
+  absolute cells with their supports, the trigger, the success checks, the `post`
+  rows, the missing materials (`{item, need, have}`) and `ok`. Two more pure
+  helpers keep the adapter honest: **`circuitSiteBlocked(plan, world)`** reports
+  `occupied` / `no_support` / `usable_block` (a chest is not a support: clicking
+  it opens the container) and treats the plan's own cells as valid supports;
+  **`checkCircuitSuccess(def, {origin, facing, read})`** pins `no_block` /
+  `property_unreadable` / `value_mismatch` and **refuses to report success when
+  the blueprint declares no check** (`empty: true` ⇒ `ok: false` — no empty
+  success). `expectedDelayTicks(def)` sums `delay + 1` per repeater row.
+- **Eight blueprints, four of them buildable**: `lamp_switch` (lever + lamp),
+  `delay_line` (lever + 3 repeaters whose delays are *set* after placement +
+  lamp, `expectedDelayTicks: 6`), `auto_lamp` (daylight detector + lamp — it has
+  no trigger and no state check, `verifyNote` says why: the output follows the
+  time of day, so the live round reads `/observe.time` with the lamp) and
+  `auto_door` (lever + fence gate, success on the gate's `open_bit`). The other
+  four are declared and **refused with a reason**: `auto_harvest` (needs the M1
+  fluid milestone and a hopper output strategy), `auto_dispense` (a repeater
+  clock is a running loop and R4's teardown does not exist yet), `hopper_chain`
+  (the hopper sits *on* the chest, a usable block for the placement primitive),
+  `crafter_pulse` (needs a pulse, not a held lever, and R5's verifier).
+- **`build_circuit_<id>`** (`_buildCircuit`): resolve the blueprint → refuse if
+  declared → refuse the missing materials → refuse a blocked site → move to the
+  anchor only when the cell is not already at reach (`_approachFor`) → place the
+  steps **in order**, each one with yaw/pitch aimed at the cell → set the repeater
+  delays → **force a redstone census** (the components just placed must be in it)
+  → trigger and verify **while the trigger is still active** → trigger again to
+  put it back at rest. Typed outcomes: `unknown_circuit` (+`known`),
+  `circuit_not_buildable` (+`reason`), `missing_materials` (+`missing`),
+  `circuit_site_blocked` (+`blocked`), `circuit_incomplete` (+`placed`/`failed`),
+  `circuit_delay_not_confirmed`, `<trigger error>`, `circuit_verify_failed`.
+  **A direction the server did not honour is an error, not a crooked circuit**:
+  when a step declares `facing`, `_placeCircuitStep` compares what the world
+  reports (`normalizeFacing(facingOf(...))`) and fails with
+  `orientation_not_confirmed` **without** retrying — the R1 retry mines and
+  replaces, which `DIG_PROTECTED` forbids for components.
+- **Nothing is left running**: the trigger is restored (the second toggle's
+  result is `trigger.restored`), so the `auto_dispense` clock stays out of the
+  catalogue until R4 can tear it down.
+- **Observability**: `GET /observe.circuits` returns `{count, buildable,
+  declared: [{id, blocked}], invalid, last}` — `last` is the full report of the
+  previous build — and the harness appends **one record per attempt** to
+  `runs/<run>/circuits.jsonl` (like `skills.jsonl`), including the refusals that
+  never reach the site, so a run can be read back afterwards.
+- **Tests**: `tests/circuits.test.mjs` (10 cases) covers the catalogue, every
+  validation message, the rotation rigidity, `circuitAnchor` in all four
+  directions, `planCircuit`, `circuitSiteBlocked` (including the support false
+  positive it originally had), `checkCircuitSuccess` and `loadCircuits` on
+  temporary directories. `tests/bedrock-circuits.test.mjs` (9 cases) drives the
+  real catalog through the adapter on a fake world where the server consumes the
+  inventory, writes the block with a facing of its choosing and flips the linked
+  lamp: the two full builds (`lamp_switch`, `delay_line` with delays `[0,1,2]`),
+  the trigger restore, the intermediate failures (`missing_materials`,
+  `circuit_site_blocked` with `occupied` and `usable_block`, `circuit_incomplete`
+  on `place_not_confirmed`), the wrong-orientation refusal, `auto_lamp`'s
+  deliberate non-verification, the option gating and `_facingFromYaw`. Suite:
+  **767 tests green**.
+- **Live round (03/10/2026, VM 100, container `hermes-jev-bedrock`, BDS 1.26.52,
+  bot at (115.5, 74.62, 159.47))** — the catalogue and every refusal were
+  exercised for real: `GET /observe.circuits` → `count: 8`, `buildable:
+  [auto_door, auto_lamp, delay_line, lamp_switch]`, the four declared circuits
+  with their reasons, `invalid: null`; `/options` offers **no** `build_circuit_*`
+  (no materials in the room — the gating is live); `POST /act
+  {"key":"build_circuit_lamp_switch"}` → `{ok: false, error:
+  'missing_materials', missing: [{redstone_lamp, 1, 0}, {lever, 1, 0}]}`;
+  `build_circuit_auto_harvest` → `{ok: false, error: 'circuit_not_buildable',
+  reason: 'the water channel needs the M1 fluid milestone …'}`;
+  `build_circuit_nope` → `{ok: false, error: 'unknown_circuit', known: […8 ids…]}`.
+  All three answered in milliseconds and **all three landed in
+  `runs/demo/circuits.jsonl`** (`{action, id, ok, error}` per line), which is the
+  file the next run reads.
+- **Known limits (R3)**: the **acceptance build** from the raw roadmap
+  (`build_circuit_lamp_switch`, `build_circuit_delay_line`) cannot be exercised
+  live in the standing room — a `redstone_lamp` needs glowstone and four
+  redstone dust, i.e. a trip to the Nether, and plan C forbids touching the
+  base's own cobblestone — so the built-and-verified path is covered by the
+  adapter tests with a modelled server, exactly like R1/R2. `checkCircuitSuccess`
+  compares block **properties**, not behaviour: a lamp that stays lit for another
+  reason still passes, and **timing** is only declared (`expectedDelayTicks`),
+  never measured (that is R4's verifier). Only one work site at a time, no
+  rollback of the steps already placed (R4), and `auto_door` builds the fence-gate
+  variant: the piston variant needs the live block name of `sticky_piston`'s arm
+  (R4).
+
 ## Proposed vocabulary
 
 - **Actions**: `build_circuit_<id>`, `use_redstone`, `set_repeater_delay`,
   `sense_redstone`, `teardown_circuit`, `mine_redstone_ore` (via `_refreshNearby`).
   Implemented: `use_redstone`, `sense_redstone`, `set_repeater_delay`,
-  `mine_redstone_ore`; still missing: `build_circuit_<id>` (R3) and
-  `teardown_circuit` (R4).
+  `mine_redstone_ore`, `build_circuit_<id>`; still missing: `teardown_circuit`
+  (R4).
 - **Intents**: `redstone`, `toggle`, `sense`.
 - **Item tags**: `redstone_dust`, `redstone_components`, `pistons`, `hoppers`.
 - **Conditions/criteria**: `redstoneNearby`, `tntNearby`, `blockPoweredAt` /
@@ -320,7 +430,7 @@ The bot can now **command** redstone and **sense** it continuously.
 | R0 | Awareness & protection | Add redstone to `DIG_PROTECTED`; extend `_refreshNearby` (ore + components); `/observe.redstone`; state-aware `findBlocksByState`; pure `bedrock-redstone.mjs` (`powerOf`, `isSource/isOutput`, `tnt` hazard). | ◑ implemented + live: awareness, census and dig protection done; circuit *building* is R1+ |
 | R1 | Oriented placement | Extend `_placeAtCell` with desired state/facing and side faces; confirm name+properties; place→read→correct retry; packet-capture task for placement orientation; repeater delay via interaction. | ◑ place→read→correct + repeater delay implemented and unit-tested; packet capture **not needed**; the live component round is blocked by plan C (no base edits) |
 | R2 | Interaction & sensing | `use_redstone` (lever/button) with state + downstream verification; redstone cache in `/observe`; `sense_redstone`; verifier criteria. | ◑ implemented + unit-tested and live-sensed (in-place cache, `use_redstone`, `sense_redstone`, `blockPoweredAt`/`circuitActive`); the live toggle is blocked by plan C |
-| R3 | Primitive circuits | Declarative `circuits/*.json` blueprints (`lamp_switch`, `delay_line`, `auto_lamp`, `auto_door`, `auto_harvest`, `auto_dispense`, `hopper_chain`, `crafter_pulse`) + `build_circuit_<id>` bounded action. | ❌ not implemented |
+| R3 | Primitive circuits | Declarative `circuits/*.json` blueprints (`lamp_switch`, `delay_line`, `auto_lamp`, `auto_door`, `auto_harvest`, `auto_dispense`, `hopper_chain`, `crafter_pulse`) + `build_circuit_<id>` bounded action. | ◑ `circuits.mjs` + 8 blueprints (4 buildable, 4 declared with a reason) + `build_circuit_<id>` implemented, unit-tested (19 cases) and live-refused (catalogue, gating, `circuits.jsonl`); the acceptance *build* needs a redstone lamp (Nether) and is blocked by plan C |
 | R4 | Verify, teardown, guardrails | Deterministic circuit verifier; `teardown_circuit` limited to bot-built blocks; rollback on partial failure; no redstone edits outside owned circuits. | ❌ not implemented |
 | R5 | Automation & integration | Gameplay skills `skills/gameplay/redstone/`; progression milestones `redstone_ore`/`redstone_basics`/`redstone_automation`; integrate farming (`auto_harvest`), storage (`hopper_chain`), defense (`auto_lamp`), fluids (water stream). | ❌ not implemented |
 | R6 | Limits & docs | No command blocks, no TNT/traps, lag/size caps, bot-safety, runbook/wiki updates. | ❌ not implemented |
@@ -331,7 +441,9 @@ The bot can now **command** redstone and **sense** it continuously.
   deterministic place → read → correct loop reads the state the server actually
   derived. What remains open is the **live component round** (plan C blocks the
   only cobblestone in reach) and the face dimension (a family that reacts to the
-  clicked face).
+  clicked face). R3 inherits the same constraint one level up: the blueprints are
+  validated and the builder is typed, but *building* a lamp needs materials the
+  room does not have.
 - **The world view can drop a section under the bot**: during the live round
   `standingOn` went `oak_planks` → `null`, `headroom` → 0 and the placement search
   answered `no_place_spot` (the ring requires *visible* air), while the bot had not

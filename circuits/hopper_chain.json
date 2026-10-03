@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "hopper_chain",
+  "description": "A hopper on a chest: items dropped on top end up in the chest.",
+  "requires": { "chest": 1, "hopper": 1 },
+  "buildable": false,
+  "blocked": "the hopper sits on the chest, but a chest is a usable block for the placement primitive (clicking it opens the container instead of supporting the block)",
+  "steps": [
+    { "item": "chest", "offset": [0, 0, 0], "label": "chest" },
+    { "item": "hopper", "offset": [0, 1, 0], "supportOffset": [0, 0, 0], "label": "hopper" }
+  ],
+  "success": [
+    { "offset": [0, 1, 0], "property": "name", "expected": "hopper" }
+  ],
+  "notes": "Even built, the check would only say the hopper exists: item transport needs a container-write verifier, which is R4/R5."
+}

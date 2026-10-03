@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "delay_line",
+  "description": "Lever, three repeaters with growing delay and a lamp: the lamp lights up after the sum of the delays.",
+  "requires": { "cobblestone": 1, "lever": 1, "repeater": 3, "redstone_lamp": 1 },
+  "buildable": true,
+  "steps": [
+    { "item": "cobblestone", "offset": [0, 0, 0], "label": "base" },
+    { "item": "lever", "offset": [0, 1, 0], "supportOffset": [0, 0, 0], "face": 1, "label": "lever" },
+    { "item": "repeater", "offset": [0, 0, 1], "facing": "south", "label": "repeater_1" },
+    { "item": "repeater", "offset": [0, 0, 2], "facing": "south", "label": "repeater_2" },
+    { "item": "repeater", "offset": [0, 0, 3], "facing": "south", "label": "repeater_3" },
+    { "item": "redstone_lamp", "offset": [0, 0, 4], "label": "lamp" }
+  ],
+  "trigger": { "offset": [0, 1, 0] },
+  "post": [
+    { "action": "set_repeater_delay", "offset": [0, 0, 1], "delay": 0 },
+    { "action": "set_repeater_delay", "offset": [0, 0, 2], "delay": 1 },
+    { "action": "set_repeater_delay", "offset": [0, 0, 3], "delay": 2 }
+  ],
+  "success": [
+    { "offset": [0, 1, 0], "property": "open_bit", "expected": true },
+    { "offset": [0, 0, 4], "property": "name", "expected": "lit_redstone_lamp" }
+  ],
+  "measure": { "expectedTicks": 6 },
+  "notes": "The three repeaters sit in a line along the blueprint +z, each one facing the next: the delay is set after the build (R1) and the total is the sum of delay+1 redstone ticks. The live round must measure the real time between the lever and the lamp; 6 ticks is the value the blueprint predicts."
+}

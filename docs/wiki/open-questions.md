@@ -258,8 +258,8 @@ Still missing (the rest of the original gap):
   player on the BDS) and the *deep* side of M6 (following a cave system beyond
   the loaded radius, Deep Dark/Ancient City never observed live).
 - **Placement** only on a top face adjacent to the bot; no scaling/orientation.
-- **Redstone awareness (R0), oriented placement (R1) and interaction/sensing
-  (R2) done (03/10); circuit blueprints still missing.**
+- **Redstone awareness (R0), oriented placement (R1), interaction/sensing (R2)
+  and primitive circuits (R3) done (03/10); R4 (verifier/teardown) still missing.**
   `bedrock-redstone.mjs` now owns the vocabulary (components, sources, outputs,
   `tnt` hazard) and reads state through `powerOf`/`facingOf`/`blockProperties`
   (`null` when unreadable — never "off" by assumption); the component list is in
@@ -278,14 +278,27 @@ Still missing (the rest of the original gap):
   patches the census in place on every `update_block` (no extra `findBlocks`),
   `sense_redstone` and the `redstone` section of `GET /survival` expose the
   verdict, and the verifier gained `blockPoweredAt`/`circuitActive` (a missing or
-  unreadable state is a failure, never a pass). Still open: building circuits
-  (R3+) and a teardown that is limited to bot-built blocks (R4); the **live**
-  component round (R1 and R2 share it) is blocked only by the standing
-  "no base edits" rule — the single cobblestone in reach is the room's own wall,
-  so `mine_cobblestone → craft_lever → place_lever → use_redstone` was not run. The
+  unreadable state is a failure, never a pass). **R3** makes a circuit *data*:
+  `circuits/*.json` declares steps, trigger, success checks and materials,
+  `circuits.mjs` validates every blueprint at load (impossible support order,
+  duplicate cells, under-declared materials, traps like `tnt`) and plans/checks
+  it purely (`planCircuit`, `circuitSiteBlocked`, `checkCircuitSuccess` — which
+  refuses an empty success), and `build_circuit_<id>` places in order, sets the
+  repeater delays, triggers, verifies **with the trigger still active** and then
+  restores it; `GET /observe.circuits` exposes the catalogue and the last report,
+  and every attempt lands in `runs/<run>/circuits.jsonl`. Four blueprints are
+  buildable (`lamp_switch`, `delay_line`, `auto_lamp`, `auto_door`), four are
+  declared and refused with a reason. Still open: a deterministic verifier that
+  *measures* the timing, `teardown_circuit` limited to bot-built blocks and
+  rollback on a partial build (all R4); the **live** component round (R1, R2 and
+  R3's acceptance build share it) is blocked from two sides — the standing
+  "no base edits" rule (the single cobblestone in reach is the room's own wall,
+  so `mine_cobblestone → craft_lever → place_lever → use_redstone` was not run)
+  and the fact that a `redstone_lamp` needs glowstone from the Nether. The
   ore was already mineable from the opportunity scan (`ore-value.mjs`) when an
-  iron pickaxe is held; the live round of R2 did verify the sensing keys, the
-  typed routes and the option gating. Roadmap in [redstone](redstone.md).
+  iron pickaxe is held; the live rounds of R2 and R3 did verify the sensing keys,
+  the catalogue, the typed routes and the option gating. Roadmap in
+  [redstone](redstone.md).
 - **Barricade** (`.private/DEFENSE-TASK.md`): `_barricadeGap` only checks the
   four cells adjacent to the bot, so the bot must already stand next to the 1×2
   opening; it does not search ahead or walk to a gap. Fine for a corridor, hard
@@ -458,10 +471,15 @@ Still missing (the rest of the original gap):
   piglins, endermen), fortress/blaze, stronghold, End and dragon. Roadmap in
   [nether](nether.md); the progression chain is already in the graph.
 - **Redstone and primitive automation** — R0 done (awareness + protection, live
-  03/10), R1 done (oriented placement + repeater delay, unit-tested 03/10) and R2
-  done (interaction + sensing, unit-tested and live-sensed 03/10), R3–R6 spec
-  only. Roadmap in [redstone](redstone.md); next is R3 (`circuits/*.json` +
-  `build_circuit_<id>`), whose live round shares the "no base edits" blocker.
+  03/10), R1 done (oriented placement + repeater delay, unit-tested 03/10), R2
+  done (interaction + sensing, unit-tested and live-sensed 03/10) and R3 done
+  (declarative circuits: `circuits/*.json` validated at load, pure planner and
+  checks, `build_circuit_<id>` that places/triggers/verifies/restores,
+  `GET /observe.circuits`, `runs/<run>/circuits.jsonl` — unit-tested and
+  live-refused 03/10), R4–R6 spec only. Roadmap in [redstone](redstone.md); next
+  is R4 (a verifier that *measures* the timing, `teardown_circuit`, rollback),
+  whose live round shares the "no base edits" blocker (and a `redstone_lamp`
+  needs Nether glowstone).
 
 ## Known code defects (not fixed)
 

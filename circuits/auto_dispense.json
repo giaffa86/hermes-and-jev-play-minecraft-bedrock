@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "auto_dispense",
+  "description": "Lever, repeater clock and dispenser: fire items on a loop.",
+  "requires": { "cobblestone": 1, "lever": 1, "repeater": 2, "dispenser": 1 },
+  "buildable": false,
+  "blocked": "a repeater clock is a running loop: the safety rule forbids leaving it active and the R4 teardown path does not exist yet",
+  "steps": [
+    { "item": "cobblestone", "offset": [0, 0, 0], "label": "base" },
+    { "item": "lever", "offset": [0, 1, 0], "supportOffset": [0, 0, 0], "face": 1, "label": "lever" },
+    { "item": "repeater", "offset": [0, 0, 1], "facing": "south", "label": "clock_a" },
+    { "item": "repeater", "offset": [0, 0, 2], "facing": "north", "label": "clock_b" },
+    { "item": "dispenser", "offset": [0, 1, 1], "supportOffset": [0, 0, 1], "facing": "south", "label": "dispenser" }
+  ],
+  "trigger": { "offset": [0, 1, 0] },
+  "notes": "A clock is the one circuit that must be *stopped* again: until R4 can tear a circuit down and verify the stop, this stays declared and not buildable."
+}

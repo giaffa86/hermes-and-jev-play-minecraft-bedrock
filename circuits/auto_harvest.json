@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "auto_harvest",
+  "description": "Observer, piston, hopper and chest: harvest a column of crops automatically.",
+  "requires": { "observer": 1, "sticky_piston": 1, "hopper": 1, "chest": 1 },
+  "buildable": false,
+  "blocked": "the water channel needs the M1 fluid milestone and the hopper output direction has no placement strategy in the current primitive",
+  "dependsOn": ["fluids_m1"],
+  "steps": [
+    { "item": "observer", "offset": [0, 0, 0], "facing": "south", "label": "observer" },
+    { "item": "sticky_piston", "offset": [0, 0, 1], "facing": "south", "label": "piston" },
+    { "item": "hopper", "offset": [0, 1, 2], "supportOffset": [0, 0, 2], "label": "hopper" },
+    { "item": "chest", "offset": [0, 0, 3], "label": "chest" }
+  ],
+  "notes": "Declared so the catalogue is complete and so the gap is a file, not a memory: no `build_circuit_auto_harvest` action is offered while `buildable` is false."
+}

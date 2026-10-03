@@ -75,7 +75,7 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**748 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**767 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
 
 - **Fluids in the survival layer (M0, 2026-10-03)**: the governor vocabulary grew
@@ -110,6 +110,22 @@ is `redstone state unknown`. The adapter side reads `inputOn` as `true`/
 `summarizeRedstone` reports `maxPower: null` — not `0` — when nothing is
 readable; `use_redstone` restores the input after probing, so no clock is
 left running ([redstone](redstone.md), row 47.4 of
+[verification](verification.md)).
+
+- **Circuit blueprints as data (R3, 2026-10-03)**: the same discipline reaches
+building a circuit. A blueprint is a JSON document (`circuits/*.json`,
+validated at load by `circuits.mjs`: support order, duplicate cells,
+under-declared materials, traps like `tnt` are refused before the bot moves);
+the planner and the success check are pure (`planCircuit`,
+`circuitSiteBlocked`, `checkCircuitSuccess`), and `checkCircuitSuccess`
+returns `empty: true` → `ok: false` when the blueprint declares no check, so
+there is **no empty success**. `build_circuit_<id>` places in order, sets the
+repeater delays, triggers the circuit, verifies **with the trigger still
+active** and then restores it (no clock left running); a direction the server
+did not honour is `orientation_not_confirmed` instead of a crooked circuit,
+and every attempt is appended to `runs/<run>/circuits.jsonl`. Four blueprints
+are buildable (`lamp_switch`, `delay_line`, `auto_lamp`, `auto_door`), four
+are declared and refused with a reason ([redstone](redstone.md), row 47.5 of
 [verification](verification.md)).
 
 - **Wading and the simulated air budget (M1 partial, 2026-10-03)**: shallow water

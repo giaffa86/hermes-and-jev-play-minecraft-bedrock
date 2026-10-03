@@ -13,6 +13,7 @@ import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
 import { detectStructures } from './structures.mjs';
 import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT } from './bedrock-fluids.mjs';
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
+import { loadCircuits, planCircuit, circuitSiteBlocked, checkCircuitSuccess, circuitAnchor, expectedDelayTicks, EMPTY_BLOCKS } from './circuits.mjs';
 import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
@@ -204,6 +205,12 @@ export class BedrockAdapter {
     // `update_block` aggiorna la cache senza rifare la scansione.
     this._redstoneBlocks = null;
     this._redstoneChange = null;
+    // R3: i blueprint dei circuiti si caricano una volta sola (un file rotto
+    // resta visibile in `/observe.circuits.invalid` invece di far esplodere il
+    // bot) e l'ultimo cantiere resta leggibile da fuori.
+    this._circuits = null;
+    this._circuitError = null;
+    this._circuitLast = null;
     this.dimension = 'overworld';
     this.standingOn = null;
     this.plan = null;
@@ -1301,6 +1308,7 @@ export class BedrockAdapter {
       structureSurvey: this._structureSurvey,
       fluids: this._fluidsView(),
       redstone: this._redstoneView(),
+      circuits: this._circuitsView(),
       ores: (this.valuableOres ?? []).slice(0, 8),
       recent: this.recent.slice(-8),
       status: this.status,
@@ -1636,6 +1644,10 @@ export class BedrockAdapter {
         o.push({ key: 'sense_redstone', description: `Read the ${census.counts.components} redstone component(s) and ${census.power.length} signal(s) in range` });
       }
     }
+    // Redstone (R3): un circuito si costruisce solo se il catalogo lo dichiara
+    // costruibile, i materiali ci sono e il sito davanti al bot è libero. Le
+    // altre opzioni non compaiono: meglio un'azione in meno che una che fallisce.
+    o.push(...this._circuitOptions());
     // Fusione: stazione adatta (altoforno per i minerali, affumicatore per il
     // cibo, altrimenti fornace) + materiale + combustibile.
     {
@@ -1934,6 +1946,8 @@ export class BedrockAdapter {
         result = await this._recoverLoot();
       } else if (key.startsWith('attack_')) {
         result = await this._combat(key.slice('attack_'.length));
+      } else if (key.startsWith('build_circuit_')) {
+        result = await this._buildCircuit(key.slice('build_circuit_'.length));
       } else if (key === 'cast_rod') {
         result = await this._castRod();
       } else if (key === 'reel_in') {
@@ -3792,6 +3806,185 @@ export class BedrockAdapter {
     if (!res.ok) return res;
     if (res.delay !== target) return { ok: false, error: 'repeater_delay_not_confirmed', position: cell, before: current, delay: res.delay, wanted: target };
     return { ok: true, position: cell, before: current, delay: res.delay, clicks: res.clicks, wanted: target };
+  }
+
+  // ------------------------------------------------------------------- R3
+  // Un circuito è un blueprint dichiarativo (circuits/*.json) che diventa un
+  // piano di celle assolute, si costruisce in ordine, si aziona e si verifica
+  // sulle proprietà che il mondo riporta. Il catalogo si carica una volta sola:
+  // un blueprint invalido non impedisce al bot di giocare, resta visibile in
+  // `/observe.circuits.invalid` (e nessuna opzione `build_circuit_*` compare).
+  _circuitCatalogue () {
+    if (!this._circuits) {
+      try {
+        this._circuits = loadCircuits();
+        this._circuitError = null;
+      } catch (error) {
+        this._circuits = new Map();
+        this._circuitError = error.message;
+        this.log('circuits_invalid', { message: error.message });
+      }
+    }
+    return this._circuits;
+  }
+
+  _circuitsView () {
+    const all = [...this._circuitCatalogue().values()];
+    return {
+      count: all.length,
+      buildable: all.filter(d => d.buildable).map(d => d.id),
+      declared: all.filter(d => !d.buildable).map(d => ({ id: d.id, blocked: d.blocked ?? null })),
+      invalid: this._circuitError,
+      last: this._circuitLast,
+    };
+  }
+
+  // La direzione del cantiere è quella verso cui guarda il bot: il blueprint è
+  // scritto con +z in avanti.
+  _facingFromYaw (yaw = this._lastYaw) {
+    const angle = ((Number(yaw) || 0) % 360 + 360) % 360;
+    if (angle < 45 || angle >= 315) return 'south';
+    if (angle < 135) return 'west';
+    if (angle < 225) return 'north';
+    return 'east';
+  }
+
+  _circuitPlan (def, { facing = null } = {}) {
+    const dir = facing ?? this._facingFromYaw();
+    return planCircuit(def, { origin: circuitAnchor(this._feet, dir), facing: dir, available: this.inventory ?? {} });
+  }
+
+  _circuitOptions () {
+    const out = [];
+    for (const def of this._circuitCatalogue().values()) {
+      if (!def.buildable) continue;
+      const plan = this._circuitPlan(def);
+      if (!plan.ok) continue;
+      if (circuitSiteBlocked(plan, cell => this.world.blockAt(cell)).length) continue;
+      const needs = Object.entries(def.requires).map(([item, qty]) => `${qty} ${item}`).join(', ');
+      out.push({ key: `build_circuit_${def.id}`, description: `Build the ${def.id} circuit at ${JSON.stringify(plan.anchor)} (needs ${needs}): ${def.description}` });
+    }
+    return out;
+  }
+
+  // Avvicinamento: se la cella non è a portata si cerca una cella camminabile
+  // vicina che non sia essa stessa un passo del circuito (non si calpesta il
+  // cantiere mentre lo si costruisce).
+  async _approachFor (cell, occupied = new Set()) {
+    if (!this._reachabilityUsable()) return null;
+    if (this.approachReachable(cell, { range: 3.5, dy: 2 })) return null;
+    const from = this._feet;
+    const candidates = this._neighbors(cell)
+      .filter(n => !occupied.has(`${n.x},${n.y},${n.z}`))
+      .filter(n => this.cellReachable(n))
+      .sort((a, b) => (Math.hypot(a.x - from.x, a.z - from.z) - Math.hypot(b.x - from.x, b.z - from.z)));
+    if (!candidates.length) return { error: 'circuit_unreachable' };
+    const move = await this._moveTo({ x: candidates[0].x + 0.5, y: candidates[0].y, z: candidates[0].z + 0.5 }, 2, 12000);
+    if (move && move.ok === false) return { error: move.error ?? 'move_failed' };
+    return null;
+  }
+
+  async _placeCircuitStep (step) {
+    const yaw = this._yawTo(this._feet, { x: step.cell.x + 0.5, z: step.cell.z + 0.5 });
+    const pitch = this._lookAt({ x: step.cell.x + 0.5, y: step.cell.y + 0.5, z: step.cell.z + 0.5 }).pitch;
+    const res = await this._placeAtCell(step.item, step.block, step.cell, step.support, step.face, step.clickPos, { yaw, pitch });
+    if (!res.ok) return res;
+    if (!step.facing) return { ...res, facing: null };
+    const actual = normalizeFacing(facingOf(this.world.blockAt(step.cell)));
+    if (facingMatches(actual, step.facing)) {
+      this.log('circuit_placed', { block: step.block, position: step.cell, facing: actual, wanted: step.facing });
+      return { ...res, facing: actual };
+    }
+    // Girato male e già piazzato: non si ritenta. La protezione dallo scavo
+    // rifiuta di rompere un componente redstone, quindi un secondo tentativo
+    // non potrebbe che fallire più tardi e in modo più confuso.
+    this.log('circuit_orientation_failed', { block: step.block, position: step.cell, facing: actual, wanted: step.facing });
+    return { ok: false, error: 'orientation_not_confirmed', block: step.block, position: step.cell, facing: actual, wanted: step.facing };
+  }
+
+  async _buildCircuit (id, { facing = null, timeoutMs = 2500 } = {}) {
+    const def = this._circuitCatalogue().get(id) ?? null;
+    if (!def) return { ok: false, error: 'unknown_circuit', id, known: [...this._circuitCatalogue().keys()] };
+    if (!def.buildable) return { ok: false, error: 'circuit_not_buildable', id, reason: def.blocked ?? 'declared only' };
+    const dir = facing ?? this._facingFromYaw();
+    const plan = this._circuitPlan(def, { facing: dir });
+    if (plan.missing.length) return { ok: false, error: 'missing_materials', id, missing: plan.missing, requires: def.requires };
+    const blocked = circuitSiteBlocked(plan, cell => this.world.blockAt(cell));
+    if (blocked.length) return { ok: false, error: 'circuit_site_blocked', id, blocked: blocked.slice(0, 8) };
+
+    const occupied = new Set(plan.steps.map(s => `${s.cell.x},${s.cell.y},${s.cell.z}`));
+    const placed = [];
+    const failed = [];
+    for (const step of plan.steps) {
+      const move = await this._approachFor(step.cell, occupied);
+      if (move?.error) { failed.push({ label: step.label, item: step.item, cell: step.cell, error: move.error }); break; }
+      const res = await this._placeCircuitStep(step);
+      if (!res.ok) {
+        failed.push({ label: step.label, item: step.item, cell: step.cell, error: res.error, facing: res.facing ?? null });
+        break;
+      }
+      placed.push({ label: step.label, item: step.item, block: step.block, cell: step.cell, facing: res.facing ?? null });
+    }
+    if (failed.length) {
+      const report = { ok: false, error: 'circuit_incomplete', id, origin: plan.origin, facing: dir, placed, failed, post: [], trigger: null, success: null, verifyNote: null };
+      this._circuitLast = report;
+      this.log('circuit_incomplete', { id, origin: plan.origin, placed: placed.length, error: failed[0].error });
+      return { ...report, circuit: report };
+    }
+
+    // Il ritardo dei repeater è una proprietà, non un piazzamento (R1).
+    const post = [];
+    for (const entry of plan.post) {
+      const res = await this._setRepeaterDelay(entry.delay, { position: entry.cell });
+      post.push({ cell: entry.cell, delay: entry.delay, ok: res.ok === true, error: res.ok ? null : (res.error ?? null), actual: res.delay ?? null });
+    }
+
+    // Il censimento potrebbe precedere il cantiere: il trigger appena piazzato
+    // deve comparire, quindi si forza la lettura prima di azionarlo.
+    if (plan.trigger) this._redstoneCensus({ force: true });
+    let trigger = null;
+    let success = null;
+    if (plan.trigger) {
+      const on = await this._useRedstone({ position: plan.trigger.cell, restore: false, timeoutMs });
+      // La verifica si fa con il trigger ancora attivo: è quello lo stato che il
+      // blueprint descrive. Il ripristino viene dopo e viene letto anche lui.
+      if (on.ok) success = checkCircuitSuccess(def, { origin: plan.origin, facing: dir, read: cell => this.world.blockAt(cell) });
+      const off = on.ok ? await this._useRedstone({ position: plan.trigger.cell, restore: false, timeoutMs }) : null;
+      trigger = {
+        cell: plan.trigger.cell,
+        item: plan.trigger.item,
+        before: on.before ?? null,
+        after: on.after ?? null,
+        ok: on.ok === true,
+        error: on.ok ? null : (on.error ?? null),
+        restored: off?.ok ? (off.after ?? null) : null,
+      };
+    } else {
+      success = checkCircuitSuccess(def, { origin: plan.origin, facing: dir, read: cell => this.world.blockAt(cell) });
+    }
+
+    const postFailed = post.filter(p => !p.ok);
+    const verified = success && !success.empty ? success.ok : null;
+    const error = postFailed.length
+      ? 'circuit_delay_not_confirmed'
+      : (trigger && !trigger.ok ? (trigger.error ?? 'trigger_failed') : (verified === false ? 'circuit_verify_failed' : null));
+    const report = {
+      ok: error == null,
+      error,
+      id,
+      origin: plan.origin,
+      facing: dir,
+      steps: placed.length,
+      placed,
+      post,
+      trigger,
+      success: success && !success.empty ? success : null,
+      verifyNote: success && success.empty ? (def.verifyNote ?? null) : null,
+      expectedDelayTicks: expectedDelayTicks(def),
+    };
+    this._circuitLast = report;
+    this.log(report.ok ? 'circuit_built' : 'circuit_failed', { id, facing: dir, origin: plan.origin, steps: placed.length, error });
+    return { ...report, circuit: report };
   }
 
   // R2: aziona la leva/pulsante più vicino (o una cella data) e **verifica** il
