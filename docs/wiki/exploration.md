@@ -191,6 +191,32 @@ mineshaft = planks + rails + cobwebs + spawner; ancient city = an extended sculk
 - **Underground kit**: torches, blocks (bridge/pillar), sword + armor, food, a
   water bucket, a pickaxe, and **free inventory space**.
 
+## Observable targets (M4)
+
+Same mission model as M1 with an observable target instead of a biome:
+**EXPLORE → SCAN → MATCH BLOCK/ENTITY → REPORT**.
+
+- Target resolution: `resolveSearchTarget(text)` → `{kind: 'block'|'entity', name, id}`.
+  The alias table covers brown/red mushroom, pumpkin, bamboo, mangrove log,
+  sugar cane, sweet berries, melon, cactus, vine, lily pad, cocoa and a set of
+  animals (cow, sheep, pig, chicken, horse, donkey, wolf, cat, villager, bee, …);
+  `block:<name>` / `entity:<name>` search *any* id, so an unlisted target is one
+  `block:` away. Aliases match on **word boundaries**: "canna da zucchero" does
+  not match the `zucche` alias of pumpkin.
+- Scan: `scanSearchTarget` in the harness reads the loaded chunks
+  (`world.findBlocks(name, position, radius, limit)`, default radius 48) for
+  blocks and the seen-entity registry (`_nearbyEntities`, 24-block cap) for
+  entities — the bot promises only what it perceives.
+- Step: `planSearchStep` returns `report` when the scan matched, otherwise the
+  M1 spiral `move` and a rescan at the next step. The report is
+  `{found: true, kind, target, count, best: {name, position, distance}, matches
+  (≤5), origin, distanceFromOrigin, scannedChunks, durationSeconds}`.
+- Harness: `POST /explore/find {target}` (400 `unknown_search_target` + the
+  supported list) creates a `find_block`/`find_entity` mission and activates it;
+  `GET /explore/find[?radius&limit]` returns one step. Previous `running`
+  searches are closed as `superseded` (`superseded_by_new_search`).
+- Driver: `RUN_ID=exp-find TARGET='funghi marroni' node explore-find.mjs`.
+
 ## Route replay (M2)
 
 "Return to an already-discovered place": the recorded route is replayed as a
@@ -226,6 +252,7 @@ explore.findSpawner()
 explore.findDeepDark()
 explore.pause() / explore.resume() / explore.cancel()
 explore.returnTo(resultId)        # implemented as POST /explore/replay (M2)
+explore.findBlock(target)         # implemented as POST /explore/find (M4)
 explore.escortTo(resultId)
 ```
 
@@ -247,15 +274,16 @@ a report → stays on the spot → can return later → can escort the player th
 
 ## Current status in the code
 
-◑ **M1 core implemented and M2 implemented.** `exploration.mjs` is the
+◑ **M1 core, M2 and M4 implemented.** `exploration.mjs` is the
 deterministic planner: biome target resolution (natural language →
 `minecraft:<id>`), the expanding-square/spiral over **unexplored chunks**, biome
-detection and the structured report — plus the M2 replay primitives. The harness
-steps it (`POST /explore` creates the mission, `GET /explore` returns one
-`move`/`found`/`hold`/`exhausted` step, `POST/GET /explore/replay` replays a
-recorded route) and `explore.mjs` / `explore-replay.mjs` are the drivers.
-Missions + sparse checkpoints are persisted in the [world memory](memory.md)
-(`kind: mission`).
+detection and the structured report — plus the M2 replay primitives and the M4
+observable-target search. The harness steps it (`POST /explore` creates the
+mission, `GET /explore` returns one `move`/`found`/`hold`/`exhausted` step,
+`POST/GET /explore/replay` replays a recorded route, `POST/GET /explore/find`
+searches a block/entity) and `explore.mjs` / `explore-replay.mjs` /
+`explore-find.mjs` are the drivers. Missions + sparse checkpoints are persisted
+in the [world memory](memory.md) (`kind: mission`).
 
 Hardening done with the live rounds (03/10):
 
@@ -263,9 +291,9 @@ Hardening done with the live rounds (03/10):
   success without its evidence;
 - `GET /explore` only ever steps a **`find_biome`** mission (it used to hijack
   whatever `adapter.missionId` pointed at, e.g. a curriculum or replay mission);
-- `POST /explore` (and `/explore/replay`) closes the previous `running`
-  missions of the same kind as `superseded`, so a service restart leaves no
-  zombie mission and no stale search is silently resumed.
+- `POST /explore` (and `/explore/replay`, `/explore/find`) closes the previous
+  `running` missions of the same kind as `superseded`, so a service restart
+  leaves no zombie mission and no stale search is silently resumed.
 
 Live evidence (03/10, container `hermes-jev-bedrock` vs BDS 1.26.52): `POST
 /explore {target:'pale garden'}` created the mission and reported
@@ -284,10 +312,14 @@ perception cap below (the bot only "sees" loaded blocks near it — see
 the bot being able to leave its platform: on the live BDS it is boxed in a 4×5
 block room, so the spiral waypoint is 96 blocks away and unreachable
 (`target_not_found`), no new biome can be reached and no travel checkpoint is
-written. M3–M5 (escort, blocks/resources, structures) and the M6 underground
-targets (caves, mineshafts, Deep Dark, spawners) are still spec only. The
-multi-leg case of M2 (a route with intermediate checkpoints) is covered by unit
-tests; live only the single-leg case could be exercised inside the room.
+written. The M4 search works from where the bot stands (it scans the 125 loaded
+chunks), so it is live-verifiable in the room, but a target that is not loaded
+still needs travel. M3 (escort) is blocked by the environment: no human player
+is connected to the BDS, so `ESCORTING`/`WAITING_FOR_PLAYER` cannot be
+exercised. M5 (structures) and the M6 underground targets (caves, mineshafts,
+Deep Dark, spawners) are still spec only; the multi-leg case of M2 (a route with
+intermediate checkpoints) is covered by unit tests, since inside the room no
+checkpoint can be earned (they are written every 48 blocks of travel).
 
 This spec is the missing piece that the persistent-agent vision
 ([ai-player-roadmap](ai-player-roadmap.md), milestone 5/6: world awareness +

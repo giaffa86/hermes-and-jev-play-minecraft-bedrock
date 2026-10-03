@@ -215,19 +215,21 @@ Still missing (the rest of the original gap):
 
 ## Design limitations
 
-- **No real exploration** (03/10: M1+M2 implemented, the long-distance run is what
-  is still missing): the bot only "sees" ores within ~±40 loaded blocks (the
+- **No real exploration** (03/10: M1+M2+M4 implemented, the long-distance run is
+  what is still missing): the bot only "sees" ores within ~±40 loaded blocks (the
   96-block radar is capped by the actively requested subchunks) and has no random
   walk / strip mining / cave exploration. See
   [headless-client](headless-client.md#8-render-distance-not-comparable). The
   deterministic planner (find biome, spiral over unexplored chunks, checkpoints,
-  report) and the route replay (return to a recorded place) are live-exercised
-  ([verification](verification.md) rows 45/45.1), but **an end-to-end run cannot
-  happen while the bot is boxed in the room**: the first spiral waypoint is 96
-  blocks away → `target_not_found`. Still spec only in
-  [exploration](exploration.md): M3 escort, M4 blocks/resources, M5 structures and
-  the **underground targets** (caves, mineshafts, Deep Dark/Ancient City,
-  spawners).
+  report), the route replay (return to a recorded place) and the observable-target
+  search (a block or an entity, from where the bot stands) are live-exercised
+  ([verification](verification.md) rows 45/45.1/45.2), but **an end-to-end run
+  cannot happen while the bot is boxed in the room**: the first spiral waypoint is
+  96 blocks away → `target_not_found`, and a target that is not in the 125 loaded
+  chunks still needs travel. Still spec only in
+  [exploration](exploration.md): M3 escort (blocked by the environment, no human
+  player on the BDS), M5 structures and the **underground targets** (caves,
+  mineshafts, Deep Dark/Ancient City, spawners).
 - **Placement** only on a top face adjacent to the bot; no scaling/orientation.
 - **No redstone awareness or placement.** `_refreshNearby`'s fixed list excludes
   redstone ore and components, so the bot cannot *watch* for them; the separate

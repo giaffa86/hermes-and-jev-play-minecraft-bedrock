@@ -116,6 +116,98 @@ export function planExplorationStep ({ mission, currentPosition, currentBiome, v
   return { action: 'move', waypoint };
 }
 
+// ---- M4: observable targets (blocks / entities) ------------------------------------
+//
+// Cercare un *oggetto osservabile* è la stessa missione dell'M1 con un target
+// diverso: la scansione guarda ciò che il bot vede (i chunk caricati), il
+// movimento riusa la spirale, il target resta un id Minecraft. Un blocco/entità
+// trovato chiude la missione con un report (EXPLORE → SCAN → MATCH → REPORT).
+
+const SEARCH_ENTITIES = new Set(['cow', 'mooshroom', 'sheep', 'pig', 'chicken', 'horse', 'donkey', 'mule', 'wolf', 'cat', 'ocelot', 'villager', 'wandering_trader', 'bee', 'parrot', 'llama', 'turtle', 'fox', 'rabbit', 'panda', 'polar_bear', 'axolotl', 'dolphin', 'squid', 'glow_squid', 'allay', 'frog', 'camel', 'sniffer', 'armadillo']);
+
+// Alias naturali → id Minecraft. Un target esplicito `block:<name>` /
+// `entity:<name>` bypassa la tabella (il bot può cercare qualsiasi cosa).
+const SEARCH_ALIASES = {
+  brown_mushroom: ['brown mushroom', 'funghi marroni', 'fungo marrone'],
+  red_mushroom: ['red mushroom', 'funghi rossi', 'fungo rosso'],
+  pumpkin: ['pumpkin', 'zucca', 'zucche'],
+  bamboo: ['bamboo', 'bambù'],
+  mangrove_log: ['mangrove', 'mangrovia', 'mangrove tree', 'tronco di mangrovia'],
+  sugar_cane: ['sugar cane', 'canna da zucchero'],
+  sweet_berry_bush: ['sweet berries', 'bacche dolci'],
+  melon: ['melon', 'anguria', 'cocomero'],
+  cactus: ['cactus', 'cacti'],
+  vine: ['vine', 'liane'],
+  lily_pad: ['lily pad', 'ninfea'],
+  cocoa: ['cocoa', 'cacao'],
+  cow: ['cow', 'mucca', 'mucche'],
+  sheep: ['sheep', 'pecora', 'pecore'],
+  pig: ['pig', 'maiale', 'maiali'],
+  chicken: ['chicken', 'gallina', 'galline'],
+  horse: ['horse', 'cavallo', 'cavalli'],
+  donkey: ['donkey', 'asino', 'asini'],
+  villager: ['villager', 'villaggio abitante', 'abitante'],
+  wolf: ['wolf', 'lupo', 'lupi'],
+  cat: ['cat', 'gatto', 'gatti'],
+  bee: ['bee', 'ape', 'api'],
+};
+
+const aliasEntries = Object.entries(SEARCH_ALIASES);
+
+// Confine di parola, non sottostringa: "canna da zucchero" non deve combaciare
+// con l'alias "zucche" di pumpkin.
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const matchesAlias = (text, alias) => text === alias || new RegExp(`(^|\\W)${escapeRe(alias)}(\\W|$)`).test(text);
+
+// Testo naturale (o `block:`/`entity:`) → { kind, name, id } oppure null.
+export function resolveSearchTarget (text) {
+  if (!text) return null;
+  const raw = String(text).trim().toLowerCase().replace(/^minecraft:/, '').replace(/\s+/g, ' ');
+  const explicit = /^(block|entity):(.+)$/.exec(raw);
+  if (explicit) {
+    const name = explicit[2].trim();
+    return name ? { kind: explicit[1], name, id: `${MC_PREFIX}${name}` } : null;
+  }
+  for (const [name, aliases] of aliasEntries) {
+    if (name === raw || aliases.some(a => matchesAlias(raw, a))) {
+      return { kind: SEARCH_ENTITIES.has(name) ? 'entity' : 'block', name, id: `${MC_PREFIX}${name}` };
+    }
+  }
+  return null;
+}
+
+export const SUPPORTED_SEARCH_TARGETS = Object.freeze(aliasEntries.map(([name]) => `${MC_PREFIX}${name}`));
+
+// Report di un target trovato: chi ha trovato cosa, dove e (se possibile) quanto
+// dista. `matches` è già ordinato per distanza dal chiamante.
+export function buildSearchReport ({ mission = null, matches = [], scannedChunks = null, now = Date.now() } = {}) {
+  const origin = mission?.origin ?? null;
+  const best = matches[0] ?? null;
+  const kind = mission?.type === 'find_entity' ? 'entity' : 'block';
+  return {
+    missionId: mission?.id ?? null,
+    target: mission?.target ?? null,
+    kind,
+    found: true,
+    count: matches.length,
+    best: best ? { name: best.name ?? null, position: best.position ?? null, distance: best.distance ?? null } : null,
+    matches: matches.slice(0, 5).map(m => ({ name: m.name ?? null, position: m.position ?? null, distance: m.distance ?? null })),
+    origin,
+    distanceFromOrigin: origin && best?.position ? distance2d(origin, best.position) : null,
+    scannedChunks,
+    durationSeconds: mission?.startedAt ? Math.round((now - mission.startedAt) / 1000) : null,
+  };
+}
+
+// Un passo della ricerca: se la scansione ha già trovato qualcosa si chiude con
+// il report, altrimenti si esplora come nell'M1 (stessa spirale, stessa
+// determinismo) e si riscansiona al prossimo passo.
+export function planSearchStep ({ mission, matches = [], currentPosition, currentBiome = null, visited = [], spacing, maxRadius, scannedChunks = null } = {}) {
+  if (!mission) return { action: 'hold', reason: 'no_mission' };
+  if (matches.length > 0) return { action: 'report', report: buildSearchReport({ mission, matches, scannedChunks }) };
+  return planExplorationStep({ mission, currentPosition, currentBiome, visited, spacing, maxRadius });
+}
+
 // ---- M2: route replay -------------------------------------------------------------
 //
 // "Torna al <posto già scoperto>": si rigioca una rotta *registrata* (i

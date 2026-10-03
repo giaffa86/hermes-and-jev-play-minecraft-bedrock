@@ -16,7 +16,7 @@ import {
   evaluateSurvival, summarizeSurvival, loadSurvivalRules,
   filterOptionsForGovernor, loadGameplaySkills, loadProgression, resolveMilestone, resolveActiveSkill,
 } from './survival/index.mjs';
-import { resolveBiomeTarget, planExplorationStep, chunkKey, SUPPORTED_BIOMES, replayRouteFromMission, replayRouteFromPlace, planReplayStep, buildReplayReport } from './exploration.mjs';
+import { resolveBiomeTarget, planExplorationStep, chunkKey, SUPPORTED_BIOMES, replayRouteFromMission, replayRouteFromPlace, planReplayStep, buildReplayReport, resolveSearchTarget, SUPPORTED_SEARCH_TARGETS, planSearchStep } from './exploration.mjs';
 
 console.log('BEDROCK HARNESS VERSION 2');
 const API_PORT = +(process.env.API_PORT || 3077);
@@ -35,6 +35,25 @@ mkdirSync(`runs/${RUN}`, { recursive: true });
 // Il nome dell'evento resta in `type`: il payload può portare un `type` (tipo
 // dell'entità, canale chat) che altrimenti lo sovrascriverebbe.
 const eventLog = (type, data) => appendFileSync(`runs/${RUN}/events.jsonl`, JSON.stringify({ t: Date.now(), ...data, type }) + '\n');
+
+// M4: scansione di un target osservabile nei chunk caricati. Blocchi: la palette
+// delle sezioni (un nome ignoto semplicemente non trova nulla). Entità: il
+// registro delle entità viste — `_nearbyEntities` cappa a 24 blocchi, cioè la
+// stessa percezione del bot (non si promette di vedere più lontano).
+function scanSearchTarget (adapter, mission, { radius = 48, limit = 16 } = {}) {
+  const name = String(mission?.target ?? '').replace(/^minecraft:/, '');
+  if (!name) return { error: 'no_target', matches: [] };
+  if (mission.type === 'find_entity') {
+    const rows = adapter._nearbyEntities?.(Math.max(limit, 24)) ?? [];
+    return { matches: rows.filter(e => e.type === name).map(e => ({ name: e.type, position: e.position, distance: e.distance })).slice(0, limit) };
+  }
+  const position = adapter.position;
+  if (!position || typeof adapter.world?.findBlocks !== 'function') return { error: 'no_world', matches: [] };
+  const matches = adapter.world.findBlocks(name, position, radius, limit)
+    .map(block => ({ name: block.name ?? name, position: { x: block.position.x, y: block.position.y, z: block.position.z }, distance: +(block.distance ?? 0).toFixed(1) }))
+    .sort((a, b) => a.distance - b.distance);
+  return { matches };
+}
 
 let server;
 let shuttingDown = false;
@@ -226,6 +245,7 @@ server = createServer(async (req, res) => {
         adapter.missionId = mission.id;
         adapter.explorationMissionId = mission.id;
         adapter.replayRoute = null;
+        adapter.searchMissionId = null;
         response = [200, { ok: true, mission, superseded }];
       }
     }
@@ -284,6 +304,7 @@ server = createServer(async (req, res) => {
         adapter.missionId = mission.id;
         adapter.explorationMissionId = null;
         adapter.replayRoute = route;
+        adapter.searchMissionId = null;
         response = [200, { ok: true, mission, route, superseded }];
       }
     }
@@ -300,6 +321,52 @@ server = createServer(async (req, res) => {
           adapter.memory.finishMission(mission.id, { outcome: 'arrived', success: true, state: 'arrived', result: report });
           response = [200, { ...step, report, missionId: mission.id }];
         } else response = [200, { ...step, missionId: mission.id }];
+      }
+    }
+    else if (req.method === 'POST' && req.url === '/explore/find') {
+      // M4: cerca un blocco o un'entità osservabile. Stessa struttura dell'M1:
+      // missione persistente, poi EXPLORE → SCAN → MATCH → REPORT.
+      const payload = body ? JSON.parse(body) : {};
+      const resolved = resolveSearchTarget(payload.target ?? payload.block ?? '');
+      if (!resolved) response = [400, { ok: false, error: 'unknown_search_target', supported: SUPPORTED_SEARCH_TARGETS }];
+      else {
+        const origin = adapter.position ? { x: adapter.position.x, y: adapter.position.y, z: adapter.position.z } : null;
+        const superseded = [];
+        for (const prev of adapter.memory.missions({ state: 'running', limit: 20 })) {
+          if (prev.type !== 'find_block' && prev.type !== 'find_entity') continue;
+          adapter.memory.finishMission(prev.id, { outcome: 'superseded', success: false, state: 'cancelled', failureReason: 'superseded_by_new_search' });
+          superseded.push(prev.id);
+        }
+        const mission = adapter.memory.createMission({ type: resolved.kind === 'entity' ? 'find_entity' : 'find_block', target: resolved.id, origin });
+        adapter.missionId = mission.id;
+        adapter.searchMissionId = mission.id;
+        adapter.explorationMissionId = null;
+        adapter.replayRoute = null;
+        response = [200, { ok: true, mission, resolved, superseded }];
+      }
+    }
+    else if (req.method === 'GET' && req.url.startsWith('/explore/find')) {
+      // Un passo della ricerca: `report` quando la scansione trova qualcosa,
+      // altrimenti `move` (la spirale dell'M1) e si riscansiona al passo dopo.
+      const params = new URLSearchParams(req.url.split('?')[1] ?? '');
+      const radius = Number(params.get('radius') ?? 48) || 48;
+      const limit = Number(params.get('limit') ?? 16) || 16;
+      const active = adapter.searchMissionId ? adapter.memory?.getMission(adapter.searchMissionId) : null;
+      const mission = active ?? adapter.memory?.missions({ state: 'running', limit: 20 }).find(m => m.type === 'find_block' || m.type === 'find_entity') ?? null;
+      if (!mission) response = [200, { action: 'hold', reason: 'no_mission' }];
+      else {
+        const scan = scanSearchTarget(adapter, mission, { radius, limit });
+        if (scan.error) response = [200, { action: 'hold', reason: scan.error, missionId: mission.id }];
+        else {
+          const visited = (adapter.memory.visitedChunks({ limit: 5000 }) || []).map(c => chunkKey(c.position.x, c.position.z));
+          const scannedChunks = adapter.world?.loaded?.size ?? null;
+          const step = planSearchStep({ mission, matches: scan.matches, currentPosition: adapter.position, visited, scannedChunks });
+          if (step.action === 'report') {
+            adapter.memory.updateMission(mission.id, { targetPosition: adapter.position });
+            adapter.memory.completeMission(mission.id, step.report);
+          }
+          response = [200, { ...step, missionId: mission.id, scan: { radius, found: scan.matches.length, scannedChunks } }];
+        }
       }
     }
     else if (req.method === 'GET' && req.url === '/mission') {

@@ -1707,3 +1707,55 @@ live resta bloccato dall'ambiente.
   `verification.md` (riga 45 aggiornata, nuova riga 45.1, riga 46),
   `open-questions.md` (bullet "No real exploration"),
   `roadmap.md` (voce 10).
+
+## [2026-10-03] feat | Esplorazione M4: ricerca di blocchi ed entità osservabili (collaudo live)
+
+M4 (spec: `explore.findBlock(target)`, EXPLORE → SCAN → MATCH BLOCK/ENTITY →
+REPORT) è implementato sul modello della missione M1: stesso ciclo, target
+osservabile invece di un bioma.
+
+**Implementazione**
+- `exploration.mjs`: `SEARCH_ALIASES` / `SEARCH_ENTITIES`,
+  `resolveSearchTarget(text)` → `{kind: 'block'|'entity', name, id}` (alias
+  naturali per funghi, zucca, bambù, mangrovia, canna da zucchero, melone,
+  cactus, vite, ninfee, cacao + animali; escape hatch `block:<name>` /
+  `entity:<name>` per qualunque id; i biomi restano di competenza di M1),
+  `SUPPORTED_SEARCH_TARGETS`, `buildSearchReport` (count, `best`
+  posizione+distanza, ≤5 match, `distanceFromOrigin`, `scannedChunks`,
+  durata), `planSearchStep` (report se la scansione ha trovato qualcosa,
+  altrimenti la spirale di M1). La corrispondenza degli alias usa un **confine
+  di parola**: trovato dai test, `'canna da zucchero'.includes('zucche')`
+  attivava l'alias di pumpkin.
+- `bedrock-harness.mjs`: `scanSearchTarget` (blocchi dai chunk caricati con
+  `world.findBlocks`, entità dal registro percepito `_nearbyEntities`, cap 24
+  blocchi — il bot promette solo ciò che vede); `POST /explore/find {target}`
+  (400 `unknown_search_target` + lista supportata) crea la missione
+  `find_block`/`find_entity` e supersede le ricerche `running`;
+  `GET /explore/find[?radius&limit]` restituisce un passo e, al `report`,
+  chiude la missione con `updateMission({targetPosition})` +
+  `completeMission`.
+- Driver `explore-find.mjs` (stesso schema di `explore.mjs`).
+
+**Collaudo live** (container `hermes-jev-bedrock`, BDS 1.26.52; il bot è nella
+stanza x114-117 / z156-160)
+- `{target:'block:oak_log'}` → missione `mission_find_block_murn5tz9` →
+  `GET /explore/find` → `report`: `found: true`, `count: 16`,
+  `best {oak_log (114,75,155), distance 2}`, 5 match, `scannedChunks: 125`.
+  Missione chiusa `state: found` / `outcome: found` / `success: true`, arco
+  `targets → minecraft:oak_log` in SQLite.
+- `{target:'brown mushroom'}`, `{target:'zucche'}`, `{target:'mucca'}` → nessun
+  match nei chunk caricati → `move` (spirale) con `found: 0` e **nessun falso
+  positivo**; il `goto_waypoint` successivo è `target_not_found` (gabbia, non
+  `arrived`).
+- `{target:'cherry grove'}` (un bioma) → 400 `unknown_search_target` + lista.
+- Una ricerca nuova chiude la precedente come `superseded`
+  (`superseded_by_new_search`).
+
+**Test**: 5 casi in `tests/exploration-search.test.mjs` (risoluzione NL e
+confine di parola, escape hatch, rifiuti, forma del report, report-vs-spirale);
+suite completa **604 test, 604 pass, 0 fail**.
+
+**Doc**: `exploration.md` (sezione "Observable targets (M4)", stato del codice,
+limiti aggiornati: l'M4 funziona da fermo perché scansiona i 125 chunk caricati,
+un target non caricato richiede viaggio), `verification.md` (riga 45.2, riga 46),
+`open-questions.md`, `roadmap.md` (voce 10).
