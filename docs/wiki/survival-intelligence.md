@@ -75,7 +75,7 @@ support (see [open-questions](open-questions.md)).
 
 ## Status
 
-**767 unit tests green (2026-10-03)**; the curriculum chain is verified live
+**774 unit tests green (2026-10-03)**; the curriculum chain is verified live
 end-to-end (`CURRICULUM=first_night` reached and closed on the real BDS).
 
 - **Fluids in the survival layer (M0, 2026-10-03)**: the governor vocabulary grew
@@ -127,6 +127,24 @@ and every attempt is appended to `runs/<run>/circuits.jsonl`. Four blueprints
 are buildable (`lamp_switch`, `delay_line`, `auto_lamp`, `auto_door`), four
 are declared and refused with a reason ([redstone](redstone.md), row 47.5 of
 [verification](verification.md)).
+
+- **A verifier that measures instead of trusting (R4, 2026-10-03)**: the timing of
+  a circuit is no longer a declaration. `measureCircuitDelay` reads the bot's own
+  redstone trace (the last bounded block updates) and reports the first change at
+  the blueprint's declared output **after** the trigger: `measuredMs`,
+  `measuredTicks`, and `ok` — with three honest states, because no sample is
+  `ok: null` (never a pass) and a sample outside the tolerance is
+  `circuit_delay_mismatch`. A blueprint can make it mandatory (`measure:
+  {expectedTicks, outputOffset, required, toleranceMs}` — `delay_line` asks for
+  six ticks ± 60 ms), and **a wrong timing is an error even when every block sits
+  exactly where it was asked to**. The same slice gives the bot a safe way back:
+  `_placeAtCell` keeps a ledger of what it placed, `_buildCircuit` stamps it with
+  the circuit id, and `teardown_circuit` removes **only** those cells — skipping
+  any cell someone else changed and leaving the rest of the world untouched —
+  while a failed step rolls the half-built site back. Error ladder:
+  `circuit_verify_failed` → `circuit_delay_not_confirmed` →
+  `circuit_delay_unmeasured` → `circuit_delay_mismatch` ([redstone](redstone.md),
+  row 47.6 of [verification](verification.md)).
 
 - **Wading and the simulated air budget (M1 partial, 2026-10-03)**: shallow water
 is now traversable — `_standable` accepts a feet cell holding water **when the

@@ -210,7 +210,19 @@ export function validateCircuit (def, where = 'circuit') {
   if (def.measure != null) {
     const m = def.measure;
     if (typeof m !== 'object' || Array.isArray(m)) errors.push(`${where}.measure: not an object`);
-    else if (!Number.isInteger(m.expectedTicks) || m.expectedTicks < 0) errors.push(`${where}.measure.expectedTicks: must be a non-negative integer`);
+    else {
+      if (!Number.isInteger(m.expectedTicks) || m.expectedTicks < 0) errors.push(`${where}.measure.expectedTicks: must be a non-negative integer`);
+      if (m.toleranceMs != null && (!Number.isInteger(m.toleranceMs) || m.toleranceMs < 0)) errors.push(`${where}.measure.toleranceMs: must be a non-negative integer`);
+      if (m.required != null && typeof m.required !== 'boolean') errors.push(`${where}.measure.required: must be a boolean`);
+      if (m.required === true && !Array.isArray(m.outputOffset)) errors.push(`${where}.measure.outputOffset: required to verify the timing`);
+      if (m.outputOffset != null) {
+        if (!Array.isArray(m.outputOffset) || m.outputOffset.length !== 3 || !m.outputOffset.every(n => Number.isInteger(n))) {
+          errors.push(`${where}.measure.outputOffset: must be [x, y, z] integers`);
+        } else if (cells.get(m.outputOffset.join(',')) == null) {
+          errors.push(`${where}.measure.outputOffset: no step places [${m.outputOffset.join(',')}]`);
+        }
+      }
+    }
   }
 
   return errors;
@@ -293,7 +305,16 @@ export function planCircuit (def, { origin = { x: 0, y: 0, z: 0 }, facing = 'sou
     trigger: triggerStep ? { cell: triggerStep.cell, item: triggerStep.item, label: triggerStep.label } : null,
     success,
     post,
-    measure: def.measure ?? null,
+    measure: def.measure
+      ? {
+        expectedTicks: expectedDelayTicks(def),
+        toleranceMs: def.measure.toleranceMs ?? DEFAULT_DELAY_TOLERANCE_MS,
+        required: def.measure.required === true,
+        output: Array.isArray(def.measure.outputOffset)
+          ? addOffset(base, def.measure.outputOffset, facing)
+          : null,
+      }
+      : null,
     buildable: def.buildable !== false,
     blocked: def.blocked ?? null,
   };
@@ -383,4 +404,37 @@ export function expectedDelayTicks (def) {
   const delays = (def?.post ?? []).map(p => p.delay ?? 0).filter(d => typeof d === 'number');
   if (!delays.length) return null;
   return delays.reduce((sum, d) => sum + (d + 1), 0);
+}
+
+// Un tick Bedrock dura 50 ms: serve a confrontare il ritardo dichiarato dal
+// blueprint con quello osservato dal vivo (dove l'unica unità misurabile è il
+// tempo, non il tick).
+export const TICK_MS = 50;
+export const DEFAULT_DELAY_TOLERANCE_MS = 60;
+
+// Misura il ritardo di un circuito dagli aggiornamenti di blocco osservati
+// ([{position, name, power, at}] in ordine cronologico, vedi la traccia
+// dell'adapter): prende il primo cambiamento dell'output avvenuto **dopo** il
+// trigger e lo confronta con i tick dichiarati. Non inventa mai una misura:
+// senza campioni `measuredMs` è null e `ok` resta null (da trattare come
+// "non misurato", mai come successo).
+export function measureCircuitDelay ({ trace = [], cell = null, triggeredAt = null, expectedTicks = null, toleranceMs = DEFAULT_DELAY_TOLERANCE_MS } = {}) {
+  const expectedMs = expectedTicks == null ? null : expectedTicks * TICK_MS;
+  const base = { expectedTicks, expectedMs, toleranceMs, measuredMs: null, measuredTicks: null, ok: null, samples: 0 };
+  if (!cell || triggeredAt == null) return base;
+  const key = cellKey(cell);
+  const samples = (trace ?? [])
+    .filter(entry => entry?.at != null && entry.at >= triggeredAt && cellKey(entry.position ?? {}) === key)
+    .sort((a, b) => a.at - b.at);
+  if (!samples.length) return base;
+  const first = samples[0];
+  const measuredMs = Math.max(0, first.at - triggeredAt);
+  const measuredTicks = Math.round(measuredMs / TICK_MS);
+  return {
+    ...base,
+    measuredMs,
+    measuredTicks,
+    samples: samples.length,
+    ok: expectedMs == null ? null : Math.abs(measuredMs - expectedMs) <= toleranceMs,
+  };
 }

@@ -4,7 +4,7 @@
   "description": "Lever, repeater clock and dispenser: fire items on a loop.",
   "requires": { "cobblestone": 1, "lever": 1, "repeater": 2, "dispenser": 1 },
   "buildable": false,
-  "blocked": "a repeater clock is a running loop: the safety rule forbids leaving it active and the R4 teardown path does not exist yet",
+  "blocked": "a repeater clock keeps running while the lever is held: the safety rule forbids leaving an active clock behind and the dispenser state needs a verifier the current blueprint cannot express",
   "steps": [
     { "item": "cobblestone", "offset": [0, 0, 0], "label": "base" },
     { "item": "lever", "offset": [0, 1, 0], "supportOffset": [0, 0, 0], "face": 1, "label": "lever" },

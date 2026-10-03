@@ -2314,3 +2314,64 @@ vocabolario, rischi), `docs/wiki/verification.md` (nuova riga 47.5),
 (tre punti), `docs/wiki/survival-intelligence.md` (767 test + bullet R3),
 `docs/index.md` (riga redstone), `AGENTS.md` (`circuits/*.json` nella project
 shape e nella regola "data, not code").
+
+## [2026-10-03] feat | Redstone R4: misurare il ritardo, smontare solo il proprio, rollback
+
+**Codice.** `circuits.mjs`: `measureCircuitDelay({trace, cell, triggeredAt,
+expectedTicks, toleranceMs})` (primo cambio **all'output dichiarato** dopo il
+trigger: `measuredMs`/`measuredTicks`/`ok`, con `ok: null` quando non arriva
+nessun campione — mai un successo vuoto; `TICK_MS = 50`,
+`DEFAULT_DELAY_TOLERANCE_MS = 60`), `planCircuit` che risolve `measure` in
+`{expectedTicks, toleranceMs, required, output}`, validazione di
+`measure.outputOffset` (deve essere una cella di un passo) / `toleranceMs` /
+`required`. `bedrock-adapter.mjs`: `_redstoneTrace` (limitata da
+`REDSTONE_TRACE_LIMIT`, default 32) alimentata da `_noteRedstoneUpdate(position,
+at = Date.now())`; registro `_placedBlocks` scritto da `_placeAtCell` e marcato
+con l'id del circuito da `_buildCircuit`; `_ownedCircuitCells`,
+`_teardownCells` (salta `not_owned` e `changed`), `_teardownCircuit` (`removed`,
+`skipped`, `failed`, `remaining`), rollback di default dei passi già piazzati
+quando un passo fallisce (`rollback: {removed, skipped, failed}`), scala d'errore
+`circuit_verify_failed` → `circuit_delay_not_confirmed` →
+`circuit_delay_unmeasured` → `circuit_delay_mismatch`; opzione e azione
+`teardown_circuit` (e `teardown_circuit_<id>`), `observe().circuits.owned`;
+`circuits/delay_line.json` dichiara `measure: {expectedTicks: 6, outputOffset:
+[0,0,4], required: true, toleranceMs: 60}`; `auto_dispense` aggiorna il motivo
+del rifiuto (un clock resta attivo finché la leva è tenuta, e lo stato del
+dispenser non è esprimibile nel blueprint); `survival/intents.mjs` mappa
+`teardown_circuit`/`teardown_circuit_<id>` su `build` + `redstone`.
+
+**Test.** `tests/circuits.test.mjs` +2 casi (misura pura: nessun campione,
+campione giusto, cella diversa, cambio precedente al trigger, ritardo tardivo;
+validazione del blocco `measure`) e `tests/bedrock-circuits.test.mjs` +5
+(`delay_line` con `linkDelayMs: 300` ⇒ `measuredMs: 300`/6 tick; `900 ms` ⇒
+`circuit_delay_mismatch` con i blocchi tutti corretti; `traceUpdates: false` ⇒
+`circuit_delay_unmeasured`; rollback sul passo rifiutato; teardown delle celle
+possedute con l'opzione che compare e sparisce, cella cambiata da altri saltata,
+`nothing_to_tear_down`/`no_circuit_built`). Il fixture modella anche l'effetto
+del registro e il `_mineBlock` del server. Suite: **774 test verdi**.
+
+**Live (VM 100, container `hermes-jev-bedrock`, BDS 1.26.52).**
+`GET /observe.circuits` → `{count: 8, buildable: [4], declared: [4 con motivo],
+invalid: null, last: null, owned: 0}`; `/options` → 22 chiavi **senza**
+`teardown_circuit` (niente di posseduto) e senza `build_circuit_*`;
+`POST /act {"key":"teardown_circuit"}` → `{ok:false, error:'nothing_to_tear_down',
+id:null, owned:0}` in millisecondi, anche dopo un `place_torch` fallito;
+`build_circuit_delay_line` → `missing_materials` (cobblestone/lever/repeater×3/
+redstone_lamp) e la riga è finita in `runs/demo/circuits.jsonl`.
+
+**Doc.** `docs/wiki/redstone.md` (status → R0–R4, nuova sezione R4, milestone R4
+→ ◑, vocabolario, limiti R3 aggiornati dove citavano R4), `docs/wiki/verification.md`
+(nuova riga 47.6), `docs/wiki/roadmap.md` (due punti → R5), `docs/wiki/open-questions.md`,
+`docs/wiki/survival-intelligence.md` (774 test + bullet R4), `docs/index.md`,
+`AGENTS.md` (`REDSTONE_TRACE_LIMIT` e la regola "data, not code" estesa a misura
+e teardown).
+
+**Limiti.** Il percorso misurato, il rollback e la rimozione di celle reali sono
+coperti dai test dell'adapter con un server modellato: la stanza non ha materiale
+redstone e il piano C vieta di toccare la base (il suo cobblestone è il muro), e
+una `redstone_lamp` richiede glowstone dal Nether. La misura dipende dal fatto
+che il server riporti il cambio del blocco di output: se sta zitto la risposta
+onesta è `circuit_delay_unmeasured`. La tolleranza ±60 ms assorbe il tick da
+50 ms ma non distingue "6 tick di ritardo" da "1 tick ripetuto sette volte".
+`teardown_circuit` non verifica se la cella è ancora alimentata da altro: rimuove
+il blocco posseduto e lascia stare il filo del vicino.

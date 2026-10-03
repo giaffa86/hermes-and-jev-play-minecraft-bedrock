@@ -223,8 +223,10 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   verifies and restores, `GET /observe.circuits`, `runs/<run>/circuits.jsonl`) —
   the packet capture the roadmap predicted
   was **not** needed, the state is read back from the world instead. Building and
-  using circuits is R3-done; **R4** (deterministic verifier, `teardown_circuit`,
-  rollback) is next. The full live build round is blocked from two sides: mining
+  using circuits is R3-done, and **R4** (measured delay, placed-block ledger,
+  `teardown_circuit`, rollback of a half-built site) is done as well: the timing
+  is now read from the bot's own redstone trace instead of being declared. The
+  full live build round is still blocked from two sides: mining
   the only cobblestone in reach edits the base, and a `redstone_lamp` needs
   glowstone from the Nether.
 - **Goal Contract** — thin slice implemented (`survival/goal-contract.mjs`,
@@ -282,7 +284,7 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    milestones are therefore parked with a documented blocker; the next
    macro-area is **Redstone R0** (below), a deviation to record in the final
    report.
-7. **Redstone** (R0+R1+R2+R3 done 03/10, spec in [redstone](redstone.md)): R0 (protect
+7. **Redstone** (R0+R1+R2+R3+R4 done 03/10, spec in [redstone](redstone.md)): R0 (protect
    redstone in `DIG_PROTECTED`, `/observe.redstone`, state-aware search) is
    implemented, unit-tested and collaudato live (see [verification](verification.md)
    row 47.2); **R1** oriented placement + repeater delay is implemented and
@@ -291,8 +293,11 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    (row 47.4); **R3** declarative circuits (`circuits/*.json` + `circuits.mjs` +
    `build_circuit_<id>` + `runs/<run>/circuits.jsonl`) is implemented,
    unit-tested and live-refused (row 47.5: catalogue, gating and typed refusals
-   on the BDS). Next is **R4** (deterministic verifier that *measures* the delay,
-   `teardown_circuit`, rollback), which also shares the live blocker of R1/R2/R3:
+   on the BDS); **R4** (the verifier *measures* the delay from the block-update
+   trace, a ledger of the blocks the bot placed, `teardown_circuit` limited to
+   them, rollback of a half-built site) is implemented and unit-tested (row
+   47.6). Next is **R5** (the deterministic verifier for the remaining
+   components and the `crafter`), which shares the live blocker of R1/R2/R3/R4:
    no component is obtainable in the base room without editing the base
    (cobblestone = the room's own wall) and a `redstone_lamp` needs glowstone.
 8. **Goal Contract** (proposal in [goal-achievement](goal-achievement.md)):

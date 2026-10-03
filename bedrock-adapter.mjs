@@ -13,7 +13,7 @@ import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
 import { detectStructures } from './structures.mjs';
 import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT } from './bedrock-fluids.mjs';
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
-import { loadCircuits, planCircuit, circuitSiteBlocked, checkCircuitSuccess, circuitAnchor, expectedDelayTicks, EMPTY_BLOCKS } from './circuits.mjs';
+import { loadCircuits, planCircuit, circuitSiteBlocked, checkCircuitSuccess, circuitAnchor, expectedDelayTicks, measureCircuitDelay, TICK_MS } from './circuits.mjs';
 import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
@@ -40,6 +40,8 @@ const MAX_SIM_STEPS = 8;        // tick di fisica massimi per singolo invio
 const PLAYER_HALF_WIDTH = 0.3;
 const PLAYER_HEIGHT = 1.8;
 const PATH_MAX_NODES = 5000;    // tetti di ricerca A*
+// R4: quanti cambi redstone tenere in traccia per misurare un ritardo.
+const REDSTONE_TRACE_LIMIT = +(process.env.REDSTONE_TRACE_LIMIT || 32);
 const MAX_CORRECTION_DRIFT = 0.75; // oltre questa distanza la correzione è autoritativa su X/Z
 // BDS 1.26.52: se il respawn non si completa entro questo tempo, si riconnette
 // (nuovo login = unico recovery noto dalla morte bloccata). Vedi _survivalTick.
@@ -211,6 +213,13 @@ export class BedrockAdapter {
     this._circuits = null;
     this._circuitError = null;
     this._circuitLast = null;
+    // R4: registro dei blocchi che il bot ha piazzato lui (chiave "x,y,z"),
+    // con la sorgente e, per i cantieri, l'id del circuito. Serve al teardown
+    // per non toccare mai un blocco che non è suo.
+    this._placedBlocks = new Map();
+    // R4: traccia degli ultimi cambi redstone osservati ({position, name, power,
+    // at}), base della misura del ritardo di un circuito.
+    this._redstoneTrace = [];
     this.dimension = 'overworld';
     this.standingOn = null;
     this.plan = null;
@@ -1165,7 +1174,7 @@ export class BedrockAdapter {
   // del censimento viene aggiornata **in place** (niente nuova scansione, che
   // costerebbe un findBlocks per ogni blocco scavato) e il cambio resta in
   // `_redstoneChange` per la diagnostica. Una cella non redstone non tocca nulla.
-  _noteRedstoneUpdate (position) {
+  _noteRedstoneUpdate (position, at = Date.now()) {
     if (!position) return;
     const cell = { x: position.x, y: position.y, z: position.z };
     const before = componentAt(this._redstoneScan, cell);
@@ -1181,8 +1190,15 @@ export class BedrockAdapter {
       previous: before?.power ?? null,
       power: row?.power ?? null,
       powerKnown: row != null ? row.power != null : null,
-      at: Date.now(),
+      at,
     };
+    // Il timestamp è un parametro (con default `Date.now()`) per potersi
+    // misurare un ritardo dichiarato dal server: la traccia è ordinata e
+    // limitata, così non cresce senza controllo durante una sessione lunga.
+    this._redstoneTrace.push({ position: cell, name: this._redstoneChange.name, power: row?.power ?? null, at });
+    if (this._redstoneTrace.length > REDSTONE_TRACE_LIMIT) {
+      this._redstoneTrace.splice(0, this._redstoneTrace.length - REDSTONE_TRACE_LIMIT);
+    }
     if (this._redstoneBlocks) {
       const index = this._redstoneBlocks.findIndex(b => b?.position
         && b.position.x === cell.x && b.position.y === cell.y && b.position.z === cell.z);
@@ -1948,6 +1964,9 @@ export class BedrockAdapter {
         result = await this._combat(key.slice('attack_'.length));
       } else if (key.startsWith('build_circuit_')) {
         result = await this._buildCircuit(key.slice('build_circuit_'.length));
+      } else if (key === 'teardown_circuit' || key.startsWith('teardown_circuit_')) {
+        const id = key === 'teardown_circuit' ? null : key.slice('teardown_circuit_'.length);
+        result = await this._teardownCircuit(id);
       } else if (key === 'cast_rod') {
         result = await this._castRod();
       } else if (key === 'reel_in') {
@@ -3697,6 +3716,11 @@ export class BedrockAdapter {
       if (placed && placed.name === blockName) {
         this._refreshNearby();
         this._lastPlacement.after = blockName;
+        // R4: il bot ricorda cosa ha piazzato lui, per poterlo rimuovere senza
+        // toccare il resto del mondo.
+        this._placedBlocks.set(`${target.x},${target.y},${target.z}`, {
+          block: blockName, item: itemName, at: Date.now(), source: 'place', circuit: null,
+        });
         return { ok: true, block: blockName, position: target };
       }
       if (placed && placed.name !== 'air' && placed.name !== 'unknown') {
@@ -3836,6 +3860,7 @@ export class BedrockAdapter {
       declared: all.filter(d => !d.buildable).map(d => ({ id: d.id, blocked: d.blocked ?? null })),
       invalid: this._circuitError,
       last: this._circuitLast,
+      owned: this._ownedCircuitCells().length,
     };
   }
 
@@ -3863,6 +3888,14 @@ export class BedrockAdapter {
       if (circuitSiteBlocked(plan, cell => this.world.blockAt(cell)).length) continue;
       const needs = Object.entries(def.requires).map(([item, qty]) => `${qty} ${item}`).join(', ');
       out.push({ key: `build_circuit_${def.id}`, description: `Build the ${def.id} circuit at ${JSON.stringify(plan.anchor)} (needs ${needs}): ${def.description}` });
+    }
+    // R4: si smonta solo quello che il bot ha costruito lui.
+    const owned = this._ownedCircuitCells();
+    if (owned.length) {
+      out.push({
+        key: 'teardown_circuit',
+        description: `Remove the ${owned.length} circuit block(s) the bot placed itself (nothing else is touched)`,
+      });
     }
     return out;
   }
@@ -3902,7 +3935,69 @@ export class BedrockAdapter {
     return { ok: false, error: 'orientation_not_confirmed', block: step.block, position: step.cell, facing: actual, wanted: step.facing };
   }
 
-  async _buildCircuit (id, { facing = null, timeoutMs = 2500 } = {}) {
+  // R4: le celle che il bot ha piazzato per un circuito. Il registro tiene
+  // anche i blocchi generici (torce, rifugi), ma il teardown tocca solo questi.
+  _ownedCircuitCells (id = null) {
+    const out = [];
+    for (const [key, entry] of this._placedBlocks) {
+      if (!entry?.circuit) continue;
+      if (id && entry.circuit !== id) continue;
+      const [x, y, z] = key.split(',').map(Number);
+      out.push({ cell: { x, y, z }, block: entry.block, item: entry.item, circuit: entry.circuit, at: entry.at, key });
+    }
+    return out.sort((a, b) => a.at - b.at);
+  }
+
+  // Smonta le celle indicate **solo** se il bot le ha piazzate lui e se il mondo
+  // mostra ancora quel blocco: se qualcun altro l'ha cambiato non si tocca.
+  async _teardownCells (cells, { timeoutMs = 30000 } = {}) {
+    const removed = [];
+    const skipped = [];
+    const failed = [];
+    for (const entry of cells) {
+      const key = entry.key ?? `${entry.cell.x},${entry.cell.y},${entry.cell.z}`;
+      const owned = this._placedBlocks.get(key) ?? null;
+      if (!owned) { skipped.push({ ...entry, reason: 'not_owned' }); continue; }
+      const block = this.world.blockAt(entry.cell);
+      const name = String(block?.name ?? '').replace(/^minecraft:/i, '').toLowerCase();
+      if (name !== owned.block) {
+        skipped.push({ ...entry, reason: 'changed', expected: owned.block, found: name || null });
+        continue;
+      }
+      const res = await this._mineBlock(block, timeoutMs);
+      if (res?.ok) {
+        this._placedBlocks.delete(key);
+        removed.push({ ...entry, block: owned.block });
+      } else {
+        failed.push({ ...entry, error: res?.error ?? 'mine_failed' });
+      }
+    }
+    return { removed, skipped, failed };
+  }
+
+  // R4: `teardown_circuit` (o `teardown_circuit_<id>`) rimuove solo i blocchi
+  // che il bot ha piazzato per un circuito: nessuna modifica redstone fuori da
+  // ciò che ha costruito lui.
+  async _teardownCircuit (id = null, { timeoutMs = 30000 } = {}) {
+    const cells = this._ownedCircuitCells(id);
+    if (!cells.length) {
+      return { ok: false, error: id ? 'no_circuit_built' : 'nothing_to_tear_down', id, owned: this._ownedCircuitCells().length };
+    }
+    const { removed, skipped, failed } = await this._teardownCells(cells, { timeoutMs });
+    const report = {
+      ok: failed.length === 0,
+      error: failed.length ? 'teardown_incomplete' : null,
+      id,
+      removed,
+      skipped,
+      failed,
+      remaining: this._ownedCircuitCells(id).length,
+    };
+    this.log(report.ok ? 'circuit_torn_down' : 'circuit_teardown_failed', { id, removed: removed.length, skipped: skipped.length, failed: failed.length });
+    return report;
+  }
+
+  async _buildCircuit (id, { facing = null, timeoutMs = 2500, rollback = true } = {}) {
     const def = this._circuitCatalogue().get(id) ?? null;
     if (!def) return { ok: false, error: 'unknown_circuit', id, known: [...this._circuitCatalogue().keys()] };
     if (!def.buildable) return { ok: false, error: 'circuit_not_buildable', id, reason: def.blocked ?? 'declared only' };
@@ -3924,11 +4019,33 @@ export class BedrockAdapter {
         break;
       }
       placed.push({ label: step.label, item: step.item, block: step.block, cell: step.cell, facing: res.facing ?? null });
+      // R4: il registro impara che quella cella è di questo circuito.
+      const owned = this._placedBlocks.get(`${step.cell.x},${step.cell.y},${step.cell.z}`);
+      if (owned) owned.circuit = id;
     }
     if (failed.length) {
-      const report = { ok: false, error: 'circuit_incomplete', id, origin: plan.origin, facing: dir, placed, failed, post: [], trigger: null, success: null, verifyNote: null };
+      // R4: un cantiere a metà non resta in piedi. Il rollback è best effort e
+      // il report conserva comunque quello che era stato piazzato.
+      const back = rollback
+        ? await this._teardownCells(placed.map(p => ({ cell: p.cell, label: p.label })), { timeoutMs: 30000 })
+        : null;
+      const report = {
+        ok: false,
+        error: 'circuit_incomplete',
+        id,
+        origin: plan.origin,
+        facing: dir,
+        placed,
+        failed,
+        post: [],
+        trigger: null,
+        success: null,
+        verifyNote: null,
+        delay: null,
+        rollback: back ? { removed: back.removed.length, skipped: back.skipped, failed: back.failed.length } : null,
+      };
       this._circuitLast = report;
-      this.log('circuit_incomplete', { id, origin: plan.origin, placed: placed.length, error: failed[0].error });
+      this.log('circuit_incomplete', { id, origin: plan.origin, placed: placed.length, error: failed[0].error, rolledBack: back?.removed.length ?? null });
       return { ...report, circuit: report };
     }
 
@@ -3944,11 +4061,40 @@ export class BedrockAdapter {
     if (plan.trigger) this._redstoneCensus({ force: true });
     let trigger = null;
     let success = null;
+    let delay = plan.measure
+      ? {
+        expectedTicks: plan.measure.expectedTicks,
+        expectedMs: plan.measure.expectedTicks == null ? null : plan.measure.expectedTicks * TICK_MS,
+        toleranceMs: plan.measure.toleranceMs,
+        required: plan.measure.required,
+        output: plan.measure.output,
+        measuredMs: null,
+        measuredTicks: null,
+        ok: null,
+        samples: 0,
+      }
+      : null;
     if (plan.trigger) {
+      const triggeredAt = Date.now();
       const on = await this._useRedstone({ position: plan.trigger.cell, restore: false, timeoutMs });
       // La verifica si fa con il trigger ancora attivo: è quello lo stato che il
       // blueprint descrive. Il ripristino viene dopo e viene letto anche lui.
       if (on.ok) success = checkCircuitSuccess(def, { origin: plan.origin, facing: dir, read: cell => this.world.blockAt(cell) });
+      // R4: il ritardo si *misura* dagli aggiornamenti di blocco arrivati dopo il
+      // trigger, non si deduce dal blueprint.
+      if (plan.measure?.output) {
+        delay = {
+          ...measureCircuitDelay({
+            trace: this._redstoneTrace,
+            cell: plan.measure.output,
+            triggeredAt,
+            expectedTicks: plan.measure.expectedTicks,
+            toleranceMs: plan.measure.toleranceMs,
+          }),
+          required: plan.measure.required,
+          output: plan.measure.output,
+        };
+      }
       const off = on.ok ? await this._useRedstone({ position: plan.trigger.cell, restore: false, timeoutMs }) : null;
       trigger = {
         cell: plan.trigger.cell,
@@ -3965,9 +4111,11 @@ export class BedrockAdapter {
 
     const postFailed = post.filter(p => !p.ok);
     const verified = success && !success.empty ? success.ok : null;
+    const delayUnmeasured = delay && delay.required && delay.measuredMs == null;
+    const delayMismatch = delay && delay.measuredMs != null && delay.ok === false;
     const error = postFailed.length
       ? 'circuit_delay_not_confirmed'
-      : (trigger && !trigger.ok ? (trigger.error ?? 'trigger_failed') : (verified === false ? 'circuit_verify_failed' : null));
+      : (trigger && !trigger.ok ? (trigger.error ?? 'trigger_failed') : (verified === false ? 'circuit_verify_failed' : (delayUnmeasured ? 'circuit_delay_unmeasured' : (delayMismatch ? 'circuit_delay_mismatch' : null))));
     const report = {
       ok: error == null,
       error,
@@ -3981,9 +4129,11 @@ export class BedrockAdapter {
       success: success && !success.empty ? success : null,
       verifyNote: success && success.empty ? (def.verifyNote ?? null) : null,
       expectedDelayTicks: expectedDelayTicks(def),
+      delay,
+      rollback: null,
     };
     this._circuitLast = report;
-    this.log(report.ok ? 'circuit_built' : 'circuit_failed', { id, facing: dir, origin: plan.origin, steps: placed.length, error });
+    this.log(report.ok ? 'circuit_built' : 'circuit_failed', { id, facing: dir, origin: plan.origin, steps: placed.length, error, measuredMs: delay?.measuredMs ?? null });
     return { ...report, circuit: report };
   }
 

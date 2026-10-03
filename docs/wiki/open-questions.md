@@ -476,10 +476,12 @@ Still missing (the rest of the original gap):
   (declarative circuits: `circuits/*.json` validated at load, pure planner and
   checks, `build_circuit_<id>` that places/triggers/verifies/restores,
   `GET /observe.circuits`, `runs/<run>/circuits.jsonl` — unit-tested and
-  live-refused 03/10), R4–R6 spec only. Roadmap in [redstone](redstone.md); next
-  is R4 (a verifier that *measures* the timing, `teardown_circuit`, rollback),
-  whose live round shares the "no base edits" blocker (and a `redstone_lamp`
-  needs Nether glowstone).
+  live-refused 03/10) and R4 done (the delay is *measured* from the block-update
+  trace, `teardown_circuit` limited to the cells the bot placed itself, rollback
+  of a half-built site, `measure.required`/tolerance per blueprint — unit-tested
+  03/10), R5–R6 spec only. Roadmap in [redstone](redstone.md); next
+  is R5, whose live round shares the "no base edits" blocker (and a
+  `redstone_lamp` needs Nether glowstone).
 
 ## Known code defects (not fixed)
 

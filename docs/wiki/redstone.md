@@ -6,9 +6,9 @@ hopper item transport, dispensers and (stretch) crafters. It builds on the
 verified primitives (placement, `click_block` interaction, containers, crafting,
 digging) while never breaking the base's own circuits.
 
-Status: **R0, R1, R2 and R3 implemented and unit-tested (R0 also collaudato
+Status: **R0, R1, R2, R3 and R4 implemented and unit-tested (R0 also collaudato
 live); the live component round is blocked by the standing "no base edits" rule
-(03/10/2026); R4–R6 spec only** (tracked in [roadmap](roadmap.md) and
+(03/10/2026); R5–R6 spec only** (tracked in [roadmap](roadmap.md) and
 [open-questions](open-questions.md)). Full raw source:
 [`docs/raw/REDSTONE_ROADMAP.md`](../raw/REDSTONE_ROADMAP.md).
 
@@ -344,7 +344,8 @@ A circuit is now **data, not code**: `circuits/*.json` declares what to build an
   `auto_door` (lever + fence gate, success on the gate's `open_bit`). The other
   four are declared and **refused with a reason**: `auto_harvest` (needs the M1
   fluid milestone and a hopper output strategy), `auto_dispense` (a repeater
-  clock is a running loop and R4's teardown does not exist yet), `hopper_chain`
+  clock keeps running while the lever is held, and a dispenser state needs a
+  verifier the blueprint cannot express), `hopper_chain`
   (the hopper sits *on* the chest, a usable block for the placement primitive),
   `crafter_pulse` (needs a pulse, not a held lever, and R5's verifier).
 - **`build_circuit_<id>`** (`_buildCircuit`): resolve the blueprint → refuse if
@@ -363,8 +364,8 @@ A circuit is now **data, not code**: `circuits/*.json` declares what to build an
   `orientation_not_confirmed` **without** retrying — the R1 retry mines and
   replaces, which `DIG_PROTECTED` forbids for components.
 - **Nothing is left running**: the trigger is restored (the second toggle's
-  result is `trigger.restored`), so the `auto_dispense` clock stays out of the
-  catalogue until R4 can tear it down.
+  result is `trigger.restored`), and a trigger that is only *held* (a clock) is
+  not offered at all.
 - **Observability**: `GET /observe.circuits` returns `{count, buildable,
   declared: [{id, blocked}], invalid, last}` — `last` is the full report of the
   previous build — and the harness appends **one record per attempt** to
@@ -404,19 +405,102 @@ A circuit is now **data, not code**: `circuits/*.json` declares what to build an
   base's own cobblestone — so the built-and-verified path is covered by the
   adapter tests with a modelled server, exactly like R1/R2. `checkCircuitSuccess`
   compares block **properties**, not behaviour: a lamp that stays lit for another
-  reason still passes, and **timing** is only declared (`expectedDelayTicks`),
-  never measured (that is R4's verifier). Only one work site at a time, no
-  rollback of the steps already placed (R4), and `auto_door` builds the fence-gate
-  variant: the piston variant needs the live block name of `sticky_piston`'s arm
-  (R4).
+  reason still passes, and **timing** is only declared (`expectedDelayTicks`) in
+  this slice — R4 measures it. Only one work site at a time, and `auto_door`
+  builds the fence-gate variant: the piston variant needs the live block name of
+  `sticky_piston`'s arm.
+
+
+## R4 — The verifier measures, the teardown stays inside what the bot built (implemented, unit-tested 03/10/2026)
+
+R3 declared a delay and trusted the block properties. R4 makes the timing a
+*measurement* and gives the bot a way back: it can dismantle what it built, and
+nothing else.
+
+- **The delay is measured, not deduced** (`circuits.mjs`):
+  `measureCircuitDelay({trace, cell, triggeredAt, expectedTicks, toleranceMs})`
+  takes the bot's own redstone trace (the last `REDSTONE_TRACE_LIMIT = 32`
+  observed block changes, `[position, name, power, at]` in order — the adapter
+  appends to it from `_noteRedstoneUpdate`) and returns the first change **at the
+  declared output cell** that happened *after* the trigger:
+  `{expectedTicks, expectedMs: expectedTicks * TICK_MS, toleranceMs, measuredMs,
+  measuredTicks, ok, samples}`. `TICK_MS = 50`. Three honest states: no sample ⇒
+  `measuredMs: null` and `ok: null` (never a success), a sample inside the
+  tolerance ⇒ `ok: true`, a sample outside ⇒ `ok: false`. A change *before* the
+  trigger is not an answer, and only the declared cell counts as a sample.
+- **A blueprint declares how it wants to be measured**:
+  `measure: {expectedTicks, outputOffset, required, toleranceMs}` — `outputOffset`
+  must be a cell some step places (validated) and `required: true` means "if the
+  delay cannot be measured, the build is not done". `delay_line` now declares
+  `{expectedTicks: 6, outputOffset: [0,0,4], required: true, toleranceMs: 60}`:
+  its acceptance is *six redstone ticks between the lever and the lamp*.
+- **The ledger of what the bot placed** (`_placedBlocks`, key `"x,y,z"`):
+  `_placeAtCell` records every successful placement
+  (`{block, item, at, source, circuit}`) and `_buildCircuit` stamps `circuit:
+  <id>` on the cells of its work site. The ledger is what makes a teardown
+  *owned*: a cell the bot never placed cannot be removed.
+- **`teardown_circuit`** (and `teardown_circuit_<id>`): removes the circuit cells
+  the bot placed, one by one, and **skips** any cell that is no longer the block
+  it placed (`{reason: 'changed', expected, found}` — someone else touched it) or
+  is not in the ledger (`not_owned`). Report: `{ok, error, id, removed, skipped,
+  failed, remaining}` with `nothing_to_tear_down` / `no_circuit_built` when there
+  is nothing of its own, and `teardown_incomplete` when a removal fails. It is
+  offered only when the ledger holds circuit cells, and it **never touches the
+  rest of the world** — a torch or a hut wall the bot placed through the same
+  primitive is not a circuit and stays.
+- **A half-built site does not stay up**: `_buildCircuit(..., {rollback: true})`
+  (the default) tears down the steps it had already placed when a later step
+  fails, and reports `rollback: {removed, skipped, failed}`. A `placed` step that
+  the server refuses is still reported — the report is the record, the world
+  goes back to its previous state.
+- **Error ladder**: the block checks come first (`circuit_verify_failed`), then
+  the timing: `circuit_delay_not_confirmed` (a `post` failed),
+  `circuit_delay_unmeasured` (the blueprint requires the measurement and nothing
+  arrived), `circuit_delay_mismatch` (measured outside the tolerance). A wrong
+  delay is an error even when every block is exactly where the blueprint wanted
+  it.
+- **Intent mapping**: `teardown_circuit` (and the `teardown_circuit_<id>`
+  variant) → `build` + `redstone` in `survival/intents.mjs`; `REDSTONE_TRACE_LIMIT`
+  is configurable (default 32).
+- **Tests**: `tests/circuits.test.mjs` adds `measureCircuitDelay` (no sample, the
+  right sample, a change in another cell, a change before the trigger, a late
+  delay) and the `measure` validation messages; `tests/bedrock-circuits.test.mjs`
+  adds the measured `delay_line` (`linkDelayMs: 300` ⇒ `measuredMs: 300`,
+  `measuredTicks: 6`), the mismatch (`900 ms` ⇒ `circuit_delay_mismatch` with
+  every block still correct), the unmeasured case (`traceUpdates: false` ⇒
+  `circuit_delay_unmeasured`), the rollback on a failed step, the teardown of
+  owned cells (with the option appearing and disappearing), the cell someone else
+  changed (skipped, not mined) and the two "nothing to tear down" errors. Suite:
+  **774 tests green**.
+- **Live round (03/10/2026, container `hermes-jev-bedrock`)**: `/observe.circuits`
+  → `{count: 8, buildable: […4…], declared: […4 with a reason…], invalid: null,
+  last: null, owned: 0}`; `/options` → 22 keys with **no** `teardown_circuit` and
+  no `build_circuit_*` (nothing owned, nothing buildable in the room);
+  `POST /act {"key":"teardown_circuit"}` → `{ok: false, error:
+  'nothing_to_tear_down', id: null, owned: 0}` in milliseconds, twice (before and
+  after a failed `place_torch`); `build_circuit_delay_line` → `missing_materials`
+  (cobblestone, lever, repeater ×3, redstone_lamp) and the attempt landed in
+  `runs/demo/circuits.jsonl`.
+- **Known limits (R4)**: the measured path, the rollback and the teardown of real
+  cells are covered by the adapter tests with a modelled server, because the
+  standing room has no redstone material and plan C forbids touching the base —
+  the live round exercises the empty/refused paths (`owned: 0`,
+  `nothing_to_tear_down`, `missing_materials`, the JSONL row). The measurement
+  depends on the server reporting block updates for the output: if it stays
+  silent, the honest answer is `circuit_delay_unmeasured`, not a passed test. A
+  tolerance of ±60 ms absorbs the 50 ms tick but cannot tell "6 ticks late" from
+  "one tick late, seven times": it is a timing check, not a trace analysis.
+  `teardown_circuit` does not check whether the cell is *still powered* by
+  something else; it removes the owned block and leaves the neighbour's wire
+  alone.
 
 ## Proposed vocabulary
 
 - **Actions**: `build_circuit_<id>`, `use_redstone`, `set_repeater_delay`,
   `sense_redstone`, `teardown_circuit`, `mine_redstone_ore` (via `_refreshNearby`).
   Implemented: `use_redstone`, `sense_redstone`, `set_repeater_delay`,
-  `mine_redstone_ore`, `build_circuit_<id>`; still missing: `teardown_circuit`
-  (R4).
+  `mine_redstone_ore`, `build_circuit_<id>`, `teardown_circuit` (and its
+  `teardown_circuit_<id>` variant).
 - **Intents**: `redstone`, `toggle`, `sense`.
 - **Item tags**: `redstone_dust`, `redstone_components`, `pistons`, `hoppers`.
 - **Conditions/criteria**: `redstoneNearby`, `tntNearby`, `blockPoweredAt` /
@@ -431,7 +515,7 @@ A circuit is now **data, not code**: `circuits/*.json` declares what to build an
 | R1 | Oriented placement | Extend `_placeAtCell` with desired state/facing and side faces; confirm name+properties; place→read→correct retry; packet-capture task for placement orientation; repeater delay via interaction. | ◑ place→read→correct + repeater delay implemented and unit-tested; packet capture **not needed**; the live component round is blocked by plan C (no base edits) |
 | R2 | Interaction & sensing | `use_redstone` (lever/button) with state + downstream verification; redstone cache in `/observe`; `sense_redstone`; verifier criteria. | ◑ implemented + unit-tested and live-sensed (in-place cache, `use_redstone`, `sense_redstone`, `blockPoweredAt`/`circuitActive`); the live toggle is blocked by plan C |
 | R3 | Primitive circuits | Declarative `circuits/*.json` blueprints (`lamp_switch`, `delay_line`, `auto_lamp`, `auto_door`, `auto_harvest`, `auto_dispense`, `hopper_chain`, `crafter_pulse`) + `build_circuit_<id>` bounded action. | ◑ `circuits.mjs` + 8 blueprints (4 buildable, 4 declared with a reason) + `build_circuit_<id>` implemented, unit-tested (19 cases) and live-refused (catalogue, gating, `circuits.jsonl`); the acceptance *build* needs a redstone lamp (Nether) and is blocked by plan C |
-| R4 | Verify, teardown, guardrails | Deterministic circuit verifier; `teardown_circuit` limited to bot-built blocks; rollback on partial failure; no redstone edits outside owned circuits. | ❌ not implemented |
+| R4 | Verify, teardown, guardrails | Deterministic circuit verifier; `teardown_circuit` limited to bot-built blocks; rollback on partial failure; no redstone edits outside owned circuits. | ◑ measured delay (`measureCircuitDelay` from the `_redstoneTrace`, `required`/`toleranceMs` per blueprint), placed-block ledger, `teardown_circuit[_<id>]` limited to circuit cells the bot placed (a cell someone else changed is skipped), rollback of a half-built site; unit-tested (24 + 21 cases) and live-verified on the empty/refused paths |
 | R5 | Automation & integration | Gameplay skills `skills/gameplay/redstone/`; progression milestones `redstone_ore`/`redstone_basics`/`redstone_automation`; integrate farming (`auto_harvest`), storage (`hopper_chain`), defense (`auto_lamp`), fluids (water stream). | ❌ not implemented |
 | R6 | Limits & docs | No command blocks, no TNT/traps, lag/size caps, bot-safety, runbook/wiki updates. | ❌ not implemented |
 

@@ -44,6 +44,7 @@ const KEY_INTENTS = {
   use_redstone: ['toggle', 'redstone'],
   sense_redstone: ['sense', 'redstone'],
   set_repeater_delay: ['toggle', 'redstone'],
+  teardown_circuit: ['build', 'redstone'],
 };
 
 const PREFIX_INTENTS = [
@@ -53,6 +54,7 @@ const PREFIX_INTENTS = [
   [/^smelt_/, ['smelt']],
   [/^place_/, ['build']],
   [/^set_repeater_delay_/, ['toggle', 'redstone']],
+  [/^teardown_circuit_/, ['build', 'redstone']],
 ];
 
 // Intenti associati a una key offerta da /options. Una key sconosciuta

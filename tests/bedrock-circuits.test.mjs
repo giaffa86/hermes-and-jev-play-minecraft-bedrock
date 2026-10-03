@@ -16,7 +16,7 @@ const YAW = { south: 0, west: 90, north: 180, east: 270 };
 // comanda le celle in `link`). Il catalogo è quello vero, letto da circuits/.
 function circuitAdapter ({
   cells = {}, inventory = {}, feet = { x: 0.5, y: 71, z: 0.5 }, facing = 'south',
-  link = [], floor = true, refuse = null, serverFacing = () => 'south',
+  link = [], floor = true, refuse = null, serverFacing = () => 'south', linkDelayMs = 0, traceUpdates = true,
 } = {}) {
   const adapter = new BedrockAdapter({ logger: { log () {} } });
   adapter.spawned = true;
@@ -44,7 +44,7 @@ function circuitAdapter ({
     put({ x, y, z }, value.name, value.properties ?? {});
   }
 
-  const events = { placed: [], logs: [], delays: [], triggers: [] };
+  const events = { placed: [], logs: [], delays: [], triggers: [], mined: [] };
   adapter.world.loaded = new Map([['0,0', {}]]);
   adapter.world.blockAt = ({ x, y, z }) => blocks.get(`${x},${y},${z}`) ?? null;
   adapter.world.runtimeIdAt = () => 1;
@@ -62,7 +62,16 @@ function circuitAdapter ({
     adapter.inventory[item] -= 1;
     const facingProp = serverFacing(block, target);
     put(target, block, facingProp ? { facing_direction: facingProp } : {});
+    // Il registro dei blocchi posseduti è un effetto del metodo vero: lo stub
+    // deve riprodurlo, altrimenti teardown e rollback non hanno nulla da cui
+    // partire.
+    adapter._placedBlocks.set(key(target), { block, item, at: Date.now(), source: 'place', circuit: null });
     return { ok: true, block, position: target };
+  };
+  adapter._mineBlock = async (block) => {
+    events.mined.push({ name: block?.name ?? null, position: { ...block?.position } });
+    blocks.delete(key(block.position));
+    return { ok: true, block: block.name, position: block.position };
   };
   adapter._setRepeaterDelay = async (wanted, { position } = {}) => {
     events.delays.push({ position: { ...position }, wanted });
@@ -87,6 +96,9 @@ function circuitAdapter ({
       if (target.name === 'fence_gate') put(target.position, 'fence_gate', { ...target.getProperties?.(), open_bit: after });
       else put(target.position, after ? 'lit_redstone_lamp' : 'redstone_lamp', {});
       effects.push(blocks.get(to).name);
+      // Il server riporta il cambio dell'output: `linkDelayMs` modella il tempo
+      // di propagazione, che è quello che R4 deve misurare.
+      if (traceUpdates) adapter._noteRedstoneUpdate(target.position, Date.now() + linkDelayMs);
     }
     return { ok: true, name: 'lever', position, before, after, effects, restored: restore ? false : null };
   };
@@ -177,6 +189,10 @@ test('un piazzamento che il server non conferma interrompe il cantiere e lo dice
   assert.equal(result.success, null);
   assert.equal(events.triggers.length, 0, 'senza tutti i pezzi non si aziona nulla');
   assert.ok(events.logs.some(l => l.type === 'circuit_incomplete'));
+  // R4: il cantiere a metà non resta in piedi.
+  assert.equal(result.rollback.removed, 1, 'la lampada già piazzata viene tolta');
+  assert.equal(events.mined.length, 1);
+  assert.equal(adapter._ownedCircuitCells().length, 0, 'il registro resta pulito');
 });
 
 test('una direzione imposta dal server sbagliata è un errore tipizzato, non un circuito storto', async () => {
@@ -192,10 +208,11 @@ test('una direzione imposta dal server sbagliata è un errore tipizzato, non un 
   assert.ok(wrong.events.logs.some(l => l.type === 'circuit_orientation_failed'));
 });
 
-test('build_circuit_delay_line imposta i ritardi e verifica la lampada accesa', async () => {
+test('build_circuit_delay_line imposta i ritardi, misura il ritardo reale e verifica la lampada accesa', async () => {
   const { adapter, blocks, events } = circuitAdapter({
     inventory: { ...DELAY_LINE },
     link: [['0,72,1', '0,71,5']],
+    linkDelayMs: 300,
   });
   const result = await adapter.executeAction('build_circuit_delay_line');
   assert.equal(result.ok, true, JSON.stringify(result));
@@ -207,6 +224,84 @@ test('build_circuit_delay_line imposta i ritardi e verifica la lampada accesa', 
   assert.equal(result.trigger.restored, false);
   assert.equal(blocks.get('0,71,5').name, 'redstone_lamp', 'la lampada è tornata spenta con la leva');
   assert.equal(events.placed.length, 6);
+  // R4: il ritardo è misurato sugli aggiornamenti del server, non dedotto.
+  assert.equal(result.delay.expectedMs, 300);
+  assert.equal(result.delay.measuredMs, 300);
+  assert.equal(result.delay.measuredTicks, 6);
+  assert.equal(result.delay.ok, true);
+});
+
+test('un ritardo diverso da quello dichiarato è un errore, non un successo', async () => {
+  const { adapter } = circuitAdapter({
+    inventory: { ...DELAY_LINE },
+    link: [['0,72,1', '0,71,5']],
+    linkDelayMs: 900,
+  });
+  const result = await adapter.executeAction('build_circuit_delay_line');
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'circuit_delay_mismatch');
+  assert.equal(result.delay.measuredMs, 900);
+  assert.equal(result.delay.expectedMs, 300);
+  assert.equal(result.delay.ok, false);
+  assert.equal(result.success.checks.every(c => c.ok), true, 'i blocchi sono giusti: è il tempo a non tornare');
+});
+
+test('un circuito che chiede la misura ma non produce aggiornamenti resta non misurato', async () => {
+  const { adapter } = circuitAdapter({
+    inventory: { ...DELAY_LINE },
+    link: [['0,72,1', '0,71,5']],
+    traceUpdates: false,
+  });
+  const result = await adapter.executeAction('build_circuit_delay_line');
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'circuit_delay_unmeasured');
+  assert.equal(result.delay.required, true);
+  assert.equal(result.delay.measuredMs, null);
+  assert.equal(result.delay.ok, null);
+});
+
+test('teardown_circuit rimuove solo i blocchi piazzati dal bot', async () => {
+  const { adapter, blocks, events } = circuitAdapter({
+    inventory: { ...LAMP_SWITCH },
+    link: [['0,72,1', '0,71,1']],
+    cells: { '5,71,5': { name: 'stone' } },
+  });
+  const built = await adapter.executeAction('build_circuit_lamp_switch');
+  assert.equal(built.ok, true);
+  assert.equal(adapter._ownedCircuitCells().length, 2);
+  // Un blocco che il bot non ha piazzato non è suo: non entra nel registro.
+  assert.equal(adapter.options().map(o => o.key).includes('teardown_circuit'), true);
+
+  const torn = await adapter.executeAction('teardown_circuit');
+  assert.equal(torn.ok, true, JSON.stringify(torn));
+  assert.equal(torn.removed.length, 2);
+  assert.equal(torn.remaining, 0);
+  assert.deepEqual(events.mined.map(m => m.name).sort(), ['lever', 'redstone_lamp']);
+  assert.equal(blocks.get('5,71,5').name, 'stone', 'il terreno e il resto del mondo non si toccano');
+  assert.equal(adapter.options().map(o => o.key).includes('teardown_circuit'), false, 'senza blocchi posseduti non si offre');
+});
+
+test('teardown_circuit non tocca un blocco che qualcun altro ha cambiato', async () => {
+  const { adapter, blocks, events } = circuitAdapter({ inventory: { ...LAMP_SWITCH }, link: [['0,72,1', '0,71,1']] });
+  await adapter.executeAction('build_circuit_lamp_switch');
+  // Un altro giocatore sostituisce la lampada: il registro non è più la verità.
+  blocks.set('0,71,1', { name: 'obsidian', position: { x: 0, y: 71, z: 1 }, getProperties: () => ({}) });
+  const torn = await adapter.executeAction('teardown_circuit');
+  assert.equal(torn.ok, true);
+  assert.deepEqual(torn.skipped.map(s => [s.cell.y + ',' + s.cell.z, s.reason, s.found]), [['71,1', 'changed', 'obsidian']]);
+  assert.equal(events.mined.length, 1, 'si rimuove solo ciò che è ancora quello che il bot ha piazzato');
+  assert.equal(blocks.get('0,71,1').name, 'obsidian');
+});
+
+test('teardown di un circuito mai costruito è tipizzato e non fa nulla', async () => {
+  const { adapter, events } = circuitAdapter({});
+  const none = await adapter.executeAction('teardown_circuit');
+  assert.equal(none.ok, false);
+  assert.equal(none.error, 'nothing_to_tear_down');
+  const id = await adapter.executeAction('teardown_circuit_lamp_switch');
+  assert.equal(id.ok, false);
+  assert.equal(id.error, 'no_circuit_built');
+  assert.equal(events.mined.length, 0);
 });
 
 test('auto_lamp senza trigger si costruisce ma non si dichiara verificato', async () => {

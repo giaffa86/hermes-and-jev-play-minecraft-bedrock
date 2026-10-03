@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import {
   CIRCUIT_FACINGS, FORWARD, addOffset, circuitAnchor, circuitSiteBlocked, checkCircuitSuccess,
   expectedDelayTicks, loadCircuits, placedAs, planCircuit, rotateOffset, validateCircuit, EMPTY_BLOCKS,
+  measureCircuitDelay, TICK_MS, DEFAULT_DELAY_TOLERANCE_MS,
 } from '../circuits.mjs';
 import { facingMatches, normalizeFacing } from '../bedrock-redstone.mjs';
 
@@ -195,6 +196,67 @@ test('expectedDelayTicks somma i ritardi dichiarati', () => {
   assert.equal(expectedDelayTicks(delay), 6);
   assert.equal(expectedDelayTicks({ post: [] }), null);
   assert.equal(expectedDelayTicks({ post: [{ delay: 0 }], measure: { expectedTicks: 11 } }), 11);
+});
+
+test('measureCircuitDelay misura dagli aggiornamenti del server e non inventa nulla', () => {
+  const output = { x: 0, y: 71, z: 5 };
+  const expectedTicks = 6;
+  const triggeredAt = 10_000;
+  const quiet = measureCircuitDelay({ trace: [], cell: output, triggeredAt, expectedTicks });
+  assert.equal(quiet.measuredMs, null);
+  assert.equal(quiet.ok, null, 'senza campioni non è un successo');
+  assert.equal(quiet.expectedMs, expectedTicks * TICK_MS);
+  assert.equal(quiet.toleranceMs, DEFAULT_DELAY_TOLERANCE_MS);
+
+  const onTime = measureCircuitDelay({
+    trace: [
+      { position: { x: 2, y: 71, z: 2 }, name: 'lit_redstone_lamp', at: 10_010 },
+      { position: { ...output }, name: 'lit_redstone_lamp', at: triggeredAt + 300 },
+    ],
+    cell: output,
+    triggeredAt,
+    expectedTicks,
+  });
+  assert.equal(onTime.measuredMs, 300);
+  assert.equal(onTime.measuredTicks, 6);
+  assert.equal(onTime.ok, true);
+  assert.equal(onTime.samples, 1, 'altre celle non contano come campioni');
+
+  const late = measureCircuitDelay({
+    trace: [{ position: { ...output }, name: 'lit_redstone_lamp', at: triggeredAt + 900 }],
+    cell: output,
+    triggeredAt,
+    expectedTicks,
+  });
+  assert.equal(late.ok, false);
+  assert.equal(late.measuredMs, 900);
+
+  const before = measureCircuitDelay({
+    trace: [{ position: { ...output }, name: 'lit_redstone_lamp', at: triggeredAt - 5 }],
+    cell: output,
+    triggeredAt,
+    expectedTicks,
+  });
+  assert.equal(before.measuredMs, null, 'un cambio precedente al trigger non è la risposta del circuito');
+  assert.equal(before.samples, 0);
+});
+
+test('validateCircuit controlla anche il blocco measure', () => {
+  const base = {
+    id: 'm',
+    description: 'misura',
+    requires: { lever: 1, redstone_lamp: 1 },
+    steps: [{ item: 'lever', offset: [0, 0, 0] }, { item: 'redstone_lamp', offset: [0, 0, 1] }],
+  };
+  const bad = validateCircuit({ ...base, measure: { expectedTicks: 6, required: true, toleranceMs: -1 } });
+  assert.ok(bad.some(e => /measure\.toleranceMs/.test(e)));
+  assert.ok(bad.some(e => /measure\.outputOffset/.test(e)), 'required senza outputOffset non si può verificare');
+
+  const outside = validateCircuit({ ...base, measure: { expectedTicks: 6, outputOffset: [0, 0, 7] } });
+  assert.ok(outside.some(e => /measure\.outputOffset: no step places \[0,0,7\]/.test(e)));
+
+  const ok = validateCircuit({ ...base, measure: { expectedTicks: 6, outputOffset: [0, 0, 1], required: true, toleranceMs: 60 } });
+  assert.deepEqual(ok, []);
 });
 
 test('loadCircuits fallisce al load con il motivo di un blueprint rotto', () => {

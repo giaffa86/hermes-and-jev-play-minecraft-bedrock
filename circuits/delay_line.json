@@ -22,6 +22,6 @@
     { "offset": [0, 1, 0], "property": "open_bit", "expected": true },
     { "offset": [0, 0, 4], "property": "name", "expected": "lit_redstone_lamp" }
   ],
-  "measure": { "expectedTicks": 6 },
+  "measure": { "expectedTicks": 6, "outputOffset": [0, 0, 4], "required": true, "toleranceMs": 60 },
   "notes": "The three repeaters sit in a line along the blueprint +z, each one facing the next: the delay is set after the build (R1) and the total is the sum of delay+1 redstone ticks. The live round must measure the real time between the lever and the lamp; 6 ticks is the value the blueprint predicts."
 }
