@@ -62,6 +62,25 @@ export const STRUCTURE_DEFS = [
     minScore: 6,
   },
   {
+    // Bedrock chiama il blocco `nether_brick` (singolare) e i suoi derivati
+    // `nether_brick_fence`/`_stairs`/`_slab`/`_wall`; `nether_wart` cresce sui
+    // blocchi della fortezza. Il blaze è l'unico mob che la fortezza genera e il
+    // suo spawner è un `mob_spawner` in dimensione nether — tutti e tre insieme
+    // valgono più di un muro di mattoni, che da solo non è una fortezza.
+    type: 'nether_fortress',
+    label: 'Nether fortress',
+    dimension: 'nether',
+    blocks: [
+      { matcher: /^nether_brick($|_)/, min: 12, score: 3, label: 'nether bricks' },
+      { matcher: /^(nether_brick_(fence|stairs|slab|wall)|(chiseled|cracked)_nether_bricks)$/, min: 2, score: 2, label: 'nether brick trims' },
+      { matcher: 'nether_wart', min: 1, score: 1, label: 'nether wart' },
+      { matcher: /^(mob_spawner|monster_spawner)$/, min: 1, score: 1, label: 'spawners' },
+    ],
+    entities: [{ matcher: /^blaze$/, min: 1, score: 3, label: 'blazes' }],
+    anchors: [/^blaze$/, /^nether_brick($|_)/, /^(mob_spawner|monster_spawner)$/],
+    minScore: 6,
+  },
+  {
     type: 'ancient_city',
     label: 'Ancient City',
     dimension: 'overworld',

@@ -30,6 +30,12 @@ test('structure targets resolve to `structure:<type>`, the kind the detector kno
   assert.equal(resolveSearchTarget('grotta').name, 'cave');
   assert.equal(resolveSearchTarget('miniera abbandonata').name, 'mineshaft');
   assert.equal(resolveSearchTarget('geode di ametista').name, 'amethyst_geode');
+  // N6: la fortezza del Nether è una struttura come le altre, con gli alias
+  // italiani, e la sua detection vive nel detector condiviso.
+  assert.deepEqual(resolveSearchTarget('fortezza del nether'), { kind: 'structure', name: 'nether_fortress', id: 'structure:nether_fortress' });
+  assert.equal(resolveSearchTarget('nether fortress').name, 'nether_fortress');
+  assert.equal(resolveSearchTarget('fortezza').name, 'nether_fortress');
+  assert.ok(SUPPORTED_SEARCH_TARGETS.includes('structure:nether_fortress'));
   assert.ok(SUPPORTED_SEARCH_TARGETS.includes('structure:village'));
   // La ricerca per nome resta di M1: un bioma non è un blocco né una struttura.
   assert.equal(resolveSearchTarget('cherry grove'), null);

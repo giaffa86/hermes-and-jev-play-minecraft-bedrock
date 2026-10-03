@@ -65,6 +65,9 @@ const KEY_INTENTS = {
   // `heal` perché è comunque un pezzo di armatura.
   avoid_enderman_gaze: ['escape', 'shelter'],
   equip_pumpkin: ['heal', 'shelter'],
+  // Nether (N6): la caccia al blaze è un combattimento con la copertura come
+  // mezzo e i rod come scopo.
+  hunt_blaze: ['fight', 'collect'],
 };
 
 const PREFIX_INTENTS = [

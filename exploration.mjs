@@ -161,6 +161,7 @@ const SEARCH_STRUCTURES = {
   ancient_city: ['ancient city', 'città antica', 'citta antica', 'deep dark'],
   trial_chamber: ['trial chamber', 'camera delle prove', 'camera dei trial'],
   spawner: ['spawner', 'spawner dei mostri', 'monster spawner'],
+  nether_fortress: ['fortress', 'nether fortress', 'fortezza', 'fortezza del nether', 'fortezza nether'],
   amethyst_geode: ['geode', 'geode di ametista', 'amethyst geode'],
   cave: ['cave', 'caverna', 'caverne', 'grotta', 'grotte'],
 };

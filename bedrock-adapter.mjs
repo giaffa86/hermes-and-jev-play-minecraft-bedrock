@@ -15,7 +15,7 @@ import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, d
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
 import { loadCircuits, planCircuit, circuitSiteBlocked, circuitSafety, forbiddenBlock, checkCircuitSuccess, circuitAnchor, expectedDelayTicks, measureCircuitDelay, TICK_MS, MAX_CIRCUIT_STEPS, MAX_CIRCUIT_COMPONENTS, MIN_CLOCK_TICKS } from './circuits.mjs';
 import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
-import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, isNetherLike, landingHazard, maxFallDepth, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, projectileVelocity, dodgeCandidates, breaksLine, isPiglinType, goldArmorWorn, piglinNeutral, barterTarget, isBarterReward, BARTER_INGOT, BARTER_RANGE, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName, endermanAimPoint, isPumpkinMask, pumpkinMaskWorn, isEnderPearl, ENDER_PEARL, ENDERMAN_GAZE_TOLERANCE_DEG } from './bedrock-nether.mjs';
+import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, isNetherLike, landingHazard, maxFallDepth, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, projectileVelocity, dodgeCandidates, breaksLine, isPiglinType, goldArmorWorn, piglinNeutral, barterTarget, isBarterReward, BARTER_INGOT, BARTER_RANGE, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName, endermanAimPoint, isPumpkinMask, pumpkinMaskWorn, isEnderPearl, ENDER_PEARL, ENDERMAN_GAZE_TOLERANCE_DEG, isBlazeType, coverCandidates, blazeTactics, blazeRodProgress, BLAZE_RANGE, BLAZE_RETREAT_HEALTH, BLAZE_ROD, COVER_RADIUS } from './bedrock-nether.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -236,6 +236,7 @@ export class BedrockAdapter {
     // Ultimo hub del Nether costruito (N2): posizione, materiale, se chiuso.
     // Il campo non può chiamarsi `_netherHub`: ombreggerebbe il metodo.
     this._netherHubLast = null;
+    this._blazeLast = null;
     // Ultimo bartering (N4): il campo non può chiamarsi `_barter`, che è un
     // verbo già usato per il metodo.
     this._barterLast = null;
@@ -1285,6 +1286,12 @@ export class BedrockAdapter {
       // essere riallineato a metà transazione), non dalla mappa di comodo.
       pearls: this._pearlsHeld(),
       pumpkin: isPumpkinMask(this.armor?.helmet),
+      // N6: il blaze più vicino e i rod in inventario. Qui *senza* il conteggio
+      // delle coperture: quella è una domanda dell'azione (una scansione di 13×13
+      // celle), non della percezione che gira a ogni passo.
+      blaze: this._blazeRows()[0] ?? null,
+      rods: this.inventory[BLAZE_ROD] || 0,
+      hunt: this._blazeLast ?? null,
       scanned: census.scanned,
       ready: census.ready !== false,
       at: census.at,
@@ -1403,6 +1410,152 @@ export class BedrockAdapter {
     this._refreshInventory();
     this.log('pumpkin_equipped', { item: slot.name, status: place.status });
     return { ok: true, already: false, item: slot.name };
+  }
+
+  // --- N6: caccia al blaze (copertura prima, poi mischia) --------------------
+  // Il blaze spara: la differenza fra un combattimento e una morte è la linea di
+  // tiro. `_blazeRows` è solo percezione, `_coverFrom` è la geometria pura di
+  // `coverCandidates`, `_huntBlaze` mette in fila tattica, copertura e mischia.
+  _blazeRows ({ range = BLAZE_RANGE } = {}) {
+    const rows = [];
+    for (const entity of this.entities.values()) {
+      if (!entity.position || !isBlazeType(entity.type)) continue;
+      const distance = this._entityDistance(entity);
+      if (!(distance <= range)) continue;
+      rows.push({ type: entity.type, runtimeId: entity.runtimeId, position: { ...entity.position }, distance: +distance.toFixed(2) });
+    }
+    rows.sort((a, b) => a.distance - b.distance);
+    return rows;
+  }
+
+  // Coperture raggiungibili *adesso* contro quel blaze: celle vicine da cui il
+  // bot non vede il blaze (la linea passa in un blocco solido), già filtrate per
+  // raggiungibilità e lava. La geometria vera è in `bedrock-nether.mjs`.
+  _coverFrom (entity, { radius = COVER_RADIUS } = {}) {
+    if (!entity?.position || !this._feet) return [];
+    const cells = [];
+    const seen = new Set();
+    for (let dx = -radius; dx <= radius; dx++) {
+      for (let dz = -radius; dz <= radius; dz++) {
+        if (dx === 0 && dz === 0) continue;
+        const point = this._standableNear({ x: this._feet.x + dx, z: this._feet.z + dz });
+        if (!point) continue;
+        const cell = { x: Math.floor(point.x), y: Math.floor(point.y), z: Math.floor(point.z) };
+        const key = `${cell.x},${cell.y},${cell.z}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (this._reachabilityUsable() && !this.cellReachable(cell)) continue;
+        if (this._lavaAdjacent(cell.x, cell.y, cell.z)) continue;
+        cells.push(cell);
+      }
+    }
+    return coverCandidates({
+      from: this._feet,
+      target: entity.position,
+      cells,
+      // Una cella *ignota* non è copertura: sotto il tiro di un blaze un chunk
+      // non caricato non ferma nulla, e fingersi al riparo è la cosa peggiore
+      // che un bot possa credere.
+      solid: (cell) => (this.world.blockAt(cell) ? this._solidAt(cell.x, cell.y, cell.z) : false),
+      radius,
+    });
+  }
+
+  _inFire () {
+    try { return this._netherView().inFire === true; } catch { return false; }
+  }
+
+  // Un blaze alla volta, con una regola sola: prima si spezza la linea, poi si
+  // chiude. Se si è già troppo feriti o in fiamme senza copertura si indietreggia
+  // e lo si dice — un "ok" qui significherebbe un bot che muore per un rod.
+  async _huntBlaze ({ timeoutMs = 45000 } = {}) {
+    if (!this.spawned || !this._feet) return { ok: false, error: 'not_ready' };
+    const rows = this._blazeRows();
+    if (!rows.length) return { ok: false, error: 'no_blaze_nearby', range: BLAZE_RANGE };
+    const health = typeof this.health === 'number' ? this.health : null;
+    if (health != null && health <= BLAZE_RETREAT_HEALTH) {
+      return { ok: false, error: 'too_hurt', health, retreatHealth: BLAZE_RETREAT_HEALTH };
+    }
+    const started = Date.now();
+    const before = this.inventory[BLAZE_ROD] || 0;
+    const actions = [];
+    const assess = () => {
+      const target = this._blazeRows()[0] ?? rows[0];
+      const cover = this._coverFrom(target);
+      const tactics = blazeTactics({
+        distance: target.distance,
+        health: this.health,
+        cover: cover.length,
+        onFire: this._inFire(),
+      });
+      return { target, cover, tactics };
+    };
+    let { target, cover, tactics } = assess();
+    const summary = () => ({
+      blaze: { type: target.type, distance: target.distance, position: target.position },
+      cover: cover.length,
+      health: this.health ?? null,
+      rods: (this.inventory[BLAZE_ROD] || 0) - before,
+    });
+    if (tactics.action === 'retreat') {
+      const spot = cover[0]?.cell ?? null;
+      if (spot) {
+        try {
+          await this._moveTo({ x: spot.x + 0.5, y: spot.y, z: spot.z + 0.5 }, 0.8, Math.min(8000, Math.max(1500, timeoutMs)));
+          actions.push('retreat_to_cover');
+        } catch (error) {
+          this.log('blaze_retreat_failed', { error: error.message, ...summary() });
+          return { ok: false, error: 'retreat_failed', reason: tactics.reason, message: error.message, actions, ...summary() };
+        }
+      }
+      this.log('blaze_retreated', { reason: tactics.reason, ...summary() });
+      return { ok: false, error: 'blaze_retreat', reason: tactics.reason, retreated: !!spot, actions, ...summary() };
+    }
+    if (tactics.action === 'take_cover') {
+      const spot = cover[0].cell;
+      try {
+        await this._moveTo({ x: spot.x + 0.5, y: spot.y, z: spot.z + 0.5 }, 0.8, Math.min(8000, Math.max(1500, timeoutMs)));
+        actions.push('take_cover');
+      } catch (error) {
+        // La copertura è un mezzo, non un requisito: se non ci si arriva si prova
+        // comunque la mischia, ma il fallimento resta nel resoconto.
+        this.log('blaze_cover_failed', { error: error.message, cell: spot, ...summary() });
+        actions.push('cover_failed');
+      }
+      ({ target, cover, tactics } = assess());
+    }
+    actions.push('fight');
+    const combat = await this._combat('blaze', Math.max(6000, timeoutMs - (Date.now() - started)));
+    let collected = null;
+    if (combat.ok) {
+      try {
+        const drop = await this._collectDrop(5000);
+        collected = { ok: drop?.ok === true, picked: drop?.picked ?? null, error: drop?.ok ? undefined : drop?.error };
+      } catch (error) {
+        collected = { ok: false, error: error.message };
+      }
+      actions.push('collect');
+    }
+    const after = this.inventory[BLAZE_ROD] || 0;
+    const report = {
+      ...summary(),
+      ok: combat.ok === true,
+      ...(combat.ok ? {} : { error: combat.error }),
+      hits: combat.hits ?? 0,
+      killed: combat.killed === true,
+      confirmedBy: combat.confirmedBy ?? null,
+      weapon: combat.weapon ?? null,
+      tactics: tactics.action,
+      reason: tactics.reason,
+      rods: after - before,
+      total: after,
+      collected,
+      actions,
+    };
+    this._blazeLast = { ...report, at: Date.now() };
+    if (report.ok) this.log('blaze_hunted', report);
+    else this.log('blaze_failed', report);
+    return report;
   }
 
   // --- N1: azioni sul portale -------------------------------------------------
@@ -2033,6 +2186,20 @@ export class BedrockAdapter {
     if (threats.length && threats[0].distance <= 16) {
       o.push({ key: 'flee', description: `Run away from the nearest ${threats[0].type} (${threats[0].distance.toFixed(1)} blocks away)` });
     }
+    // N6: un blaze non si affronta in linea retta. `hunt_blaze` è la stessa
+    // mischia con la differenza che conta (copertura prima, ritirata se si è già
+    // troppo feriti) e resta un'opzione *in più* rispetto ad `attack_blaze`: il
+    // vocabolario non nasconde la mischia semplice, le affianca la versione che
+    // tiene conto della linea di tiro e dei rod che mancano.
+    const blazeTarget = this._blazeRows()[0];
+    if (blazeTarget && !(typeof this.health === 'number' && this.health <= BLAZE_RETREAT_HEALTH)) {
+      const covers = this._coverFrom(blazeTarget).length;
+      const rods = blazeRodProgress({ inventory: this.inventory });
+      o.push({
+        key: 'hunt_blaze',
+        description: `Hunt the blaze at ${JSON.stringify({ x: Math.round(blazeTarget.position.x), y: Math.round(blazeTarget.position.y), z: Math.round(blazeTarget.position.z) })} (${blazeTarget.distance} blocks away, ${covers} cover spot${covers === 1 ? '' : 's'} in reach) — ${rods.have}/${rods.need} blaze rods`,
+      });
+    }
     // Lava: pericolo assoluto (M0). L'opzione esiste solo se la lava è davvero
     // vicina e se c'è una cella d'appoggio che aumenta la distanza.
     const lavaThreat = this._lavaThreat();
@@ -2626,6 +2793,8 @@ export class BedrockAdapter {
         result = await this._flee();
       } else if (key === 'dodge_projectile') {
         result = await this._dodgeProjectile({});
+      } else if (key === 'hunt_blaze') {
+        result = await this._huntBlaze({});
       } else if (key === 'avoid_enderman_gaze') {
         result = await this._avoidGaze({});
       } else if (key === 'equip_pumpkin') {

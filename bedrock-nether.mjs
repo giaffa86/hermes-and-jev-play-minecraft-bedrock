@@ -837,3 +837,100 @@ export function barterTarget ({ piglins = [], from = null, range = BARTER_RANGE 
   }
   return { target, nearest };
 }
+
+// --- N6: fortezza e blaze ---------------------------------------------------
+//
+// Il blaze è l'ostile del Nether che spara: la linea retta è la cosa che fa più
+// male, quindi la tattica è *spezzare la linea, poi chiudere*. La geometria sta
+// qui perché il giudizio ("ho copertura?") deve essere verificabile in un test
+// senza server.
+
+export const BLAZE_TYPES = new Set(['blaze']);
+export const BLAZE_RANGE = 16;
+export const BLAZE_REACH = 3.4;
+export const BLAZE_RETREAT_HEALTH = 6;
+export const BLAZE_RODS_NEEDED = 7;
+export const BLAZE_ROD = 'blaze_rod';
+export const COVER_SAMPLE_STEP = 0.5;
+export const COVER_MAX_CELLS = 12;
+export const COVER_RADIUS = 6;
+
+export function isBlazeType (name) {
+  const normalized = normalizeNetherName(name);
+  return normalized != null && BLAZE_TYPES.has(normalized);
+}
+
+export function isBlazeRod (name) {
+  return normalizeNetherName(name) === BLAZE_ROD;
+}
+
+// Un blocco solido sulla congiungente fra i due punti: campiona il segmento a
+// passi piccoli e si ferma al primo campione pieno. Il primo campione è la cella
+// del bot (`skip`), l'ultimo è il bersaglio: né l'uno né l'altro sono copertura.
+export function lineBlocked ({ from, to, solid, step = COVER_SAMPLE_STEP, skip = 1 } = {}) {
+  if (!from || !to || typeof solid !== 'function') return { blocked: false, at: null, samples: 0 };
+  const dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
+  const distance = Math.hypot(dx, dy, dz);
+  if (distance < 1) return { blocked: false, at: null, samples: 0 };
+  const total = Math.max(2, Math.ceil(distance / step));
+  let samples = 0;
+  for (let i = skip + 1; i < total; i++) {
+    if (i <= 0) continue;
+    const t = i / total;
+    const cell = {
+      x: Math.floor(from.x + dx * t),
+      y: Math.floor(from.y + dy * t),
+      z: Math.floor(from.z + dz * t),
+    };
+    samples++;
+    if (solid(cell)) return { blocked: true, at: cell, samples };
+  }
+  return { blocked: false, at: null, samples };
+}
+
+// Celle da cui lo sparo del bersaglio è intercettato da un blocco: la mira del
+// bot sta all'altezza degli occhi (1.62), quella del bersaglio al petto (0.9).
+// Ordinate per vicinanza: la copertura utile è quella che si raggiunge adesso.
+export function coverCandidates ({ from, target, cells = [], solid, radius = COVER_RADIUS, limit = COVER_MAX_CELLS } = {}) {
+  if (!from || !target || typeof solid !== 'function') return [];
+  const shot = { x: target.x + 0.5, y: target.y + 0.9, z: target.z + 0.5 };
+  const rows = [];
+  for (const cell of cells) {
+    if (!cell) continue;
+    const distance = Math.hypot(cell.x - from.x, cell.y - from.y, cell.z - from.z);
+    if (distance > radius) continue;
+    const eye = { x: cell.x + 0.5, y: cell.y + 1.62, z: cell.z + 0.5 };
+    const line = lineBlocked({ from: eye, to: shot, solid });
+    if (!line.blocked) continue;
+    rows.push({ cell: { x: cell.x, y: cell.y, z: cell.z }, distance: +distance.toFixed(2), cover: line.at });
+  }
+  rows.sort((a, b) => a.distance - b.distance);
+  return rows.slice(0, limit);
+}
+
+// La tattica della mischia: un giudizio puro su cosa fare *adesso*.
+// - `retreat`: salute sotto la soglia, oppure in fiamme senza copertura (nessun
+//   modo di interrompere il danno: restare lì è solo perdere);
+// - `take_cover`: c'è una copertura raggiungibile e il blaze è fuori portata;
+// - `fight`: in mischia, o nessuna copertura disponibile (combattere resta
+//   l'unica cosa da fare).
+export function blazeTactics ({ distance, health = null, cover = 0, onFire = false, retreatHealth = BLAZE_RETREAT_HEALTH, reach = BLAZE_REACH, range = BLAZE_RANGE } = {}) {
+  if (health != null && health <= retreatHealth) return { action: 'retreat', reason: 'low_health' };
+  // In fiamme si smette di combattere: la copertura è solo la destinazione
+  // della fuga, non un motivo per restare a sparare.
+  if (onFire) return { action: 'retreat', reason: cover > 0 ? 'on_fire_with_cover' : 'on_fire_without_cover' };
+  if (!(distance > 0)) return { action: 'approach', reason: 'unknown_distance' };
+  if (distance > range) return { action: 'approach', reason: 'out_of_range' };
+  if (cover > 0 && distance > reach) return { action: 'take_cover', reason: 'no_line_of_sight' };
+  return { action: 'fight', reason: distance <= reach ? 'in_reach' : 'no_cover_available' };
+}
+
+// Quanti rod mancano all'obiettivo (uno per blaze ucciso è la stima ottimista:
+// il drop non è garantito, quindi il conteggio vero resta l'inventario).
+export function blazeRodProgress ({ inventory = {}, need = BLAZE_RODS_NEEDED } = {}) {
+  let have = 0;
+  for (const [name, count] of Object.entries(inventory ?? {})) {
+    if (isBlazeRod(name)) have += Number(count) || 0;
+  }
+  return { have, need, remaining: Math.max(0, need - have), done: have >= need };
+}

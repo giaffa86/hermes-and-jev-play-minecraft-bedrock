@@ -9,11 +9,12 @@ stronghold, open the End portal, and (stretch) defeat the **Ender Dragon**.
 Status: **N0 (awareness and hazards), N1 (portal reach/build/light/enter), N2
 (nether survival: non-flammable hub, dimension-aware fall, hazardous landings),
 N3 (dodging an incoming projectile sideways, never into lava), N4 (bartering
-with a piglin, never hitting one) and N5 (gaze discipline, pumpkin mask, torso
-aim, pearls) implemented and unit-tested; all six have a live round
-(03/10/2026), N1–N5 partial because the live world is an Overworld room with no
-obsidian, no loaded portal, no gun-armed mob, no piglin and no enderman; N6–N7
-still spec only**.
+with a piglin, never hitting one), N5 (gaze discipline, pumpkin mask, torso
+aim, pearls) and N6 (fortress detection, blaze hunt with cover, blaze rods)
+implemented and unit-tested; all seven have a live round (03/10/2026), N1–N6
+partial because the live world is an Overworld room with no obsidian, no loaded
+portal, no gun-armed mob, no piglin, no enderman and no blaze; N7 still spec
+only**.
 `knowledge/progression.json` now has the full chain and the
 `beat_the_dragon → enter_nether` contradiction is fixed: `beat_the_dragon` is a
 real milestone requiring `enter_end`. Full raw source:
@@ -81,7 +82,7 @@ New item tags: `gold_ingots`, `obsidian`, `blaze_rods`, `blaze_powder`,
 | N3 | Ghast avoidance | track fireballs, dodge perpendicular to the trajectory (or deflect), never flee into lava. | ◑ implemented + live partial (03/10/2026), see below |
 | N4 | Piglin bartering | wear gold armour for neutrality; `barter_piglin` (gold in hand → `item_use_on_entity` → collect drops); never hit piglins. | ◑ implemented + live partial (03/10/2026), see below |
 | N5 | Ender gaze & pearls | never aim at enderman eyes; pumpkin option; kill at body/feet; collect pearls. | ◑ implemented + live partial (03/10/2026), see below |
-| N6 | Fortress & blaze rods | find the fortress (exploration), fight blazes with cover, collect 7 rods. | ❌ not implemented |
+| N6 | Fortress & blaze rods | find the fortress (exploration), fight blazes with cover, collect 7 rods. | ◑ implemented + live partial (03/10/2026), see below |
 | N7 | Endgame | eyes of ender, stronghold via thrown eyes, fill/enter the portal, (stretch) dragon. | ❌ not implemented |
 
 ## N0 — Nether awareness & hazards (implemented, live 03/10/2026)
@@ -564,6 +565,67 @@ whole suite at this point. The unit tests are the only place where the
 - `portalKind('nether_portal')` returns `null` on purpose: the Bedrock block is
   named `portal`.
 
+## N6 — Fortress and blaze rods (implemented, live partial 03/10/2026)
+
+The Nether's first real obstacle is not the walk: it is finding a **fortress** in
+a dimension that is mostly empty, and surviving the **blazes** that guard it. N6
+is two halves — *recognition* and *hunt* — and the split matters, because a
+detector that hallucinates a fortress sends the bot on a long wrong trip.
+
+### Implementation
+
+| Layer | What it does |
+|---|---|
+| `structures.mjs` | New `nether_fortress` def (dimension `nether`): `nether_brick*` >= 12 (3 pts), nether brick trims (`fence`/`stairs`/`slab`/`wall`, `chiseled_`/`cracked_`) >= 2 (2 pts), `nether_wart` >= 1 (1 pt), spawner >= 1 (1 pt), a **blaze** within range (3 pts), `minScore 6`; anchors blaze -> bricks -> spawner. |
+| `exploration.mjs` | `SEARCH_STRUCTURES.nether_fortress` aliases (`fortress`, `nether fortress`, `fortezza`, `fortezza del nether`, `fortezza nether`) so `POST /explore/find {"target":"fortezza"}` works like any other M4 target. |
+| `bedrock-nether.mjs` | `lineBlocked({from,to,solid,step,skip})` samples the shot segment (the last sample *is* the target: a wall at the blaze's own cell is not cover); `coverCandidates({from,target,cells,solid,radius,limit})` keeps the cells whose shot is broken, nearest first (bot aim at eyes 1.62, blaze chest at 0.9); `blazeTactics({distance,health,cover,onFire,...})` -> `retreat` (`low_health`, `on_fire_with_cover`, `on_fire_without_cover`), `approach` (`unknown_distance`, `out_of_range`), `take_cover` (`no_line_of_sight`), `fight` (`in_reach`, `no_cover_available`); `blazeRodProgress({inventory,need})`. |
+| `bedrock-adapter.mjs` | `_blazeRows`, `_coverFrom` (walkable candidates from `_standableNear`, `cellReachable`, never lava-adjacent — a cell the world does not know is **not** cover), `_inFire` (reads the top-level `inFire` of the nether view, not `hazard.inFire`), `_huntBlaze({timeoutMs})` — typed refusals `not_ready`/`no_blaze_nearby`/`too_hurt`, then assess -> retreat or take cover -> `_combat('blaze')` -> `_collectDrop`, with `blaze_hunted`/`blaze_retreated`/`blaze_cover_failed` logs; the option `hunt_blaze` appears only with a blaze within `BLAZE_RANGE` (16) and `health > BLAZE_RETREAT_HEALTH` (6); `_netherView` exposes `blaze`, `rods`, `hunt`. |
+| `survival/intents.mjs` | `hunt_blaze: ['fight', 'collect']`. |
+
+### Tests
+
+`node --test tests/*.test.mjs` -> **885 tests, 885 pass**. The new ones: 5 pure
+(`isBlazeType`/`isBlazeRod`, `lineBlocked` samples/skip, `coverCandidates`
+ordering + no-cover, `blazeTactics` order of urgencies, `blazeRodProgress`), 8
+adapter (`_coverFrom` with a real wall, the full hunt with cover ->
+`['take_cover', 'fight', 'collect']` and one rod collected, fight in the open
+with no cover, the two refusals, retreat on fire without cover, retreat *into*
+cover with the line broken, fight when the cover cannot be reached, the option
+gating), 1 detector (`nether_fortress` needs markers: bricks alone score 3 < 6,
+bricks + trims 5 < 6, in the Overworld the def is skipped) and 1 search alias.
+
+The tests found two real bugs: `_inFire()` read `hazard.inFire` (the field lives
+at the top level of the view, so the bot was never "on fire" and would have
+duelled while burning) and `_coverFrom` accepted any cell `_solidAt` called
+solid — including cells the world does not know, so an unloaded chunk counted as
+a wall and the bot walked into the open believing it was covered.
+
+### Live round (03/10/2026)
+
+The live world is the usual Overworld room: there is no fortress and no blaze.
+
+| Probe | Answer |
+|---|---|
+| `GET /observe.nether` | `blaze: null`, `rods: 0`, `hunt: null` |
+| `POST /act {"key":"hunt_blaze"}` | `{"ok":false,"error":"no_blaze_nearby","range":16}` — immediate |
+| `GET /options` | 24 keys, no `hunt_blaze` |
+| `POST /explore/find {"target":"fortezza del nether"}` | `ok`, mission `mission_find_structure_muryvma5` `type: find_structure` `target: structure:nether_fortress`, supersedes the previous search |
+| `GET /explore/find` | `{"action":"move","waypoint":{"x":20,"z":64},"scan":{"radius":48,"found":0,"scannedChunks":125}}` |
+| `GET /observe` (structures) | `["village","cave"]` only — the nether def is skipped in the Overworld, no phantom fortress |
+| `POST /explore/find {"target":"cherry grove"}` | still `unknown_search_target` with the supported list, which now includes `structure:nether_fortress` |
+
+### Known limits
+
+- **No blaze, no fortress live**: the happy path (cover -> fight -> rod) is
+  covered by unit tests only. The typed refusals and the detector's dimension
+  guard *are* live-verified.
+- **`_combat` is melee**: a blaze flies and shoots; N6 fights it when it is in
+  reach and hides otherwise, but ranged combat is still missing.
+- The hunt is a **single fight**, not a farm: it stops after one kill, so
+  reaching seven rods is the progression engine's job (one `hunt_blaze` per rod).
+- `nether_wart` is not an anchor: a corridor of bricks only stays under the
+  threshold (5 < 6) and is not detected.
+
 ## Dependencies and risks
 
 - **Fluids M0/M4** (lava/fire hazards) and **exploration** (fortress, stronghold)
@@ -571,7 +633,7 @@ whole suite at this point. The unit tests are the only place where the
 - **Goal Contract / Goal Manager** ([goal-achievement](goal-achievement.md)) is
   needed for a long persistent Nether run with suspend/resume.
 - **Ranged combat** is missing: `_combat` is melee, but blaze and end crystals
-  need a bow.
+  need a bow — N6 fights blazes only in reach and takes cover otherwise.
 - **Death loses everything** (`keep-inventory=false`) — establish a hub/respawn
   anchor early (N1–N2).
 - The ghast dodge geometry is straight-line in plan view and its step distance is

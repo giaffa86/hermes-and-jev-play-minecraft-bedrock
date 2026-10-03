@@ -19,6 +19,8 @@ import {
   isBarterReward, barterTarget, BARTER_INGOT, PIGLIN_TYPES,
   endermanAimPoint, aimsAtEndermanEyes, isPumpkinMask, pumpkinMaskWorn, isEnderPearl,
   ENDERMAN_TORSO_HEIGHT, ENDERMAN_EYE_HEIGHT,
+  isBlazeType, isBlazeRod, lineBlocked, coverCandidates, blazeTactics, blazeRodProgress,
+  BLAZE_RANGE, BLAZE_REACH, BLAZE_RETREAT_HEALTH, BLAZE_RODS_NEEDED,
 } from '../bedrock-nether.mjs';
 
 const at = (x, y, z) => ({ x, y, z });
@@ -623,4 +625,70 @@ test('pumpkin masks and ender pearls are recognised by name', () => {
   assert.equal(isEnderPearl('minecraft:ender_pearl'), true);
   assert.equal(isEnderPearl('ender_eye'), false);
   assert.equal(isEnderPearl(null), false);
+});
+
+test('blaze and blaze rods are recognised by name, namespaced or not', () => {
+  assert.equal(isBlazeType('blaze'), true);
+  assert.equal(isBlazeType('minecraft:blaze'), true);
+  assert.equal(isBlazeType('Blaze'), true);
+  assert.equal(isBlazeType('ghast'), false);
+  assert.equal(isBlazeType(null), false);
+
+  assert.equal(isBlazeRod('blaze_rod'), true);
+  assert.equal(isBlazeRod('minecraft:blaze_rod'), true);
+  assert.equal(isBlazeRod('blaze_powder'), false);
+});
+
+test('lineBlocked samples the segment and skips the shooter cell', () => {
+  const wall = new Set(['3,72,0']);
+  const solid = (cell) => wall.has(`${cell.x},${cell.y},${cell.z}`);
+  const from = { x: 2.5, y: 72.62, z: 0.5 };
+  const to = { x: 7, y: 71.9, z: 1 };
+  const blocked = lineBlocked({ from, to, solid, step: 0.5 });
+  assert.equal(blocked.blocked, true);
+  assert.deepEqual(blocked.at, { x: 3, y: 72, z: 0 });
+  assert.ok(blocked.samples >= 1);
+  // L'ultimo campione è il bersaglio: se il muro fosse *dentro* il blaze non
+  // sarebbe copertura.
+  const atTarget = new Set(['7,71,1']);
+  assert.equal(lineBlocked({ from, to, solid: (c) => atTarget.has(`${c.x},${c.y},${c.z}`), step: 0.5 }).blocked, false);
+});
+
+test('coverCandidates keeps only the cells whose shot is broken, nearest first', () => {
+  const wall = new Set(['3,72,0']);
+  const solid = (cell) => wall.has(`${cell.x},${cell.y},${cell.z}`);
+  const cells = [
+    { x: -2, y: 71, z: 0 },
+    { x: 1, y: 71, z: 0 },
+    { x: 0, y: 71, z: 3 },
+  ];
+  const cover = coverCandidates({ from: { x: 0.5, y: 71, z: 0.5 }, target: { x: 7, y: 71, z: 1 }, cells, solid, step: 0.5 });
+  assert.deepEqual(cover.map(entry => entry.cell), [{ x: 1, y: 71, z: 0 }]);
+  assert.deepEqual(cover[0].cover, { x: 3, y: 72, z: 0 });
+  // Nessun muro: nessuna copertura, e nessuna invenzione.
+  assert.deepEqual(coverCandidates({ from: { x: 0.5, y: 71, z: 0.5 }, target: { x: 7, y: 71, z: 1 }, cells, solid: () => false, step: 0.5 }), []);
+  // Un limite basso non cambia la scelta: le celle sono ordinate per distanza.
+  assert.equal(coverCandidates({ from: { x: 0.5, y: 71, z: 0.5 }, target: { x: 7, y: 71, z: 1 }, cells, solid, step: 0.5, limit: 1 }).length, 1);
+});
+
+test('blazeTactics puts survival before shooting', () => {
+  assert.deepEqual(blazeTactics({ distance: 10, health: BLAZE_RETREAT_HEALTH, cover: 4 }), { action: 'retreat', reason: 'low_health' });
+  assert.deepEqual(blazeTactics({ distance: 10, health: 20, cover: 4, onFire: true }), { action: 'retreat', reason: 'on_fire_with_cover' });
+  assert.deepEqual(blazeTactics({ distance: 10, health: 20, cover: 0, onFire: true }), { action: 'retreat', reason: 'on_fire_without_cover' });
+  // In fiamme vince anche sull'avvicinarsi: non si entra nel fuoco per sparare.
+  assert.deepEqual(blazeTactics({ distance: 40, health: 20, cover: 0, onFire: true }), { action: 'retreat', reason: 'on_fire_without_cover' });
+
+  assert.deepEqual(blazeTactics({ distance: null, health: 20 }), { action: 'approach', reason: 'unknown_distance' });
+  assert.deepEqual(blazeTactics({ distance: BLAZE_RANGE + 1, health: 20 }), { action: 'approach', reason: 'out_of_range' });
+  assert.deepEqual(blazeTactics({ distance: 10, health: 20, cover: 3 }), { action: 'take_cover', reason: 'no_line_of_sight' });
+  assert.deepEqual(blazeTactics({ distance: BLAZE_REACH, health: 20, cover: 0 }), { action: 'fight', reason: 'in_reach' });
+  assert.deepEqual(blazeTactics({ distance: 10, health: 20, cover: 0 }), { action: 'fight', reason: 'no_cover_available' });
+});
+
+test('blazeRodProgress counts what is missing for the brewing stand', () => {
+  assert.deepEqual(blazeRodProgress({ inventory: {} }), { have: 0, need: BLAZE_RODS_NEEDED, remaining: BLAZE_RODS_NEEDED, done: false });
+  assert.deepEqual(blazeRodProgress({ inventory: { blaze_rod: 3 } }), { have: 3, need: 7, remaining: 4, done: false });
+  assert.deepEqual(blazeRodProgress({ inventory: { blaze_rod: 7 } }), { have: 7, need: 7, remaining: 0, done: true });
+  assert.deepEqual(blazeRodProgress({ inventory: { 'minecraft:blaze_rod': 2 }, need: 2 }), { have: 2, need: 2, remaining: 0, done: true });
+  assert.deepEqual(blazeRodProgress({ inventory: { blaze_powder: 9 } }), { have: 0, need: 7, remaining: 7, done: false });
 });

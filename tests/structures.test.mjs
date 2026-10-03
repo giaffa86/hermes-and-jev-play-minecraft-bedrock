@@ -86,3 +86,60 @@ test('a non-overworld dimension produces no overworld structures', () => {
   assert.deepEqual(detectStructures({ survey: survey({ mob_spawner: { count: 1, ...at(0) } }), dimension: 'nether' }), []);
   assert.equal(detectStructures({ survey: survey({ mob_spawner: { count: 1, ...at(0) } }), dimension: 'overworld' }).length, 1);
 });
+
+test('a nether fortress is read from nether bricks and needs more than one marker', () => {
+  // Solo mattoni: 3 punti, sotto la soglia di 6. Un ponte di mattoni non è una
+  // fortezza (e le fortezze vere hanno fioriere, spawner e blaze).
+  const bricksOnly = detectStructures({
+    survey: survey({ nether_brick: { count: 40, ...at(8) } }),
+    dimension: 'nether',
+  });
+  assert.deepEqual(bricksOnly, [], 'i mattoni da soli non bastano (3 < 6)');
+
+  const fortress = detectStructures({
+    survey: survey({
+      nether_brick: { count: 40, ...at(8) },
+      nether_brick_fence: { count: 6, ...at(9) },
+      mob_spawner: { count: 1, ...at(8, 70, 12) },
+    }),
+    entities: [{ type: 'blaze', position: { x: 8, y: 70, z: 14 } }],
+    dimension: 'nether',
+  });
+  assert.deepEqual(fortress.map(s => s.type), ['nether_fortress']);
+  assert.equal(fortress[0].id, 'structure:nether_fortress');
+  assert.deepEqual(fortress[0].position, { x: 8, y: 70, z: 14 }, 'l\'ancora più specifica è il blaze');
+  assert.ok(fortress[0].evidence.matched.includes('blazes'));
+  assert.ok(fortress[0].evidence.matched.includes('nether bricks'));
+
+  // `chiseled_nether_bricks` e le scale contano come finiture: da soli con i
+  // mattoni restano a 5 punti, sotto la soglia; con la verruca del Nether si
+  // supera (una fortezza viva ha anche le fioriere).
+  const trimmed = detectStructures({
+    survey: survey({
+      nether_brick: { count: 20, ...at(1) },
+      chiseled_nether_bricks: { count: 4, ...at(2) },
+      nether_brick_stairs: { count: 2, ...at(3) },
+    }),
+    dimension: 'nether',
+  });
+  assert.deepEqual(trimmed, [], 'mattoni + finiture senza altri marker restano sotto la soglia (5 < 6)');
+  const withWart = detectStructures({
+    survey: survey({
+      nether_brick: { count: 20, ...at(1) },
+      chiseled_nether_bricks: { count: 4, ...at(2) },
+      nether_brick_stairs: { count: 2, ...at(3) },
+      nether_wart: { count: 3, ...at(2, 65, 12) },
+    }),
+    dimension: 'nether',
+  });
+  assert.deepEqual(withWart.map(s => s.type), ['nether_fortress'], 'mattoni + finiture + verruca raggiungono la soglia');
+  assert.deepEqual(withWart[0].position, { x: 1, y: 64, z: 10 }, 'senza blaze/spawner l\'ancora è il primo marker di mattoni');
+
+  // La stessa survey in Overworld non produce nulla: il def è del Nether.
+  const overworld = detectStructures({
+    survey: survey({ nether_brick: { count: 40, ...at(8) }, nether_brick_fence: { count: 6, ...at(9) } }),
+    entities: [{ type: 'blaze', position: { x: 8, y: 70, z: 14 } }],
+    dimension: 'overworld',
+  });
+  assert.deepEqual(overworld, []);
+});

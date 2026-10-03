@@ -353,7 +353,7 @@ Still missing (the rest of the original gap):
   `nether_portal → … → enter_end → beat_the_dragon` chain and the goal points to
   the real milestone. The underlying Nether capabilities are still missing — see
   [nether](nether.md).
-- **No Nether/End capabilities (N0/N1/N2/N3/N4/N5 done)**: N0 (awareness and hazards) is
+- **No Nether/End capabilities (N0/N1/N2/N3/N4/N5/N6 done)**: N0 (awareness and hazards) is
   implemented, unit-tested and live-checked 03/10 — portal/fire/magma/spawner
   census, projectile tracking, enderman gaze sensing, `waterEvaporates`/
   `bedsExplode` and seven governor rules, all *perception only*; N1 adds the four
@@ -374,8 +374,12 @@ Still missing (the rest of the original gap):
   `equip_pumpkin`, torso aim in `_combat`, `pearls` counted from the slots) — all
   unit-tested, live-checked
   only for the refusals (the live world is an Overworld room with no obsidian, no
-  ghast, no piglin and no enderman). Still missing:
-  fortress/stronghold/End actions and a
+  ghast, no piglin, no enderman and no blaze); N6 adds the `nether_fortress`
+  detector (dimension-scoped, so the Overworld survey never invents one) and the
+  `hunt_blaze` action (`lineBlocked`/`coverCandidates`/`blazeTactics`: low health
+  and *being on fire* come before shooting, cover before approaching, and an
+  unknown cell is not cover). Still missing:
+  stronghold/End actions and a
   `bossDefeated` verifier criterion. Roadmap in [nether](nether.md).
 - **Crafting** only one item at a time; special recipes (smithing, anvil, looms)
   not implemented.

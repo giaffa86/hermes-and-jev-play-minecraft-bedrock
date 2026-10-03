@@ -254,9 +254,10 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 - **Nether / End** — **N0 (awareness + hazards), N1 (portal reach/build/light/
   enter), N2 (nether survival: non-flammable hub, dimension-aware fall,
   hazardous landings), N3 (dodging an incoming projectile sideways, never into
-  lava), N4 (bartering with a piglin, never hitting one) and N5 (gaze
-  discipline, pumpkin mask, torso aim, pearls) implemented and unit-tested; N0
-  live-checked 03/10, N1–N5 live only for the typed refusals**: the
+  lava), N4 (bartering with a piglin, never hitting one), N5 (gaze
+  discipline, pumpkin mask, torso aim, pearls) and N6 (fortress detection,
+  blaze hunt with cover, blaze rods) implemented and unit-tested; N0
+  live-checked 03/10, N1–N6 live only for the typed refusals**: the
   portal/fire/magma/spawner census (`GET /observe.portals`), projectile tracking
   (`projectileThreat`/`projectileIncoming`/`projectileVelocity`), gaze sensing
   (`gazedAtEnderman` now separating `aimingAtEyes` from `gazed`),
@@ -271,9 +272,11 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
   verified by a fresh drop, piglins removed from the attack vocabulary) and the
   gaze discipline (`endermanAimPoint`/`aimsAtEndermanEyes`/`isPumpkinMask`,
   `avoid_enderman_gaze`, `equip_pumpkin`, torso aim in `_combat`, `pearls` in the
-  view). Still missing: the live happy paths (the base has no obsidian, no ghast,
-  no piglin and no enderman), fortress/stronghold/End actions and a
-  `bossDefeated` verifier. Roadmap in
+  view), the blaze hunt (`nether_fortress` detector in `dimension: nether`,
+  `lineBlocked`/`coverCandidates`/`blazeTactics`, action `hunt_blaze` that takes
+  cover before shooting and refuses to duel while on fire). Still missing: the
+  live happy paths (the base has no obsidian, no ghast, no piglin, no enderman
+  and no blaze), stronghold/End actions and a `bossDefeated` verifier. Roadmap in
   [nether](nether.md) / [`raw/NETHER_ROADMAP.md`](../raw/NETHER_ROADMAP.md). The
   progression chain (incl. the fixed `beat_the_dragon`) is already in
   `knowledge/progression.json`.
@@ -356,10 +359,10 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
    spawner census, projectile + gaze sensing, governor rules), N1 done (portal
    reach/build/light/enter), N2 done (nether survival: non-flammable hub,
    dimension-aware fall, hazardous landings), N3 done (dodge an incoming
-   projectile sideways, never into lava) and N4 done (bartering with a piglin,
-   never hitting one) and N5 done (gaze discipline, pumpkin mask, torso aim,
-   pearls), all unit-tested and live-checked for the refusals; next is N6/N7
-   (fortress, blaze rods, End).
+   projectile sideways, never into lava), N4 done (bartering with a piglin,
+   never hitting one), N5 done (gaze discipline, pumpkin mask, torso aim,
+   pearls) and N6 done (fortress detector + blaze hunt with cover and rods), all
+   unit-tested and live-checked for the refusals; next is N7 (stronghold, End).
 10. **Exploration** (spec in [exploration](exploration.md)): M1 core, M2
     (route replay) and M4 (observable targets) are implemented and live-exercised
     (`exploration.mjs` target resolution + spiral planner + report + replay +

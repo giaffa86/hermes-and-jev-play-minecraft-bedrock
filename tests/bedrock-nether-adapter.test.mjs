@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BedrockAdapter } from '../bedrock-adapter.mjs';
-import { planPortalFrame, endermanAimPoint, ENDERMAN_EYE_HEIGHT, ENDERMAN_GAZE_TOLERANCE_DEG } from '../bedrock-nether.mjs';
+import { planPortalFrame, endermanAimPoint, lineBlocked, ENDERMAN_EYE_HEIGHT, ENDERMAN_GAZE_TOLERANCE_DEG } from '../bedrock-nether.mjs';
 
 // Mondo finto: quattro celle d'aria sopra un pavimento di pietre, più le celle
 // passate esplicitamente. `findBlocks` filtra per nome (o suffisso `_<nome>`,
@@ -934,4 +934,194 @@ test('_combat aims an enderman at the torso, never at the eyes', async () => {
   const transaction = writes.find(w => w.name === 'inventory_transaction').packet.transaction.transaction_data;
   assert.equal(transaction.action_type, 'attack');
   assert.equal(transaction.click_pos.y, endermanAimPoint(enderman.position).y);
+});
+
+// --- N6: caccia al blaze -----------------------------------------------------
+
+// Il bot guarda il blaze da 6 blocchi; `wall` è il blocco solido che spezza la
+// linea di tiro. `_moveTo` è finto ma *cambia* la posizione: la copertura è un
+// movimento, e la tattica si rivaluta dopo.
+function blazeAdapter ({
+  blaze = { x: 6.5, y: 71, z: 0.5 },
+  wall = { x: 3, y: 72, z: 0 },
+  cells = {},
+  items = {},
+  health = 20,
+  moveThrows = false,
+} = {}) {
+  const all = {};
+  // L'aria va dichiarata *prima*: la fixture non ha celle "vuote" implicite e un
+  // blocco ignoto è solido per il pathfinding, quindi senza questo nessuna cella
+  // risulterebbe calpestabile. E va dichiarata prima del muro, che altrimenti
+  // verrebbe sovrascritto dalla griglia.
+  for (let x = -4; x <= 8; x++) {
+    for (let z = -4; z <= 8; z++) {
+      if (x === 0 && z === 0) continue;
+      all[`${x},71,${z}`] = 'air';
+      all[`${x},72,${z}`] = 'air';
+    }
+  }
+  if (wall) all[`${wall.x},${wall.y},${wall.z}`] = 'stone';
+  Object.assign(all, cells);
+  const adapter = netherAdapter(all, { feet: { x: 0.5, y: 71, z: 0.5 }, dimension: 'nether' });
+  adapter.health = health;
+  adapter.inventory = { ...items };
+  adapter._lavaCells = new Set();
+  adapter._moves = [];
+  adapter._combats = [];
+  if (blaze) adapter.entities.set('41', { runtimeId: '41', type: 'blaze', kind: 'mob', position: { ...blaze }, health: 20, lastAt: Date.now() });
+  adapter._moveTo = async (target) => {
+    adapter._moves.push({ ...target });
+    if (moveThrows) throw new Error('path_failed');
+    adapter._feet = { x: target.x, y: target.y, z: target.z };
+    adapter.position = { x: target.x, y: target.y + 1.62, z: target.z };
+    return { ok: true };
+  };
+  adapter._combat = async (type) => {
+    adapter._combats.push(type);
+    adapter.inventory.blaze_rod = (adapter.inventory.blaze_rod || 0) + 1;
+    return { ok: true, killed: true, hits: 3, weapon: 'diamond_sword', confirmedBy: 'health' };
+  };
+  adapter._collectDrop = async () => ({ ok: true, picked: [{ item: 'blaze_rod', count: 1 }] });
+  adapter._collects = 0;
+  const collect = adapter._collectDrop;
+  adapter._collectDrop = async (...args) => { adapter._collects++; return collect(...args); };
+  adapter.events = { logs: [] };
+  adapter.log = (type, data) => { adapter.events.logs.push({ type, data }); };
+  return adapter;
+}
+
+test('_netherView reports the nearest blaze and the rods held', () => {
+  const adapter = blazeAdapter({ items: { blaze_rod: 2, diamond_sword: 1, bread: 3 } });
+  const view = adapter._netherView();
+  assert.equal(view.blaze.type, 'blaze');
+  assert.ok(Math.abs(view.blaze.distance - Math.hypot(6, 0.9 - 1.62)) < 0.01, `distance was ${view.blaze.distance}`);
+  assert.equal(view.rods, 2);
+  assert.equal(view.hunt, null);
+});
+
+test('_coverFrom finds the cells from which the blaze has no line of fire', () => {
+  const adapter = blazeAdapter();
+  const cover = adapter._coverFrom({ position: { x: 6.5, y: 71, z: 0.5 } });
+  assert.ok(cover.length > 0, 'a wall between the bot and the blaze is cover');
+  for (const row of cover) {
+    assert.deepEqual(row.cover, { x: 3, y: 72, z: 0 });
+    assert.ok(row.distance > 0);
+  }
+  // Il bot non è mai una delle proprie coperture.
+  assert.ok(!cover.some(row => row.cell.x === 0 && row.cell.z === 0));
+
+  const open = blazeAdapter({ wall: null });
+  assert.deepEqual(open._coverFrom({ position: { x: 6.5, y: 71, z: 0.5 } }), []);
+});
+
+test('_huntBlaze takes cover, fights and counts the rods it collected', async () => {
+  const adapter = blazeAdapter({ items: { diamond_sword: 1 } });
+  const report = await adapter._huntBlaze({});
+  assert.equal(report.ok, true);
+  assert.equal(report.killed, true);
+  assert.equal(report.hits, 3);
+  assert.equal(report.weapon, 'diamond_sword');
+  assert.equal(report.tactics, 'take_cover');
+  assert.equal(report.reason, 'no_line_of_sight');
+  assert.equal(report.cover > 0, true);
+  assert.deepEqual(report.actions, ['take_cover', 'fight', 'collect']);
+  assert.equal(report.rods, 1);
+  assert.equal(report.total, 1);
+  assert.equal(report.collected.picked[0].item, 'blaze_rod');
+  assert.deepEqual(adapter._combats, ['blaze']);
+  assert.equal(adapter._collects, 1);
+  assert.equal(adapter._blazeLast.ok, true);
+  assert.ok(adapter._blazeLast.at > 0);
+  // Il movimento è andato verso una cella di copertura, e quella cella copre
+  // davvero: il muro taglia la linea di tiro.
+  assert.equal(adapter._moves.length, 1);
+  const moved = adapter._moves[0];
+  const sight = lineBlocked({
+    from: { x: moved.x, y: moved.y + 1.62, z: moved.z },
+    to: { x: 7, y: 71.9, z: 1 },
+    solid: (cell) => Boolean(adapter.world.blockAt(cell) && adapter._solidAt(cell.x, cell.y, cell.z)),
+    step: 0.5,
+  });
+  assert.equal(sight.blocked, true);
+  assert.deepEqual(sight.at, { x: 3, y: 72, z: 0 });
+  assert.ok(adapter.events.logs.some(entry => entry.type === 'blaze_hunted'));
+});
+
+test('_huntBlaze fights in the open when there is no cover to reach', async () => {
+  const adapter = blazeAdapter({ wall: null });
+  const report = await adapter._huntBlaze({});
+  assert.equal(report.ok, true);
+  assert.equal(report.cover, 0);
+  assert.equal(report.tactics, 'fight');
+  assert.equal(report.reason, 'no_cover_available');
+  assert.deepEqual(report.actions, ['fight', 'collect']);
+  assert.equal(adapter._moves.length, 0);
+});
+
+test('_huntBlaze refuses with no blaze in range, and when it is already too hurt', async () => {
+  const none = blazeAdapter({ blaze: null });
+  const missing = await none._huntBlaze({});
+  assert.equal(missing.ok, false);
+  assert.equal(missing.error, 'no_blaze_nearby');
+  assert.equal(none._combats.length, 0);
+
+  const hurt = blazeAdapter({ health: 5 });
+  const refused = await hurt._huntBlaze({});
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error, 'too_hurt');
+  assert.equal(refused.health, 5);
+  assert.equal(hurt._moves.length, 0);
+  assert.equal(hurt._combats.length, 0);
+});
+
+test('_huntBlaze retreats when it is on fire and nothing breaks the line', async () => {
+  // In fiamme ai piedi e nessun muro: sparare da fermi è l'unica altra opzione,
+  // e non è una buona idea. Il rifiuto è tipizzato, non un silenzio.
+  const adapter = blazeAdapter({ wall: null, cells: { '0,71,0': 'fire' } });
+  assert.equal(adapter._inFire(), true);
+  const report = await adapter._huntBlaze({});
+  assert.equal(report.ok, false);
+  assert.equal(report.error, 'blaze_retreat');
+  assert.equal(report.reason, 'on_fire_without_cover');
+  assert.equal(report.retreated, false);
+  assert.equal(adapter._combats.length, 0);
+  assert.equal(adapter._moves.length, 0);
+  assert.ok(adapter.events.logs.some(entry => entry.type === 'blaze_retreated'));
+});
+
+test('_huntBlaze retreats into cover when it is on fire and the line can be broken', async () => {
+  const adapter = blazeAdapter({ cells: { '0,71,0': 'fire' } });
+  const report = await adapter._huntBlaze({});
+  assert.equal(report.ok, false);
+  assert.equal(report.error, 'blaze_retreat');
+  assert.equal(report.reason, 'on_fire_with_cover');
+  assert.equal(report.retreated, true);
+  assert.deepEqual(report.actions, ['retreat_to_cover']);
+  assert.equal(adapter._moves.length, 1);
+  assert.equal(adapter._combats.length, 0);
+});
+
+test('_huntBlaze still fights when the cover cannot be reached', async () => {
+  const adapter = blazeAdapter({ moveThrows: true });
+  const report = await adapter._huntBlaze({});
+  assert.equal(report.ok, true);
+  assert.deepEqual(report.actions, ['cover_failed', 'fight', 'collect']);
+  assert.equal(adapter._combats.length, 1);
+  assert.ok(adapter.events.logs.some(entry => entry.type === 'blaze_cover_failed'));
+});
+
+test('the hunt_blaze option appears only with a blaze in range and enough health', () => {
+  const ready = blazeAdapter({ items: { diamond_sword: 1 } });
+  const option = ready.options().find(o => o.key === 'hunt_blaze');
+  assert.ok(option, 'the option is offered with a blaze and full health');
+  assert.match(option.description, /Hunt the blaze at \{"x":7,"y":71,"z":1\}/);
+  assert.match(option.description, /\d+ cover spots? in reach/);
+  assert.match(option.description, /0\/7 blaze rods/);
+
+  const hurt = blazeAdapter({ health: 5 });
+  assert.equal(hurt.options().some(o => o.key === 'hunt_blaze'), false);
+
+  const empty = blazeAdapter({ blaze: null });
+  assert.equal(empty.options().some(o => o.key === 'hunt_blaze'), false);
 });
