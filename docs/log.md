@@ -3055,3 +3055,19 @@ hint (verificato live dopo il deploy: md5 adapter `a3fee1bbbd257e2883e95502e483c
 **Limiti**: i percorsi felici di riding, taming, tosatura, pesca e contenitori
 restano non esercitabili (servono una cattura di client reale, un osso, 2 lingotti di
 ferro, una canna da pesca e contenitori dentro il componente camminabile).
+
+## [2026-10-03] report | Chiusura della campagna P0 → P7
+
+Pagina nuova `docs/wiki/final-report.md` (collegata da `docs/index.md`): il
+bilancio della campagna a priorità — 51 commit, suite da 466 a **987 test**, 11
+task di goal completi e 1 saltato per blocker ambientale. Sette sezioni: completato
+(P0 consolidamento, P1 goal→missione, P3 `first_night`, P4 latte/colture/scudo/chat
+M5, P4 esplorazione M1–M6, P5 kit di viaggio, P6 observation log + indice
+vettoriale, P7 fluidi M0–M6, redstone R0–R6, nether/End N0–N7, più l'affidabilità
+del harness in P2), migliorato ma non completo (riding, percorsi felici dei
+compagni e della pesca, apertura del commercio, nuoto di M1, build redstone/Nether
+senza materiali), blocker con causa radice e tentativi (nessun player umano,
+entità e contenitori fuori dal componente, respawn del BDS, trigger di
+montaggio/commercio, crescita delle colture — quest'ultima risolta), test e prove
+live, modifiche principali, traccia documentale e i cinque task successivi ordinati
+per dipendenza tecnica.
