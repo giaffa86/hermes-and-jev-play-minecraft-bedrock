@@ -1,5 +1,46 @@
 # Log
 
+## [2026-10-04] feat | Swimming M1: a measurement probe, and the water the bot cannot enter
+
+The missing half of M1 (the vertical rates) stopped being a guess and became a
+live measurement. `adapter.swimMeasure` (`POST /debug/swim-measure`, gated by
+`BEDROCK_DEBUG`) forces the vertical intention through `_swimProbe` while sampling
+the **server's own** position (`move_player` is authoritative), so one call next
+to open water yields `ratePerSecond` for `up`, `down` and `none`.
+
+Getting the bot there needed a deliberate entry primitive: `_standable` treats
+deep water as a wall by design (M3 forbids *planning* a descent into water, since
+a descent the bot cannot leave is a trap), so `enterWater` walks one node with
+`_stepToward` instead of asking A*. `deepWaterColumns` groups the census cells by
+column and probes each one up and down; the earlier version ranked by **depth**
+first and truncated with `limit`, which filled the list with the 17-cell columns
+and hid the pond at the bot's feet — with a reference point it now ranks by
+distance. Two guards came from the live world: a **covered** column is skipped
+(the step lands on the lid and the motion declares the target reached) and a
+column more than four blocks below the feet is refused (`no_water_at_level`).
+
+What the world actually offers: the village pond is a **well**, water at `y=73-74`
+under a solid surface at `y=75` (the bot stands at `y=76`, `standingOn: air`; the
+structure detector reports a `Village` at `(74,76,174)` right next to the
+`(69-72, 172-176)` columns), and the only deep water is a **flooded amphitheatre**
+13-17 blocks underground (`ys=56..58`, columns up to 17 cells, waterfall at
+`(71,149)`). So the final live calls answer honestly:
+`{ enter: true, mode: 'none', max_distance: 24, depth: 2 }` → `not_in_water` with
+`entered: { ok: false, error: 'no_water_at_level', columns: [{71,43,153},{72,42,153},…] }`,
+and a bare `swimMeasure` → `not_in_water`. **The blocker is world access, not
+protocol**: the probe, the entry primitive and the typed refusals are implemented,
+unit-tested and live-verified as refusals; one `enter: true` call next to open
+water closes M1's last unknown.
+
+Offline: `tests/bedrock-fluids.test.mjs` +2 (distance ranking, per-column grouping
+and `limit`), `tests/bedrock-fluids-adapter.test.mjs` +5 (`swimMeasure` up/down and
+its typed refusals; `enterWater` entering a deep column, refusing an invented swim,
+an already-wet bot, a covered column and a ravine), suite **1102 pass / 0 fail**.
+
+Operational note: a night walk toward the pond cost one death (the bot stepped
+into the cave under the well while zombies were around) and the respawn emptied the
+inventory. `sleep` first, and do not navigate the village at night.
+
 ## [2026-10-04] fix | Entity interactions respect a line of sight (and the packet family is proven accepted)
 
 A live diagnostic round on the real BDS (probe route `POST /debug/probe-interact`,

@@ -11,7 +11,7 @@ import { professionName, normalizeProfession, professionMatches, pickBestTrade }
 import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
 import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
 import { detectStructures } from './structures.mjs';
-import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, swimInputFlags, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT, LAVA_CONTACT_RANGE } from './bedrock-fluids.mjs';
+import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, swimInputFlags, deepWaterColumns, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT, LAVA_CONTACT_RANGE } from './bedrock-fluids.mjs';
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
 import { normalizeEffectName, waterBreathingSources, divePlan, underwaterWork, CONDUIT_BLOCK, CONDUIT_RANGE } from './bedrock-dive.mjs';
 import { findWaterfalls, findBubbleColumns, columnTactic, summarizeColumn, withinColumn } from './bedrock-waterfall.mjs';
@@ -269,6 +269,11 @@ export class BedrockAdapter {
     // M1 (04/10/2026): stato di nuoto dichiarato al server con i flag
     // `start_swimming`/`stop_swimming` (transizioni a fronte) e `want_up`/`want_down`.
     this._swimming = false;
+    // M1 (04/10/2026): sonda di misura. `_swimProbe` forza per pochi secondi
+    // l'intenzione verticale (`mode: 'up'|'down'|'none'`) mentre `swimMeasure`
+    // campiona la quota che il **server** conferma: i ratei del nuoto si misurano,
+    // non si indovinano (il client reale li sente, noi no).
+    this._swimProbe = null;
     this._waterfallLast = null;
     this._lavaLast = null;
     this._bucketLast = null;
@@ -1242,6 +1247,14 @@ export class BedrockAdapter {
       airSeconds: airSeconds(air),
       waterBreathing: this._waterBreathing(),
       water: census.water,
+      // M1: dove l'acqua è abbastanza profonda da immergere la testa. La cella
+      // più vicina non basta: per misurare i ratei del nuoto (e per pianificare
+      // una discesa) serve una colonna, non un punto.
+      deepestWater: deepWaterColumns(census.cells?.water ?? [], {
+        blockAt: typeof this.world?.blockAt === 'function' ? (p => this.world.blockAt(p) ?? null) : null,
+        minDepth: 2,
+        limit: 3,
+      }),
       lava: census.lava,
       waterDistance: census.waterDistance,
       lavaDistance: census.lavaDistance,
@@ -7778,13 +7791,16 @@ export class BedrockAdapter {
     // M1: nuoto. In acqua il client dichiara lo stato (start/stop_swimming, a
     // fronte) e l'intenzione verticale (want_up con il salto, want_down con lo
     // sneak). Senza input il bot affonda piano: è la gravità locale di sempre.
+    // La sonda `swimMeasure` può forzare l'intenzione per misurare i ratei.
     const inWater = !this.riding && this._inWater();
     const headInWater = !this.riding && this._headInWater();
-    const wantUp = (this._freeJump?.heldTicks > 0) || (motion?.jumpHeldTicks > 0);
-    const swimFlags = swimInputFlags({ inWater, headInWater, swimming: this._swimming, wantUp, wantDown: this._sneaking });
+    const probeMode = this._swimProbe?.mode;
+    const wantUp = probeMode === 'up' || (this._freeJump?.heldTicks > 0) || (motion?.jumpHeldTicks > 0);
+    const wantDown = probeMode === 'down' || this._sneaking;
+    const swimFlags = swimInputFlags({ inWater, headInWater, swimming: this._swimming, wantUp, wantDown });
     for (const flag of swimFlags) if (!inputData.includes(flag)) inputData.push(flag);
     if (headInWater !== this._swimming) this._swimming = headInWater;
-    if (swimFlags.length) this.logger?.log?.('swim_input', { inWater, headInWater, wantUp, wantDown: this._sneaking, flags: swimFlags });
+    if (swimFlags.length) this.logger?.log?.('swim_input', { inWater, headInWater, wantUp, wantDown, flags: swimFlags });
     if (blockAction?.length) inputData.push('block_action');
     // `itemInteract` senza transazione serve alla sonda delle interazioni entità
     // (probeInteract): il flag è l'unico modo per dichiarare "uso un item" in un
@@ -7888,6 +7904,94 @@ export class BedrockAdapter {
     return this._fluidKindAt(x, y, z) === 'water';
   }
 
+  // Un passo deliberato verso una cella, **senza** A*: serve dove il pathfinder non
+  // deve passare (l'ingresso in acqua profonda, M1). Il percorso è di un solo nodo,
+  // quindi `_standable` — e la sua regola "l'acqua profonda è un muro" — non entra
+  // in gioco: la scelta è dell'azione, non del pianificatore.
+  _stepToward (cell, { timeoutMs = 12000, stopDistance = 0.6 } = {}) {
+    const node = { x: Math.floor(cell.x), y: Math.floor(cell.y), z: Math.floor(cell.z) };
+    const target = { x: node.x + 0.5, y: node.y, z: node.z + 0.5 };
+    return this._startMotion([node], node, target, stopDistance, Date.now() + timeoutMs);
+  }
+
+  // M1 (04/10/2026): **entrare** in acqua. Il pathfinder non attraversa l'acqua
+  // profonda (M3: una discesa in un pozzo allagato da cui non si esce è una
+  // trappola), ma per nuotare — e per misurare i ratei — bisogna poterci entrare.
+  // La cella la sceglie il censimento (`deepWaterColumns`: una colonna, non un
+  // punto) e il passo è deliberato.
+  async enterWater ({ maxDistance = 6, depth = 2, timeoutMs = 12000 } = {}) {
+    if (this.riding) return { ok: false, error: 'riding' };
+    if (!this.spawned || !this._feet || !this.position) return { ok: false, error: 'not_spawned' };
+    if (this._inWater()) {
+      return { ok: true, already: true, position: this.pos(), headInWater: this._headInWater(), depth: null };
+    }
+    const census = this._fluidCensus();
+    const feet = this._feet;
+    // La scelta è per **vicinanza** (`from`/`maxDistance`): con un `limit` per
+    // profondità lo stagno di due celle accanto al bot verrebbe scartato a favore
+    // di un pozzo profondo a venti blocchi (live 04/10).
+    const ranked = deepWaterColumns(census.cells?.water ?? [], {
+      blockAt: typeof this.world?.blockAt === 'function' ? (p => this.world.blockAt(p) ?? null) : null,
+      minDepth: depth,
+      limit: 6,
+      from: feet,
+      maxDistance,
+    });
+    if (!ranked.length) {
+      // Nessuna colonna profonda abbastanza vicina: non si tenta una nuotata che
+      // non si può misurare, si dichiara il motivo.
+      return { ok: false, error: 'no_deep_water', maxDistance, depth, water: census.water };
+    }
+    // Una colonna a tredici blocchi **sotto** i piedi non si entra con un passo:
+    // camminarci verso vuol dire buttarsi in un dirupo, o arrampicarsi se è sopra.
+    // Live 04/10: l'unica acqua profonda del mondo intorno al bot è un anfiteatro
+    // allagato sotto la superficie, e `_stepToward` verso di lui avrebbe fatto
+    // cadere il bot nel vuoto; la misura si fa dove si entra **camminando**.
+    const LEVEL_ABOVE = 3;
+    const LEVEL_DROP = 4;
+    const level = ranked.filter(column => column.top <= feet.y + LEVEL_ABOVE && column.top >= feet.y - LEVEL_DROP);
+    if (!level.length) {
+      return { ok: false, error: 'no_water_at_level', maxDistance, depth, columns: ranked.map(c => c.position) };
+    }
+    // Una colonna **coperta** non si entra camminandoci: il passo arriva sul
+    // coperchio e si ferma lì (`|Δy| < 3` fa dichiarare raggiunto il bersaglio),
+    // quindi si scarta invece di fingere un ingresso. Live 04/10: lo stagno del
+    // villaggio (il pozzo, coperto) ha l'acqua a y=73-74 e il bot in piedi a y=76.
+    const open = level.filter(column => {
+      const above = typeof this.world?.blockAt === 'function'
+        ? this.world.blockAt({ x: column.position.x, y: column.top + 1, z: column.position.z })
+        : null;
+      if (!above) return true;
+      if (above.boundingBox === 'empty') return true;
+      return fluidKind(above.name) === 'water';
+    });
+    if (!open.length) {
+      return { ok: false, error: 'water_covered', maxDistance, depth, columns: level.map(c => c.position) };
+    }
+    const attempts = [];
+    for (const column of open.slice(0, 3)) {
+      const cell = { x: column.position.x, y: column.top, z: column.position.z };
+      const reason = await this._stepToward(cell, { timeoutMs });
+      const entered = this._inWater();
+      attempts.push({ cell, depth: column.depth, reason, entered });
+      if (entered) {
+        const report = {
+          ok: true,
+          entered: true,
+          cell,
+          depth: column.depth,
+          headInWater: this._headInWater(),
+          position: this.pos(),
+        };
+        this._waterEnterLast = report;
+        this.log('enter_water', report);
+        return report;
+      }
+    }
+    this.log('enter_water_failed', { attempts });
+    return { ok: false, error: 'water_not_reached', attempts };
+  }
+
   // Un tick del budget d'aria. Fuori dall'acqua si recupera, con la testa
   // sott'acqua si consuma: nessun danno viene simulato (la salute è del server),
   // il contatore serve solo alle decisioni di sopravvivenza.
@@ -7941,6 +8045,56 @@ export class BedrockAdapter {
     const feet = this._feet;
     if (!feet) return false;
     return this._fluidKindAt(Math.floor(feet.x), Math.floor(feet.y + 0.1), Math.floor(feet.z)) === 'water';
+  }
+
+  // M1 (04/10/2026): i ratei del nuoto non si indovinano. Questa sonda tiene
+  // un'intenzione verticale per qualche secondo e campiona la quota che il
+  // **server** conferma (`this.position` arriva dai `move_player`), cosi' il
+  // modello locale puo' usare numeri misurati invece di una stima. La semantica
+  // viene dalla sessione umana: `down` = sneak (discesa rapida), `none` = nessun
+  // input (discesa lenta), `up` = spacebar (risalita).
+  async swimMeasure ({ mode = 'none', ms = 3000, sampleMs = 100 } = {}) {
+    const wanted = ['none', 'up', 'down'].includes(mode) ? mode : null;
+    if (!wanted) return { ok: false, error: 'unknown_mode', mode, modes: ['none', 'up', 'down'] };
+    if (this.riding) return { ok: false, error: 'riding' };
+    if (!this.spawned || !this.position) return { ok: false, error: 'not_spawned' };
+    if (!this._inWater()) return { ok: false, error: 'not_in_water', position: { ...this.position } };
+    const headInWater = this._headInWater();
+    const duration = Math.max(200, Math.min(Number(ms) || 0, 20000));
+    const step = Math.max(20, Math.min(Number(sampleMs) || 0, 1000));
+    const t0 = Date.now();
+    const y0 = this.position.y;
+    const samples = [{ t: 0, y: +y0.toFixed(3), feet: +(this._feet?.y ?? y0).toFixed(3) }];
+    this._swimProbe = { mode: wanted, until: t0 + duration };
+    try {
+      while (Date.now() < t0 + duration) {
+        await delay(step);
+        if (!this.position) break;
+        samples.push({ t: Date.now() - t0, y: +this.position.y.toFixed(3), feet: +(this._feet?.y ?? this.position.y).toFixed(3) });
+      }
+    } finally {
+      // La sonda deve spegnersi **sempre** (anche su disconnessione a meta'
+      // misura): un'intenzione verticale lasciata accesa falserebbe l'azione dopo.
+      this._swimProbe = null;
+    }
+    const last = samples[samples.length - 1];
+    const seconds = (last.t || 1) / 1000;
+    const deltaY = +(last.y - y0).toFixed(3);
+    return {
+      ok: true,
+      mode: wanted,
+      ms: duration,
+      sampleMs: step,
+      headInWater,
+      air: this.air,
+      airSource: this.airSource,
+      from: +y0.toFixed(3),
+      to: last.y,
+      deltaY,
+      seconds: +seconds.toFixed(2),
+      ratePerSecond: +(deltaY / seconds).toFixed(3),
+      samples,
+    };
   }
 
   _headInWater () {

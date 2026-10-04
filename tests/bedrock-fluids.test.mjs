@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import {
   isWaterBlock, isLavaBlock, isFluidBlock, fluidKind, normalizeFluidName,
   summarizeFluids, fluidCells, fluidHazard, rankEscapeCells, digFluidRisk,
-  swimInputFlags,
+  swimInputFlags, deepWaterColumns,
   AIR_CRITICAL, LAVA_NEAR_RANGE,
 } from '../bedrock-fluids.mjs';
 
@@ -150,4 +150,81 @@ test('digFluidRisk refuses a dig that would open into lava (or water when asked)
   // La lava ha la precedenza sull'acqua.
   assert.equal(digFluidRisk({ neighbors: [water, lava], avoidWater: true }).reason, 'lava_adjacent');
   assert.equal(digFluidRisk({}).unsafe, false);
+});
+
+test('deepWaterColumns: la cella più vicina non è dove si può nuotare (M1)', () => {
+  // Colonna profonda in (0,68..71,z=0), pozza di una cella in (5,70,0),
+  // e una colonna che il mondo non ha caricato oltre (2,70,0).
+  const world = new Map([
+    ['0,68,0', 'water'], ['0,69,0', 'water'], ['0,70,0', 'water'], ['0,71,0', 'water'],
+    ['0,72,0', 'air'], ['0,67,0', 'stone'],
+    ['5,70,0', 'water'], ['5,71,0', 'air'], ['5,69,0', 'stone'],
+    ['2,70,0', 'water'],
+  ]);
+  const blockAt = ({ x, y, z }) => {
+    const name = world.get(`${x},${y},${z}`);
+    return name ? { name } : null;
+  };
+  const cells = [{ x: 0, y: 70, z: 0 }, { x: 5, y: 70, z: 0 }, { x: 2, y: 70, z: 0 }];
+  const deep = deepWaterColumns(cells, { blockAt, minDepth: 2, limit: 4 });
+  assert.equal(deep.length, 1, 'solo la colonna di 4 celle è profonda');
+  assert.equal(deep[0].depth, 4);
+  assert.deepEqual(deep[0].position, at(0, 68, 0), 'la posizione è il fondo della colonna');
+  assert.equal(deep[0].top, 71);
+  // La pozza di una cella e la colonna non caricata non si dichiarano profonde.
+  assert.equal(deepWaterColumns([{ x: 5, y: 70, z: 0 }], { blockAt }).length, 0);
+  assert.equal(deepWaterColumns([{ x: 2, y: 70, z: 0 }], { blockAt }).length, 0);
+  // Senza mondo (nessun `blockAt`) non si inventa nulla: la cella vale per sé,
+  // quindi con la soglia di default non è "profonda" e non viene dichiarata tale.
+  assert.deepEqual(deepWaterColumns([{ x: 5, y: 70, z: 0 }], {}), []);
+  assert.deepEqual(deepWaterColumns([{ x: 5, y: 70, z: 0 }], { minDepth: 1 }), [{
+    position: at(5, 70, 0), top: 70, bottom: 70, depth: 1,
+  }]);
+});
+
+test('deepWaterColumns: ordina per profondità e limita il numero di colonne (M1)', () => {
+  const world = new Map([
+    ['0,68,0', 'water'], ['0,69,0', 'water'], ['0,70,0', 'water'],
+    ['1,70,0', 'water'], ['1,71,0', 'water'], ['1,72,0', 'water'], ['1,73,0', 'water'],
+    ['2,69,0', 'water'], ['2,70,0', 'water'],
+  ]);
+  const blockAt = ({ x, y, z }) => {
+    const name = world.get(`${x},${y},${z}`);
+    return name ? { name } : null;
+  };
+  const cells = [
+    { x: 0, y: 70, z: 0 }, { x: 0, y: 68, z: 0 },
+    { x: 1, y: 72, z: 0 }, { x: 2, y: 70, z: 0 },
+  ];
+  const deep = deepWaterColumns(cells, { blockAt, limit: 2 });
+  assert.deepEqual(deep.map(c => [c.position.x, c.depth]), [[1, 4], [0, 3]], 'una voce per colonna, la più profonda prima');
+  // Una cella non valida (senza coordinate) non fa esplodere la misura.
+  assert.deepEqual(deepWaterColumns([null, {}, { x: 1, y: 72, z: 0 }], { blockAt, limit: 1 }).length, 1);
+});
+
+test('deepWaterColumns: con un punto di riferimento conta la vicinanza, non la profondità (M1)', () => {
+  // Il caso live del 04/10: il bot sull'argine dello stagno aveva accanto colonne
+  // di **due** celle, mentre le colonne profonde del censimento erano a venti
+  // blocchi (il pozzo allagato). Ordinando per profondità e troncando con `limit`
+  // lo stagno spariva dalla lista — e `enterWater` rispondeva `no_deep_water` con
+  // l'acqua a due blocchi.
+  const world = new Map([
+    ['0,73,0', 'water'], ['0,74,0', 'water'],
+    ['20,42,0', 'water'], ['20,43,0', 'water'], ['20,44,0', 'water'], ['20,45,0', 'water'],
+    ['20,46,0', 'water'], ['20,47,0', 'water'], ['20,48,0', 'water'],
+  ]);
+  const blockAt = ({ x, y, z }) => {
+    const name = world.get(`${x},${y},${z}`);
+    return name ? { name } : { name: 'stone' };
+  };
+  const cells = [{ x: 0, y: 74, z: 0 }, { x: 20, y: 45, z: 0 }];
+  const byDepth = deepWaterColumns(cells, { blockAt, minDepth: 2, limit: 1 });
+  assert.deepEqual(byDepth.map(c => [c.position.x, c.depth]), [[20, 7]], 'senza riferimento vince la più profonda');
+
+  const from = { x: 0.5, y: 76, z: 0.5 };
+  const near = deepWaterColumns(cells, { blockAt, minDepth: 2, limit: 1, from, maxDistance: 6 });
+  assert.deepEqual(near.map(c => [c.position.x, c.depth, c.distance]), [[0, 2, 0]], 'col riferimento vince la più vicina');
+  assert.equal(near[0].top, 74, 'la cella d\'ingresso è la superficie');
+  // Fuori portata non si promette nulla: nessuna colonna entra nella lista.
+  assert.deepEqual(deepWaterColumns(cells, { blockAt, minDepth: 2, from: { x: 100.5, z: 100.5 }, maxDistance: 4 }), []);
 });

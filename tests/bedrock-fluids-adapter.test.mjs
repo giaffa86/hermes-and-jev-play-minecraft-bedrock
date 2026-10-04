@@ -1099,3 +1099,235 @@ test('M5: fill_bucket, place_water e mount_boat arrivano al ramo giusto', async 
   const boarded = await board.adapter.executeAction('mount_boat');
   assert.deepEqual([boarded.ok, boarded.mounted], [true, 'boat'], 'mount_boat non è la cavalcatura di un tipo "boat" generico');
 });
+
+// M1 (04/10/2026): i ratei del nuoto si misurano. La sonda forza l'intenzione
+// verticale nei frame e riferisce la quota che il **server** conferma; il test
+// verifica entrambe le cose (frame + report) e che la sonda si spenga sempre.
+test('M1: swimMeasure misura la risalita con want_up e spegne la sonda', async () => {
+  const { adapter } = fluidAdapter({ '0,71,0': water, '0,72,0': water });
+  const written = [];
+  adapter.client = { write: (name, params) => written.push({ name, params }), entityId: 1 };
+  const y0 = adapter.position.y;
+  const probe = adapter.swimMeasure({ mode: 'up', ms: 200, sampleMs: 40 });
+  // Il server conferma la risalita: la quota (autorevole) sale mentre la sonda è accesa.
+  for (let step = 1; step <= 4; step++) {
+    await new Promise(resolve => setTimeout(resolve, 30));
+    adapter.position = { x: 0.5, y: y0 + step * 0.25, z: 0.5 };
+    adapter._sendAuthInput({ yaw: 0, pitch: 0, tick: 100 + step });
+  }
+  const report = await probe;
+  assert.equal(report.ok, true);
+  assert.equal(report.mode, 'up');
+  assert.equal(report.headInWater, true, 'testa in acqua: è la condizione della misura');
+  assert.ok(report.deltaY > 0, `quota salita (${report.deltaY})`);
+  assert.ok(report.ratePerSecond > 0, `rateo positivo (${report.ratePerSecond})`);
+  assert.ok(report.samples.length >= 2, 'ci sono campioni');
+  const auth = written.find(w => w.name === 'player_auth_input');
+  assert.ok(auth, 'player_auth_input inviato durante la misura');
+  assert.ok(auth.params.input_data.includes('want_up'), 'la sonda dichiara want_up');
+  assert.ok(!auth.params.input_data.includes('want_down'), 'e non want_down');
+  assert.equal(adapter._swimProbe, null, 'la sonda si spegne a fine misura');
+  // Spenta la sonda, il frame torna a non dichiarare l'intenzione verticale.
+  written.length = 0;
+  adapter._sendAuthInput({ yaw: 0, pitch: 0, tick: 200 });
+  const after = written.find(w => w.name === 'player_auth_input');
+  assert.ok(!after.params.input_data.includes('want_up'), 'nessuna intenzione verticale residua');
+});
+
+test('M1: swimMeasure in discesa dichiara want_down e riferisce il segno', async () => {
+  const { adapter } = fluidAdapter({ '0,71,0': water, '0,72,0': water });
+  const written = [];
+  adapter.client = { write: (name, params) => written.push({ name, params }), entityId: 1 };
+  const y0 = adapter.position.y;
+  const probe = adapter.swimMeasure({ mode: 'down', ms: 200, sampleMs: 40 });
+  for (let step = 1; step <= 4; step++) {
+    await new Promise(resolve => setTimeout(resolve, 30));
+    adapter.position = { x: 0.5, y: y0 - step * 0.2, z: 0.5 };
+    adapter._sendAuthInput({ yaw: 0, pitch: 0, tick: 300 + step });
+  }
+  const report = await probe;
+  assert.equal(report.ok, true);
+  assert.ok(report.deltaY < 0, `quota scesa (${report.deltaY})`);
+  assert.ok(report.ratePerSecond < 0, `rateo negativo (${report.ratePerSecond})`);
+  const auth = written.find(w => w.name === 'player_auth_input');
+  assert.ok(auth.params.input_data.includes('want_down'), 'la sonda dichiara want_down');
+  assert.ok(auth.params.input_data.includes('down'));
+  assert.ok(!auth.params.input_data.includes('want_up'), 'e non want_up');
+});
+
+test('M1: swimMeasure rifiuta in modo tipizzato fuori dall\'acqua, da montato e con un modo ignoto', async () => {
+  const dry = fluidAdapter({}).adapter;
+  dry.client = { write () {}, entityId: 1 };
+  assert.deepEqual(await dry.swimMeasure({ mode: 'up', ms: 100 }), {
+    ok: false, error: 'not_in_water', position: { ...dry.position },
+  });
+
+  const { adapter } = fluidAdapter({ '0,71,0': water, '0,72,0': water });
+  adapter.client = { write () {}, entityId: 1 };
+  const unknown = await adapter.swimMeasure({ mode: 'sideways', ms: 100 });
+  assert.equal(unknown.error, 'unknown_mode');
+  assert.deepEqual(unknown.modes, ['none', 'up', 'down']);
+
+  adapter.riding = { riddenEntityId: '9' };
+  assert.equal((await adapter.swimMeasure({ mode: 'up', ms: 100 })).error, 'riding');
+
+  adapter.riding = null;
+  adapter.spawned = false;
+  assert.equal((await adapter.swimMeasure({ mode: 'up', ms: 100 })).error, 'not_spawned');
+});
+
+// M1 (04/10/2026): il pathfinder non attraversa l'acqua profonda (M3: una
+// discesa in un pozzo da cui non si esce è una trappola), ma per nuotare — e per
+// misurare i ratei — bisogna poterci entrare: `enterWater` fa un passo
+// deliberato verso la colonna scelta dal censimento, con un percorso di un solo
+// nodo (nessun A*, nessuna modifica a `_standable`).
+test('M1: enterWater sceglie una colonna profonda e ci entra (nessun A*)', async () => {
+  const { adapter } = fluidAdapter({ '3,71,0': water, '3,72,0': water, '3,73,0': water, '3,74,0': water });
+  const calls = [];
+  adapter._startMotion = (path, goalNode, target, stopDistance, deadline) => {
+    calls.push({ path, goalNode, target, stopDistance, deadline });
+    // Il server conferma la discesa: i piedi arrivano sul fondo della colonna.
+    adapter._feet = { x: target.x, y: 71, z: target.z };
+    adapter.position = { x: target.x, y: 72.62, z: target.z };
+    return Promise.resolve('goal');
+  };
+  const report = await adapter.enterWater();
+  assert.equal(report.ok, true);
+  assert.equal(report.entered, true);
+  assert.deepEqual(report.cell, { x: 3, y: 74, z: 0 }, "la cella d'ingresso è la superficie della colonna");
+  assert.equal(report.depth, 4);
+  assert.equal(report.headInWater, true, "testa sott'acqua: è la condizione della misura");
+  assert.equal(report.position.y, 72.62);
+  assert.equal(calls.length, 1, 'la prima colonna basta');
+  assert.deepEqual(calls[0].path, [{ x: 3, y: 74, z: 0 }], 'percorso di un nodo: nessun A*');
+  assert.deepEqual(calls[0].goalNode, { x: 3, y: 74, z: 0 });
+  assert.equal(adapter._waterEnterLast.entered, true, 'il report resta leggibile');
+});
+
+test('M1: enterWater non inventa una nuotata senza acqua profonda', async () => {
+  const dry = fluidAdapter({}).adapter;
+  const noWater = await dry.enterWater();
+  assert.equal(noWater.error, 'no_deep_water');
+  assert.equal(noWater.depth, 2);
+  assert.equal(noWater.water.count, 0);
+
+  // Una pozzanghera di una cella non è una colonna: misurarci i ratei sarebbe
+  // misurare il fondo. Con la soglia a 1 la stessa cella vale.
+  const { adapter } = fluidAdapter({ '3,71,0': water });
+  const shallow = await adapter.enterWater();
+  assert.equal(shallow.error, 'no_deep_water');
+  const calls = [];
+  adapter._startMotion = (_path, _goalNode, target) => {
+    calls.push(target);
+    adapter._feet = { x: target.x, y: 71, z: target.z };
+    return Promise.resolve('goal');
+  };
+  const withDepthOne = await adapter.enterWater({ depth: 1 });
+  assert.equal(withDepthOne.ok, true);
+  assert.equal(withDepthOne.depth, 1);
+  assert.equal(calls.length, 1);
+
+  // Una colonna profonda ma lontana non si raggiunge a nuoto: si dichiara.
+  const far = fluidAdapter({ '5,71,0': water, '5,72,0': water, '5,73,0': water }).adapter;
+  far._startMotion = () => Promise.resolve('goal');
+  assert.equal((await far.enterWater({ maxDistance: 2 })).error, 'no_deep_water');
+});
+
+test('M1: enterWater è idempotente in acqua e riferisce i tentativi falliti', async () => {
+  // Già in acqua: nessun passo, nessuna colonna cercata.
+  const { adapter } = fluidAdapter({ '0,71,0': water, '0,72,0': water });
+  let motions = 0;
+  adapter._startMotion = () => { motions++; return Promise.resolve('goal'); };
+  const already = await adapter.enterWater();
+  assert.equal(already.ok, true);
+  assert.equal(already.already, true);
+  assert.equal(already.headInWater, true);
+  assert.equal(motions, 0, 'già in acqua: nessun movimento');
+
+  // Il passo non porta in acqua (mondo ostile): tre tentativi e un rifiuto tipizzato.
+  const { adapter: stuck } = fluidAdapter({
+    '3,71,0': water, '3,72,0': water, '3,73,0': water,
+    '4,71,0': water, '4,72,0': water, '4,73,0': water,
+    '5,71,0': water, '5,72,0': water, '5,73,0': water,
+  });
+  const tried = [];
+  stuck._startMotion = (_path, goalNode) => { tried.push(goalNode); return Promise.resolve('stuck'); };
+  const failed = await stuck.enterWater();
+  assert.equal(failed.error, 'water_not_reached');
+  assert.equal(failed.attempts.length, 3, 'prova le prime tre colonne, non tutte');
+  assert.deepEqual(failed.attempts[0], {
+    cell: { x: 3, y: 73, z: 0 }, depth: 3, reason: 'stuck', entered: false,
+  });
+  assert.ok(tried.every(node => node.y === 73), 'ogni tentativo mira alla superficie della colonna');
+
+  stuck.riding = { riddenEntityId: '9' };
+  assert.equal((await stuck.enterWater()).error, 'riding');
+  stuck.riding = null;
+  stuck.spawned = false;
+  assert.equal((await stuck.enterWater()).error, 'not_spawned');
+});
+
+test('M1: enterWater scarta una colonna coperta e sceglie quella aperta', async () => {
+  // Live 04/10: lo stagno del villaggio ha l'acqua a y=73-74 e una superficie
+  // solida a y=75 — il passo verso la colonna arrivava sul coperchio e il
+  // movimento lo dichiarava raggiunto (`|Δy| < 3`), quindi `enterWater` diceva
+  // `water_not_reached` con l'acqua a due blocchi. Il coperchio si dichiara.
+  const covered = { name: 'ice', boundingBox: 'block', diggable: true, hardness: 0.5 };
+  const { adapter } = fluidAdapter({
+    '3,71,0': water, '3,72,0': water, '3,73,0': water, '3,74,0': covered,
+    '5,71,0': water, '5,72,0': water, '5,73,0': water,
+  });
+  const nodes = [];
+  adapter._startMotion = (_path, goalNode, target) => {
+    nodes.push(goalNode);
+    adapter._feet = { x: target.x, y: goalNode.y - 1, z: target.z };
+    return Promise.resolve('goal');
+  };
+  const report = await adapter.enterWater();
+  assert.equal(report.ok, true, 'entra nella colonna aperta');
+  assert.deepEqual(report.cell, { x: 5, y: 73, z: 0 }, 'la colonna coperta non viene nemmeno provata');
+  assert.equal(nodes.length, 1);
+
+  // Solo colonne coperte: si dichiara, elencando quelle scartate.
+  const { adapter: onlyCovered } = fluidAdapter({
+    '3,71,0': water, '3,72,0': water, '3,73,0': water, '3,74,0': covered,
+  });
+  let motions = 0;
+  onlyCovered._startMotion = () => { motions++; return Promise.resolve('goal'); };
+  const refused = await onlyCovered.enterWater();
+  assert.equal(refused.error, 'water_covered');
+  assert.deepEqual(refused.columns, [{ x: 3, y: 71, z: 0 }]);
+  assert.equal(motions, 0, 'nessun passo verso un coperchio');
+});
+
+test('M1: enterWater non si tuffa in una colonna che sta in fondo a un dirupo', async () => {
+  // Live 04/10: intorno al bot l'unica acqua profonda era un anfiteatro allagato
+  // a y=56-58 mentre i piedi stavano a y=71 — `_stepToward` verso di lui avrebbe
+  // portato il bot a camminare nel vuoto. La misura si fa dove si **entra**
+  // camminando: una colonna a più di quattro blocchi sotto i piedi si rifiuta.
+  const { adapter } = fluidAdapter({
+    '3,56,0': water, '3,57,0': water, '3,58,0': water,
+  });
+  let motions = 0;
+  adapter._startMotion = () => { motions++; return Promise.resolve('goal'); };
+  const refused = await adapter.enterWater({ maxDistance: 8 });
+  assert.equal(refused.error, 'no_water_at_level');
+  assert.deepEqual(refused.columns, [{ x: 3, y: 56, z: 0 }], 'la colonna scartata è elencata');
+  assert.equal(motions, 0, 'nessun passo verso il dirupo');
+
+  // Tre blocchi sotto i piedi sono ancora un passo (si scende in acqua).
+  const { adapter: lowBank } = fluidAdapter({
+    '3,68,0': water, '3,69,0': water, '3,70,0': water,
+  }, { feet: { x: 0.5, y: 71, z: 0.5 } });
+  const nodes = [];
+  lowBank._startMotion = (_path, goalNode, target) => {
+    nodes.push(goalNode);
+    lowBank._feet = { x: target.x, y: 68, z: target.z };
+    return Promise.resolve('goal');
+  };
+  const report = await lowBank.enterWater();
+  assert.equal(report.ok, true);
+  assert.equal(report.depth, 3);
+  assert.equal(report.headInWater, true);
+  assert.equal(nodes.length, 1);
+});

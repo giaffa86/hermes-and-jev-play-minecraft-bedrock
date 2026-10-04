@@ -224,6 +224,27 @@ are) or a periodic synchronisation (they are not). `PROBE_VARIANTS` includes
 `[rx_hex] { name, bytes }` (400 hex chars), which is how the `link`/`links` bug in
 the mount confirmation and the `window_id: 2` saddle window were read off the wire.
 
+### 4.6 Measuring swimming: `POST /debug/swim-measure`
+
+Gated by `BEDROCK_DEBUG=1`. Body:
+`{ "mode": "none"|"up"|"down", "ms": 3000, "sample_ms": 100, "enter": true,
+"depth": 2, "max_distance": 6 }`.
+
+The vertical intention is forced through `_swimProbe` (so the frame carries
+`want_up`, `want_down` or neither) while the adapter samples **`this.position`**,
+which the server owns (`move_player`) — the report is a measurement of the server,
+not of our simulation: `{ mode, ms, sampleMs, headInWater, air, airSource, from, to,
+deltaY, seconds, ratePerSecond, samples }`. Typed refusals: `unknown_mode`,
+`riding`, `not_spawned`, `not_in_water`. The probe is cleared in a `finally`, so a
+disconnect mid-measurement leaves no lingering flag.
+
+`enter: true` walks the bot into water first (`enterWater`, one deliberate step,
+no A*, because deep water is a wall for the planner) and merges its verdict into
+the same report: `no_deep_water`, `water_covered` (a lid over the surface),
+`no_water_at_level` (a column more than four blocks below the feet is a ravine,
+not a step), `water_not_reached` (with `attempts`). Every refusal lists the
+columns it considered.
+
 ---
 
 ## 5. The bounded-action loop

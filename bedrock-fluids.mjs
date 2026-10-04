@@ -189,6 +189,59 @@ export function swimInputFlags ({
   return flags;
 }
 
+// M1 (04/10/2026): dove l'acqua è **profonda**. La cella più vicina non basta:
+// per misurare i ratei del nuoto (e per pianificare una discesa) serve sapere
+// dove la colonna ha abbastanza celle da immergere la testa. `blockAt` è il mondo
+// finché le celle sono caricate; un `null` chiude la colonna lì — mai una
+// profondità inventata su un chunk che non abbiamo guardato.
+// Colonne d'acqua di una certa profondità (M1). La cella più vicina non basta:
+// per misurare i ratei del nuoto — o per pianificare una discesa — serve un
+// punto dove c'è acqua **sopra e sotto** i piedi. Con `from`/`maxDistance` le
+// colonne si scelgono per vicinanza (è quello che serve per *entrare* in acqua:
+// lo stagno di due celle sotto i piedi batte il pozzo profondo a venti blocchi),
+// senza si scelgono per profondità (è quello che serve per *sapere* dove si può
+// nuotare). Un `blockAt` che non risponde (chunk non caricato) chiude la colonna
+// lì: mai una profondità inventata.
+export function deepWaterColumns (cells = [], { blockAt = null, minDepth = 2, limit = 4, maxProbe = 24, from = null, maxDistance = null } = {}) {
+  const probe = typeof blockAt === 'function' ? blockAt : null;
+  const seen = new Set();
+  const columns = [];
+  for (const cell of cells) {
+    if (!cell || !Number.isFinite(cell.x) || !Number.isFinite(cell.y) || !Number.isFinite(cell.z)) continue;
+    const key = `${cell.x},${cell.z}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    let bottom = cell.y;
+    let top = cell.y;
+    if (probe) {
+      for (let i = 0; i < maxProbe; i++) {
+        const below = probe({ x: cell.x, y: bottom - 1, z: cell.z });
+        if (!below || fluidKind(below.name) !== 'water') break;
+        bottom -= 1;
+      }
+      for (let i = 0; i < maxProbe; i++) {
+        const above = probe({ x: cell.x, y: top + 1, z: cell.z });
+        if (!above || fluidKind(above.name) !== 'water') break;
+        top += 1;
+      }
+    }
+    const entry = { position: { x: cell.x, y: bottom, z: cell.z }, top, bottom, depth: top - bottom + 1 };
+    if (from && Number.isFinite(from.x) && Number.isFinite(from.z)) {
+      entry.distance = +Math.hypot(cell.x + 0.5 - from.x, cell.z + 0.5 - from.z).toFixed(2);
+    }
+    columns.push(entry);
+  }
+  const deep = columns.filter(column => column.depth >= minDepth);
+  const near = from && Number.isFinite(maxDistance)
+    ? deep.filter(column => column.distance <= maxDistance)
+    : deep;
+  return near
+    .sort(from
+      ? ((a, b) => (a.distance - b.distance) || (b.depth - a.depth) || (a.position.y - b.position.y))
+      : ((a, b) => (b.depth - a.depth) || (a.position.y - b.position.y)))
+    .slice(0, limit);
+}
+
 export function digFluidRisk ({ neighbors = [], avoidWater = false } = {}) {
   for (const block of neighbors) {
     if (!block) continue;

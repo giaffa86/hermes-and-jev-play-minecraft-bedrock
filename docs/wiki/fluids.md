@@ -226,23 +226,70 @@ implemented and unit-tested; the second is **blocked** (see below).
 **Known limits / blocker (M1)**
 
 - The live acceptance of M1 — *cross a river/lake to the opposite shore* —
-  **cannot be run**: the only water the census knows is a **two-cell-deep** pool
-  (`y=70` + `y=71`) 20.6 blocks away, i.e. deep water that needs swimming, and the
-  bot is sealed in a furnished base room (waypoints → `path_failed` /
-  `target_not_found`). Wading is therefore verified by unit tests only, and the
-  option was **not** exercised live.
-- Swimming **motion** is not implemented and must not be guessed: the Bedrock
-  `input_data` flags honest to confirm are `start_swimming`/`stop_swimming`
-  (29/30), `want_up`/`want_down` (16/17) and `auto_jumping_in_water` (7), plus the
-  `delta` model and the buoyancy/drag constants. The discovery task — capture the
-  traffic of a **real player swimming** in this BDS — needs a real client
-  connected while it swims (no human joins the server during autonomous runs,
-  `m01312`), so M1's `surface`/`swim_to`, water A* nodes and buoyancy stay
-  unimplemented rather than shipped unverified.
+  **cannot be run**: the only water the census knew on 03/10 was a
+  **two-cell-deep** pool 20.6 blocks away, i.e. deep water that needs swimming,
+  and the bot was sealed in a furnished base room (waypoints → `path_failed` /
+  `target_not_found`). Wading is therefore verified by unit tests only.
+- Swimming **motion** is half implemented and half measured: the input flags are
+  wired (see the 2026-10-04 subsection) and the measurement probe exists
+  (2026-10-04 later), but the **rates** are still unknown because no body of
+  water the bot can enter has been found in this world (see below). The `delta`
+  model, the buoyancy and the drag constants stay unimplemented rather than
+  shipped unverified.
 - Digging next to water is still refused (the M0 conservatism): relaxing it
   requires knowing whether the shaft floods, which needs the same live round.
 - `WADE_SPEED_FACTOR` is a conservative guess (half of the land speed); the first
   live wade will tell whether it should be tuned.
+
+### 2026-10-04 (later): the swim measurement probe, and the water the bot cannot enter
+
+Measuring beats guessing, so the missing half of M1 became a **live measurement**
+rather than a constant read off a forum.
+
+- `adapter.swimMeasure({mode, ms, sampleMs})` (route
+  `POST /debug/swim-measure`, gated by `BEDROCK_DEBUG`) forces the vertical
+  intention (`none`/`up`/`down`) through `_swimProbe` while sampling the
+  **server's own** position (`this.position` comes from `move_player`, so the
+  rate is measured, not simulated), then reports `from`, `to`, `deltaY`,
+  `ratePerSecond`, `samples`, `air`. The probe is cleared in a `finally`, and
+  typed refusals cover `unknown_mode`, `riding`, `not_spawned`, `not_in_water`.
+- `adapter.enterWater({maxDistance, depth})` walks the bot into water with a
+  single deliberate step: `deepWaterColumns(cells, {blockAt, minDepth, from,
+  maxDistance})` groups the census cells by column, probes each one up and down,
+  and — when a reference point is given — ranks by **distance** (not depth, the
+  earlier bug: depth-first ranking plus `limit` filled the list with the 17-cell
+  columns and hid the pond at the bot's feet). `_stepToward(cell)` moves to one
+  node without A*, because `_standable` treats deep water as a wall by design
+  (M3 forbids *planning* a descent into water; entering one deliberately is a
+  different decision). Refusals: `no_deep_water`, `water_covered`,
+  `no_water_at_level`, `water_not_reached` (with `attempts`), always with the
+  columns it considered.
+- Two guards learned from the live world: a **covered** column is skipped (the
+  step lands on the lid and the motion declares the target reached, `|Δy| < 3`),
+  and a column more than four blocks **below** the feet is refused
+  (`no_water_at_level`) — walking toward the flooded ravine would have made the
+  bot step into the void.
+
+**What the world offers (live, 04/10/2026)**: the village pond is a **well**: the
+water sits at `y=73-74` under a solid surface at `y=75` (the bot stands at
+`y=76`, `standingOn: air`; the structure detector reports a `Village` at
+`(74,76,174)` right next to the `(69-72, 172-176)` columns), and the three
+approach attempts ended with `reason: 'goal'` two blocks above the water. The only
+deep water is a **flooded amphitheatre** 13-17 blocks underground (`ys=56..58`,
+columns up to 17 cells, bottoms at `y=42-46`, waterfall at `(71,149)`); the puddle
+at `(74,70,160)` is one block deep. The final live call —
+`POST /debug/swim-measure {enter:true, mode:'none', max_distance:24, depth:2}` —
+answers `not_in_water` with `entered: {ok:false, error:'no_water_at_level',
+columns:[{71,43,153},{72,42,153},…]}`, and a bare `swimMeasure` answers
+`not_in_water`: **there is no water at the bot's level to measure the rates in**.
+
+**Blocker (honest)**: M1's rates need a body of water at the bot's level with a
+free surface, and this world has none within the census radius (the well is
+covered, the ravine is underground). The probe, the entry primitive and the
+typed refusals are implemented, unit-tested and live-verified **as refusals**; one
+`POST /debug/swim-measure {enter:true}` next to open water measures all three
+rates, after which the local model and `swimSupported: true` follow. This is a
+world-access blocker, not a protocol one.
 
 ### 2026-10-04: the swim input flags (schema-driven)
 

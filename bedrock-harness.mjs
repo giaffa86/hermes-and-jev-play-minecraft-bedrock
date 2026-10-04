@@ -383,6 +383,29 @@ server = createServer(async (req, res) => {
         interactRotation: interactRotation && typeof interactRotation === 'object' ? interactRotation : null,
       })];
     }
+    else if (process.env.BEDROCK_DEBUG && req.method === 'POST' && req.url === '/debug/swim-measure') {
+      // M1 (04/10/2026): i ratei del nuoto si misurano, non si indovinano. Tiene
+      // un'intenzione verticale per `ms` e riferisce la quota **confermata dal
+      // server** (delta, rateo al secondo, campioni) più l'aria residua.
+      const { mode, ms, sample_ms: sampleMs, enter, depth, max_distance: maxDistance } = JSON.parse(body || '{}');
+      // `enter: true` porta prima il bot in acqua profonda (`enterWater`): il
+      // pathfinder non ci passa (l'acqua profonda è un muro, M3), quindi la
+      // misura comincia da un passo deliberato verso una colonna del censimento.
+      const entered = enter === true
+        ? await adapter.enterWater({
+          depth: Number(depth) > 0 ? Number(depth) : 2,
+          maxDistance: Number(maxDistance) > 0 ? Number(maxDistance) : 6,
+        })
+        : null;
+      response = [200, {
+        ...await adapter.swimMeasure({
+          mode: mode || 'none',
+          ms: Number(ms) > 0 ? Number(ms) : 3000,
+          sampleMs: Number(sampleMs) > 0 ? Number(sampleMs) : 100,
+        }),
+        ...(entered ? { entered } : {}),
+      }];
+    }
     else if (process.env.BEDROCK_DEBUG && req.method === 'POST' && req.url === '/debug/isr') {
       const { type_id, count, source, destination, randomly, open } = JSON.parse(body);
       if (open) await adapter._ensureInventoryOpen();

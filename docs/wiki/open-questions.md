@@ -111,10 +111,12 @@ Last lint: 2026-10-03.
   itself was never touched, so **(A)/(B)/(C) is moot for this room**: no
   `setblock`, no dug floor, no chest. The remaining live blocker of the session
   is a different one — a **closed door on the bot's cell** (a villager) and the
-  mounting/trade/swim/fishing captures, see rows 47.28 and the mount/trade sections
-  (fishing: the server sends **no** bite event to this client — five `fish` runs,
-  `grep -c fish_bite` = 0, hook despawns after ~40 s; see row 28 and
-  [fishing](fishing.md)).
+  mounting/trade/fishing captures, see rows 47.28 and the mount/trade sections
+  (swimming no longer belongs on that list: its flags are schema-driven and its
+  rates are measurable, the blocker there is the absence of free-surface water at
+  the bot's level, row 47.42; fishing: the server sends **no** bite event to this
+  client — five `fish` runs, `grep -c fish_bite` = 0, hook despawns after ~40 s;
+  see row 28 and [fishing](fishing.md)).
 - **Still true**: the base furniture (beds, chests, planks) stays untouchable by
   design, and `mine_owned` only claims what the ledger recorded — the pre-ledger
   probes of this room are gone for another reason (the bot mined them or they
@@ -321,11 +323,18 @@ Last lint: 2026-10-03.
   with a dispatch test pinning the order.
   Still missing: swimming itself — `_passable()` treats `water|lava` as
   walls, so deep water, `surface`, `swim_to` and the water A* nodes wait for the
-  Bedrock water-movement `input_data` flags/`delta` semantics, which need a
-  packet capture of a real player swimming (no human is connected during
-  autonomous runs); the air budget also stays unverified against server truth, and
-  the underwater refusal has only been unit-tested (the bot cannot submerge from
-  the base room).
+  measured vertical rates. The flags are no longer a guess (`swimInputFlags` from
+  the 1.26.51 `InputData` mapper, semantics confirmed by the human session of
+  04/10) and the measurement is no longer imagination either: `adapter.swimMeasure`
+  (`POST /debug/swim-measure`) holds `want_up`/`want_down`/nothing while sampling
+  the **server's own** positions, so one call next to open water yields the three
+  rates. What is missing is the water: the village pond is a **covered well**
+  (solid surface at `y=75` over water at `y=73-74`, structure detector: `Village`
+  at `(74,76,174)`) and the only deep water is a **flooded amphitheatre 13-17
+  blocks underground** (`ys=56..58`), so `enterWater` answers `water_covered` or
+  `no_water_at_level` and the rates stay unmeasured — a world-access blocker, not
+  a protocol one. The air budget is still simulated (no `minecraft:air` attribute
+  from the server), and the underwater refusal has only been unit-tested.
   Roadmap and limits in [fluids](fluids.md).
 
 ## Exploration travel kit (multi-day expeditions)
@@ -804,12 +813,15 @@ Still missing (the rest of the original gap):
   whether the BDS really sends that event.
   Roadmap in [fishing](fishing.md).
 - **Fluids** (swimming, drowning/breathing, waterfalls, lava avoidance, buckets/
-  boats/potions) — M0 + M1 partial (wading + simulated air) + M2 (breathing) + M3
-  (waterfalls/bubble columns, detection and verdicts) + M4 (lava shores, destroyed
-  loot, crossing gate) + M5 (buckets, boats, brewing gate, lava bridge) + M6
-  (fluid skills, milestones, spatial criteria) implemented and live 03/10; the
-  swimming motion is still the open blocker. Roadmap in [fluids](fluids.md);
-  the blocker is the missing packet capture of a real player swimming.
+  boats/potions) — M0 + M1 partial (wading + simulated air + the measurement
+  probe) + M2 (breathing) + M3 (waterfalls/bubble columns, detection and verdicts)
+  + M4 (lava shores, destroyed loot, crossing gate) + M5 (buckets, boats, brewing
+  gate, lava bridge) + M6 (fluid skills, milestones, spatial criteria)
+  implemented and live 03/10; the swimming **motion** (the rates) is still the
+  open blocker, and it is world access rather than protocol: the probe is ready,
+  the world around the bot has no free-surface water at its level (a covered
+  village well above, a flooded ravine 13+ blocks below). Roadmap in
+  [fluids](fluids.md).
 - **Goal-driven gameplay** — Goal Contract + task graph + 5 progressive
   benchmarks (16 logs, shelter+night, iron pickaxe, 5 diamonds, Nether portal).
   Proposal in [goal-achievement](goal-achievement.md); the 5 benchmarks have
