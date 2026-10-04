@@ -25,14 +25,15 @@ import {nextIdleGoal, isNeedResolved, DEFAULT_AUTONOMY_COOLDOWN_MS, DEFAULT_MAX_
 import {detectEvents} from './world-events.mjs';
 import {emergencyGoalFor, DEFAULT_EMERGENCY_COOLDOWN_MS} from './emergency-goals.mjs';
 import {
-  buildCriteria, buildDecisionInstructions, detectRepeatedAction, filterOptions,
+  buildCriteria, buildDecisionInstructions, detectRepeatedAction, filterOptions, isStopOrder, withStickyFollow,
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
 import {planGreetings, DEFAULT_GREETING_TEMPLATE, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
-import {orderAck, orderOutcome, isSelfTriggering, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
+import {orderAck, orderOutcome, lostNotice, isSelfTriggering, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
 import {
   evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
   resolveMilestone, resolveActiveSkill, skillPreferredIntents, verifySkill, buildSkillRecord, appendSkillRecord,
+  chooseNeedAction,
   contractFromEnv, contractStop, hasContractConfig,
 } from './survival/index.mjs';
 
@@ -53,6 +54,20 @@ function envJson (name, fallback) {
 const WAYPOINT = envJson('WAYPOINT', null);   // e.g. {"x":380,"z":16}
 const TARGETS = envJson('TARGETS', {dirt: 4}); // item -> min count
 const MAX_STEPS = +(process.env.MAX_STEPS || 20);
+// Un ordine "seguimi" aperto non deve girare a vuoto: se `follow_player` riesce
+// all'istante (l'umano e' gia' li') il passo successivo attende questo intervallo
+// invece di interrogare l'harness in un ciclo stretto.
+const FOLLOW_IDLE_POLL_MS = +(process.env.FOLLOW_IDLE_POLL_MS || 3000);
+// "Wolf recovery": quando `follow_player` non e' piu' offerto l'umano e' uscito
+// dalla vista. L'ordine resta aperto: per due passi consecutivi il bot insiste
+// (cerca l'ultima posizione nota, poi aspetta) e solo dopo dice qualcosa in
+// chat. Un buco di tracking di un secondo non merita un messaggio: il messaggio
+// e' l'ultima risorsa, non la prima.
+const LOST_NOTICE_AFTER_STEPS = +(process.env.LOST_NOTICE_AFTER_STEPS || 2);
+const LOST_NOTICE_COOLDOWN_MS = +(process.env.LOST_NOTICE_COOLDOWN_MS || 120000);
+// Quanto si aspetta, a passi fermi, che l'umano perso torni: oltre questo tetto
+// l'ordine viene rilasciato (il bot non resta immobile per sempre).
+const LOST_HOLD_MAX_STEPS = +(process.env.LOST_HOLD_MAX_STEPS || 120);
 const CONTROLLER = process.env.CONTROLLER || 'jev';
 const JEV_MODEL = process.env.JEV_MODEL || (process.env.TYPESAFE_API_KEY ? 'jev-latest' : 'typesafe/jev-1.13');
 const REPLAN_EVERY = +(process.env.REPLAN_EVERY || 8);
@@ -123,6 +138,12 @@ const RESUME = process.env.RESUME == null ? SESSION : /^(1|on|true|yes)$/i.test(
 const AUTONOMY = /^(1|on|true|yes)$/i.test(process.env.AUTONOMY || '');
 const AUTONOMY_COOLDOWN_MS = +(process.env.AUTONOMY_COOLDOWN_MS || DEFAULT_AUTONOMY_COOLDOWN_MS);
 const AUTONOMY_MAX_GOALS = +(process.env.AUTONOMY_MAX_GOALS || DEFAULT_MAX_AUTONOMOUS_GOALS);
+// Bisogni di sopravvivenza: in IDLE un bisogno che il governor dichiara
+// *adesso* genera un goal anche con AUTONOMY off — l'autonomia e' inventarsi
+// obiettivi, dormire di notte con un letto a due passi e' la policy di
+// sopravvivenza (`knowledge/survival-rules.json`). Cooldown piu' corto di
+// quello dell'autonomia: la notte dura pochi minuti e non si aspetta.
+const SURVIVAL_IDLE_COOLDOWN_MS = +(process.env.SURVIVAL_IDLE_COOLDOWN_MS || 30000);
 // Emergenze (milestone 2): un evento del mondo può sospendere il goal in corso e
 // avviarne uno a priorità 100 (es. morte -> recupero loot). Default: attivo in
 // modalità sessione.
@@ -378,13 +399,25 @@ async function humanCommandPlan (obs, entry) {
   ].join('\n');
   const started = Date.now();
   const out = await runHermes(prompt);
-  const fallback = (note) => ({
-    objective: `Follow ${entry.from} and obey their last order: "${entry.message}"`,
-    targets: {},
-    waypoint: senderPos ? { x: Math.round(senderPos.x), z: Math.round(senderPos.z) } : null,
-    follow: entry.from,
-    notes: `human:${entry.from} ${note}`,
-  });
+  // "fermati" non deve mai diventare un inseguimento: il fallback
+  // deterministico ("segui chi ti ha scritto") vale per ogni altra richiesta,
+  // ma un ordine di stop deve lasciare il bot fermo.
+  const stopOrder = isStopOrder(entry.message);
+  const fallback = (note) => (stopOrder
+    ? {
+        objective: 'Stay put and wait for the next order',
+        targets: {},
+        waypoint: null,
+        follow: null,
+        notes: `human:${entry.from} ${note}`,
+      }
+    : {
+        objective: `Follow ${entry.from} and obey their last order: "${entry.message}"`,
+        targets: {},
+        waypoint: senderPos ? { x: Math.round(senderPos.x), z: Math.round(senderPos.z) } : null,
+        follow: entry.from,
+        notes: `human:${entry.from} ${note}`,
+      });
   if (out == null) { log('plan_fallback', {plan: fallback('hermes unavailable'), ms: Date.now() - started, source: 'human'}); return fallback('hermes unavailable'); }
   const m = out.match(/\{[\s\S]*\}/);
   let plan = null;
@@ -393,7 +426,11 @@ async function humanCommandPlan (obs, entry) {
     log('plan_fallback', {plan: fallback('parse'), ms: Date.now() - started, source: 'human'});
     return fallback('parse');
   }
-  if (plan.follow == null && /follow|stay near|come with|escort|seguimi|accompagn/i.test(entry.message)) plan.follow = entry.from;
+  if (stopOrder) {
+    plan.follow = null;
+    plan.targets = {};
+    plan.waypoint = null;
+  } else if (plan.follow == null && /follow|stay near|come with|escort|seguimi|accompagn/i.test(entry.message)) plan.follow = entry.from;
   plan.notes = `human:${entry.from} ${plan.notes || ''}`.trim();
   log('plan', {plan, ms: Date.now() - started, source: 'human'});
   return plan;
@@ -615,6 +652,11 @@ if (initialPlan?.met) {
   return {status: 'success', exitCode: 0, steps: 0, reason: 'curriculum_already_met'};
 }
 let plan = initialPlan;
+// Un ordine "seguimi" e' un impegno aperto (M3): il goal se lo ricorda e resta un
+// inseguimento finche' non arriva un altro ordine, anche se un replan riscrive il
+// piano senza `follow` (live 04/10: il replan anti-loop cancellava l'ordine, il
+// waypoint statico chiudeva il goal e il bot si fermava da solo).
+if (initialPlan?.follow) goal.follow = initialPlan.follow;
 await api('POST', '/plan', plan);
 // Archi di goal: ogni target dell'obiettivo diventa una risorsa cercata
 // (mission --seeks--> resource:<item>). Best-effort, non blocca il loop.
@@ -636,7 +678,16 @@ let totalCost = 0;
 let goalReached = false;
 let stepsUsed = 0;
 let prevObs = null;             // osservazione del passo precedente (eventi del mondo)
-for (let step = 1; step <= MAX_STEPS; step++) {
+let lastFollowTarget = null;    // ultimo ordine "seguimi" annunciato nei log
+let lastNeedKey = null;         // ultimo bisogno di sopravvivenza annunciato nei log
+let lostFollowSteps = 0;        // passi consecutivi con l'ordine "seguimi" aperto ma senza bersaglio
+let lostNoticeSent = false;     // l'avviso in chat e' uno per episodio, non uno per cooldown
+let lostHoldSteps = 0;          // passi di attesa a tracce perse (nessuna azione, nessun modello)
+let lastLostNoticeAt = 0;       // ultimo avviso "non ti vedo" (cooldown per episodio)
+// Il budget e' rinnovabile: un ordine "seguimi" aperto non si esaurisce con
+// MAX_STEPS azioni (l'impegno dura finche' non arriva un altro ordine).
+let maxSteps = MAX_STEPS;
+for (let step = 1; step <= maxSteps; step++) {
   obs = await api('GET', '/observe');
   stepsUsed = step;
   // Saluto proattivo: indipendente dal goal, un umano vicino va informato di
@@ -677,6 +728,9 @@ for (let step = 1; step <= MAX_STEPS; step++) {
   const humanCmd = await maybeHumanCommand(obs);
   if (humanCmd) {
     plan = humanCmd.plan;
+    // Un nuovo ordine riorienta l'impegno: "seguimi" apre il follow, qualsiasi
+    // altro ordine lo chiude (altrimenti resterebbe appeso per sempre).
+    if (plan.follow) goal.follow = plan.follow; else delete goal.follow;
     await api('POST', '/plan', plan);
     skillRun = null; // il piano umano sostituisce la skill attiva
     // Un ordine può riorientare un goal nato autonomo: l'esito di *quel* goal
@@ -726,7 +780,9 @@ for (let step = 1; step <= MAX_STEPS; step++) {
       obs.skillResult = {skill: finished.id, status: skillStatus.status, evidence: skillStatus.evidence};
     }
   }
-  if (goalMet(obs, plan, skillStatus)) {
+  // `goalMet` vede il follow del *goal*: un waypoint raggiunto da un piano
+  // ripianificato non puo' chiudere un ordine "seguimi" ancora aperto.
+  if (goalMet(obs, withStickyFollow(plan, goal.follow), skillStatus)) {
     console.log(`GOAL MET after ${step - 1} actions`, JSON.stringify({position: obs.position, inventory: obs.inventory}));
     log('goal_met', {steps: step - 1, totalCost, obs});
     goalReached = true;
@@ -749,7 +805,10 @@ for (let step = 1; step <= MAX_STEPS; step++) {
       console.log(`ANTI-LOOP ${lastKey} x${repeated.count}: replan + exclude until step ${step + ANTI_LOOP_COOLDOWN}`);
     }
   }
-  if (!replanReason && step > 1 && step % REPLAN_EVERY === 1) replanReason = 'periodic';
+  // Con un ordine "seguimi" aperto il replan periodico e' rumore: l'obiettivo non
+  // cambia finche' non arriva un altro ordine, e riscriverebbe il piano (a spese
+  // del planner) rischiando target che allontanano il bot dall'umano.
+  if (!replanReason && !goal.follow && step > 1 && step % REPLAN_EVERY === 1) replanReason = 'periodic';
   // Un goal autonomo/emergenza è ancorato al suo predicato di successo
   // (bisogno o recupero loot): non va sostituito da un nuovo piano, o si perde
   // l'ancoraggio e il goal non si chiude. Si salta il replan.
@@ -761,7 +820,7 @@ for (let step = 1; step <= MAX_STEPS; step++) {
     const candidatePlan = await planForStep(obs, replanReason, goal);
     if (candidatePlan?.met) { log('curriculum_goal_met', {step, reason: replanReason}); goalReached = true; break; }
     const sameSkill = candidatePlan?.skill && candidatePlan.skill === plan.skill;
-    plan = candidatePlan;
+    plan = withStickyFollow(candidatePlan, goal.follow);
     await api('POST', '/plan', plan);
     if (!sameSkill || !skillRun) skillRun = startSkillRun(plan, obs);
     log('replan', {step, reason: replanReason, objective: plan.objective, skill: plan.skill ?? null, milestone: plan.milestone ?? null});
@@ -810,10 +869,104 @@ for (let step = 1; step <= MAX_STEPS; step++) {
   } else if (obs.deathSite && !obs.dead) {
     decisionPlan = { ...plan, objective: `Recover the dropped items and XP at the death site ${JSON.stringify(obs.deathSite.position)}: choose recover_loot until no loot is left nearby, then resume the previous objective.` };
   }
-  const decision = CONTROLLER === 'jev' ? await jevDecide(obs, filtered.options, decisionPlan) : await hermesDecide(obs, filtered.options, decisionPlan);
+  // Finche' un ordine "seguimi" resta aperto la scelta e' deterministica: il
+  // controller non interroga il modello a ogni passo (l'inseguimento lo esegue
+  // l'harness, che muove e traccia per la sua finestra). L'LLM torna in gioco solo
+  // quando l'harness non offre `follow_player` (bersaglio non tracciato); in
+  // emergenza e' il governor a togliere l'opzione dagli `allowedIntents`.
+  // Bisogno di sopravvivenza eseguibile adesso, per intento: respirare, uscire
+  // dal pericolo, curarsi, mangiare, dormire. Il bisogno non e' il nome di
+  // un'azione (nessuna opzione si chiama `heal`), quindi la scelta passa da
+  // `chooseNeedAction`: in emergenza segue gli intenti ammessi dal governor
+  // (gia' ordinati per priorita' del pericolo), altrimenti i bisogni in ordine.
+  // Si dorme *nonostante tutto*, inseguimento compreso: l'azione non passa dal
+  // modello, che poteva scegliere il waypoint e restare sveglio.
+  const needAction = chooseNeedAction({ governor, options: filtered.options });
+  const needKey = needAction?.key || null;
+  const needIntent = needAction?.intent || null;
+  // Recupero dell'umano perso: con un ordine di follow aperto, se l'inseguimento
+  // non e' piu' possibile si cammina verso l'ultima posizione nota (`seek_player`);
+  // se non c'e' nemmeno quella si aspetta. Il bersaglio resta il goal, non il piano.
+  const seekKey = !needKey && goal.follow && filtered.options.some(o => o.key === 'seek_player') ? 'seek_player' : null;
+  const followKey = !needKey && goal.follow && filtered.options.some(o => o.key === 'follow_player') ? 'follow_player' : null;
+  const lostFollow = !!goal.follow && !needKey && !followKey;
+  if (lostFollow) lostFollowSteps += 1; else lostFollowSteps = 0;
+  if (needKey && lastNeedKey !== needKey) {
+    lastNeedKey = needKey;
+    console.log('SURVIVAL ' + (needIntent || 'need').toUpperCase() + ' ' + needKey + ' -> azione deterministica (' + (governor.rule ?? governor.mode) + ')');
+    log('survival_need', {step, need: needAction.need ?? null, intent: needIntent, key: needKey, ladder: needAction.source, mode: governor.mode, rule: governor.rule ?? null, risk: governor.risk?.score ?? null, objective: governor.overrideObjective ?? null});
+  } else if (!needKey) {
+    lastNeedKey = null;
+  }
+  const pursuitKey = followKey || seekKey;
+  if (pursuitKey) lostNoticeSent = false; // torna visibile: un nuovo episodio puo' avvisare di nuovo
+  if (pursuitKey && lastFollowTarget !== goal.follow) {
+    lastFollowTarget = goal.follow;
+    if (followKey) {
+      console.log(`FOLLOW ORDER ${goal.follow}: inseguimento deterministico (nessuna chiamata al modello)`);
+      log('follow_order', {step, key: followKey, target: goal.follow});
+    } else {
+      console.log(`FOLLOW SEARCH ${goal.follow}: recupero all'ultima posizione nota (nessuna chiamata al modello)`);
+      log('follow_seek', {step, key: seekKey, target: goal.follow, lastSeen: obs.follow?.lastSeen ?? null, lastSeenAgeMs: obs.follow?.lastSeenAgeMs ?? null});
+    }
+  } else if (!pursuitKey) {
+    lastFollowTarget = null;
+  }
+  // Ultima risorsa: la ricerca autonoma e' fallita (nessun bersaglio per due
+  // passi). Un messaggio per episodio, mai a ogni passo.
+  if (lostFollow && !lostNoticeSent && lostFollowSteps >= LOST_NOTICE_AFTER_STEPS && Date.now() - lastLostNoticeAt > LOST_NOTICE_COOLDOWN_MS) {
+    const notice = lostNotice({from: goal.follow, prefix: CHAT_PREFIX});
+    if (notice) {
+      lastLostNoticeAt = Date.now();
+      lostNoticeSent = true;
+      console.log(`FOLLOW LOST ${goal.follow}: chiedo dove si trova (${lostFollowSteps} passi senza bersaglio)`);
+      log('follow_lost', {step, target: goal.follow, steps: lostFollowSteps, lastSeen: obs.follow?.lastSeen ?? null, lastSeenAgeMs: obs.follow?.lastSeenAgeMs ?? null});
+      void replyChat(notice, {to: goal.follow, context: 'lost_follow'});
+    }
+  }
+  const lostWaitKey = lostFollow && !seekKey && filtered.options.some(o => o.key === 'wait') ? 'wait' : null;
+  // L'umano non e' tracciato e la sua traccia non e' percorribile: l'ordine resta
+  // aperto e il bot aspetta dove ha perso le tracce invece di lasciare il modello
+  // libero di andarsene per la mappa (in produzione: `go_home`, `open_trade`).
+  const lostHold = !needKey && !pursuitKey && !lostWaitKey && !!goal.follow &&
+    !!obs.follow && !obs.follow.tracked && !obs.follow.searchable;
+  if (lostHold) {
+    if (lostHoldSteps >= LOST_HOLD_MAX_STEPS) {
+      console.log(`FOLLOW RELEASED ${goal.follow}: nessuna traccia da ${lostHoldSteps} passi`);
+      log('follow_released', {step, target: goal.follow, steps: lostHoldSteps, lastSeen: obs.follow?.lastSeen ?? null});
+      delete goal.follow;
+      lostHoldSteps = 0;
+      lostFollowSteps = 0;
+      lostNoticeSent = false;
+    } else {
+      if (lostHoldSteps === 0) {
+        console.log(`FOLLOW HOLD ${goal.follow}: aspetto dove ho perso le tracce`);
+        log('follow_hold', {step, target: goal.follow, lastSeen: obs.follow?.lastSeen ?? null, lastSeenAgeMs: obs.follow?.lastSeenAgeMs ?? null});
+      }
+      lostHoldSteps += 1;
+      await delay(FOLLOW_IDLE_POLL_MS);
+      step -= 1; // un'attesa non consuma il budget: l'ordine deve restare aperto
+      continue;
+    }
+  } else {
+    lostHoldSteps = 0;
+  }
+  const decision = needKey
+    ? {key: needKey, reason: 'survival_' + (needIntent || 'need') + ':' + needKey, source: 'survival_need'}
+    : followKey
+    ? {key: followKey, reason: `follow_order:${goal.follow}`, source: 'follow_order'}
+    : seekKey
+    ? {key: seekKey, reason: `follow_seek:${goal.follow}`, source: 'follow_seek'}
+    : lostWaitKey
+    ? {key: lostWaitKey, reason: `follow_lost:${goal.follow}`, source: 'follow_lost'}
+    : (CONTROLLER === 'jev' ? await jevDecide(obs, filtered.options, decisionPlan) : await hermesDecide(obs, filtered.options, decisionPlan));
   const key = decision.key;
   if (typeof decision.cost === 'number') totalCost += decision.cost;
-  chosenFingerprint = progressFingerprint(obs, plan);
+  // Un inseguimento non e' stagnazione: `follow_player` che riesce a distanza e'
+  // lo stato desiderato (l'umano e' li'), non un loop da punire con l'anti-loop.
+  // Ne' una ricerca ne' un'attesa di recupero sono stagnazione: la prima ha un
+  // bersaglio verificato dall'harness, la seconda e' il tempo che l'umano torni.
+  chosenFingerprint = pursuitKey || lostWaitKey ? null : progressFingerprint(obs, plan);
   const actStarted = Date.now();
   let result = await api('POST', '/act', {key});
   // `busy` non è un verdetto sull'azione: il harness sta ancora eseguendo
@@ -843,7 +996,22 @@ for (let step = 1; step <= MAX_STEPS; step++) {
     await api('POST', '/mission/action', {missionId: goal.missionId, actionType: key, outcome: result.ok ? 'ok' : (result.error ?? 'failed'), startedAt: actStarted, completedAt: Date.now(), data: {position: obs.position, dimension: obs.dimension}}).catch(() => {});
   }
   console.log(`#${step} ${key} ->`, JSON.stringify(result));
-  if (step === MAX_STEPS) { console.log('step budget exhausted'); log('budget_exhausted', {steps: step, totalCost}); }
+  // Inseguimento gia' soddisfatto (azione rientrata subito): si attende prima di
+  // rileggere lo stato, altrimenti il loop gira a vuoto per ore.
+  // Un bisogno risolto in pochi ms (notte saltata) non deve far girare il loop
+  // a vuoto; il fingerprint resta comunque contato per il bisogno, cosi' un
+  // `sleep` che fallisce e si ripete finisce nell'anti-loop.
+  if ((pursuitKey || needKey || lostWaitKey) && result?.ok && (result.ms ?? 0) < 250) await delay(FOLLOW_IDLE_POLL_MS);
+  if (goal.follow && step >= maxSteps) {
+    // Il budget si rinnova finche' l'ordine "seguimi" resta aperto: l'impegno
+    // finisce con un altro ordine (o con un'emergenza che preempta il goal).
+    maxSteps += MAX_STEPS;
+    console.log(`FOLLOW open: step budget renewed (+${MAX_STEPS} -> ${maxSteps})`);
+    log('follow_budget_renewed', {step, maxSteps});
+  } else if (step >= maxSteps) {
+    console.log('step budget exhausted');
+    log('budget_exhausted', {steps: step, totalCost});
+  }
 }
 // Budget esaurito con il contratto ancora RUNNING: chiude il contratto con
 // esito `exhausted` (dopo aver riletto lo stato, nel caso l'ultima azione
@@ -900,21 +1068,39 @@ async function waitForGoal () {
         log('human_order', {from: cmd.entry.from, xuid: cmd.entry.xuid, plan: cmd.plan, goalId: goal.id, via: 'idle'});
         return goal;
       }
-      // Autonomia: nessun ordine umano -> un goal dai bisogni, deterministico.
-      if (AUTONOMY && autonomousGoalCount < AUTONOMY_MAX_GOALS) {
-        const candidate = nextIdleGoal(obs, {rules: survivalRules, attempts: autonomousAttempts, cooldownMs: AUTONOMY_COOLDOWN_MS});
-        if (candidate) {
-          autonomousAttempts.set(candidate.need, Date.now());
-          autonomousGoalCount += 1;
-          const goal = goalManager.enqueue({
-            type: 'autonomous', source: candidate.source, priority: candidate.priority, objective: candidate.objective,
-            plan: {objective: candidate.objective, targets: {}, waypoint: null, need: candidate.need, priority: 'autonomy', notes: `autonomy:${candidate.need}`},
-            parameters: {need: candidate.need, mode: candidate.mode, reason: candidate.reason},
-          });
-          console.log(`IDLE -> autonomous goal ${goal.id} [${candidate.need}] ${goal.objective}`);
-          log('idle_goal', {goalId: goal.id, need: candidate.need, source: candidate.source, mode: candidate.mode, reason: candidate.reason});
-          return goal;
-        }
+      // Bisogni correnti del governor: nessun ordine umano -> se il governor
+      // chiede di dormire (notte + letto) o di mettersi al riparo, il goal si
+      // crea anche con AUTONOMY off. Il bisogno resta aperto (`plan.need`)
+      // finche' il predicato deterministico non dice che e' risolto.
+      const governor = evaluateSurvival(obs, {rules: survivalRules});
+      let candidate = null;
+      if (governor.needs.length) {
+        // Il harness e' l'unico arbitro di cosa e' valido: un bisogno senza
+        // un'azione corrispondente offerta adesso non diventa un goal (niente
+        // caccia al letto quando il letto non e' raggiungibile).
+        const availability = await api('GET', '/options').catch(() => null);
+        const offered = new Set((availability?.options || []).map(o => o.key));
+        candidate = nextIdleGoal(obs, {
+          rules: survivalRules, attempts: autonomousAttempts,
+          cooldownMs: AUTONOMY ? AUTONOMY_COOLDOWN_MS : SURVIVAL_IDLE_COOLDOWN_MS,
+          allow: (c) => offered.has(c.need) && governor.needs.includes(c.need),
+        });
+      }
+      // Autonomia generale (bisogni non correnti): solo quando e' abilitata.
+      if (!candidate && AUTONOMY && autonomousGoalCount < AUTONOMY_MAX_GOALS) {
+        candidate = nextIdleGoal(obs, {rules: survivalRules, attempts: autonomousAttempts, cooldownMs: AUTONOMY_COOLDOWN_MS});
+      }
+      if (candidate) {
+        autonomousAttempts.set(candidate.need, Date.now());
+        if (AUTONOMY) autonomousGoalCount += 1;
+        const goal = goalManager.enqueue({
+          type: 'autonomous', source: candidate.source, priority: candidate.priority, objective: candidate.objective,
+          plan: {objective: candidate.objective, targets: {}, waypoint: null, need: candidate.need, priority: 'autonomy', notes: `autonomy:${candidate.need}`},
+          parameters: {need: candidate.need, mode: candidate.mode, reason: candidate.reason},
+        });
+        console.log(`IDLE -> autonomous goal ${goal.id} [${candidate.need}] ${goal.objective}`);
+        log('idle_goal', {goalId: goal.id, need: candidate.need, source: candidate.source, mode: candidate.mode, reason: candidate.reason, autonomy: AUTONOMY});
+        return goal;
       }
     }
     if (IDLE_TIMEOUT_MS && Date.now() - startedAt >= IDLE_TIMEOUT_MS) {

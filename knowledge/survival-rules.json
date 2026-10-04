@@ -102,7 +102,7 @@
       "id": "no_food_available",
       "priority": 96,
       "when": { "foodMax": 12, "hasFood": false },
-      "intents": ["eat", "heal"],
+      "intents": ["eat", "heal", "smelt", "collect"],
       "objective": "Find or craft something safe to eat before continuing with the objective.",
       "preferredSkills": ["obtain_food", "eat_available_food"]
     },
@@ -117,7 +117,7 @@
     {
       "id": "drowning",
       "priority": 98,
-      "when": { "headInWater": true, "airBelow": 8, "waterBreathing": false },
+      "when": { "headInWater": true, "airBelow": 60, "waterBreathing": false },
       "intents": ["surface"],
       "objective": "Surface for air before the air budget runs out.",
       "preferredSkills": ["surface_for_air"]

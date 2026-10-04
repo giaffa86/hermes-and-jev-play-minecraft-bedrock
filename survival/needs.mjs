@@ -11,6 +11,31 @@ export const NEEDS = [
   'obtain_food', 'obtain_weapon', 'obtain_armor', 'replace_tool', 'continue_progression',
 ];
 
+// Aria (tick, 20 al secondo) sotto la quale il bisogno `surface` scatta: 60 tick
+// = 3 secondi. Il danno da annegamento comincia a 0, ma reagire a 0 non lascia
+// tempo di risalire e raggiungere una riva; la regola JSON `drowning` usa lo
+// stesso valore, cosi' bisogno, regola e azione offerta parlano la stessa lingua.
+export const DROWNING_AIR = +(process.env.DROWNING_AIR || 60);
+
+// Intenti che soddisfano un bisogno, in ordine di preferenza. I bisogni non sono
+// nomi di azione: nessuna opzione si chiama `heal` o `obtain_food`, mentre gli
+// intenti (`eat`, `smelt`, `flee`, `surface`...) classificano le opzioni che il
+// harness ha davvero offerto. I bisogni di progressione (armi, armature, tool,
+// milestone) restano fuori di proposito: quelli sono scelte del piano e del
+// modello, la scala deterministica copre solo la sopravvivenza.
+export const NEED_INTENTS = {
+  survive: ['heal', 'eat', 'escape', 'shelter'],
+  escape: ['escape', 'fight'],
+  surface: ['surface', 'swim', 'ascend'],
+  eat: ['eat'],
+  heal: ['heal', 'eat', 'sleep'],
+  sleep: ['sleep'],
+  shelter: ['shelter', 'build'],
+  obtain_food: ['eat', 'smelt', 'collect', 'craft'],
+  obtain_armor: ['heal', 'craft'],
+  replace_tool: ['craft'],
+};
+
 export function deriveNeeds (perception = {}, risk = {}) {
   const needs = [];
   const add = (need) => { if (!needs.includes(need)) needs.push(need); };
@@ -31,7 +56,7 @@ export function deriveNeeds (perception = {}, risk = {}) {
   // Con il respiro attivo (M2: elmo di tartaruga o effetto) non c'è nulla da
   // risalire a fare in fretta.
   if (perception.fluids?.headInWater === true && perception.fluids?.waterBreathing !== true &&
-      Number.isFinite(perception.fluids?.air) && perception.fluids.air <= 8) {
+      Number.isFinite(perception.fluids?.air) && perception.fluids.air <= DROWNING_AIR) {
     add('surface');
   }
   // Contatto con la lava: fuga immediata, è più urgente di ogni altra cura.

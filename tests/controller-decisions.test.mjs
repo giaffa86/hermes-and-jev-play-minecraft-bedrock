@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildCriteria, buildDecisionInstructions, capOptions, detectRepeatedAction, filterOptions,
+  buildCriteria, buildDecisionInstructions, capOptions, detectRepeatedAction, filterOptions, isStopOrder,
   optionPriority, parseDistance, progressFingerprint, rankOptions, summarizePlan, waitOnlyReason,
-  DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
+  withStickyFollow, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
 } from '../controller-decisions.mjs';
 
 const opt = (key, description = `${key} description`) => ({ key, description });
@@ -208,4 +208,36 @@ test('anti-loop scenario: a stagnant goto loop gets excluded and later retried',
   history.push({ key: 'mine_stone', stagnant: false });
   const later = filterOptions([opt('goto_waypoint'), opt('mine_stone')], history);
   assert.deepEqual(later.options.map(o => o.key), ['goto_waypoint', 'mine_stone']);
+});
+
+test('withStickyFollow keeps an open follow on every plan of the goal', () => {
+  // Un ordine "seguimi" e' un impegno del goal: il piano puo' cambiare
+  // (replan, piano dello skill) ma il `follow` deve restare agganciato.
+  const replanned = { objective: 'stand near the waypoint', targets: {}, waypoint: { x: 1, z: 2 } };
+  assert.deepEqual(withStickyFollow(replanned, 'Ale'), {
+    objective: 'stand near the waypoint', targets: {}, waypoint: { x: 1, z: 2 }, follow: 'Ale',
+  });
+  // Senza ordine aperto il piano non viene toccato (nemmeno la sua identita':
+  // il fast-path deterministico confronta il piano, non delle copie).
+  assert.equal(withStickyFollow(replanned, null), replanned);
+  assert.equal(withStickyFollow(replanned, undefined), replanned);
+  const already = { objective: 'Follow Ale', follow: 'Ale' };
+  assert.equal(withStickyFollow(already, 'Ale'), already);
+  // Un follow diverso (nuovo ordine) vince su quello vecchio.
+  assert.equal(withStickyFollow(already, 'Bob').follow, 'Bob');
+  assert.deepEqual(withStickyFollow(null, 'Bob'), { follow: 'Bob' });
+});
+
+test('isStopOrder recognizes stop orders and never a follow request', () => {
+  // Il fallback deterministico di humanCommandPlan trasforma ogni ordine in
+  // "segui chi ti ha scritto": "fermati" deve esserne escluso, altrimenti il
+  // goal sticky non si chiude piu' (bug live del 04/10).
+  for (const message of ['fermati', 'ok fermati', 'stop', 'adesso basta', 'aspettami qui', 'resta dove sei', 'stay there', 'wait for me', 'smettila']) {
+    assert.equal(isStopOrder(message), true, `"${message}" is a stop order`);
+  }
+  for (const message of ['seguimi', 'vieni con me', 'mina 4 dirt', 'portami del cibo', 'aiutami con gli zombie', 'come here', '']) {
+    assert.equal(isStopOrder(message), false, `"${message}" is not a stop order`);
+  }
+  assert.equal(isStopOrder(null), false);
+  assert.equal(isStopOrder(undefined), false);
 });

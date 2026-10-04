@@ -42,7 +42,11 @@ console.log(`survival layer ready: rules=${survivalRules.length} skills=${gamepl
 mkdirSync(`runs/${RUN}`, { recursive: true });
 // Il nome dell'evento resta in `type`: il payload può portare un `type` (tipo
 // dell'entità, canale chat) che altrimenti lo sovrascriverebbe.
-const eventLog = (type, data) => appendFileSync(`runs/${RUN}/events.jsonl`, JSON.stringify({ t: Date.now(), ...data, type }) + '\n');
+// Un payload può contenere BigInt (metadata, runtime id): JSON.stringify li rifiuta
+// e l'eccezione, sollevata dentro l'handler di un pacchetto, uccideva il processo
+// (live 04/10 con BEDROCK_META_LOG=1). Il replacer li serializza come stringhe.
+const bigintSafe = (key, value) => (typeof value === 'bigint' ? value.toString() : value);
+const eventLog = (type, data) => appendFileSync(`runs/${RUN}/events.jsonl`, JSON.stringify({ t: Date.now(), ...data, type }, bigintSafe) + '\n');
 // R3: un cantiere redstone lascia un record per run, come le skill verificabili
 // (`skills.jsonl`): l'esito di un circuito si legge dal file e non dalla memoria
 // di chi lo ha lanciato.
@@ -268,7 +272,10 @@ server = createServer(async (req, res) => {
       const obs = adapter.observe();
       const survival = evaluateSurvival(obs, { rules: survivalRules });
       const offered = adapter.options();
-      const restricted = filterOptionsForGovernor(offered, survival);
+      // Un ordine umano aperto ("seguimi") resta valido anche in emergenza:
+      // il governor non puo' togliere l'inseguitore che l'utente ha chiesto.
+      const humanOrderKeys = obs.plan?.follow ? ['follow_player', 'seek_player'] : [];
+      const restricted = filterOptionsForGovernor(offered, survival, { protectedKeys: humanOrderKeys });
       response = [200, {
         options: restricted.options,
         survival: summarizeSurvival(survival),

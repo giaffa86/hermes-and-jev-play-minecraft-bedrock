@@ -230,6 +230,34 @@ const CHAT_ECHO_MEMORY = 8;
 // Raggio entro cui un giocatore umano è "percepito" (gli saluta e gli spiega
 // come dare un ordine). Separato dal tracking entità (64 blocchi).
 const HUMAN_RANGE = +(process.env.HUMAN_RANGE || 32);
+// event_id di level_event che parlano di sonno (players_sleeping/sleeping_players):
+// l'annuncio del server "qualcuno dorme", usato come conferma del sonno.
+const SLEEP_LEVEL_EVENTS = new Set([9800, 9801]);
+// Recupero dell'umano perso ("wolf recovery"): oltre questa distanza l'ultima
+// posizione nota non e' piu' una traccia utile, e oltre questa eta' non lo e'
+// nemmeno un ricordo vecchio (il mondo cambia: il giocatore quasi certamente
+// non e' piu' la'). `seek_player` viene offerto solo dentro entrambi i limiti.
+const SEEK_MAX_DISTANCE = +(process.env.SEEK_MAX_DISTANCE || 128);
+const SEEK_MAX_AGE_MS = +(process.env.SEEK_MAX_AGE_MS || 600000);
+// Respiro (M2): con la testa sott'acqua l'aria scende di un tick per tick e
+// l'unica cura e' uscire dall'acqua. L'opzione `surface` compare con questo
+// anticipo (150 tick = 7,5 s di aria) perche' raggiungere una riva costa tempo;
+// la regola JSON `drowning` scatta a 60 tick (3 s) e in emergenza ammette
+// l'intento `surface`, cosi' la scala di sopravvivenza ha un'azione da fare
+// *prima* che i cuori scendano.
+const SURFACE_AIR_ALERT = +(process.env.SURFACE_AIR_ALERT || 150);
+
+// Il BDS firma i nomi con i codici di formattazione (`§r`, `§7`, …): in chat il
+// gamertag arriva come `Nome§r`, nei pacchetti `add_player`/`player_list` invece
+// pulito. Senza normalizzazione la stessa persona è due stringhe diverse, e ogni
+// confronto esatto si rompe: l'allowlist del controller (`entry.from`), il lookup
+// dell'entità da seguire (`_playerByName`) e il saluto per gamertag. Si toglie
+// alla fonte, così chat, mappa dei nomi, entità e descrizioni delle opzioni
+// portano sempre lo stesso nome.
+function stripFormatting (text) {
+  if (text == null) return null;
+  return String(text).replace(/\u00a7./g, '').replace(/\u00a7/g, '').trim();
+}
 
 const STORAGE_CONTAINER_SLOT = {
   chest: 'container',
@@ -359,6 +387,9 @@ export class BedrockAdapter {
     this._sentChat = [];             // testo dei messaggi inviati { text, at } (riconoscere l'eco)
     this.selfName = null;            // gamertag che il server attribuisce al bot (imparato dall'eco)
     this._playersByName = new Map(); // gamertag minuscolo -> runtimeId (chat -> entità da seguire)
+    this._sleepLevelEventAt = 0;     // ultimo level_event di sonno ricevuto
+    this._playerBedPosition = null;  // player_bed_position dei metadata (letto di respawn)
+    this._playerLastSeen = new Map(); // gamertag minuscolo -> { position, at } (ultima posizione nota)
     this.busy = false;
     this.recent = [];
     this.connectError = null;
@@ -585,6 +616,11 @@ export class BedrockAdapter {
         for (const pending of this._authInputQueue.splice(0)) pending.reject(new Error('connection_lost'));
         if (this.client !== client) return;
         const wasSpawned = this.spawned;
+        // Un movimento in corso non ricevera' piu' tick (l'intervallo di auth e' appena
+        // stato spento): senza abortirlo la promise di `_startMotion` resta appesa e
+        // l'azione tiene il lock dell'harness fino all'action_timeout di 180 s, con il
+        // bot immobile (live 04/10: `client_close` a meta' di `follow_player`).
+        if (this._motion?.active) this._finishMotion('disconnected');
         this.log('client_close', { reason: client._lifecycleCloseReason || this.connectError?.message || 'closed' });
         this.status = 'disconnected';
         this.spawned = false;
@@ -689,7 +725,21 @@ export class BedrockAdapter {
       });
 
       this.client.on('move_player', (packet) => {
-        if (String(packet.runtime_id) !== String(client.entityId)) return;
+        if (String(packet.runtime_id) !== String(client.entityId)) {
+          // Il BDS inoltra il movimento degli *altri giocatori* con `move_player`
+          // (id 0x13, ~20 pacchetti/s): `move_entity`/`move_entity_delta` arrivano
+          // solo per i mob. Senza questo ramo la posizione di un umano restava
+          // ferma a quella di `add_player` (bug live 04/10).
+          this._onPlayerMove(packet);
+          return;
+        }
+        if (process.env.MOVE_DEBUG) {
+          this.log('self_move_player', {
+            position: { x: +packet.position.x.toFixed(2), y: +packet.position.y.toFixed(2), z: +packet.position.z.toFixed(2) },
+            feet: this._feet ? { x: +this._feet.x.toFixed(2), y: +this._feet.y.toFixed(2), z: +this._feet.z.toFixed(2) } : null,
+            onGround: packet.on_ground ?? null,
+          });
+        }
         this.position = packet.position;
         this.world.requestAround(client, this.position);
       });
@@ -709,10 +759,29 @@ export class BedrockAdapter {
           this._velocity.x = 0;
           this._velocity.z = 0;
         }
-        this._feet.y = packet.position.y - EYE_HEIGHT;
+        // Il server puo' tenere il bot sospeso (quota di spawn mai aggiornata,
+        // quarantena anti-cheat, sonno appena accettato): adottare quella quota a
+        // ogni correzione lo inchioda in aria e la fisica locale riparte a cadere,
+        // per sempre. `_serverFeetY` accetta solo quote sostenibili, teletrasporti
+        // e spinte verso il basso.
+        const verifiedFeetY = this._feetFromServerY(packet.position);
+        const acceptedFeetY = this._serverFeetY(packet.position);
+        if (acceptedFeetY != null && Math.abs(acceptedFeetY - this._feet.y) > 0.05) {
+          if (process.env.MOVE_DEBUG) this.log('feet_clamped', { from: +this._feet.y.toFixed(2), to: +acceptedFeetY.toFixed(2), position: packet.position });
+        }
+        if (acceptedFeetY != null) this._feet.y = acceptedFeetY;
+        else if (process.env.MOVE_DEBUG && verifiedFeetY != null) this.log('feet_suspended', { server: +verifiedFeetY.toFixed(2), local: +this._feet.y.toFixed(2), position: packet.position });
         if (packet.on_ground != null) {
           this._onGround = packet.on_ground;
           if (packet.on_ground) this._velocity.y = 0;
+        }
+        if (process.env.MOVE_DEBUG) {
+          this.log('predict_correction', {
+            position: { x: +packet.position.x.toFixed(2), y: +packet.position.y.toFixed(2), z: +packet.position.z.toFixed(2) },
+            feetAfter: +this._feet.y.toFixed(2),
+            drift,
+            onGround: this._onGround,
+          });
         }
         this._syncPositionFromFeet();
         this.world.requestAround(client, this.position);
@@ -876,6 +945,9 @@ export class BedrockAdapter {
       this.client.on('update_attributes', (packet) => this._applyEntityAttributes(packet));
       this.client.on('entity_event', (packet) => this._onEntityEvent(packet));
       this.client.on('set_time', (packet) => this._recordTime(packet.time));
+      // Il sonno viene annunciato anche con un level_event: conferma
+      // indipendente dal flag resting, che il server non sempre aggiorna.
+      this.client.on('level_event', (packet) => this._onLevelEvent(packet));
       this.client.on('sync_world_clocks', (packet) => this._onWorldClocks(packet));
       this.client.on('respawn', (packet) => this._onRespawnPacket(packet));
       // Diagnostica opzionale (PACKET_DEBUG=1): logga i nomi dei pacchetti
@@ -2779,6 +2851,66 @@ export class BedrockAdapter {
     return { ok: false, error: `move_to_safe_failed${lastError ? `: ${lastError}` : ''}`, lava: before.nearest };
   }
 
+  // M2 — la cella asciutta piu' vicina: dove la testa non e' piu' sott'acqua. La
+  // ricerca e' a raggiera (16 direzioni, raggi crescenti) e si ferma al primo
+  // anello che ne trova una: non serve la piu' vicina in assoluto, serve una
+  // riva raggiungibile adesso, mentre l'aria scende.
+  _shoreCell () {
+    if (!this._feet) return null;
+    const from = { x: this._feet.x, y: this._feet.y, z: this._feet.z };
+    let best = null;
+    for (const radius of [3, 5, 8, 12, 16]) {
+      for (let i = 0; i < 16; i++) {
+        const angle = (i / 16) * Math.PI * 2;
+        const cell = this._standableNear({ x: from.x + Math.cos(angle) * radius, z: from.z + Math.sin(angle) * radius });
+        if (!cell) continue;
+        if (this._fluidKindAt(Math.floor(cell.x), cell.y + 1, Math.floor(cell.z)) === 'water') continue; // testa ancora in acqua
+        const d = Math.hypot(cell.x - from.x, cell.z - from.z);
+        if (best && d >= best.distance) continue;
+        if (this._reachabilityUsable() && !this.cellReachable(cell)) continue;
+        best = { x: cell.x, y: cell.y, z: cell.z, distance: +d.toFixed(2) };
+      }
+      if (best) break;
+    }
+    return best;
+  }
+
+  // M2 — "respirare": cammina fino alla riva piu' vicina e verifica col server
+  // che la testa sia davvero fuori dall'acqua. Un rifiuto e' tipizzato
+  // (`no_shore` = nessuna cella asciutta nel raggio, `still_underwater` = ci sono
+  // arrivato ma la testa e' ancora sotto), cosi' il controller puo' decidere
+  // invece di credere a un successo.
+  async _surfaceFromWater ({ timeoutMs = 15000 } = {}) {
+    if (!this._feet) return { ok: false, error: 'no_position' };
+    const airBefore = Number.isFinite(this.air) ? this.air : null;
+    if (!this._headInWater()) return { ok: true, surfaced: true, reason: 'head_above_water', air: airBefore };
+    const shore = this._shoreCell();
+    if (!shore) {
+      this.log('surface_no_shore', { position: this._feet, air: airBefore });
+      return { ok: false, error: 'no_shore', air: airBefore };
+    }
+    try {
+      await this._moveTo(shore, 0.7, Math.min(timeoutMs, 8000));
+    } catch (error) {
+      const failed = { ok: false, error: 'surface_failed: ' + error.message, shore, airBefore, air: Number.isFinite(this.air) ? this.air : null };
+      this.log('surface_failed', failed);
+      return failed;
+    }
+    const surfaced = !this._headInWater();
+    const report = {
+      ok: surfaced,
+      surfaced,
+      shore,
+      airBefore,
+      air: Number.isFinite(this.air) ? this.air : null,
+      position: this.pos(),
+    };
+    if (!surfaced) report.error = 'still_underwater';
+    this._surfaceLast = report;
+    this.log('surface', report);
+    return report;
+  }
+
   // M4 — Attraversare la lava: solo col gate aperto (resistenza al fuoco + ponte,
   // o acqua → ossidiana dove l'acqua si può piazzare). Costruire il ponte è M5/M6:
   // qui si rifiuta con il piano in mano invece di fingere un attraversamento.
@@ -3514,6 +3646,7 @@ export class BedrockAdapter {
         contents: c.contents,
       })),
       plan: this.plan,
+      follow: this._followView(),
       chat: this.chatInbox.slice(-10),
       nearby: this.nearbyBlocks,
       structures: this.structures.slice(0, 8),
@@ -3587,6 +3720,16 @@ export class BedrockAdapter {
     if (follow && follow.position && this.entityApproachable(follow, { range: 3, dy: 2 })) {
       const d = this._entityDistance(follow);
       o.push({ key: 'follow_player', description: `Follow ${follow.username || this.plan.follow} (${d.toFixed(1)} blocks away)` });
+    } else if (this.plan?.follow) {
+      // L'umano e' uscito dal raggio di vista (o e' irraggiungibile): prima di
+      // chiedere in chat si va a cercarlo dove e' stato visto l'ultima volta.
+      const seek = this._seekTarget(this.plan.follow);
+      if (seek) {
+        o.push({
+          key: 'seek_player',
+          description: `Search for ${this.plan.follow} near their last known position (${seek.distance.toFixed(1)} blocks away)`,
+        });
+      }
     }
     if (drop && !fresh) {
       o.push({ key: 'collect_drop', description: `Walk onto the nearest dropped item (${drop.distance.toFixed(1)} blocks away)` });
@@ -3634,6 +3777,15 @@ export class BedrockAdapter {
     // (l'acqua accanto vale doppio: spegne il fuoco).
     if (lavaNow.inLava || (lavaNow.lavaDistance != null && lavaNow.lavaDistance <= LAVA_CONTACT_RANGE)) {
       o.push({ key: 'move_to_safe', description: `Get out of the lava now (${lavaNow.inLava ? 'standing in it' : `${lavaNow.lavaDistance} blocks away`}): reach a safe shore, water if possible` });
+    }
+    // M2 — respirare: con la testa sott'acqua l'unica cura e' uscirne. Il bot non
+    // nuota, quindi "risalire" vuol dire camminare sul fondo o sulla riva dove la
+    // testa esce dall'acqua. L'opzione esiste solo se una cella cosi' esiste.
+    const breath = this._waterBreathing();
+    if (this._headInWater() && !breath.active && (this.air == null || this.air <= SURFACE_AIR_ALERT)) {
+      const shore = this._shoreCell();
+      const airLeft = this.air == null ? 'air unknown' : airSeconds(this.air) + 's of air left';
+      o.push({ key: 'surface', description: 'Surface for air (' + airLeft + (shore ? ', nearest dry cell ' + JSON.stringify({ x: Math.round(shore.x), y: shore.y, z: Math.round(shore.z) }) + ' (' + shore.distance + ' blocks)' : ', no dry cell in reach') + ')' });
     }
     // M4: attraversare si può solo col gate aperto (resistenza al fuoco + ponte).
     if (!lavaNow.inLava && lavaNow.gap?.gap > 0 && !lavaNow.gap.truncated && lavaNow.gate?.ok) {
@@ -4286,6 +4438,8 @@ export class BedrockAdapter {
         }
       } else if (key === 'follow_player' && this.plan?.follow) {
         result = await this._followPlayer(this.plan.follow);
+      } else if (key === 'seek_player' && this.plan?.follow) {
+        result = await this._seekPlayer(this.plan.follow);
       } else if (key === 'collect_drop') {
         result = await this._collectDrop();
       } else if (key === 'dig_down') {
@@ -4432,6 +4586,8 @@ export class BedrockAdapter {
         result = await this._avoidLava();
       } else if (key === 'move_to_safe') {
         result = await this._moveToSafe();
+      } else if (key === 'surface') {
+        result = await this._surfaceFromWater();
       } else if (key === 'cross_lava') {
         result = await this._crossLava();
       } else if (key === 'descend_waterfall' || key === 'climb_waterfall') {
@@ -4488,6 +4644,10 @@ export class BedrockAdapter {
         result = { ok: false, error: this.riding ? 'no_ride_destination' : 'not_riding', hint: 'while mounted, steer with goto_waypoint' };
       } else if (key === 'follow_player') {
         result = { ok: false, error: 'no_player_target', hint: 'follow_player is offered only when a nearby player has been named' };
+      } else if (key === 'seek_player') {
+        result = { ok: false, error: 'no_player_target', hint: 'seek_player is offered only while a lost player has a recent last-known position' };
+      } else if (key === 'surface') {
+        result = { ok: false, error: 'not_underwater', hint: 'surface is offered only with the head under water and the air running out' };
       } else {
         result = { ok: false, error: 'unknown_action', reason: `unknown or invalid action ${key}` };
       }
@@ -8226,9 +8386,49 @@ export class BedrockAdapter {
     });
   }
 
+  // La quota del server è quella degli occhi: sottrarre EYE_HEIGHT va bene in
+  // piedi, ma quando il server mette il giocatore a letto (o lo corregge) la
+  // quota riportata può essere più bassa e infilare i piedi DENTRO il blocco del
+  // pavimento. Lì la previsione locale blocca ogni passo (il blocco sotto esiste
+  // anche nella cella accanto) e il bot resta congelato: live 04/10 il bot era
+  // immobile sulla cella del letto, `goto_waypoint` -> `stuck` e ogni `sleep`
+  // respinto. Se la cella dei piedi contiene un blocco solido *noto*, la quota
+  // valida è il bordo superiore di quel blocco.
+  _feetFromServerY (position) {
+    if (!position) return null;
+    const raw = position.y - EYE_HEIGHT;
+    try {
+      const bx = Math.floor(position.x), bz = Math.floor(position.z);
+      const cell = Math.floor(raw + 1e-9);
+      const block = this.world.blockAt({ x: bx, y: cell, z: bz });
+      if (block && block.name && block.name !== 'unknown' && this._solidAt(bx, cell, bz) && raw < cell + 0.999) return cell + 1;
+    } catch { /* mondo non caricato: si tiene la quota del server */ }
+    return raw;
+  }
+
+  // Quota dei piedi da adottare da una correzione del server: `null` quando la
+  // quota e' insostenibile per il mondo locale (bot tenuto sospeso in aria) e
+  // non e' ne' un teletrasporto ne' una spinta verso il basso. In quel caso la
+  // fisica locale resta padrona della caduta e la correzione non la rimette su.
+  _serverFeetY (position) {
+    const verified = this._feetFromServerY(position);
+    if (verified == null) return null;
+    if (this._supportedAt(position.x, verified, position.z)) return verified;
+    if (this._feet && Math.abs(verified - this._feet.y) > 3) return verified;
+    if (this._feet && verified < this._feet.y - 0.05) return verified;
+    return null;
+  }
+
+  // C'e' un appoggio solido appena sotto la quota indicata? Usa la stessa
+  // sonda del movimento (6 cm sotto i piedi): un blocco sconosciuto conta come
+  // solido, quindi un mondo non caricato non fa rifiutare la quota del server.
+  _supportedAt (x, feetY, z) {
+    return this._collides(x, feetY - 0.06, z);
+  }
+
   _syncFeetFromPosition (position = this.position) {
     if (!position) return;
-    this._feet = { x: position.x, y: position.y - EYE_HEIGHT, z: position.z };
+    this._feet = { x: position.x, y: this._feetFromServerY(position), z: position.z };
   }
 
   _syncPositionFromFeet () {
@@ -8584,6 +8784,62 @@ export class BedrockAdapter {
     return false;
   }
 
+  // Diagnostica movimento: quale cella solida blocca il passo?
+  _firstSolid (x, y, z) {
+    const self = this._selfCells();
+    const eps = 1e-9;
+    const minX = Math.floor(x - PLAYER_HALF_WIDTH + eps), maxX = Math.floor(x + PLAYER_HALF_WIDTH - eps);
+    const minY = Math.floor(y + eps), maxY = Math.floor(y + PLAYER_HEIGHT - eps);
+    const minZ = Math.floor(z - PLAYER_HALF_WIDTH + eps), maxZ = Math.floor(z + PLAYER_HALF_WIDTH - eps);
+    for (let bx = minX; bx <= maxX; bx++) {
+      for (let by = minY; by <= maxY; by++) {
+        for (let bz = minZ; bz <= maxZ; bz++) {
+          if (self?.has(bx + ',' + by + ',' + bz)) continue;
+          if (this._solidAt(bx, by, bz)) {
+            const b = this.world.blockAt({ x: bx, y: by, z: bz });
+            return { x: bx, y: by, z: bz, block: b && b.name ? b.name : '?' };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  _moveDiag (nx, y, nz, ax, az) {
+    if (!process.env.MOVE_DEBUG) return;
+    this._moveDiagCount = (this._moveDiagCount || 0) + 1;
+    if (this._moveDiagCount > 60) return;
+    this.log('move_blocked', {
+      from: { x: +this._feet.x.toFixed(2), y: +this._feet.y.toFixed(2), z: +this._feet.z.toFixed(2) },
+      to: { x: +nx.toFixed(2), y: +y.toFixed(2), z: +nz.toFixed(2) },
+      step: { ax: +ax.toFixed(3), az: +az.toFixed(3) },
+      solid: this._firstSolid(nx, y, nz),
+      onGround: this._onGround,
+    });
+  }
+
+  _physDiag () {
+    if (!process.env.MOVE_DEBUG) return;
+    const now = Date.now();
+    if (this._lastPhysDiagAt && now - this._lastPhysDiagAt < 1500) return;
+    this._lastPhysDiagAt = now;
+    const feet = this._feet;
+    if (!feet) return;
+    const fx = Math.floor(feet.x), fy = Math.floor(feet.y + 1e-9), fz = Math.floor(feet.z);
+    const cell = (x, y, z) => { const b = this.world.blockAt({ x, y, z }); return b && b.name ? b.name : "?"; };
+    this.log('phys_probe', {
+      feet: { x: +feet.x.toFixed(2), y: +feet.y.toFixed(2), z: +feet.z.toFixed(2) },
+      position: this.position ? { x: +this.position.x.toFixed(2), y: +this.position.y.toFixed(2), z: +this.position.z.toFixed(2) } : null,
+      onGround: this._onGround,
+      feetCell: cell(fx, fy, fz),
+      belowCell: cell(fx, fy - 1, fz),
+      blockedStep: this._firstSolid(feet.x + 0.25, feet.y, feet.z),
+      standable: this._standable(fx, fy, fz),
+      reachableUsable: this._reachabilityUsable(),
+      motion: this._motion?.active ? { index: this._motion.index, len: this._motion.path.length, forward: this._motion.forward, stuckTries: this._motion.stuckTries } : null,
+    });
+  }
+
   _moveHorizontal (dx, dz) {
     const feet = this._feet;
     const motion = this._motion;
@@ -8597,6 +8853,7 @@ export class BedrockAdapter {
         continue;
       }
       this._collidedHorizontally = true;
+      this._moveDiag(nx, feet.y, nz, ax, az);
       // Gradino di un blocco: prepara un salto se lo spazio sopra è libero.
       if (this._onGround && !this._collides(nx, feet.y + 1, nz, { ignoreSelf: true }) && motion?.active && motion.jumpHeldTicks <= 0) {
         motion.jumpQueued = true;
@@ -8660,6 +8917,21 @@ export class BedrockAdapter {
     if (steps > MAX_SIM_STEPS) steps = MAX_SIM_STEPS;
     for (let i = 0; i < steps; i++) this._physicsStep();
     this._lastSimTick = tick;
+    this._physDiag();
+    // Piedi dentro un blocco solido *noto*: la previsione locale blocca ogni passo
+    // (il fondo esiste anche nella cella accanto) e il bot resta congelato. La
+    // posizione e' comunque quella del server, quindi qui non si inventa nulla:
+    // si riallinea il modello al bordo superiore del blocco in cui e' infilato.
+    if (this._feet && this._onGround) {
+      const fx = Math.floor(this._feet.x), fy = Math.floor(this._feet.y + 1e-9), fz = Math.floor(this._feet.z);
+      const here = this.world.blockAt({ x: fx, y: fy, z: fz });
+      if (here && here.name && here.name !== 'unknown' && this._solidAt(fx, fy, fz) && this._feet.y < fy + 0.999) {
+        this.log('phys_unstick', { from: +this._feet.y.toFixed(2), to: fy + 1, block: here.name, cell: { x: fx, y: fy, z: fz } });
+        this._feet.y = fy + 1;
+        this._velocity.y = 0;
+        this._syncPositionFromFeet();
+      }
+    }
     if (this._motion?.active) this._updateMotionState();
   }
 
@@ -8667,14 +8939,24 @@ export class BedrockAdapter {
 
   _startMotion (path, goalNode, target, stopDistance, deadline) {
     return new Promise(resolve => {
+      // Un movimento ancora pendente verrebbe sovrascritto e la sua promise non
+      // sarebbe piu' risolvibile (nessuno la risolve): la si chiude esplicitamente.
+      if (this._motion?.active) this._finishMotion('superseded');
       this._motion = {
         active: true, path, index: Math.min(1, path.length - 1), goalNode,
         target, stopDistance, deadline, resolve,
         yaw: this._yawTo(this._feet, { x: goalNode.x + 0.5, z: goalNode.z + 0.5 }),
         forward: true, jumpQueued: false, jumpHeldTicks: 0, jumpStart: false,
         bestWaypointDist: Infinity, lastProgressAt: Date.now(), stuckTries: 0,
-        useRequest: null,
+        useRequest: null, guard: null,
       };
+      // `_updateMotionState` gira solo sui tick del client: se la connessione cade (o
+      // il mondo smette di tickare) la promise non verrebbe mai risolta e l'await
+      // resterebbe appeso. Il timer la chiude comunque entro la deadline.
+      const guardMs = Math.max(250, (Number.isFinite(deadline) ? deadline - Date.now() : 0) + 500);
+      this._motion.guard = setTimeout(() => {
+        if (this._motion && this._motion.active && this._motion.resolve === resolve) this._finishMotion('timeout');
+      }, guardMs);
     });
   }
 
@@ -8685,6 +8967,7 @@ export class BedrockAdapter {
   _finishMotion (reason) {
     const motion = this._motion;
     if (!motion) return;
+    if (motion.guard) { clearTimeout(motion.guard); motion.guard = null; }
     motion.active = false;
     motion.forward = false;
     const resolve = motion.resolve;
@@ -9118,6 +9401,10 @@ export class BedrockAdapter {
     let attempts = 0;
     let lastFeet = null;
     while (Date.now() < deadline) {
+      // I tick del client guidano `_updateMotionState`: senza client connesso il
+      // movimento non puo' avanzare ne' scadere, quindi si esce subito (il close
+      // azzera `client`, quindi la guardia copre la disconnessione reale).
+      if (!this.client) throw new Error('connection_lost');
       const start = this._startNode();
       // Il limite più alto del default (8) serve a non perdere la cella esatta
       // quando sta più in basso: la penalità verticale del punteggio la spinge
@@ -9178,6 +9465,94 @@ export class BedrockAdapter {
   // Segue un giocatore (by gamertag) rileggendo la sua posizione viva a ogni
   // tratto, finché non è vicino o scade il budget. Usato dal comando umano
   // "seguimi" (plan.follow = gamertag).
+  // Ultima posizione nota di un giocatore (memoria del "lupo"): il server non
+  // manda piu' nulla di un giocatore che esce dal raggio di vista, quindi
+  // `lastAt` sull'entita' non basta — quando l'entita' sparisce serve un posto
+  // dove andare a cercarlo.
+  _rememberPlayerSeen (name, position) {
+    const key = stripFormatting(name)?.toLowerCase();
+    if (!key || !position || !Number.isFinite(position.x) || !Number.isFinite(position.z)) return;
+    const prev = this._playerLastSeen.get(key);
+    if (prev && prev.position && prev.position.x === position.x && prev.position.y === position.y && prev.position.z === position.z) {
+      prev.at = Date.now();
+      return;
+    }
+    this._playerLastSeen.set(key, {
+      position: { x: position.x, y: position.y, z: position.z },
+      at: Date.now(),
+    });
+  }
+
+  // Bersaglio del recupero: l'ultima posizione nota, se l'entita' non e' piu'
+  // tracciata, altrimenti la sua posizione attuale (l'entita' viva e' la
+  // verita': non serve cercare dove *era*). Ritorna null quando la memoria e'
+  // troppo vecchia o troppo lontana per valere un viaggio.
+  _seekTarget (name) {
+    const key = stripFormatting(name)?.toLowerCase();
+    if (!key || !this.position) return null;
+    const live = this._playerByName(key);
+    const record = live?.position ? { position: live.position, at: Date.now() } : this._playerLastSeen.get(key);
+    if (!record?.position) return null;
+    const age = Date.now() - (record.at || 0);
+    if (age > SEEK_MAX_AGE_MS) return null;
+    const distance = Math.hypot(record.position.x - this.position.x, record.position.z - this.position.z);
+    if (distance > SEEK_MAX_DISTANCE) return null;
+    if (distance < 2) return null; // ci siamo gia': non e' una ricerca
+    return { position: record.position, distance, ageMs: age, live: !!live };
+  }
+
+  // Recupero dell'umano perso ("wolf recovery"): va all'ultima posizione nota
+  // e guarda intorno. Non e' un inseguimento: se il giocatore e' tornato
+  // visibile lo riporta (`found: true`), altrimenti dichiara il fallimento e
+  // lascia al controller la decisione (un'altra ricerca o un messaggio in chat).
+  async _seekPlayer (name, { arriveDistance = 1.5, timeoutMs = 45000 } = {}) {
+    const target = this._seekTarget(name);
+    if (!target) return { ok: false, error: 'no_seek_target', target: name };
+    this.log('seek_start', { target: name, position: target.position, distance: +target.distance.toFixed(1), ageMs: target.ageMs, live: target.live });
+    try {
+      const result = await this._moveTo(target.position, arriveDistance, timeoutMs);
+      const found = this._playerByName(name);
+      if (found?.position) {
+        const d = this._entityDistance(found);
+        this.log('seek_found', { target: name, distance: +d.toFixed(1) });
+        return { ok: true, found: true, target: name, distance: +d.toFixed(1), walked: result?.distance ?? null };
+      }
+      this.log('seek_failed', { target: name, position: target.position, walked: result?.distance ?? null });
+      return { ok: false, found: false, error: 'player_not_found', target: name, searched: target.position, walked: result?.distance ?? null };
+    } catch (error) {
+      this.log('seek_failed', { target: name, error: error?.message ?? String(error) });
+      return { ok: false, found: false, error: `seek_failed: ${error?.message ?? String(error)}`, target: name, searched: target.position };
+    }
+  }
+
+  // Vista compatta per l'osservazione: al controller serve sapere se il
+  // bersaglio del follow e' tracciato e quanto e' vecchia la traccia.
+  _followView () {
+    const name = this.plan?.follow || null;
+    if (!name) return null;
+    const key = stripFormatting(name)?.toLowerCase();
+    const live = this._playerByName(key);
+    // `searchable` deve dire se `seek_player` è *offerto* — cioè quando
+    // `follow_player` non lo è — non se il bersaglio è lontano più di due
+    // blocchi: sono due domande diverse e solo la prima interessa al controller.
+    const approachable = !!(live?.position && this.entityApproachable(live, { range: 3, dy: 2 }));
+    const record = live?.position ? { position: live.position, at: Date.now() } : this._playerLastSeen.get(key) || null;
+    const lastSeen = record?.position
+      ? { x: +record.position.x.toFixed(1), y: +record.position.y.toFixed(1), z: +record.position.z.toFixed(1) }
+      : null;
+    const lastSeenAgeMs = record ? Date.now() - (record.at || 0) : null;
+    const seek = approachable ? null : this._seekTarget(name);
+    return {
+      name,
+      tracked: !!live?.position,
+      approachable,
+      distance: live?.position ? +this._entityDistance(live).toFixed(1) : null,
+      lastSeen,
+      lastSeenAgeMs,
+      searchable: !!seek,
+    };
+  }
+
   async _followPlayer (name, { distance = 3, timeoutMs = 45000 } = {}) {
     const started = Date.now();
     let last = null;
@@ -9189,12 +9564,16 @@ export class BedrockAdapter {
         if (++stalls >= 8) return { ok: false, error: 'target_not_found', target: name };
         continue;
       }
-      stalls = 0;
       last = entity.position;
       const d = Math.hypot(last.x - this.position.x, last.z - this.position.z);
       if (d <= distance) return { ok: true, followed: name, distance: +d.toFixed(1) };
       try {
         await this._moveTo({ x: last.x, y: last.y, z: last.z }, distance, Math.min(12000, Math.max(3000, d * 600)));
+        // Solo un tratto davvero percorso azzera i fallimenti consecutivi: con
+        // l'azzeramento a ogni giro il contatore non arrivava mai a 4 e un follow
+        // bloccato restava 45 s a girare a vuoto, per giunta riportando `ok: true`
+        // (live 04/10: tre minuti di bot immobile visti dall'utente).
+        stalls = 0;
       } catch (error) {
         if (++stalls >= 4) return { ok: false, error: `follow_failed: ${error.message}`, target: name };
       }
@@ -9214,7 +9593,7 @@ export class BedrockAdapter {
     const message = packet?.message;
     if (!message || typeof message !== 'string') return;
     if (type !== 'chat' && type !== 'whisper' && type !== 'json_whisper') return;
-    const from = packet.source_name || null;
+    const from = stripFormatting(packet.source_name) || null;
     // Eco dei propri messaggi: il server li rimanda indietro con il gamertag
     // vero, non con il nome di login. Lasciarli entrare in `chatInbox` fa
     // credere al controller che un umano fidato abbia parlato (e il bot può
@@ -9248,10 +9627,10 @@ export class BedrockAdapter {
   // Il bot si riconosce per nome di login oppure per il gamertag imparato
   // dall'eco (sono diversi: `BEDROCK_USERNAME` è il nome di autenticazione).
   isSelfName (name) {
-    if (!name) return false;
-    const wanted = String(name).toLowerCase();
-    if (USERNAME && wanted === USERNAME.toLowerCase()) return true;
-    return !!this.selfName && wanted === this.selfName.toLowerCase();
+    const wanted = stripFormatting(name)?.toLowerCase();
+    if (!wanted) return false;
+    if (USERNAME && wanted === stripFormatting(USERNAME).toLowerCase()) return true;
+    return !!this.selfName && wanted === stripFormatting(this.selfName).toLowerCase();
   }
 
   // Il bot scrive in chat (M5). Un pacchetto `text` tipo `chat` è ciò che manda
@@ -9306,8 +9685,9 @@ export class BedrockAdapter {
     entity.lastAt = Date.now();
     if (!entity.seenAt) entity.seenAt = Date.now();
     if (kind === 'player' && packet.username) {
-      entity.username = packet.username;
-      this._playersByName.set(String(packet.username).toLowerCase(), runtimeId);
+      const username = stripFormatting(packet.username);
+      entity.username = username;
+      this._playersByName.set(username.toLowerCase(), runtimeId);
     }
     if (packet.unique_id != null) {
       entity.uniqueId = String(packet.unique_id);
@@ -9316,6 +9696,7 @@ export class BedrockAdapter {
     if (packet.position) {
       const y = kind === 'player' ? packet.position.y - EYE_HEIGHT : packet.position.y;
       entity.position = { x: packet.position.x, y, z: packet.position.z };
+      if (kind === 'player' && entity.username) this._rememberPlayerSeen(entity.username, entity.position);
     }
     if (Array.isArray(packet.attributes)) {
       for (const attr of packet.attributes) {
@@ -9327,8 +9708,19 @@ export class BedrockAdapter {
     }
   }
 
+  // Movimento di un *altro* giocatore: `move_player` ha `runtime_id` (non
+  // `runtime_entity_id`) e la posizione degli occhi, quindi si riusa
+  // `_onEntityMove` con la stessa convenzione di `_trackEntity` (piedi).
+  _onPlayerMove (packet) {
+    if (!packet?.position) return;
+    this._onEntityMove({
+      runtime_entity_id: String(packet.runtime_id ?? ''),
+      position: { x: packet.position.x, y: packet.position.y - EYE_HEIGHT, z: packet.position.z },
+    });
+  }
+
   _onEntityMove (packet) {
-    const runtimeId = String(packet.runtime_entity_id ?? '');
+    const runtimeId = String(packet.runtime_entity_id ?? packet.runtime_id ?? '');
     const entity = this.entities.get(runtimeId);
     if (!entity || !entity.position) return;
     // Solo per i proiettili: la posizione precedente è la sorgente della velocità
@@ -9350,6 +9742,10 @@ export class BedrockAdapter {
         z: packet.z ?? entity.position.z,
       };
     }
+    // Traccia dell'ultimo avvistamento: `add_player` arriva solo quando un
+    // giocatore *entra* nel campo visivo, quindi quando il server manda
+    // `remove_entity` questa e' l'unica memoria di *dove* l'abbiamo visto.
+    if (entity.kind === 'player' && entity.username) this._rememberPlayerSeen(entity.username, entity.position);
     entity.lastAt = Date.now();
   }
 
@@ -9359,7 +9755,20 @@ export class BedrockAdapter {
     if (!runtimeId) return;
     const entity = this.entities.get(runtimeId);
     if (entity?.uniqueId) this._entitiesByUnique.delete(entity.uniqueId);
+    // Per i giocatori questa e' l'unica via di uscita (non si potano mai da soli):
+    // se il nome restasse mappato, un runtime id riciclato dal server farebbe
+    // puntare `follow_player` a un'entita' diversa.
+    if (entity?.username) this._playersByName.delete(entity.username.toLowerCase());
     this.entities.delete(runtimeId);
+  }
+
+  _onLevelEvent (packet) {
+    const raw = packet?.event_id ?? packet?.event;
+    const id = Number(raw);
+    const name = typeof packet?.event === 'string' ? packet.event : null;
+    if (!SLEEP_LEVEL_EVENTS.has(id) && name !== 'players_sleeping' && name !== 'sleeping_players') return;
+    this._sleepLevelEventAt = Date.now();
+    this.log('sleep_level_event', { id: Number.isFinite(id) ? id : null, event: name, sleeping: this.sleeping });
   }
 
   _applyEntityMetadata (packet) {
@@ -9419,7 +9828,18 @@ export class BedrockAdapter {
       }
       if (isSelf && process.env.BEDROCK_META_LOG) this.log('self_metadata', { key, value: entry.value?._value != null ? String(entry.value._value) : entry.value });
       // player_bed_position è il letto di respawn (presente anche da svegli):
-      // non indica lo stato sonno, che resta affidato al flag `resting`.
+      // un CAMBIO durante il tentativo di dormire è però il segno che il server
+      // ha accettato il sonno (lo stato sonno in sé resta sul flag resting).
+      if (isSelf && key === 'player_bed_position' && entry.value && typeof entry.value === 'object') {
+        const v = entry.value;
+        const pos = { x: Number(v.x ?? NaN), y: Number(v.y ?? NaN), z: Number(v.z ?? NaN) };
+        const prev = this._playerBedPosition;
+        if (Number.isFinite(pos.x) && Number.isFinite(pos.y) && Number.isFinite(pos.z) &&
+            (!prev || prev.x !== pos.x || prev.y !== pos.y || prev.z !== pos.z)) {
+          this._playerBedPosition = pos;
+          this.log('sleep_bed_position', { position: pos });
+        }
+      }
     }
     if (entity) entity.lastAt = Date.now();
   }
@@ -9761,8 +10181,9 @@ export class BedrockAdapter {
 
   // Risolve un gamertag (case-insensitive) nell'entità giocatore tracciata.
   _playerByName (name) {
-    if (!name) return null;
-    const runtimeId = this._playersByName.get(String(name).toLowerCase());
+    const key = stripFormatting(name)?.toLowerCase();
+    if (!key) return null;
+    const runtimeId = this._playersByName.get(key);
     return runtimeId ? (this.entities.get(runtimeId) || null) : null;
   }
 
@@ -9770,11 +10191,20 @@ export class BedrockAdapter {
     if (!this.entities.size) return;
     const now = Date.now();
     for (const [runtimeId, entity] of this.entities) {
-      const stale = now - entity.lastAt > 60000;
-      const far = entity.position && this.position && this._entityDistance(entity) > 64;
+      // I giocatori non si potano mai per inattivita' o distanza: un umano fermo
+      // non produce pacchetti di movimento, e il server manda `add_player` solo
+      // quando un giocatore *entra* nel campo visivo (non lo ripete per chi e' gia'
+      // in vista). Con la vecchia regola dei 60 s l'entita' spariva e non tornava
+      // piu': `follow_player` non veniva piu' offerto e un ordine "seguimi" di un
+      // umano immobile restava senza effetto per sempre (osservato live sul BDS).
+      // Per loro l'unica fonte di verita' e' il `remove_entity` del server: e' lui
+      // a cullare le entita' quando escono dal campo visivo del client.
+      const stale = entity.kind !== 'player' && now - entity.lastAt > 60000;
+      const far = entity.kind !== 'player' && entity.position && this.position && this._entityDistance(entity) > 64;
       if (stale || far) {
         this.entities.delete(runtimeId);
         if (entity.uniqueId) this._entitiesByUnique.delete(entity.uniqueId);
+        if (entity.username) this._playersByName.delete(entity.username.toLowerCase());
       }
     }
   }
@@ -11456,59 +11886,222 @@ export class BedrockAdapter {
     return { ...reel, biteDetected, biteSource, bobber: cast.bobber, verdict: cast.verdict };
   }
 
-  // Letto più vicino nel mondo caricato (scansione con TTL di 30 s).
-  _findBed () {
-    if (!this.position) return null;
+  // Letti vicini nel mondo caricato (scansione con TTL di 30 s). Restituisce
+  // *tutti* i candidati: il più vicino può essere irraggiungibile (villaggio su
+  // più piani, porta chiusa da un villager) e un letto occupato non accetta il
+  // sonno, quindi chi chiama deve poter passare al successivo.
+  _findBeds () {
+    if (!this.position) return [];
     const now = Date.now();
-    if (this._bedCache && now - this._bedCache.at < 30000) return this._bedCache.bed;
-    let bed = null;
-    const found = this.world.findBlocks('bed', this.position, 48, 4);
-    if (found?.length) {
-      const first = found[0];
-      bed = { name: first.name, position: first.position, distance: +(first.distance ?? 0).toFixed(1) };
+    if (this._bedCache && now - this._bedCache.at < 30000) return this._bedCache.beds;
+    const found = this.world.findBlocks('bed', this.position, 48, 12) || [];
+    const seen = new Set();
+    const beds = [];
+    for (const block of found) {
+      if (!block?.position) continue;
+      const key = block.position.x + ',' + block.position.y + ',' + block.position.z;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      beds.push({
+        name: block.name,
+        position: block.position,
+        distance: +(block.distance ?? 0).toFixed(1),
+        occupied: this._bedOccupied(block),
+      });
     }
-    this._bedCache = { at: now, bed };
-    return bed;
+    // Prima i letti liberi (un letto occupato fa fallire il click), poi i più vicini.
+    beds.sort((a, b) => (a.occupied === b.occupied ? a.distance - b.distance : (a.occupied ? 1 : -1)));
+    this._bedCache = { at: now, beds, bed: beds.find(candidate => !candidate.occupied) || beds[0] || null };
+    return beds;
+  }
+
+  // Rilegge lo stato del letto dalla colonna viva (blockAt): il server aggiorna
+  // occupied_bit quando qualcuno ci dorme, quindi è una conferma server-side.
+  _bedOccupiedAt (position) {
+    try {
+      const block = this.world?.blockAt?.(position);
+      if (block) return this._bedOccupied(block);
+    } catch { /* mondo non pronto: nessuna informazione */ }
+    return null;
+  }
+
+  _bedOccupied (block) {
+    try {
+      return block?.getProperties?.()?.occupied_bit === true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Letto più vicino usabile adesso: una sola voce per chi ne vuole uno
+  // (opzione sleep e _wake()).
+  _findBed () {
+    this._findBeds();
+    return this._bedCache?.bed || null;
   }
 
   // Si avvicina al letto e ci clicca sopra finché il server non conferma il
   // sonno (flag resting nei metadata). Fallisce se è giorno o se ci sono mostri.
-  async _sleepInBed ({ approachTimeoutMs = 25000, confirmMs = 3000 } = {}) {
+  async _sleepInBed ({ approachTimeoutMs = 30000, retryTimeoutMs = 18000, confirmMs = 3000, maxBeds = 3 } = {}) {
     if (this.sleeping) return { ok: true, alreadySleeping: true };
     // Nel Nether e nell'End un letto esplode: non è un'azione vietata per
     // prudenza, è un'esplosione garantita. Il rifiuto è tipizzato e immediato.
     if (bedsExplode(this.dimension)) return { ok: false, error: 'beds_explode_here', dimension: this.dimension };
     if (!this._isNight()) return { ok: false, error: 'not_night' };
-    const bed = this._findBed();
-    if (!bed) return { ok: false, error: 'no_bed' };
+    const beds = this._findBeds();
+    // Prima i letti liberi, poi quelli occupati come ultima risorsa: un villager
+    // può essersi alzato nel frattempo e un click costa poco.
+    const candidates = [
+      ...beds.filter(candidate => !candidate.occupied),
+      ...beds.filter(candidate => candidate.occupied),
+    ].slice(0, maxBeds);
+    if (!candidates.length) return { ok: false, error: 'no_bed' };
+    const tried = [];
+    let lastError = 'bed_unreachable';
+    let lastDistance = null;
+    for (let i = 0; i < candidates.length; i++) {
+      const bed = candidates[i];
+      const attempt = await this._trySleepInBed(bed, {
+        approachTimeoutMs: i === 0 ? approachTimeoutMs : retryTimeoutMs,
+        confirmMs,
+      });
+      tried.push({ bed: bed.position, ok: !!attempt.ok, error: attempt.error || null, distance: attempt.distance ?? null });
+      if (attempt.ok) return { ...attempt, tried };
+      lastError = attempt.error || lastError;
+      lastDistance = attempt.distance ?? lastDistance;
+      if (lastError === 'not_night') break;
+    }
+    return {
+      ok: false,
+      error: lastError,
+      distance: lastDistance,
+      tried,
+      hint: 'every nearby bed failed: unreachable, occupied, monsters nearby or the server clock says it is not night',
+    };
+  }
+
+  // Un singolo letto: ci si mette ACCANTO (fuori dal footprint: dentro il letto
+  // la previsione locale blocca i passi e il server non accetta il sonno) e si
+  // chiede il sonno come lo chiede un client vero: click sul blocco *e*
+  // `player_action start_sleeping`. Il solo click lascia il server in una via di
+  // mezzo — sposta il giocatore sul letto ma la notte non salta (live 04/10).
+  async _trySleepInBed (bed, { approachTimeoutMs = 30000, confirmMs = 4000 } = {}) {
+    const reach = 3.2;
     const bedCenter = { x: bed.position.x + 0.5, y: bed.position.y, z: bed.position.z + 0.5 };
-    if (this._pointDistance(bedCenter) > 4.5) {
+    let distance = this._pointDistance(bedCenter);
+    const horizontal = () => (this._feet ? Math.hypot(this._feet.x - bedCenter.x, this._feet.z - bedCenter.z) : Infinity);
+    const stand = this._bedStandSpot(bed);
+    // Senza un punto di sosta verificabile (mondo non caricato) si ripiega sul
+    // centro del letto: è la vecchia via, meno pulita ma meglio che niente.
+    if ((distance > reach || horizontal() < 1.3) && (stand || bedCenter)) {
       try {
-        await this._moveTo(bedCenter, 1.8, approachTimeoutMs);
+        await this._moveTo(stand || bedCenter, stand ? 0.6 : 1.8, approachTimeoutMs);
       } catch (error) {
-        this.log('bed_approach_failed', { message: error.message, bed: bed.position });
+        this.log('bed_approach_failed', { message: error.message, bed: bed.position, distance: +this._pointDistance(bedCenter).toFixed(2) });
       }
+      distance = this._pointDistance(bedCenter);
     }
-    if (this._pointDistance(bedCenter) > 5) return { ok: false, error: 'bed_unreachable', bed: bed.position };
+    if (distance > reach) return { ok: false, error: 'bed_unreachable', bed: bed.position, distance: +distance.toFixed(2) };
     const beforeTicks = this._timeInfo()?.ticks ?? null;
-    for (let attempt = 1; attempt <= 3 && !this.sleeping; attempt++) {
-      const look = this._lookAt({ x: bedCenter.x, y: bed.position.y + 0.5, z: bedCenter.z });
-      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
-      await delay(120);
-      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch, transaction: this._blockUseTransaction(bed.position) });
-      const waitUntil = Date.now() + confirmMs;
-      while (Date.now() < waitUntil && !this.sleeping) {
-        // Con un solo giocatore il server salta la notte quando il sonno è
-        // accettato: un balzo in avanti dell'orologio è una conferma.
-        const ticks = this._timeInfo()?.ticks;
-        if (beforeTicks != null && ticks != null && ticks < beforeTicks && (beforeTicks - ticks) > 3000) {
-          return { ok: true, slept: 'night_skipped', bed: bed.position };
-        }
-        await delay(100);
-      }
+    const occupiedBefore = this._bedOccupiedAt(bed.position);
+    const levelEventBefore = this._sleepLevelEventAt;
+    const bedPositionBefore = this._playerBedPosition
+      ? this._playerBedPosition.x + ',' + this._playerBedPosition.y + ',' + this._playerBedPosition.z : null;
+    const look = this._lookAt({ x: bedCenter.x, y: bed.position.y + 0.5, z: bedCenter.z });
+    await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+    await delay(120);
+    await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch, transaction: this._blockUseTransaction(bed.position) });
+    this._sendSleepAction('start_sleeping', bed.position);
+    const waitUntil = Date.now() + confirmMs;
+    while (Date.now() < waitUntil) {
+      const confirmed = this._sleepConfirmed(beforeTicks);
+      if (this.sleeping || confirmed) return { ok: true, slept: confirmed ? 'night_skipped' : 'resting_flag', bed: bed.position };
+      await delay(100);
     }
-    if (this.sleeping) return { ok: true, slept: 'resting_flag', bed: bed.position };
-    return { ok: false, error: 'sleep_rejected', bed: bed.position, hint: 'bed occupied, monsters nearby or the server clock says it is not night' };
+    // Nessuna conferma: il server può aver comunque spostato il giocatore a letto
+    // (stato ibrido) — si esce esplicitamente prima di riportare il fallimento.
+    const slept = this._sleepConfirmed(beforeTicks) || this.sleeping;
+    if (this.sleeping) return { ok: true, slept: slept ? 'night_skipped' : 'resting_flag', bed: bed.position };
+    this._sendSleepAction('stop_sleeping', bed.position);
+    // Diagnostica: quali segnali sono arrivati dopo la richiesta di sonno.
+    this.log('sleep_probe', {
+      bed: bed.position,
+      sleeping: this.sleeping,
+      ticks: this._timeInfo()?.ticks ?? null,
+      beforeTicks,
+      occupiedBefore,
+      occupiedAfter: this._bedOccupiedAt(bed.position),
+      levelEvent: this._sleepLevelEventAt > levelEventBefore ? 'new' : 'none',
+      bedPositionBefore,
+      bedPositionNow: this._playerBedPosition
+        ? this._playerBedPosition.x + ',' + this._playerBedPosition.y + ',' + this._playerBedPosition.z : null,
+      positionNow: this.position ? { x: +this.position.x.toFixed(2), y: +this.position.y.toFixed(2), z: +this.position.z.toFixed(2) } : null,
+    });
+    return {
+      ok: false,
+      error: 'sleep_rejected',
+      bed: bed.position,
+      distance: +distance.toFixed(2),
+      hint: 'bed occupied, monsters nearby or the server clock says it is not night',
+    };
+  }
+
+  // Conferma del sonno: l'orologio che salta (con un solo giocatore il server
+  // salta la notte appena accetta), il level event `players_sleeping` o il flag
+  // `resting` (via `_setSleeping`).
+  _sleepConfirmed (beforeTicks) {
+    const ticks = this._timeInfo()?.ticks;
+    if (beforeTicks != null && ticks != null && ticks < beforeTicks && (beforeTicks - ticks) > 3000) return true;
+    if (this._sleepLevelEventAt && Date.now() - this._sleepLevelEventAt < 8000) return true;
+    return false;
+  }
+
+  _sendSleepAction (action, position) {
+    if (!this.client || this.client.entityId == null) return false;
+    try {
+      this.client.write('player_action', {
+        runtime_entity_id: this.client.entityId,
+        action,
+        position,
+        result_position: { x: 0, y: 0, z: 0 },
+        face: 0,
+      });
+      this.log('sleep_action', { action, position });
+      return true;
+    } catch (error) {
+      this.log('sleep_action_failed', { action, message: error.message });
+      return false;
+    }
+  }
+
+  // Punto di sosta per cliccare il letto: FUORI dal footprint, nella direzione da
+  // cui il bot arriva (fallback ai quattro assi), con la cella dei piedi libera e
+  // un piano d'appoggio sotto.
+  _bedStandSpot (bed) {
+    if (!bed?.position || !this._feet) return null;
+    const center = { x: bed.position.x + 0.5, y: bed.position.y, z: bed.position.z + 0.5 };
+    const dx = this._feet.x - center.x, dz = this._feet.z - center.z;
+    const len = Math.hypot(dx, dz);
+    const dirs = [];
+    if (len > 0.3) dirs.push([dx / len, dz / len]);
+    dirs.push([0, 1], [0, -1], [1, 0], [-1, 0]);
+    const radius = 1.9;
+    for (const [ux, uz] of dirs) {
+      const spot = { x: center.x + ux * radius, y: center.y, z: center.z + uz * radius };
+      if (this._bedStandSpotFree(spot)) return spot;
+    }
+    return null;
+  }
+
+  _bedStandSpotFree (spot) {
+    try {
+      const bx = Math.floor(spot.x), by = Math.floor(spot.y), bz = Math.floor(spot.z);
+      const feet = this.world.blockAt({ x: bx, y: by, z: bz });
+      const below = this.world.blockAt({ x: bx, y: by - 1, z: bz });
+      const free = block => !block || block.name === 'unknown' || block.boundingBox !== 'block';
+      const floor = block => !!block && (block.boundingBox === 'block' || block.name === 'unknown');
+      return free(feet) && floor(below);
+    } catch { return true; }
   }
 
   // ---- risalita a gradini (uscita da buche/pozzi) ------------------------------------
