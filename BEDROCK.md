@@ -85,6 +85,11 @@ CHAT_GREET=on                      # default on when the channel is open
 CHAT_GREET_RANGE=24                # blocks within which a human is "perceived"
 CHAT_GREET_COOLDOWN_MS=600000      # don't greet the same human again before this (0 = once per session)
 CHAT_GREET_TEMPLATE='Ciao {name}! ... {prefix} <ordine>'  # {name}, {prefix}, {prefixes}
+CHAT_INTENT=on                     # answer chat questions from observe() (M6); default on with a key
+CHAT_INTENT_URL=                   # alternative decisions endpoint (e.g. a local Jev)
+CHAT_INTENT_MODEL=                 # routing model (default JEV_MODEL)
+CHAT_INTENT_TIMEOUT_MS=4000        # past this the message stays an order
+CHAT_INTENT_MIN_P=0.4              # minimum probability for an intent (0 = argmax)
 
 # Persistent agent session (optional)
 SESSION=off                        # on = persistent session loop with an IDLE state; off = one-shot (default)

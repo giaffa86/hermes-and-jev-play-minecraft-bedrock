@@ -1,5 +1,39 @@
 # Log
 
+## [2026-10-04] ingest | Chat questions (`CHAT_INTENT`, System One = Jev)
+
+A `@bot <domanda>` message that asks about the bot is now **answered from
+`observe()`** instead of being turned into a goal: `@bot dove sei?` used to
+produce an ack plus `follow <sender>`, never an answer.
+
+- **Code**: `human-questions.mjs` (pure: six intents with a regex fast path
+  `q_position`/`q_health`/`q_activity`/`q_inventory`/`q_time`/`q_identity`, the
+  closed option list `intentCriteria` with the `q_none` sentinel,
+  `intentFromChoice`, and the answer bodies `answerIntent`/`clockFromTicks`/
+  `renderAnswer`); `chat-intent.mjs` (router: regex → System One → "not a
+  question", fails open); `system-one.mjs` (System One/Jev transport, now shared
+  with `jevDecide`); `controller.mjs` (`resolveQuestion` before the order path,
+  `CHAT_INTENT*` config, `chat_intent`/`chat_question` telemetry,
+  `chat_reply {context:'question'}`).
+- **Safety**: the model never writes the answer — it only picks an option from a
+  closed list; a missing fact is admitted ("non lo so: …"). Any router failure
+  (no key, timeout, error, low probability, `q_none`) leaves the message an
+  order, so the channel is never silenced. A question creates no goal.
+- **Config**: `CHAT_INTENT` (default `on` with a TypeSafe/OpenRouter key),
+  `CHAT_INTENT_URL`, `CHAT_INTENT_MODEL`, `CHAT_INTENT_TIMEOUT_MS` (4000),
+  `CHAT_INTENT_MIN_P` (0.4; probabilities rank options, they do not measure
+  confidence).
+- **Tests**: `tests/human-questions.test.mjs` (12), `tests/chat-intent.test.mjs`
+  (10, stubbed decisions endpoint) and three new cases in
+  `tests/controller-chat-ack.test.mjs` (a regex question is answered without a
+  goal; a free-form question is routed by System One and still answered from the
+  facts; with the router off the message stays an order). Complete suite
+  **1181/1181**.
+- **Docs**: [human-command](wiki/human-command.md) new *Chat questions (M6)*
+  section plus the milestone list, [sources](sources.md) (three new modules,
+  `controller.mjs` description) and [index](index.md) updated; env vars in
+  `.env.example`, `BEDROCK.md`, `AGENTS.md` and `README.md`.
+
 ## [2026-10-04] ingest | Multi-trigger chat orders (`CHAT_PREFIXES`)
 
 Implemented several triggers per bot: `CHAT_PREFIXES` (comma/space separated,

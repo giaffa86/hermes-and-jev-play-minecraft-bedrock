@@ -83,6 +83,10 @@ human chat message
 - **M5 — stretch** ✅ the bot speaks (`sendChat()` + `POST /say`) and now uses it
   for the order lifecycle: proactive greeting, **ack of an accepted order**, and
   the **outcome** when the goal closes (`human-replies.mjs`).
+- **M6 — questions** ✅ a `@bot <domanda>` message that asks about the bot is
+  answered from `observe()` instead of being turned into a goal: regex fast path,
+  then System One (Jev) over a closed intent list (`human-questions.mjs`,
+  `chat-intent.mjs`, `system-one.mjs`).
 
 ## Live evidence (2026-10-03, BDS 1.26.52 via CT 108, VM 100 container)
 
@@ -192,6 +196,47 @@ bots accept the same order.
   syntax list) and `tests/controller-chat-ack.test.mjs` (an order sent with the
   second trigger is acked and the prefix is stripped; a message with an
   unconfigured prefix is ignored, no reply and no `chat_command`).
+
+## Chat questions (M6): a router picks the intent, the facts write the answer
+
+A human will ask *"dove sei?"*, not only give orders. Such a message is not an
+order, and answering it with `follow <sender>` (the old fallback) was worse than
+answering nothing. M6 inserts a question path **before** the order path:
+
+- **Fast path (free, offline)**: `human-questions.mjs` holds a catalogue of six
+  intents (`q_position`, `q_health`, `q_activity`, `q_inventory`, `q_time`,
+  `q_identity`), each with a regex. A message that matches is answered without
+  any model call.
+- **Router (System One = Jev)**: a message that matches nothing is classified by
+  the decisions endpoint over a **closed option list** — the six intents plus the
+  sentinel `q_none`. The model picks an option; it never writes the answer.
+  `chat-intent.mjs` asks, `system-one.mjs` is the transport shared with the
+  action decision (`jevDecide`).
+- **The answer is composed from `observe()`** by `answerIntent(...)`: position,
+  health/food, the current objective, the inventory, the clock
+  (`clockFromTicks`, Bedrock tick 0 = 06:00), the accepted triggers. A missing
+  fact is *admitted* ("non lo so: …"), never invented.
+- **`q_none` means "not a question"**: an order, a greeting or small talk keeps
+  today's behaviour (ack + goal). So does any router failure: no key, timeout,
+  error, unparsable answer or a choice below `CHAT_INTENT_MIN_P`. A dead router
+  never silences the channel.
+- **No goal is created** by a question, and the reply is the same one-line
+  `POST /say` path (`context: 'question'`), rendered from
+  `DEFAULT_ANSWER_TEMPLATE = '@{name} {answer}'`.
+- **Config**: `CHAT_INTENT` (default `on` when `TYPESAFE_API_KEY` or
+  `OPENROUTER_API_KEY` is set, else `off`), `CHAT_INTENT_MODEL`,
+  `CHAT_INTENT_URL` (e.g. a local Jev-compatible endpoint),
+  `CHAT_INTENT_TIMEOUT_MS` (4000) and `CHAT_INTENT_MIN_P` (0.4; probabilities are
+  uncalibrated — they rank options, they do not measure confidence).
+- **Telemetry**: `chat_intent` (every Jev decision: `intent`, `chosen`,
+  `probability`, `model`, `ms`, `cost`, `reason`, `error`) and `chat_question`
+  (the answer actually served: `intent`, `via` = `regex`|`jev`, `probability`).
+- **Tests**: `tests/human-questions.test.mjs` (regex catalogue, answer bodies and
+  the missing-fact policy, `intentFromChoice`), `tests/chat-intent.test.mjs`
+  (routing over a stubbed endpoint: threshold, `q_none`, out-of-range choice,
+  transport errors) and `tests/controller-chat-ack.test.mjs` (a regex question is
+  answered and creates no goal; a free-form question is routed by System One and
+  still answered from the facts; with the router off the message stays an order).
 
 ## Proactive greeting (§6 Attention System)
 

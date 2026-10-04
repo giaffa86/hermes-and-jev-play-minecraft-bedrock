@@ -868,8 +868,13 @@ Still missing (the rest of the original gap):
   answers to both a generic word and its own name — required once several bots
   share a server; NL → Hermes → `/plan`, `follow_player`); **M5 is now
   implemented and live-verified** (ack of the order + outcome line, see below);
-  the inbound path with a **human** sender is still pending (no human connects to
-  the BDS). Autonomous exploration remains open. Roadmap in
+  **M6 (chat questions) is implemented and unit-tested**: `@bot dove sei?` is
+  answered from `observe()` (regex fast path, then System One/Jev over a closed
+  intent list; the model picks an option and never writes the answer) and creates
+  no goal; any router failure leaves the message an order. The inbound path with
+  a **human** sender is still pending (no human connects to the BDS), and the
+  question path has not had a live round on the BDS yet (a real chat message,
+  not `POST /say`). Autonomous exploration remains open. Roadmap in
   [human-command](human-command.md).
 - **Proactive greeting** (AI-player roadmap §6 *Attention System*, milestone 4
   first slice) — **implemented and unit-tested, live round pending**: perception

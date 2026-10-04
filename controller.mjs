@@ -30,6 +30,9 @@ import {
 } from './controller-decisions.mjs';
 import {planGreetings, DEFAULT_GREETING_TEMPLATE, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
 import {orderAck, orderOutcome, isSelfTriggering, normalizePrefixes, matchChatPrefix, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
+import {answerIntent, renderAnswer} from './human-questions.mjs';
+import {resolveQuestionIntent, DEFAULT_INTENT_TIMEOUT_MS, DEFAULT_INTENT_MIN_P} from './chat-intent.mjs';
+import {systemOneDecide} from './system-one.mjs';
 import {
   evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
   resolveMilestone, resolveActiveSkill, skillPreferredIntents, verifySkill, buildSkillRecord, appendSkillRecord,
@@ -111,6 +114,18 @@ const CHAT_REPLY = process.env.CHAT_REPLY == null
   ? (CHAT_CONTROL !== 'off' && CHAT_ALLOWLIST.size > 0)
   : /^(1|on|true|yes)$/i.test(process.env.CHAT_REPLY);
 const CHAT_REPLY_MAX_LENGTH = +(process.env.CHAT_REPLY_MAX_LENGTH || DEFAULT_REPLY_MAX_LENGTH);
+// Domande in chat (M6): un messaggio che chiede un fatto sul bot ("dove sei",
+// "che fai", "quanti dirt hai") riceve una risposta deterministica dai dati
+// dell'harness — nessun goal creato, quindi un goal in corso continua a girare.
+// La regex risponde da sola a quello che riconosce; il resto lo instrada System
+// One (Jev) su una lista chiusa di intenti, se c'è una chiave. `CHAT_INTENT=off`
+// lascia attiva la sola regex (il bot non resta muto senza chiave o offline).
+const CHAT_INTENT = process.env.CHAT_INTENT || ((process.env.TYPESAFE_API_KEY || process.env.OPENROUTER_API_KEY) ? 'on' : 'off');
+const CHAT_INTENT_ON = /^(1|on|true|yes)$/i.test(CHAT_INTENT);
+const CHAT_INTENT_MODEL = process.env.CHAT_INTENT_MODEL || null;
+const CHAT_INTENT_URL = process.env.CHAT_INTENT_URL || null;
+const CHAT_INTENT_TIMEOUT_MS = +(process.env.CHAT_INTENT_TIMEOUT_MS || DEFAULT_INTENT_TIMEOUT_MS);
+const CHAT_INTENT_MIN_P = process.env.CHAT_INTENT_MIN_P == null ? DEFAULT_INTENT_MIN_P : +(process.env.CHAT_INTENT_MIN_P);
 // Session mode (AI-player roadmap M0->1): con SESSION=on il controller non
 // esce a fine goal ma resta in IDLE e accetta nuovi goal (ordini in chat)
 // senza riconnettersi. Default off = comportamento one-shot storico.
@@ -402,6 +417,35 @@ async function humanCommandPlan (obs, entry) {
   return plan;
 }
 
+// Domanda sul bot o ordine? Prima la regex (gratis, offline), poi System One
+// sulla lista chiusa di intenti. Il router non scrive mai la risposta: la
+// compone `answerIntent` dai dati dell'osservazione. Un router indisponibile
+// (nessuna chiave, timeout, errore, bassa probabilità) non zittisce il canale:
+// il messaggio resta un ordine, come prima di M6.
+async function resolveQuestion (obs, entry) {
+  const decision = await resolveQuestionIntent(entry.message, {
+    from: entry.from,
+    enabled: CHAT_INTENT_ON,
+    model: CHAT_INTENT_MODEL ?? undefined,
+    url: CHAT_INTENT_URL ?? undefined,
+    timeoutMs: CHAT_INTENT_TIMEOUT_MS,
+    minProbability: CHAT_INTENT_MIN_P,
+  });
+  if (!decision) return null;
+  if (decision.via === 'jev') {
+    log('chat_intent', {
+      from: entry.from, xuid: entry.xuid, message: entry.message, reason: decision.reason,
+      intent: decision.matched ?? null, chosen: decision.id ?? null, probability: decision.probability,
+      model: decision.model, ms: decision.ms, cost: decision.cost, error: decision.error ?? null,
+    });
+  }
+  if (!decision.id) return null;
+  const answer = answerIntent(decision.id, obs, {prefixes: CHAT_PREFIXES, maxLength: CHAT_REPLY_MAX_LENGTH});
+  if (!answer) return null;
+  log('chat_question', {from: entry.from, xuid: entry.xuid, intent: decision.id, via: decision.via, probability: decision.probability});
+  return {...decision, answer};
+}
+
 // Cerca nell'ultima osservazione un nuovo comando umano valido. Restituisce
 // {plan, entry} oppure null. Dedup per non rieseguire lo stesso messaggio.
 async function maybeHumanCommand (obs) {
@@ -436,6 +480,13 @@ async function maybeHumanCommand (obs) {
     if (!message) continue;
     const seenKey = `${entry.at}|${entry.from}|${message}`;
     if (!rememberSeen(humanCommandSeen, seenKey)) continue;
+    // M6: prima di tradurre il messaggio in un piano, chiediti se è una domanda.
+    // Se lo è, si risponde e si passa al messaggio successivo: nessun goal nasce.
+    const question = await resolveQuestion(obs, {...entry, message, prefix: match.prefix});
+    if (question?.answer) {
+      await replyChat(renderAnswer({from: entry.from, answer: question.answer, maxLength: CHAT_REPLY_MAX_LENGTH}), {to: entry.from, context: 'question'});
+      continue;
+    }
     log('chat_command', {from: entry.from, xuid: entry.xuid, prefix: match.prefix, message});
     const plan = await humanCommandPlan(obs, {...entry, message});
     // M5: conferma dell'ordine in chat. Best-effort (l'adapter applica rate
@@ -488,28 +539,13 @@ async function maybeGreetHumans (obs) {
 
 // ---- controller: Jev via TypeSafe or OpenRouter ---------------------------------------------
 async function jevDecide(observation, options, plan) {
-  const typesafeKey = process.env.TYPESAFE_API_KEY;
-  const openrouterKey = process.env.OPENROUTER_API_KEY;
-  const key = typesafeKey || openrouterKey;
-  if (!key) throw new Error('TYPESAFE_API_KEY or OPENROUTER_API_KEY is required for CONTROLLER=jev');
   const criteria = buildCriteria(options);
-  const body = {
+  const {answers, model, provider, usage, ms} = await systemOneDecide({
     model: JEV_MODEL,
-    state: JSON.stringify({...observation, plan: observation.plan ?? plan, recent: observation.recent?.slice(-4)}),
+    state: {...observation, plan: observation.plan ?? plan, recent: observation.recent?.slice(-4)},
     questions: {action: {type: 'choice', instructions: buildDecisionInstructions(plan), criteria}},
-  };
-  const started = Date.now();
-  let data;
-  if (typesafeKey) {
-    const r = await fetch('https://api.typesafe.ai/v1/systemone', {method: 'POST', headers: {Authorization: `Bearer ${key}`, 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-    data = await r.json();
-    if (!r.ok) throw new Error(`TypeSafe error ${r.status}: ${JSON.stringify(data)}`);
-  } else {
-    const r = await fetch('https://openrouter.ai/api/alpha/decisions', {method: 'POST', headers: {Authorization: `Bearer ${key}`, 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-    data = await r.json();
-    if (data.error) throw new Error(JSON.stringify(data.error));
-  }
-  const ans = data.answers.action;
+  });
+  const ans = answers.action;
   const idx = +ans.choice.slice(1);
   const chosen = options[idx];
   if (!chosen) throw new Error(`decision model chose unknown option ${ans.choice}`);
@@ -520,12 +556,12 @@ async function jevDecide(observation, options, plan) {
     .map((o, i) => ({key: o.key, choice: `a${i}`, p: probabilityOf(`a${i}`)}))
     .sort((a, b) => (b.p ?? -1) - (a.p ?? -1));
   log('decision', {
-    controller: 'jev', provider: typesafeKey ? 'typesafe' : 'openrouter', model: data.model,
+    controller: 'jev', provider, model,
     choice: ans.choice, key: chosen.key, probabilities, confidence: ans.confidence,
-    cost: data.usage?.cost, ms: Date.now() - started, candidates,
+    cost: usage?.cost, ms, candidates,
     selectedProbability: probabilityOf(ans.choice), optionsCount: options.length, objective: plan.objective,
   });
-  return {key: chosen.key, cost: data.usage?.cost ?? null};
+  return {key: chosen.key, cost: usage?.cost ?? null};
 }
 
 // ---- controller: Hermes (fallback) ------------------------------------------------------------
