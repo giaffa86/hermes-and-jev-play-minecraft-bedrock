@@ -87,6 +87,10 @@ human chat message
   answered from `observe()` instead of being turned into a goal: regex fast path,
   then System One (Jev) over a closed intent list (`human-questions.mjs`,
   `chat-intent.mjs`, `system-one.mjs`).
+- **M6.1 — a router failure is not an order** ✅ the question guard
+  (`looksLikeQuestion`) and the Jev pre-filter: an order never pays a model call
+  before its ack, and a question-shaped message the router cannot decide is
+  refused instead of becoming `follow <sender>`.
 
 ## Live evidence (2026-10-03, BDS 1.26.52 via CT 108, VM 100 container)
 
@@ -217,9 +221,8 @@ answering nothing. M6 inserts a question path **before** the order path:
   (`clockFromTicks`, Bedrock tick 0 = 06:00), the accepted triggers. A missing
   fact is *admitted* ("non lo so: …"), never invented.
 - **`q_none` means "not a question"**: an order, a greeting or small talk keeps
-  today's behaviour (ack + goal). So does any router failure: no key, timeout,
-  error, unparsable answer or a choice below `CHAT_INTENT_MIN_P`. A dead router
-  never silences the channel.
+  today's behaviour (ack + goal). A router *failure*, though, is not a verdict:
+  M6.1 (below) made it a refusal, never a goal.
 - **No goal is created** by a question, and the reply is the same one-line
   `POST /say` path (`context: 'question'`), rendered from
   `DEFAULT_ANSWER_TEMPLATE = '@{name} {answer}'`.
@@ -236,7 +239,48 @@ answering nothing. M6 inserts a question path **before** the order path:
   (routing over a stubbed endpoint: threshold, `q_none`, out-of-range choice,
   transport errors) and `tests/controller-chat-ack.test.mjs` (a regex question is
   answered and creates no goal; a free-form question is routed by System One and
-  still answered from the facts; with the router off the message stays an order).
+  still answered from the facts).
+
+### M6.1 — a router failure is not an order
+
+M6 failed **open**: with `@bot quanti cuori hai?` and an unreachable Jev the
+message fell through to the order path and became the static `follow <sender>`
+fallback — a failure moving the bot. M6.1 closes that boundary:
+
+- **Question guard (pure, on the raw text)**: `looksLikeQuestion` in
+  `human-questions.mjs` fires on an explicit `?`/`¿` or on an interrogative
+  **first** word (`chi`, `che`, `cosa`, `come`, `dove`, `quando`,
+  `quanto`/`quanta`/`quanti`/`quante`, `perché`, `quale`/`quali`, and the English
+  set). It is deliberately conservative — bare verbs are excluded, so `stai qui`
+  and `sei un cretino` stay orders — and evaluates the *raw* message, because
+  `normalizeForMatching` deletes the `?`.
+- **Pre-filter**: a message that is not question-shaped never reaches Jev. Before
+  M6.1 every order the regex did not catch paid one decisions call and up to
+  `CHAT_INTENT_TIMEOUT_MS` of latency **before its ack**; now it pays nothing.
+- **Three outcomes** from `resolveQuestionIntent` (`action`): `answer` (regex, or
+  Jev above threshold) → reply and no goal; `order` (not question-shaped, or
+  `q_none` from a working model) → the order path; `unrouted` (question-shaped
+  and the router is off/without key, times out, errors, answers unparsably, or
+  lands under `CHAT_INTENT_MIN_P`) → the bot says it did not understand and
+  **creates no goal**.
+- **Refusal with a way out** (`renderUnrouted`, `UNROUTED_TEMPLATE`):
+  `non ho capito la domanda. Se era un ordine, scrivi "@bot <ordine>".` — the
+  message may well have been an order phrased as a question
+  (`riesci a raggiungermi?`).
+- **Telemetry**: `chat_unrouted` records `from`, `xuid`, `message`, `reason`
+  (`no_key` | `disabled` | `timeout` | `error` | `unparsable` |
+  `low_probability` | `no_fact`), `probability`, `model`, `ms`, `cost`; the
+  refusal carries `context: 'unrouted'`.
+- **Tests**: `tests/human-questions.test.mjs` (the guard's true/false pairs, the
+  refusal line), `tests/chat-intent.test.mjs` (the pre-filter costs no call;
+  `q_none` → order; timeout/unparsable/low-p/disabled/no-key → `unrouted`) and
+  `tests/controller-chat-ack.test.mjs` (`quanti cuori hai?` with a dead router is
+  refused and never becomes `follow`; `sei un cretino` skips the model;
+  `riesci a raggiungermi?` with a model that answers `q_none` stays an order; a
+  hanging endpoint is logged as `timeout`).
+- **Not done on purpose**: a tie-break through Hermes (System Two) for
+  interrogative *orders* — `chat_intent.reason = 'not_a_question'` and
+  `chat_unrouted` are the data that will decide whether M7 needs it.
 
 ## Proactive greeting (§6 Attention System)
 

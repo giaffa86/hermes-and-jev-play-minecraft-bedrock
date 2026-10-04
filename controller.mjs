@@ -30,7 +30,7 @@ import {
 } from './controller-decisions.mjs';
 import {planGreetings, DEFAULT_GREETING_TEMPLATE, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
 import {orderAck, orderOutcome, isSelfTriggering, normalizePrefixes, matchChatPrefix, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
-import {answerIntent, renderAnswer} from './human-questions.mjs';
+import {answerIntent, renderAnswer, renderUnrouted} from './human-questions.mjs';
 import {resolveQuestionIntent, DEFAULT_INTENT_TIMEOUT_MS, DEFAULT_INTENT_MIN_P} from './chat-intent.mjs';
 import {systemOneDecide} from './system-one.mjs';
 import {
@@ -114,14 +114,22 @@ const CHAT_REPLY = process.env.CHAT_REPLY == null
   ? (CHAT_CONTROL !== 'off' && CHAT_ALLOWLIST.size > 0)
   : /^(1|on|true|yes)$/i.test(process.env.CHAT_REPLY);
 const CHAT_REPLY_MAX_LENGTH = +(process.env.CHAT_REPLY_MAX_LENGTH || DEFAULT_REPLY_MAX_LENGTH);
-// Domande in chat (M6): un messaggio che chiede un fatto sul bot ("dove sei",
+// Domande in chat (M6/M6.1): un messaggio che chiede un fatto sul bot ("dove sei",
 // "che fai", "quanti dirt hai") riceve una risposta deterministica dai dati
 // dell'harness — nessun goal creato, quindi un goal in corso continua a girare.
-// La regex risponde da sola a quello che riconosce; il resto lo instrada System
-// One (Jev) su una lista chiusa di intenti, se c'è una chiave. `CHAT_INTENT=off`
-// lascia attiva la sola regex (il bot non resta muto senza chiave o offline).
-const CHAT_INTENT = process.env.CHAT_INTENT || ((process.env.TYPESAFE_API_KEY || process.env.OPENROUTER_API_KEY) ? 'on' : 'off');
+// La regex risponde da sola a quello che riconosce; per il resto si chiede a
+// System One (Jev) solo se il messaggio *sembra* una domanda (`?` o prima parola
+// interrogativa): un ordine non paga mai una chiamata di rete né i suoi 4 s di
+// latenza prima dell'ack. Un router assente (nessuna chiave, `off`, timeout,
+// errore, bassa probabilità) non trasforma mai una domanda in un ordine: il bot
+// dice che non ha capito e non crea alcun goal. `CHAT_INTENT=off` lascia attiva
+// la sola regex.
+const CHAT_INTENT_KEY = Boolean(process.env.TYPESAFE_API_KEY || process.env.OPENROUTER_API_KEY);
+const CHAT_INTENT = process.env.CHAT_INTENT || (CHAT_INTENT_KEY ? 'on' : 'off');
 const CHAT_INTENT_ON = /^(1|on|true|yes)$/i.test(CHAT_INTENT);
+// Perché il router è indisponibile: `no_key` e `disabled` sono cause diverse, e
+// `chat_unrouted.reason` deve poterle distinguere (M7 si guida coi dati).
+const CHAT_INTENT_DISABLED_REASON = CHAT_INTENT_KEY ? 'disabled' : 'no_key';
 const CHAT_INTENT_MODEL = process.env.CHAT_INTENT_MODEL || null;
 const CHAT_INTENT_URL = process.env.CHAT_INTENT_URL || null;
 const CHAT_INTENT_TIMEOUT_MS = +(process.env.CHAT_INTENT_TIMEOUT_MS || DEFAULT_INTENT_TIMEOUT_MS);
@@ -418,20 +426,23 @@ async function humanCommandPlan (obs, entry) {
 }
 
 // Domanda sul bot o ordine? Prima la regex (gratis, offline), poi System One
-// sulla lista chiusa di intenti. Il router non scrive mai la risposta: la
-// compone `answerIntent` dai dati dell'osservazione. Un router indisponibile
-// (nessuna chiave, timeout, errore, bassa probabilità) non zittisce il canale:
-// il messaggio resta un ordine, come prima di M6.
+// sulla lista chiusa di intenti — ma solo se il messaggio sembra una domanda.
+// Il router non scrive mai la risposta: la compone `answerIntent` dai dati
+// dell'osservazione.
+// Tre esiti (M6.1): `answer` (rispondi e non creare goal), `order` (prosegui
+// sull'order path: nessuna domanda riconosciuta, oppure `q_none` da un modello
+// funzionante — una decisione, non un guasto), `unrouted` (sembrava una domanda
+// e non si è potuto decidere: si dice che non si è capito, senza creare goal).
 async function resolveQuestion (obs, entry) {
   const decision = await resolveQuestionIntent(entry.message, {
     from: entry.from,
     enabled: CHAT_INTENT_ON,
+    disabledReason: CHAT_INTENT_DISABLED_REASON,
     model: CHAT_INTENT_MODEL ?? undefined,
     url: CHAT_INTENT_URL ?? undefined,
     timeoutMs: CHAT_INTENT_TIMEOUT_MS,
     minProbability: CHAT_INTENT_MIN_P,
   });
-  if (!decision) return null;
   if (decision.via === 'jev') {
     log('chat_intent', {
       from: entry.from, xuid: entry.xuid, message: entry.message, reason: decision.reason,
@@ -439,9 +450,25 @@ async function resolveQuestion (obs, entry) {
       model: decision.model, ms: decision.ms, cost: decision.cost, error: decision.error ?? null,
     });
   }
-  if (!decision.id) return null;
+  if (decision.action === 'order') return decision;
+  if (decision.action !== 'answer') {
+    // Nessun goal: un guasto del router non deve muovere il bot.
+    log('chat_unrouted', {
+      from: entry.from, xuid: entry.xuid, message: entry.message, reason: decision.reason,
+      probability: decision.probability, model: decision.model, ms: decision.ms,
+      cost: decision.cost, error: decision.error ?? null,
+    });
+    return decision;
+  }
   const answer = answerIntent(decision.id, obs, {prefixes: CHAT_PREFIXES, maxLength: CHAT_REPLY_MAX_LENGTH});
-  if (!answer) return null;
+  if (!answer) {
+    // Intento in catalogo ma fatto assente (es. inventario vuoto): stesso rifiuto.
+    log('chat_unrouted', {
+      from: entry.from, xuid: entry.xuid, message: entry.message, reason: 'no_fact',
+      probability: decision.probability, model: decision.model, ms: decision.ms, cost: decision.cost, error: null,
+    });
+    return {...decision, action: 'unrouted', reason: 'no_fact', answer: null};
+  }
   log('chat_question', {from: entry.from, xuid: entry.xuid, intent: decision.id, via: decision.via, probability: decision.probability});
   return {...decision, answer};
 }
@@ -480,11 +507,17 @@ async function maybeHumanCommand (obs) {
     if (!message) continue;
     const seenKey = `${entry.at}|${entry.from}|${message}`;
     if (!rememberSeen(humanCommandSeen, seenKey)) continue;
-    // M6: prima di tradurre il messaggio in un piano, chiediti se è una domanda.
-    // Se lo è, si risponde e si passa al messaggio successivo: nessun goal nasce.
+    // M6/M6.1: prima di tradurre il messaggio in un piano, chiediti se è una
+    // domanda. Se lo è, si risponde e si passa al messaggio successivo: nessun
+    // goal nasce. Se sembrava una domanda ma il router non ha deciso, si dice
+    // che non si è capito — sempre senza creare goal.
     const question = await resolveQuestion(obs, {...entry, message, prefix: match.prefix});
-    if (question?.answer) {
+    if (question?.action === 'answer' && question.answer) {
       await replyChat(renderAnswer({from: entry.from, answer: question.answer, maxLength: CHAT_REPLY_MAX_LENGTH}), {to: entry.from, context: 'question'});
+      continue;
+    }
+    if (question?.action === 'unrouted') {
+      await replyChat(renderUnrouted({from: entry.from, prefixes: CHAT_PREFIXES, maxLength: CHAT_REPLY_MAX_LENGTH}), {to: entry.from, context: 'unrouted'});
       continue;
     }
     log('chat_command', {from: entry.from, xuid: entry.xuid, prefix: match.prefix, message});

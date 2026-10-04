@@ -88,7 +88,7 @@ CHAT_GREET_TEMPLATE='Ciao {name}! ... {prefix} <ordine>'  # {name}, {prefix}, {p
 CHAT_INTENT=on                     # answer chat questions from observe() (M6); default on with a key
 CHAT_INTENT_URL=                   # alternative decisions endpoint (e.g. a local Jev)
 CHAT_INTENT_MODEL=                 # routing model (default JEV_MODEL)
-CHAT_INTENT_TIMEOUT_MS=4000        # past this the message stays an order
+CHAT_INTENT_TIMEOUT_MS=4000        # past this a question is refused (M6.1), never turned into a goal
 CHAT_INTENT_MIN_P=0.4              # minimum probability for an intent (0 = argmax)
 
 # Persistent agent session (optional)

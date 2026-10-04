@@ -1,5 +1,27 @@
 # Log
 
+## [2026-10-04] ingest | Chat questions M6.1: a router failure is not an order
+
+The M6 question path failed **open**: with an unreachable Jev, `@bot quanti cuori
+hai?` fell through to the order path and became the static `follow <sender>`
+fallback — a failure that moved the bot. M6.1 closes that boundary with the pure
+question guard `looksLikeQuestion` (evaluated on the **raw** text: an explicit
+`?`/`¿` or an interrogative first word; bare `hai`/`sei`/`stai` are excluded so
+`stai qui` stays an order), used as a **Jev pre-filter**: a message that is not
+question-shaped never costs a decisions call (and up to
+`CHAT_INTENT_TIMEOUT_MS` of latency) before its ack. `resolveQuestionIntent` now
+always returns an `action`: `answer` (regex, or Jev above `CHAT_INTENT_MIN_P`),
+`order` (not question-shaped, or `q_none` from a working model — a verdict, not a
+failure) or `unrouted` (question-shaped and the router is off, without key, timed
+out, errored, unparsable or below the floor). An `unrouted` message is refused by
+`renderUnrouted` — `non ho capito la domanda. Se era un ordine, scrivi "@bot
+<ordine>".` — logged as `chat_unrouted` with
+`reason`/`probability`/`model`/`ms`/`cost`, and **creates no goal**. Transport
+errors now carry a code (`no_key`, `http`, `api`, `unparsable`). Docs:
+`wiki/human-command.md` §M6.1, `wiki/verification.md` row 18, `sources.md`,
+`.env.example`, `AGENTS.md`, `BEDROCK.md`, `index.md`. Tests 1190/1190
+(`human-questions`, `chat-intent`, `controller-chat-ack`).
+
 ## [2026-10-04] ingest | Chat questions (`CHAT_INTENT`, System One = Jev)
 
 A `@bot <domanda>` message that asks about the bot is now **answered from

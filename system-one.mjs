@@ -12,11 +12,19 @@
 // Transport only: no logging, no retry, no clock beyond the request duration.
 // The caller owns all three.
 
+// Every failure carries a `code` so the caller can say *why* a decision was
+// unavailable: the chat router turns it into `chat_unrouted.reason` (M6.1).
+function systemOneError (code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
 export function systemOneConfig ({ model, url, key, timeoutMs } = {}) {
   const typesafeKey = process.env.TYPESAFE_API_KEY;
   const openrouterKey = process.env.OPENROUTER_API_KEY;
   const apiKey = key ?? typesafeKey ?? openrouterKey;
-  if (!apiKey) throw new Error('TYPESAFE_API_KEY or OPENROUTER_API_KEY is required for System One decisions');
+  if (!apiKey) throw systemOneError('no_key', 'TYPESAFE_API_KEY or OPENROUTER_API_KEY is required for System One decisions');
   return {
     key: apiKey,
     provider: typesafeKey && apiKey === typesafeKey ? 'typesafe' : 'openrouter',
@@ -50,9 +58,9 @@ export async function systemOneDecide ({ state, questions, model, url, key, time
   const started = Date.now();
   const response = await fetchImpl(config.url, init);
   const data = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(`System One HTTP ${response.status}: ${JSON.stringify(data?.error ?? data)}`);
-  if (data?.error) throw new Error(`System One error: ${JSON.stringify(data.error)}`);
-  if (!data?.answers) throw new Error(`System One answered without 'answers': ${JSON.stringify(data).slice(0, 200)}`);
+  if (!response.ok) throw systemOneError('http', `System One HTTP ${response.status}: ${JSON.stringify(data?.error ?? data)}`);
+  if (data?.error) throw systemOneError('api', `System One error: ${JSON.stringify(data.error)}`);
+  if (!data?.answers) throw systemOneError('unparsable', `System One answered without 'answers': ${JSON.stringify(data).slice(0, 200)}`);
   return {
     answers: data.answers,
     model: data.model ?? config.model,

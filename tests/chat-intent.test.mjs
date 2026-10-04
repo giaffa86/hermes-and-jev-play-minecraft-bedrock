@@ -1,10 +1,11 @@
-// Unit test for the chat question router (M6): regex first, then System One
-// (Jev) over a closed option list. The decisions endpoint is stubbed, so no
-// network and no key are involved.
+// Unit test for the chat question router (M6/M6.1): regex first, then System One
+// (Jev) over a closed option list — but only for messages that look like a
+// question. The decisions endpoint is stubbed, so no network and no key are
+// involved.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { classifyQuestionIntent, resolveQuestionIntent } from '../chat-intent.mjs';
-import { QUESTION_INTENTS, intentCriteria } from '../human-questions.mjs';
+import { QUESTION_INTENTS, intentCriteria, looksLikeQuestion } from '../human-questions.mjs';
 
 const URL = 'http://system-one.test/v1/systemone';
 const KEY = 'test-key';
@@ -34,6 +35,7 @@ const answers = (choice, probabilities, extra = {}) => ok({ model: 'jev-test', u
 test('a message the regex already understands costs no model call', async () => {
   const { fetchImpl, calls } = stubFetch(() => ok({}));
   const decision = await resolveQuestionIntent('HEI DOVE SEI?', { from: 'Ale', fetchImpl, url: URL, key: KEY });
+  assert.equal(decision.action, 'answer');
   assert.equal(decision.id, 'q_position');
   assert.equal(decision.via, 'regex');
   assert.equal(calls.length, 0, 'il fast path non chiama System One');
@@ -65,19 +67,44 @@ test('a free-form question is routed by System One over the closed option list',
 
 test('q_none leaves the message to the order path', async () => {
   const { fetchImpl } = stubFetch(() => answers(choiceFor('q_none'), { [choiceFor('q_none')]: 0.9 }));
-  const decision = await resolveQuestionIntent('svuota le chest', { fetchImpl, url: URL, key: KEY });
+  const decision = await resolveQuestionIntent('cosa devo fare con le chest?', { fetchImpl, url: URL, key: KEY });
+  assert.equal(decision.action, 'order', 'q_none da un modello funzionante è una decisione, non un guasto');
   assert.equal(decision.id, null);
   assert.equal(decision.via, 'jev');
   assert.equal(decision.reason, 'not_a_question');
 });
 
-test('a hesitant model does not swallow an order', async () => {
+test('a hesitated question never becomes an order (M6.1)', async () => {
   const choice = choiceFor('q_inventory');
   const { fetchImpl } = stubFetch(() => answers(choice, { [choice]: 0.3 }));
-  const decision = await resolveQuestionIntent('hai della pietra', { fetchImpl, url: URL, key: KEY, minProbability: 0.4 });
+  const decision = await resolveQuestionIntent('quanta pietra hai?', { fetchImpl, url: URL, key: KEY, minProbability: 0.4 });
+  assert.equal(decision.action, 'unrouted', 'una domanda incerta non muove il bot');
   assert.equal(decision.id, null);
   assert.equal(decision.reason, 'low_probability');
   assert.equal(decision.matched, 'q_inventory', 'la scelta resta nel log anche se rifiutata');
+});
+
+test('a message that is not question-shaped never reaches the model (pre-filter)', async () => {
+  const { fetchImpl, calls } = stubFetch(() => ok({}));
+  for (const message of ['prendi la terra', 'stai qui', 'sei un cretino']) {
+    const decision = await resolveQuestionIntent(message, { fetchImpl, url: URL, key: KEY });
+    assert.equal(decision.action, 'order', `${message} resta un ordine`);
+    assert.equal(decision.via, 'none');
+    assert.equal(decision.reason, 'not_question_like');
+  }
+  assert.equal(calls.length, 0, 'un ordine non paga una chiamata di rete né 4 s di latenza');
+});
+
+test('a timeout is reported as unroutable, not as an order', async () => {
+  const timeout = async () => {
+    const error = new Error('The operation was aborted due to timeout');
+    error.name = 'TimeoutError';
+    throw error;
+  };
+  const decision = await resolveQuestionIntent('quanti cuori hai?', { fetchImpl: timeout, url: URL, key: KEY });
+  assert.equal(decision.action, 'unrouted');
+  assert.equal(decision.reason, 'timeout');
+  assert.match(decision.error, /timeout/);
 });
 
 test('the threshold accepts a probability equal to it, and 0 accepts the argmax', async () => {
@@ -103,36 +130,46 @@ test('probabilities are read from either answer shape', async () => {
 
 test('an out-of-range choice is not a question', async () => {
   const { fetchImpl } = stubFetch(() => answers('a99', {}));
-  const decision = await resolveQuestionIntent('blah', { fetchImpl, url: URL, key: KEY });
+  const decision = await resolveQuestionIntent('cosa dici?', { fetchImpl, url: URL, key: KEY });
+  assert.equal(decision.action, 'order');
   assert.equal(decision.id, null);
   assert.equal(decision.reason, 'not_a_question');
 });
 
-test('a broken router never refuses the message: it stays an order', async () => {
+test('a broken router reports why, and never turns a question into an order', async () => {
   const failing = stubFetch(() => ({ ok: false, status: 503, json: async () => ({ error: 'upstream down' }) }));
-  const decision = await resolveQuestionIntent('che combini?', { fetchImpl: failing.fetchImpl, url: URL, key: KEY });
-  assert.equal(decision.id, null);
-  assert.equal(decision.reason, 'error');
-  assert.match(decision.error, /System One HTTP 503/);
+  const broken = await resolveQuestionIntent('che combini?', { fetchImpl: failing.fetchImpl, url: URL, key: KEY });
+  assert.equal(broken.action, 'unrouted');
+  assert.equal(broken.reason, 'error');
+  assert.match(broken.error, /System One HTTP 503/);
 
   const garbage = stubFetch(() => ({ ok: true, status: 200, json: async () => ({ model: 'x' }) }));
-  assert.match((await resolveQuestionIntent('che combini?', { fetchImpl: garbage.fetchImpl, url: URL, key: KEY })).error, /without 'answers'/);
+  const unparsable = await resolveQuestionIntent('che combini?', { fetchImpl: garbage.fetchImpl, url: URL, key: KEY });
+  assert.equal(unparsable.action, 'unrouted');
+  assert.equal(unparsable.reason, 'unparsable');
+  assert.match(unparsable.error, /without 'answers'/);
 
   const throwing = async () => { throw new Error('socket hang up'); };
-  assert.match((await resolveQuestionIntent('che combini?', { fetchImpl: throwing, url: URL, key: KEY })).error, /socket hang up/);
+  const unreachable = await resolveQuestionIntent('che combini?', { fetchImpl: throwing, url: URL, key: KEY });
+  assert.equal(unreachable.action, 'unrouted');
+  assert.equal(unreachable.reason, 'error');
+  assert.match(unreachable.error, /socket hang up/);
 });
 
 test('without a key System One is never called, and the router can be disabled', async () => {
   const { fetchImpl, calls } = stubFetch(() => ok({}));
-  assert.equal(await resolveQuestionIntent('che combini?', { enabled: false, fetchImpl, url: URL, key: KEY }), null);
+  const disabled = await resolveQuestionIntent('che combini?', { enabled: false, fetchImpl, url: URL, key: KEY });
+  assert.equal(disabled.action, 'unrouted');
+  assert.equal(disabled.reason, 'disabled');
   assert.equal(calls.length, 0);
-  // Nessuna chiave: system-one.mjs solleva, il router lo riporta come errore.
+  // Nessuna chiave: system-one.mjs solleva, il router lo riporta come `no_key`.
   const previous = { typesafe: process.env.TYPESAFE_API_KEY, openrouter: process.env.OPENROUTER_API_KEY };
   delete process.env.TYPESAFE_API_KEY;
   delete process.env.OPENROUTER_API_KEY;
   try {
     const decision = await resolveQuestionIntent('che combini?', { fetchImpl, url: URL });
-    assert.equal(decision.id, null);
+    assert.equal(decision.action, 'unrouted');
+    assert.equal(decision.reason, 'no_key');
     assert.match(decision.error, /TYPESAFE_API_KEY or OPENROUTER_API_KEY/);
     assert.equal(calls.length, 0, 'senza chiave non si esce in rete');
   } finally {

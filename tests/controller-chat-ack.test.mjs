@@ -361,10 +361,169 @@ test('a free-form question is routed by System One and still answered from the f
   }
 });
 
-// Senza router (nessuna chiave) il comportamento resta quello di M5: il
-// messaggio è un ordine, con ack e goal. Il canale non si zittisce mai.
-test('without System One a free-form question stays an order (no silent channel)', async () => {
+// Un endpoint di decisione che non risponde mai: il router deve andare in
+// timeout e rifiutare, non ricadere nell'order path.
+function startHangingDecisionStub () {
+  return new Promise(resolve => {
+    const calls = [];
+    const server = createServer((req, res) => {
+      calls.push({ method: req.method, path: req.url });
+      // Nessuna risposta: l'unico limite è l'AbortSignal.timeout del controller.
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, calls }));
+  });
+}
+
+function closeStub (stub) {
+  stub.server.closeAllConnections?.();
+  stub.server.close();
+}
+
+// M6.1: senza router una domanda non si trasforma in un ordine. Il bot dice che
+// non ha capito (con la sintassi per rimediare) e non crea nessun goal.
+test('without System One a question is refused, not turned into an order (M6.1)', async () => {
   const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot che combini?' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-unrouted-nokey-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({ ...baseEnv(runId, harness.port, fake.dir), CHAT_INTENT: 'off' });
+    assert.equal(code, 0);
+    assert.equal(stdout.includes('from Ale'), false, 'una domanda senza router non diventa un goal');
+
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.equal(says.length, 1, `un solo rifiuto (got ${JSON.stringify(says)})`);
+    assert.match(says[0], /^@Ale /);
+    assert.match(says[0], /non ho capito la domanda/);
+    assert.match(says[0], /@bot <ordine>/, 'il rifiuto mostra la via d\'uscita verso gli ordini');
+
+    const events = readEvents(runId);
+    assert.equal(events.some(e => e.type === 'chat_command'), false, 'nessun ordine creato');
+    assert.equal(events.some(e => e.type === 'chat_question'), false, 'nessuna risposta data');
+    const unrouted = events.find(e => e.type === 'chat_unrouted');
+    assert.equal(unrouted?.reason, 'no_key', 'la telemetria distingue no_key da disabled');
+    assert.equal(events.find(e => e.type === 'chat_reply' && e.context === 'unrouted') != null, true);
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+// Il pre-filtro: un messaggio che non ha forma di domanda non chiede nulla a Jev
+// e resta un ordine, anche con il router configurato e funzionante.
+test('a message that is not question-shaped skips the router entirely (pre-filter)', async () => {
+  const stub = await startDecisionStub({ choice: 'a0', probabilities: { a0: 0.99 } });
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot sei un cretino' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-prefilter-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, harness.port, fake.dir),
+      TYPESAFE_API_KEY: 'test-key',
+      CHAT_INTENT: 'on',
+      CHAT_INTENT_URL: `http://127.0.0.1:${stub.port}/v1/systemone`,
+    });
+    assert.equal(code, 0);
+    assert.equal(stub.calls.length, 0, 'un ordine non paga una chiamata di rete');
+    assert.match(stdout, /IDLE -> goal \S+ from Ale: /, 'resta un ordine');
+    const events = readEvents(runId);
+    assert.ok(events.some(e => e.type === 'chat_command'));
+    assert.equal(events.some(e => e.type === 'chat_intent'), false, 'il modello non viene nemmeno interrogato');
+  } finally {
+    closeStub(stub);
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+// "riesci a raggiungermi?" è un ordine espresso come domanda: se il modello
+// funziona e dice `q_none`, il messaggio deve tornare all'order path.
+test('an order phrased as a question is decided by the model, not by the guard', async () => {
+  const criteria = intentCriteria();
+  const choice = Object.keys(criteria).find(key => criteria[key].startsWith('[q_none]'));
+  const stub = await startDecisionStub({ choice, probabilities: { [choice]: 0.95 } });
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot riesci a raggiungermi?' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-qnone-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, harness.port, fake.dir),
+      TYPESAFE_API_KEY: 'test-key',
+      CHAT_INTENT: 'on',
+      CHAT_INTENT_URL: `http://127.0.0.1:${stub.port}/v1/systemone`,
+    });
+    assert.equal(code, 0);
+    assert.equal(stub.calls.length, 1, 'una domanda in forma di domanda viene instradata');
+    assert.match(stdout, /IDLE -> goal \S+ from Ale: /, 'q_none significa ordine');
+    const events = readEvents(runId);
+    assert.ok(events.some(e => e.type === 'chat_command'));
+    assert.equal(events.some(e => e.type === 'chat_unrouted'), false, 'q_none è una decisione, non un guasto');
+    assert.equal(events.find(e => e.type === 'chat_intent')?.reason, 'not_a_question');
+  } finally {
+    closeStub(stub);
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+// Un router che non risponde in tempo: la domanda resta senza risposta, ma non
+// diventa un ordine.
+test('a router timeout is reported and the bot does not move', async () => {
+  const stub = await startHangingDecisionStub();
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot quanti cuori hai?' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-timeout-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, harness.port, fake.dir),
+      TYPESAFE_API_KEY: 'test-key',
+      CHAT_INTENT: 'on',
+      CHAT_INTENT_TIMEOUT_MS: '60',
+      CHAT_INTENT_URL: `http://127.0.0.1:${stub.port}/v1/systemone`,
+    });
+    assert.equal(code, 0);
+    assert.equal(stdout.includes('from Ale'), false, 'il timeout non muove il bot');
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.equal(says.length, 1, `un solo rifiuto (got ${JSON.stringify(says)})`);
+    assert.match(says[0], /non ho capito la domanda/);
+    const events = readEvents(runId);
+    assert.equal(events.some(e => e.type === 'chat_command'), false);
+    assert.equal(events.find(e => e.type === 'chat_unrouted')?.reason, 'timeout');
+    assert.equal(events.find(e => e.type === 'chat_reply' && e.context === 'unrouted') != null, true);
+  } finally {
+    closeStub(stub);
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+// Il caso che ha motivato M6.1: una domanda innocua con il router giù non deve
+// diventare `follow <sender>`.
+test('a question can no longer become a follow goal when the router is down (M6.1)', async () => {
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot quanti cuori hai?' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-nofollow-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({ ...baseEnv(runId, harness.port, fake.dir), CHAT_INTENT: 'off' });
+    assert.equal(code, 0);
+    assert.equal(stdout.includes('from Ale'), false, 'nessun goal: niente follow');
+    const events = readEvents(runId);
+    assert.equal(events.some(e => e.type === 'chat_command'), false);
+    assert.equal(events.some(e => e.type === 'plan' && e.source === 'human'), false, 'nessun piano umano creato');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+// Senza router un messaggio non in forma di domanda resta un ordine: il canale
+// non si zittisce mai, e il comportamento di M5 è intatto.
+test('without System One a plain order still works (no silent channel)', async () => {
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot prendi la terra' });
   const fake = fakeHermesQueue([HUMAN_PLAN]);
   const runId = `test-chat-nointent-${process.pid}-${Date.now()}`;
   try {

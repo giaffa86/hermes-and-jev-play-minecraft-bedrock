@@ -150,6 +150,36 @@ export function matchQuestionIntent (message) {
   return null;
 }
 
+// Does the *raw* message look like a question? (M6.1)
+//
+// Called on the text as the human wrote it, before `normalizeForMatching`: that
+// one deletes `?` and `¿`, so the strongest signal would already be gone.
+//
+// Deliberately conservative — only two markers count: an explicit question mark
+// anywhere, or an interrogative *first* word. A miss costs nothing (the message
+// keeps the order path exactly as before M6.1), while a false positive refuses a
+// real order, so bare verbs are absent on purpose:
+//   "stai qui"         -> order (first word `stai` is not an opener)
+//   "sei un cretino"   -> order
+//   "quanti cuori hai?" -> question (mark and opener)
+//   "prendi la terra e dimmi cosa fai" -> order (the opener is not first)
+//   "prendi la terra, cosa fai dopo?" -> question (the mark counts, even in an order)
+export const QUESTION_OPENERS = [
+  'chi', 'che', 'cosa', 'come', 'dove', 'quando',
+  'quanto', 'quanta', 'quanti', 'quante',
+  'perché', 'perche', 'quale', 'quali',
+  'what', 'where', 'when', 'why', 'how', 'who', 'which', 'whose',
+];
+
+export function looksLikeQuestion (message) {
+  const raw = String(message ?? '');
+  if (/[?¿]/.test(raw)) return true;
+  // Leading punctuation/emoji is dropped, then only the first token is looked
+  // at, so an interrogative word in the middle does not make an order a question.
+  const first = raw.trim().toLowerCase().replace(/^[^\p{L}\p{N}]+/u, '').split(/[\s,.;:!]+/)[0] ?? '';
+  return QUESTION_OPENERS.includes(first);
+}
+
 // The closed option list handed to Jev, in the `criteria` shape the decisions
 // API uses (`{a0: '[id] description', ...}`). The `q_none` sentinel is always
 // last, so abstaining costs nothing and an order is never swallowed silently.
@@ -188,4 +218,19 @@ export function answerIntent (id, obs = {}, { prefixes = DEFAULT_CHAT_PREFIX, ma
 // `replyChat`'s self-trigger guard has nothing to refuse.
 export function renderAnswer ({ from, answer, template = DEFAULT_ANSWER_TEMPLATE, maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
   return renderReply(template, { name: from ?? '?', answer: answer ?? '' }, maxLength);
+}
+
+// The message looked like a question but no intent could be determined: the
+// router is off (no key / disabled), it did not answer in time, its choice was
+// under the probability threshold, or its answer was unparsable. Turning such a
+// message into an order would move the bot on the strength of a failure (with
+// `@bot quanti cuori hai?` and a dead router the old code sent it `follow
+// <sender>`), so the bot says it did not understand instead — and shows the way
+// back to the order path, because the human's message may well have been an
+// order expressed as a question ("riesci a raggiungermi?").
+export const UNROUTED_TEMPLATE = 'non ho capito la domanda. Se era un ordine, scrivi "{prefixes} <ordine>".';
+
+export function renderUnrouted ({ from, prefixes = DEFAULT_CHAT_PREFIX, template = UNROUTED_TEMPLATE, maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
+  const answer = renderReply(template, { prefixes: formatPrefixes(prefixes) || DEFAULT_CHAT_PREFIX });
+  return renderAnswer({ from, answer, maxLength });
 }

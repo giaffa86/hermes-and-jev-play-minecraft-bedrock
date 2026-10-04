@@ -871,7 +871,14 @@ Still missing (the rest of the original gap):
   **M6 (chat questions) is implemented and unit-tested**: `@bot dove sei?` is
   answered from `observe()` (regex fast path, then System One/Jev over a closed
   intent list; the model picks an option and never writes the answer) and creates
-  no goal; any router failure leaves the message an order. The inbound path with
+  no goal. **M6.1** closed the fail-open boundary: `looksLikeQuestion` (raw text:
+  explicit `?`/`¿` or an interrogative first word, bare `hai`/`sei`/`stai`
+  excluded) is a **pre-filter** — a message that is not question-shaped never
+  costs a model call before its ack — and a question-shaped message the router
+  cannot decide (off, no key, timeout, error, unparsable, below
+  `CHAT_INTENT_MIN_P`) is refused with the way back to the order syntax and
+  logged as `chat_unrouted`, **never** turned into `follow <sender>`. `q_none`
+  from a working model still means "it was an order". The inbound path with
   a **human** sender is still pending (no human connects to the BDS), and the
   question path has not had a live round on the BDS yet (a real chat message,
   not `POST /say`). Autonomous exploration remains open. Roadmap in

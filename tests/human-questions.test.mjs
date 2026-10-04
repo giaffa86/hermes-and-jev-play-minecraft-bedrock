@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   NO_INTENT, QUESTION_INTENTS, answerIntent, clockFromTicks, intentCriteria, intentFromChoice,
-  matchQuestionIntent, normalizeForMatching, renderAnswer,
+  looksLikeQuestion, matchQuestionIntent, normalizeForMatching, renderAnswer, renderUnrouted,
 } from '../human-questions.mjs';
 import { isSelfTriggering } from '../human-replies.mjs';
 
@@ -144,8 +144,37 @@ test('clockFromTicks follows the Bedrock day (tick 0 = 06:00)', () => {
 test('a reply is addressed to the sender and never looks like an order to the bot', () => {
   assert.equal(renderAnswer({ from: 'Ale', answer: 'sono a x 0, z 0' }), '@Ale sono a x 0, z 0');
   const answer = answerIntent('q_position', OBS);
-  // Il mittente pu\u00f2 chiamarsi come un trigger: \u00e8 il guardiano di `replyChat`
+  // Il mittente può chiamarsi come un trigger: è il guardiano di `replyChat`
   // (`isSelfTriggering`) a rifiutare la riga, non questo modulo.
   assert.equal(isSelfTriggering(renderAnswer({ from: 'bot', answer }), '@bot'), true);
   assert.equal(isSelfTriggering(renderAnswer({ from: 'Ale', answer }), '@bot'), false);
+});
+
+// M6.1: la guardia che decide se un messaggio può essere instradato a Jev. Deve
+// essere *conservativa*: un falso positivo rifiuta un ordine vero, un falso
+// negativo lascia solo il comportamento pre-M6.1.
+test('the question guard only fires on explicit question markers', () => {
+  // Segnali forti: il punto interrogativo (anche spagnolo) o l'apertura
+  // interrogativa come prima parola.
+  for (const message of ['quanti cuori hai?', '¿dove vas?', 'chi sei', 'CHE FAI', 'cosa hai in mano', 'perche?', 'where are you', 'quanto manca']) {
+    assert.equal(looksLikeQuestion(message), true, `${message} deve sembrare una domanda`);
+  }
+  // Ordini e piccola conversazione: i verbi nudi (`hai`/`sei`/`stai`) sono
+  // esclusi apposta, quindi "stai qui" e "sei un cretino" restano ordini.
+  for (const message of ['stai qui', 'stai fermo', 'sei un cretino', 'prendi la terra', 'svuota le chest', 'aiuto', '', '  ']) {
+    assert.equal(looksLikeQuestion(message), false, `${message} non deve sembrare una domanda`);
+  }
+  assert.equal(looksLikeQuestion('prendi la terra e dimmi cosa fai'), false, 'l\'apertura interrogativa deve essere la prima parola');
+  assert.equal(looksLikeQuestion('prendi la terra, cosa fai dopo?'), true, 'il punto interrogativo conta anche dentro un ordine');
+  assert.equal(looksLikeQuestion('@bot dove sei?'), true);
+});
+
+test('an unroutable question gets a short refusal that shows the way back to orders', () => {
+  const line = renderUnrouted({ from: 'Ale', prefixes: ['@bot', '@hermes'] });
+  assert.match(line, /^@Ale /);
+  assert.match(line, /non ho capito la domanda/);
+  assert.match(line, /@bot o @hermes <ordine>/);
+  assert.doesNotMatch(line, /[\r\n]/, 'una sola riga');
+  assert.equal(isSelfTriggering(line, ['@bot', '@hermes']), false, 'il rifiuto non deve scatenare il bot');
+  assert.ok(line.length <= 180);
 });
