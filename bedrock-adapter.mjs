@@ -11,7 +11,7 @@ import { professionName, normalizeProfession, professionMatches, pickBestTrade }
 import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
 import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
 import { detectStructures } from './structures.mjs';
-import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT, LAVA_CONTACT_RANGE } from './bedrock-fluids.mjs';
+import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, swimInputFlags, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT, LAVA_CONTACT_RANGE } from './bedrock-fluids.mjs';
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
 import { normalizeEffectName, waterBreathingSources, divePlan, underwaterWork, CONDUIT_BLOCK, CONDUIT_RANGE } from './bedrock-dive.mjs';
 import { findWaterfalls, findBubbleColumns, columnTactic, summarizeColumn, withinColumn } from './bedrock-waterfall.mjs';
@@ -262,6 +262,9 @@ export class BedrockAdapter {
     // colonna passano da `columnTactic`, che senza nuoto risponde
     // `swimming_unavailable` invece di provare una fisica che non c'è.
     this.swimSupported = false;
+    // M1 (04/10/2026): stato di nuoto dichiarato al server con i flag
+    // `start_swimming`/`stop_swimming` (transizioni a fronte) e `want_up`/`want_down`.
+    this._swimming = false;
     this._waterfallLast = null;
     this._lavaLast = null;
     this._bucketLast = null;
@@ -7494,6 +7497,16 @@ export class BedrockAdapter {
       inputData.push('jumping', 'want_up');
       if (this._freeJump.start) { inputData.push('start_jumping'); this._freeJump.start = false; }
     }
+    // M1: nuoto. In acqua il client dichiara lo stato (start/stop_swimming, a
+    // fronte) e l'intenzione verticale (want_up con il salto, want_down con lo
+    // sneak). Senza input il bot affonda piano: è la gravità locale di sempre.
+    const inWater = !this.riding && this._inWater();
+    const headInWater = !this.riding && this._headInWater();
+    const wantUp = (this._freeJump?.heldTicks > 0) || (motion?.jumpHeldTicks > 0);
+    const swimFlags = swimInputFlags({ inWater, headInWater, swimming: this._swimming, wantUp, wantDown: this._sneaking });
+    for (const flag of swimFlags) if (!inputData.includes(flag)) inputData.push(flag);
+    if (headInWater !== this._swimming) this._swimming = headInWater;
+    if (swimFlags.length) this.logger?.log?.('swim_input', { inWater, headInWater, wantUp, wantDown: this._sneaking, flags: swimFlags });
     if (blockAction?.length) inputData.push('block_action');
     if (transaction) inputData.push('item_interact');
     if (itemStackRequest) inputData.push('item_stack_request');
@@ -7640,6 +7653,19 @@ export class BedrockAdapter {
     const x = Math.floor(feet.x), y = Math.floor(feet.y + 0.1), z = Math.floor(feet.z);
     if (this._fluidKindAt(x, y, z) !== 'water') return false;
     return this._fluidKindAt(x, y + 1, z) !== 'water';
+  }
+
+  // M1: acqua ai piedi (guado o nuoto) e acqua sulla testa (nuoto vero e proprio).
+  _inWater () {
+    const feet = this._feet;
+    if (!feet) return false;
+    return this._fluidKindAt(Math.floor(feet.x), Math.floor(feet.y + 0.1), Math.floor(feet.z)) === 'water';
+  }
+
+  _headInWater () {
+    const feet = this._feet;
+    if (!feet) return false;
+    return this._fluidKindAt(Math.floor(feet.x), Math.floor(feet.y + 1.1), Math.floor(feet.z)) === 'water';
   }
 
   // Per il pathfinding una porta chiusa è percorribile: il movimento la apre

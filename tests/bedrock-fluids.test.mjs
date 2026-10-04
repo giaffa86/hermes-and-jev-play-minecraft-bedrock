@@ -6,10 +6,26 @@ import assert from 'node:assert/strict';
 import {
   isWaterBlock, isLavaBlock, isFluidBlock, fluidKind, normalizeFluidName,
   summarizeFluids, fluidCells, fluidHazard, rankEscapeCells, digFluidRisk,
+  swimInputFlags,
   AIR_CRITICAL, LAVA_NEAR_RANGE,
 } from '../bedrock-fluids.mjs';
 
 const at = (x, y, z) => ({ x, y, z });
+
+test('swimInputFlags: lo stato di nuoto dichiarato al server (M1)', () => {
+  // La testa entra in acqua: la transizione si annuncia una volta sola.
+  assert.deepEqual(swimInputFlags({ headInWater: true }), ['start_swimming']);
+  // Già in nuoto: sneak = discesa rapida, salto = risalita (regole della sessione umana).
+  assert.deepEqual(swimInputFlags({ headInWater: true, swimming: true, wantDown: true }), ['want_down', 'down']);
+  assert.deepEqual(swimInputFlags({ headInWater: true, swimming: true, wantUp: true }), ['want_up', 'jumping']);
+  // La testa esce: fine del nuoto.
+  assert.deepEqual(swimInputFlags({ inWater: true, swimming: true }), ['stop_swimming']);
+  // Guado con il salto premuto: è la risalita sui blocchi della riva.
+  assert.deepEqual(swimInputFlags({ inWater: true, wantUp: true }), ['auto_jumping_in_water', 'jumping']);
+  // A secco non si dichiara nulla: nessun flag inventato.
+  assert.deepEqual(swimInputFlags({}), []);
+  assert.deepEqual(swimInputFlags({ wantUp: true, wantDown: true }), []);
+});
 
 test('fluidKind classifies water, lava and everything else', () => {
   assert.equal(fluidKind('water'), 'water');

@@ -244,6 +244,28 @@ implemented and unit-tested; the second is **blocked** (see below).
 - `WADE_SPEED_FACTOR` is a conservative guess (half of the land speed); the first
   live wade will tell whether it should be tuned.
 
+### 2026-10-04: the swim input flags (schema-driven)
+
+The first human session settled the **semantics** of swimming in Bedrock: holding
+sneak dives fast, doing nothing sinks slowly, the jump button (spacebar) rises from
+the bottom and also climbs the blocks at the shore. The **encoding** is no longer a
+guess either: the 1.26.51 `InputData` mapper names the bits — 29 `start_swimming`,
+30 `stop_swimming`, 16 `want_up`, 17 `want_down`, 7 `auto_jumping_in_water`.
+
+`swimInputFlags({inWater, headInWater, swimming, wantUp, wantDown})` in
+`bedrock-fluids.mjs` turns that into the flag list with edge-triggered start/stop
+(one packet per transition, like the vanilla client), and `_sendAuthInput` merges
+it into `player_auth_input.input_data` while the bot's head is under water
+(`_inWater()`/`_headInWater()` read the same cells as `_wading()`), tracking
+`_swimming` across ticks and logging `swim_input`.
+
+What is **not** done: the local physics still has no buoyancy or swim speed, so
+`swimSupported` stays `false` and every column/waterfall action keeps answering
+`swimming_unavailable`. The flags are the half the schema defines; the rates have
+to be **measured** from the server with the bot connected (enter water, hold
+`want_up` for N ticks, read the server's own positions from `/observe`) before a
+local model is allowed to claim swimming.
+
 ## M2 — Breathing and controlled dives (implemented, live 03/10/2026)
 
 M2 asks for four things: a dive decision with an air budget, a gate on the work

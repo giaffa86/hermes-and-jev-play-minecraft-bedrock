@@ -53,6 +53,39 @@ function fluidAdapter (cells = {}, { feet = { x: 0.5, y: 71, z: 0.5 }, floor = 6
   return { adapter, blocks };
 }
 
+test('M1: i flag di nuoto finiscono in player_auth_input e sono a fronte', () => {
+  const { adapter, blocks } = fluidAdapter({ '0,71,0': water, '0,72,0': water });
+  const written = [];
+  adapter.client = { write: (name, params) => written.push({ name, params }), entityId: 1 };
+  const flags = () => {
+    const auth = written.find(w => w.name === 'player_auth_input');
+    assert.ok(auth, 'player_auth_input inviato');
+    return auth.params.input_data;
+  };
+  // In acqua profonda: lo stato di nuoto si dichiara entrando.
+  adapter._sendAuthInput({ yaw: 0, pitch: 0, tick: 10 });
+  assert.ok(flags().includes('start_swimming'), 'start_swimming entrando in acqua');
+  assert.equal(adapter._swimming, true, 'lo stato di nuoto è ricordato');
+  // Secondo tick, ancora in acqua: nessun nuovo start (transizione a fronte).
+  written.length = 0;
+  adapter._sendAuthInput({ yaw: 0, pitch: 0, tick: 11 });
+  assert.ok(!flags().includes('start_swimming'), 'la transizione si annuncia una volta sola');
+  // Sneak in acqua: discesa rapida.
+  adapter._sneaking = true;
+  written.length = 0;
+  adapter._sendAuthInput({ yaw: 0, pitch: 0, tick: 12 });
+  assert.ok(flags().includes('want_down'), 'sneak = scendere');
+  assert.ok(flags().includes('down'));
+  adapter._sneaking = false;
+  // La testa esce dall\'acqua (restano i piedi bagnati): fine del nuoto.
+  blocks.set('0,72,0', air);
+  written.length = 0;
+  adapter._sendAuthInput({ yaw: 0, pitch: 0, tick: 13 });
+  assert.ok(flags().includes('stop_swimming'), 'stop_swimming uscendo');
+  assert.equal(adapter._swimming, false, 'lo stato torna a terra');
+  assert.ok(!flags().includes('want_down'), 'a testa fuori non si dichiara discesa');
+});
+
 test('_fluidsView legge le celle del bot e il censimento, senza inventare l\'annegamento', () => {
   const { adapter } = fluidAdapter({ '0,71,0': water, '0,72,0': water, '6,71,0': lava });
   const view = adapter._fluidsView();

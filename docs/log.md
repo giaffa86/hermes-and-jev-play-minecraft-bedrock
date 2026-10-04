@@ -3612,3 +3612,17 @@ caught the `player_action` defect. The live round with the bot is still pending
 (the single NetherNet port is occupied by the human session), so
 [verification](wiki/verification.md) row 47.35 records the fix with its proof and
 marks the live confirmation as pending.
+
+## [2026-10-04] feat | M1: the swim input flags, from the human session's input mapping (physics still pending)
+
+The first human session described how swimming works in Bedrock (holding sneak
+dives fast, doing nothing sinks slowly, the jump button rises from the bottom and
+climbs the shore blocks), and the 1.26.51 `InputData` mapper names the bits, so the
+client-side half of M1 is no longer a guess: `swimInputFlags` computes
+`start_swimming`/`stop_swimming` (edge-triggered, one packet per transition),
+`want_up`/`want_down` and `auto_jumping_in_water`, and `_sendAuthInput` merges them
+while the head is under water, tracking `_swimming` and logging `swim_input`.
+`swimSupported` stays `false`: the local physics has no buoyancy yet, so the real
+rates must be measured with the bot in water before any column or waterfall action
+is allowed to swim. Tests: `tests/bedrock-fluids.test.mjs` and
+`tests/bedrock-fluids-adapter.test.mjs`, suite 1077 pass / 0 fail.

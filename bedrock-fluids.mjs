@@ -156,6 +156,39 @@ export function rankEscapeCells (candidates = [], { from = null, hazards = [], m
 // brucia e si propaga, l'acqua allaga il buco (e la base). `neighbors` sono i
 // blocchi attorno alla cella che sta per essere rimossa; `avoidWater` alza la
 // severità verso l'acqua (scavare una scala vicino a un lago la riempie).
+export const SWIM_INPUT_FLAGS = {
+  start_swimming: 29,
+  stop_swimming: 30,
+  want_up: 16,
+  want_down: 17,
+  auto_jumping_in_water: 7
+};
+
+// M1 (04/10/2026): i flag che il client dichiara nel pacchetto `player_auth_input`
+// quando è in acqua. La **semantica** è quella osservata nella sessione umana:
+// sneak = discesa rapida, nessun input = discesa lenta, spacebar (jump) = risalita
+// dal fondale e scalata dei blocchi sulla riva; la **codifica** (nomi e bit) viene
+// dallo schema Bedrock 1.26.51 (`InputData`: 29 start_swimming, 30 stop_swimming,
+// 16 want_up, 17 want_down, 7 auto_jumping_in_water). Le transizioni sono a
+// fronte (start/stop una volta sola) come nel client vanilla. La fisica locale non
+// simula ancora il galleggiamento, quindi questa funzione prepara i flag ma non
+// dichiara che il bot sappia nuotare: `swimSupported` resta false finché non
+// misuriamo le velocità reali dal server.
+export function swimInputFlags ({
+  inWater = false, headInWater = false, swimming = false,
+  wantUp = false, wantDown = false
+} = {}) {
+  const flags = [];
+  if (headInWater && !swimming) flags.push('start_swimming');
+  if (!headInWater && swimming) flags.push('stop_swimming');
+  if (headInWater && wantDown) flags.push('want_down', 'down');
+  if (headInWater && wantUp) flags.push('want_up', 'jumping');
+  // In acqua con la testa fuori e il salto premuto: è la risalita della riva
+  // ("risali anche sui blocchi di superficie adiacenti alla riva").
+  if (inWater && !headInWater && wantUp) flags.push('auto_jumping_in_water', 'jumping');
+  return flags;
+}
+
 export function digFluidRisk ({ neighbors = [], avoidWater = false } = {}) {
   for (const block of neighbors) {
     if (!block) continue;
