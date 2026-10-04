@@ -170,6 +170,30 @@ test('placing the grid keeps the crafting window open (workbench regression)', a
   assert.equal(opens, 1);
 });
 
+test('a failed place-back keeps the cursor truthful instead of clearing it locally', async () => {
+  // Live 04/10/2026: un place fallito lascia lo stack sul cursore del server.
+  // Azzerare `_cursor` in locale nascondeva quello stack e nessuna pulizia
+  // successiva (tutte guardate da `_cursor?.count > 0`) lo svuotava più: ogni
+  // take verso il cursore finiva poi in `take_failed_50`.
+  const adapter = craftAdapter();
+  adapter.world.registry.items[307] = { name: 'iron_ingot' };
+  adapter.inventorySlots[10] = { network_id: 307, name: 'iron_ingot', count: 1, stack_id: 5 };
+  adapter._ensureInventoryOpen = async () => {};
+  const requests = [];
+  adapter._sendStackRequest = async ([action]) => {
+    requests.push(action.type_id);
+    if (action.type_id === 'take') {
+      return { status: 'ok', containers: [{ slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 1, item_stack_id: 70 }] }] };
+    }
+    return { status: 55, containers: [] }; // place rifiutato, e rifiutato anche il ripristino
+  };
+  const result = await adapter._moveItemViaCursor(10, 20);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'place_failed_55');
+  assert.deepEqual(requests, ['take', 'place', 'place'], 'un take, un place rifiutato e il tentativo di ripristino');
+  assert.equal(adapter._cursor?.count, 1, 'il cursore resta occupato: lo stack è ancora sul server');
+});
+
 test('stale slot detection compares aggregate pickups with tracked slots', () => {
   const adapter = craftAdapter();
   adapter.inventory = { cobblestone: 3, stick: 2 };

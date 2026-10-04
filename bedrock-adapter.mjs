@@ -185,6 +185,19 @@ const CHECKPOINT_MIN_DISTANCE = 48;   // checkpoint sparsi: ogni ~48 blocchi di 
 // Raggio entro cui alzare lo scudo ha senso (il blocco vale per gli attacchi
 // che arrivano davanti al bot).
 const SHIELD_THREAT_RANGE = +(process.env.SHIELD_THREAT_RANGE || 8);
+// Indirizzo dell'offhand nelle `item_stack_request`. L'offhand non è lo slot 0
+// del container `offhand` (34): la mappa ufficiale dello slot del giocatore
+// mette l'offhand all'indice 45 e la conversione del POC di riferimento
+// (mc-zuri/node-mineflayer, `lib/bedrock/item-stack-actions.mts`, citato
+// nell'issue PrismarineJS/bedrock-protocol#685) lo indirizza come
+// `{container_id: 'offhand', slot: 1}`. Con `0` il server risponde **50**, che
+// nell'enum `ItemStackResponse.result` è `FailedToValidateDstSlot` — la
+// destinazione non esiste; è il rifiuto osservato live il 03/10. L'armatura usa
+// invece gli slot 0-3 (elmo 0 = indice giocatore 36), già corretta.
+const OFFHAND_SLOT = 1;
+// Un solo ripiego, bounded e documentato: se anche lo slot 1 viene rifiutato la
+// risposta va riportata così com'è, senza scavare oltre a tentativi ciechi.
+const OFFHAND_FALLBACK_SLOT = 0;
 // M2: il conteggio della discesa vale per ogni lavoro sott'acqua (un blocco di
 // scavo a mani nude). I conduit si censisono in cache: un blocco non si sposta.
 const DIVE_WORK_SECONDS = +(process.env.DIVE_WORK_SECONDS || 3);
@@ -6019,6 +6032,12 @@ export class BedrockAdapter {
       const slot = slots[slotIndex];
       const count = slot.count || 1;
       const slotType = this._storageContainerSlotType(entry.type);
+      // Il cursore deve essere vuoto *prima* del take: BDS rifiuta con status 50
+      // (FailedToValidateDstSlot) un take verso un cursore che contiene già uno
+      // stack, anche con lo stesso item (riprodotto live il 04/10/2026). Un place
+      // fallito lascia il cursore sporco: qui si svuota o si fallisce tipizzato,
+      // invece di incolpare il contenitore con un `take_failed_50` opaco.
+      if (this._cursor?.count > 0 && !(await this._returnCursorToInventory())) throw new Error('cursor_busy');
       const take = await this._sendStackRequest([{
         type_id: 'take', legacy_type_id: 0, count,
         source: this._slotInfo(slotType, slotIndex, slot.stack_id || 0),
@@ -7264,13 +7283,17 @@ export class BedrockAdapter {
         cursorStack, src, dst, cursor: this._cursor,
       });
       // Il cursore server-side conserva l'item: se resta sporco, ogni take
-      // successivo fallirebbe con 50. Riprova a rimetterlo nella sorgente.
-      await this._sendStackRequest([{
+      // successivo fallirebbe con 50. Riprova a rimetterlo nella sorgente e
+      // allinea il modello locale all'esito reale: un `_cursor = null`
+      // ottimista qui nasconderebbe lo stack rimasto sul server, e nessuna
+      // pulizia successiva (tutte guardate da `_cursor?.count > 0`) lo
+      // svuoterebbe più.
+      const undo = await this._sendStackRequest([{
         type_id: 'place', legacy_type_id: 1, count,
         source: this._slotInfo('cursor', 0, cursorStack),
         destination: this._slotInfo('hotbar_and_inventory', srcIndex, 0),
-      }]).catch(() => {});
-      this._cursor = null;
+      }]).catch(() => null);
+      if (undo && (String(undo.status) === 'ok' || undo.status === 0)) this._applyStackResponse(undo, { networkId: item.network_id });
       return { ok: false, error: `place_failed_${response.status}` };
     }
     this._applyStackResponse(response, { networkId: item.network_id });
@@ -10755,7 +10778,11 @@ export class BedrockAdapter {
   }
 
   // Indossa lo scudo nell'offhand: `take` sul cursor + `place` su 'offhand'
-  // (container_id 34), la stessa forma di _equipArmor. Il server rimanda un
+  // (container_id 34), la stessa forma di _equipArmor. Lo slot dell'offhand è
+  // **1** (vedi OFFHAND_SLOT): con `0` il server risponde 50, cioè
+  // `FailedToValidateDstSlot`. Se lo slot 1 viene rifiutato si fa un solo
+  // ripiego sullo slot 0 e poi si riporta l'errore tipizzato con entrambi gli
+  // esiti, senza scavare oltre. Il server rimanda un
   // `mob_equipment` per la mano secondaria: se arriva, la conferma è
   // autorevole (`confirmedBy: mob_equipment`); altrimenti vale la risposta
   // degli stack request (`confirmedBy: stack_response`), e il `take`/`place`
@@ -10779,20 +10806,31 @@ export class BedrockAdapter {
       if (reason === 'missing_ingredients') return { ok: false, error: 'missing_shield' };
       return { ok: false, error: `shield_take_failed_${reason.replace(/^take_failed_/, '')}` };
     }
-    const place = await this._sendStackRequest([{
-      type_id: 'place', legacy_type_id: 1, count: 1,
-      source: this._slotInfo('cursor', 0, cursorStack),
-      destination: this._slotInfo('offhand', 0, 0),
-    }]).catch(() => null);
-    if (!place || (String(place.status) !== 'ok' && place.status !== 0)) {
+    const attempts = [];
+    let place = null;
+    for (const slot of [OFFHAND_SLOT, OFFHAND_FALLBACK_SLOT]) {
+      place = await this._sendStackRequest([{
+        type_id: 'place', legacy_type_id: 1, count: 1,
+        source: this._slotInfo('cursor', 0, cursorStack),
+        destination: this._slotInfo('offhand', slot, 0),
+      }]).catch(() => null);
+      const status = place?.status ?? 'timeout';
+      attempts.push({ slot, status });
+      if (place && (String(status) === 'ok' || status === 0)) break;
+      // Un place rifiutato non cambia nulla lato server: il cursore è ancora
+      // carico con la stessa stack id, quindi il ripiego la riusa (un solo
+      // ripiego, non un ciclo).
       this.log('shield_place_failed', {
-        status: place?.status ?? 'timeout',
-        destination: 'offhand/0',
+        status,
+        destination: `offhand/${slot}`,
         cursor_stack_id: this._cursor?.stack_id ?? null,
         cursorStack,
       });
+    }
+    if (!place || (String(place.status) !== 'ok' && place.status !== 0)) {
       await this._returnCursorToInventory().catch(() => {});
-      return { ok: false, error: `shield_place_failed_${place?.status ?? 'timeout'}` };
+      const last = attempts[attempts.length - 1] ?? { status: 'timeout' };
+      return { ok: false, error: `shield_place_failed_${last.status}`, attempts };
     }
     this._applyStackResponse(place);
     this._cursor = null;

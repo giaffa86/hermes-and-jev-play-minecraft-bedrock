@@ -407,10 +407,37 @@ server = createServer(async (req, res) => {
       }];
     }
     else if (process.env.BEDROCK_DEBUG && req.method === 'POST' && req.url === '/debug/isr') {
-      const { type_id, count, source, destination, randomly, open } = JSON.parse(body);
+      const { type_id, count, source, destination, randomly, open, container, apply } = JSON.parse(body);
       if (open) await adapter._ensureInventoryOpen();
+      // Con `container` la rotta apre prima un contenitore di stoccaggio: serve a
+      // provare le transazioni contro una finestra non-giocatore (il take da un
+      // baule, che BDS rifiuta con status 50 se la destinazione non è valida).
+      let opened = null;
+      if (container) {
+        const known = (adapter._findNearbyStorageBlocks() || []).find(b => b.position.x === container.x && b.position.y === container.y && b.position.z === container.z);
+        const target = known || { name: container.name || 'chest', position: { x: container.x, y: container.y, z: container.z } };
+        try {
+          await adapter._ensureStorageOpen(target);
+          opened = {
+            block: target.name,
+            position: target.position,
+            window: adapter._openContainer ? { id: adapter._openContainer.id, type: adapter._openContainer.type } : null,
+            slots: (adapter._openContainerSlots || []).length,
+            slotItems: (adapter._openContainerSlots || []).slice(0, 12).map((slot, index) => slot?.network_id
+              ? { index, name: adapter._slotItemName(slot), count: slot.count, stack_id: slot.stack_id ?? null }
+              : null),
+          };
+        } catch (error) {
+          opened = { block: target.name, position: target.position, error: String(error?.message || error) };
+        }
+      }
       const legacy = { take: 0, place: 1, swap: 2, drop: 3, destroy: 4 }[type_id] ?? 0;
-      response = [200, await adapter._sendStackRequest([{ type_id, legacy_type_id: legacy, count, source, destination, randomly }], {})];
+      const stackResponse = await adapter._sendStackRequest([{ type_id, legacy_type_id: legacy, count, source, destination, randomly }], {});
+      // Con `apply` la rotta applica la risposta al modello locale come fa una
+      // transazione reale: senza questo passo il cursore resterebbe sporco solo
+      // sul server (divergenza), che non è lo stato in cui versa un'azione.
+      if (apply) adapter._applyStackResponse(stackResponse, {});
+      response = [200, opened ? { ...stackResponse, opened } : stackResponse];
     }
     else if (req.method === 'POST' && req.url === '/explore') {
       // Risolve il target in un id Minecraft e crea/attiva la missione di esplorazione.

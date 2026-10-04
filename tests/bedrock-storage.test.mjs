@@ -173,6 +173,58 @@ test('take_<item> fails cleanly when the item is not in a container', async () =
   assert.deepEqual(await adapter._takeFromContainer('iron_ingot'), { ok: false, error: 'item_not_in_container' });
 });
 
+// Live 04/10/2026: un take verso un cursore già occupato viene rifiutato da BDS
+// con status 50 (FailedToValidateDstSlot), anche con lo stesso item. Il take
+// deve quindi svuotare il cursore *prima*, altrimenti l'errore accusa il baule.
+test('a take with a dirty cursor empties it before taking from the container', async () => {
+  const adapter = storageAdapter();
+  const entry = seedContainer(adapter);
+  const slots = [{ network_id: 458, name: 'iron_ingot', count: 3, stack_id: 5 }];
+  adapter._ensureStorageOpen = async () => {
+    adapter._openContainer = { id: 1, type: 'container' };
+    adapter._openContainerBlock = { name: 'chest', position: entry.position };
+    adapter._openContainerSlots = slots;
+  };
+  adapter._cursor = { network_id: 458, name: 'iron_ingot', count: 1, stack_id: 42 };
+  const order = [];
+  adapter._returnCursorToInventory = async () => {
+    order.push('return_cursor');
+    adapter.inventorySlots[0] = { network_id: 458, name: 'iron_ingot', count: 1, stack_id: 43 };
+    adapter._cursor = null;
+    return true;
+  };
+  adapter._sendStackRequest = async actions => {
+    order.push(`${actions[0].type_id}:${actions[0].source.slot_type.container_id}@${actions[0].source.slot}`);
+    return {
+      status: 'ok',
+      containers: [
+        { slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 3, item_stack_id: 70 }] },
+        { slot_type: { container_id: 'container' }, slots: [{ slot: 0, count: 0, item_stack_id: 0 }] },
+      ],
+    };
+  };
+  const result = await adapter._takeFromContainer('iron_ingot');
+  assert.equal(result.ok, true, 'il take riesce una volta svuotato il cursore');
+  assert.deepEqual(order.slice(0, 2), ['return_cursor', 'take:container@0'], 'il cursore si svuota prima del take');
+  assert.equal(adapter.containers.get('2,64,0').contents.iron_ingot, undefined);
+});
+
+test('a take fails typed cursor_busy when the cursor cannot be emptied', async () => {
+  const adapter = storageAdapter();
+  const entry = seedContainer(adapter);
+  adapter._ensureStorageOpen = async () => {
+    adapter._openContainer = { id: 1, type: 'container' };
+    adapter._openContainerBlock = { name: 'chest', position: entry.position };
+    adapter._openContainerSlots = [{ network_id: 458, name: 'iron_ingot', count: 3, stack_id: 5 }];
+  };
+  adapter._cursor = { network_id: 425, name: 'gold_ingot', count: 1, stack_id: 42 };
+  let sent = 0;
+  adapter._returnCursorToInventory = async () => false;
+  adapter._sendStackRequest = async () => { sent++; return { status: 'ok', containers: [] }; };
+  assert.deepEqual(await adapter._takeFromContainer('iron_ingot'), { ok: false, error: 'cursor_busy' });
+  assert.equal(sent, 0, 'senza cursore libero non si manda nessun take');
+});
+
 test('deposit_<item> moves valuables into a container and verifies the delta', async () => {
   const adapter = storageAdapter();
   const entry = seedContainer(adapter, { contents: {} });

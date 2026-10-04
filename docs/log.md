@@ -3798,3 +3798,34 @@ Two operational notes from the round: the BDS transport dropped once
 CT 108 — the harness reconnected **on its own** within ~30 s with the inventory intact, so
 the container does not need to be restarted when only NetherNet dies; and `mount_donkey`
 reports `no_rideable_nearby` while no donkey is in the census.
+
+## [2026-10-04] fix | A dirty cursor paralysed the container take path; the offhand is slot 1
+
+`take_<item>` from a chest ended in `{"ok":false,"error":"take_failed_50"}` while the
+chest clearly held the item. The live A/B on the deployed container named the cause: the
+cursor is **one** slot and the server validates it as the destination of every `take`, so
+any stack parked on it makes the next take answer `50`
+(`FailedToValidateDstSlot`) — even when the item being taken is the same one. With an
+empty cursor the same two requests are `ok` (chest→cursor, cursor→`hotbar_and_inventory`).
+
+What made it permanent was ours: `_moveItemViaCursor` cleared `_cursor` optimistically
+after a failed place-back, while the server still held the stack, and every later cleanup
+is guarded by `this._cursor?.count > 0` — so nothing ever gave that stack back.
+`_takeFromContainer` now empties the cursor first and refuses with a typed `cursor_busy`
+when it cannot, and `_moveItemViaCursor` keeps the model truthful (it applies a successful
+undo instead of pretending). Three tests cover the order and the typed refusal; the suite
+is at 1113.
+
+The same round settled the offhand destination that was blocking the shield: with a
+nautilus shell — an item the offhand accepts — `place` → `offhand`/1 answers `ok` while
+`offhand`/0 answers `55`, and an offhand-illegal item (kelp) is refused with `50` on both.
+`_equipShield` already targets slot 1 with slot 0 as a fallback, so the old
+`shield_place_failed_50` was the wrong index; only a shield to equip is missing now (the
+village chest that held one is gone). `POST /debug/isr` gained a container opener and an
+`apply` flag so a hand-driven stack request records its answer in the local model exactly
+like an action does — that is how the positive round was run: a tracked dirty cursor, then
+a real `take_tropical_fish` → `{ok:true, count:1, from:'chest', inventoryDelta:1}` in 11.5 s
+with the formerly stuck stack back in the inventory.
+
+See [verification](wiki/verification.md) row 47.44, [headless-client](wiki/headless-client.md)
+§4.3 and [open-questions](wiki/open-questions.md) §"Taking from a container".

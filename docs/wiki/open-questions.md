@@ -231,6 +231,24 @@ Last lint: 2026-10-03.
   `movement timeout` failures for containers genuinely beyond the walkable component
   remain — they cost 30 s each when asked for explicitly.
 
+## Taking from a container: the option knows, the action must read (2026-10-04)
+
+- `take_<item>` is offered from the **durable** container memory
+  (`world-memory` keeps 27 chests across restarts), while `_takeFromContainer` looks the
+  container up in the **runtime** cache (`this.containers`, filled by a read and expiring
+  with `CONTAINER_TTL_MS`). Without a fresh `read_container`, the option exists and the
+  action answers `item_not_in_container` in milliseconds (`take_cobblestone`, live
+  04/10). Not a lie (the bot can still walk there and read), but the two sources should
+  be reconciled — either refresh the runtime cache on demand or say so in the option.
+- A **dirty cursor** used to paralyse the whole take path: the server validates the
+  cursor as the destination of every `take` and answers `50` (`FailedToValidateDstSlot`)
+  whenever it already holds a stack — even the same item. The local model could lose
+  track of that stack (an optimistic `_cursor = null` after a failed place-back in
+  `_moveItemViaCursor`), and every later cleanup is guarded by
+  `this._cursor?.count > 0`, so the refusal was permanent. Fixed and live-verified
+  (row 47.44 of [verification](verification.md)); the same live A/B settled the offhand
+  destination: **slot 1**, not 0.
+
 ## The BDS drops the session during a container read (2026-10-03)
 
 - Four times in one afternoon the server closed the session while a `read_container`
@@ -824,9 +842,11 @@ Still missing (the rest of the original gap):
   (`place_torch`, `craft_*_sword`, `retreat`/`go_home`, `close_door`/`barricade`,
   `equip_armor`, armor points). The **shield** is now implemented too (row 19.3:
   `craft_shield`, `equip_shield` on the offhand, `raise_shield`/`lower_shield`
-  with the `start_using_item` flag) but the live equipping round is still open:
-  it needs an iron ingot + 6 planks the cage cannot mine, and a hostile that
-  reaches the bot. See [verification](verification.md) rows 32–38 and 19.3,
+  with the `start_using_item` flag). The take path was fixed and the offhand
+  destination settled live on 04/10 (**slot 1**, row 47.44), so what the live round
+  still needs is simply a shield: the village chest that held one has been removed
+  from the world, and `craft_shield` needs an iron ingot + 6 planks the cage cannot
+  mine. See [verification](verification.md) rows 32–38, 19.3 and 47.44,
   [roadmap](roadmap.md).
 - **Fishing** — **implemented, bite detection rewritten 03/10, bobber verdict added
   04/10**: the bite is no

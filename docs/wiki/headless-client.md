@@ -178,6 +178,25 @@ Item movement, crafting and smelting are `item_stack_request` transactions
 - Reading is bounded on purpose: `STORAGE_READ_LIMIT` (8) containers per action and a
   time budget (`STORAGE_READ_BUDGET_MS`), because a long read can end with the server
   dropping the session (see [open questions](open-questions.md)).
+- **A `take` into a non-empty cursor is refused with 50** (`FailedToValidateDstSlot`), even
+  when the stack being taken is the same item as the one on the cursor. The cursor is a
+  single slot and the server validates it as the *destination* of every take, so one
+  leftover stack paralyses the whole take path (`take_failed_50`). Live A/B on the deployed
+  BDS (04/10): with an empty cursor, chest→cursor and cursor→`hotbar_and_inventory` are both
+  `ok`; with a stack on the cursor, two different takes both answer `50`. `_takeFromContainer`
+  now empties the cursor first (`_returnCursorToInventory`) and refuses with a typed
+  `cursor_busy` when it cannot, and `_moveItemViaCursor` no longer clears `_cursor`
+  optimistically after a failed place-back: that divergence is what used to make the refusal
+  permanent, because every later cleanup is guarded by `this._cursor?.count > 0`.
+- **The offhand is slot `1`.** Live A/B with a nautilus shell (an item the offhand accepts)
+  on the deployed BDS: `place` → `offhand`/1 = `ok` (the shell lands there, `mob_equipment`
+  aside), `place` → `offhand`/0 = `55` (`CannotPlaceItem`); an offhand-illegal item (kelp) is
+  refused with `50` on both slots. `_equipShield` targets slot 1 and keeps slot 0 only as a
+  fallback (`OFFHAND_SLOT` / `OFFHAND_FALLBACK_SLOT`).
+- `POST /debug/isr` (BEDROCK_DEBUG) drives one stack request by hand
+  (`type_id`/`count`/`source`/`destination`/…), can open a container first (`container`) and,
+  with `apply`, records the answer in the local model — the same bookkeeping a real action
+  performs.
 
 ### 4.4 Interactions — `click_block`, `item_use`, `item_use_on_entity`
 
