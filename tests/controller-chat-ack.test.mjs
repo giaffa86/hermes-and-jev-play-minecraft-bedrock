@@ -208,3 +208,56 @@ test('a chat order from an unknown sender is ignored (no reply, logged)', async 
     rmSync(fake.dir, { recursive: true, force: true });
   }
 });
+
+// Più trigger per lo stesso bot (`CHAT_PREFIXES`): il prefisso generico e il
+// nome del bot sono equivalenti, e la reply non deve somigliare a un ordine per
+// nessuno dei due (altrimenti il bot — o un altro bot sul canale — si riordina).
+test('an order is accepted with any configured trigger, and the prefix is stripped', async () => {
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@hermes prendi la terra' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-prefixes-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, harness.port, fake.dir),
+      CHAT_PREFIXES: '@bot,@hermes',
+    });
+    assert.equal(code, 0);
+    assert.match(stdout, /IDLE -> goal \S+ from Ale: prendi la terra/, 'il trigger viene rimosso dal testo dell\'ordine');
+
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.equal(says.length, 2, `ack + esito (got ${JSON.stringify(says)})`);
+    for (const msg of says) {
+      assert.equal(msg.startsWith('@bot'), false, 'la reply non è un ordine per il trigger generico');
+      assert.equal(msg.startsWith('@hermes'), false, 'la reply non è un ordine per il trigger personale');
+    }
+
+    const command = readEvents(runId).find(e => e.type === 'chat_command');
+    assert.equal(command?.prefix, '@hermes', 'il log dice quale trigger ha matchato');
+    assert.equal(command?.message, 'prendi la terra');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+test('a message that starts with an unconfigured prefix is not an order', async () => {
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@jev fermati' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-noprefix-${process.pid}-${Date.now()}`;
+  try {
+    const { code } = await runController({
+      ...baseEnv(runId, harness.port, fake.dir),
+      CHAT_PREFIXES: '@bot,@hermes',
+    });
+    assert.equal(code, 0);
+    assert.equal(harness.calls.filter(c => c.path === '/say').length, 0, 'nessuna reply');
+    const events = readEvents(runId);
+    assert.equal(events.some(e => e.type === 'chat_command'), false, 'non e un comando');
+    assert.equal(events.some(e => e.type === 'chat_ignored'), false, 'non e nemmeno un rifiuto: non era un ordine');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});

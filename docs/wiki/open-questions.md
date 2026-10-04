@@ -864,7 +864,9 @@ Still missing (the rest of the original gap):
   [verification](verification.md) row 42.3 and the bullet below.
 - **Human chat command channel**: natural-language remote control via in-game
   chat (`@bot seguimi`, `@bot aiutami coi mob`). M1–M3 implemented (chat capture,
-  allowlist + trigger, NL → Hermes → `/plan`, `follow_player`); **M5 is now
+  allowlist + **multi-trigger** `CHAT_PREFIXES`, e.g. `@bot,@hermes`, so one bot
+  answers to both a generic word and its own name — required once several bots
+  share a server; NL → Hermes → `/plan`, `follow_player`); **M5 is now
   implemented and live-verified** (ack of the order + outcome line, see below);
   the inbound path with a **human** sender is still pending (no human connects to
   the BDS). Autonomous exploration remains open. Roadmap in

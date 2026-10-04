@@ -29,7 +29,7 @@ import {
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
 import {planGreetings, DEFAULT_GREETING_TEMPLATE, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
-import {orderAck, orderOutcome, isSelfTriggering, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
+import {orderAck, orderOutcome, isSelfTriggering, normalizePrefixes, matchChatPrefix, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
 import {
   evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
   resolveMilestone, resolveActiveSkill, skillPreferredIntents, verifySkill, buildSkillRecord, appendSkillRecord,
@@ -67,10 +67,13 @@ const HARNESS_BUSY_MAX_WAIT_MS = +(process.env.HARNESS_BUSY_MAX_WAIT_MS || 90000
 const HARNESS_BUSY_POLL_MS = +(process.env.HARNESS_BUSY_POLL_MS || 2000);
 const ANTI_LOOP_COOLDOWN = +(process.env.ANTI_LOOP_COOLDOWN || 3);
 // Comando umano via chat (M1-M3): attivo solo se CHAT_ALLOWLIST è valorizzato
-// (gamertag/xuid separati da virgola). CHAT_PREFIX è il prefisso che scatena l'ordine.
+// (gamertag/xuid separati da virgola). I prefissi che scatenano l'ordine sono
+// `CHAT_PREFIXES` (lista separata da virgola, es. `@bot,@hermes`); il singolo
+// `CHAT_PREFIX` resta valido e i due si sommano. Più bot sullo stesso server
+// devono avere prefissi *distinti*: un trigger condiviso li farebbe agire tutti.
 const CHAT_CONTROL = process.env.CHAT_CONTROL || (process.env.CHAT_ALLOWLIST ? 'on' : 'off');
 const CHAT_ALLOWLIST = new Set((process.env.CHAT_ALLOWLIST || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
-const CHAT_PREFIX = (process.env.CHAT_PREFIX || '@bot').toLowerCase();
+const CHAT_PREFIXES = normalizePrefixes([process.env.CHAT_PREFIXES, process.env.CHAT_PREFIX].filter(Boolean));
 const humanCommandSeen = new Set(); // dedup: un comando già eseguito non si ripete
 const ignoredChatSeen = new Set(); // dedup della telemetria: un messaggio rifiutato si logga una volta
 // Un ordine vecchio non va rieseguito: l'inbox dell'harness conserva gli ultimi
@@ -407,7 +410,9 @@ async function maybeHumanCommand (obs) {
   for (let i = chat.length - 1; i >= 0; i--) {
     const entry = chat[i];
     const text = String(entry.message || '').trim();
-    if (!text.toLowerCase().startsWith(CHAT_PREFIX)) continue;
+    // `@bot1` non deve essere letto come `@bot`: vince il prefisso più lungo.
+    const match = matchChatPrefix(text, CHAT_PREFIXES);
+    if (!match) continue;
     // Età del messaggio: se l'adapter ha timbrato `at`, un ordine più vecchio
     // della finestra è storia, non un comando (fail-open se `at` manca).
     const stampedAt = Number(entry.at);
@@ -427,11 +432,11 @@ async function maybeHumanCommand (obs) {
       }
       continue;
     }
-    const message = text.slice(CHAT_PREFIX.length).trim();
+    const message = match.rest;
     if (!message) continue;
     const seenKey = `${entry.at}|${entry.from}|${message}`;
     if (!rememberSeen(humanCommandSeen, seenKey)) continue;
-    log('chat_command', {from: entry.from, xuid: entry.xuid, message});
+    log('chat_command', {from: entry.from, xuid: entry.xuid, prefix: match.prefix, message});
     const plan = await humanCommandPlan(obs, {...entry, message});
     // M5: conferma dell'ordine in chat. Best-effort (l'adapter applica rate
     // limit e lunghezza); l'esito arriva alla chiusura del goal.
@@ -446,7 +451,7 @@ async function maybeHumanCommand (obs) {
 // mai: il canale resta best-effort come il saluto.
 async function replyChat (message, {to = null, context = null} = {}) {
   if (!CHAT_REPLY || !message) return null;
-  if (isSelfTriggering(message, CHAT_PREFIX)) {
+  if (isSelfTriggering(message, CHAT_PREFIXES)) {
     log('chat_reply_refused', {to, context, message, reason: 'would_trigger_the_bot'});
     return {ok: false, error: 'would_trigger_the_bot'};
   }
@@ -464,7 +469,7 @@ async function maybeGreetHumans (obs) {
   const greetings = planGreetings({
     humans: obs.humans || [],
     allowlist: CHAT_ALLOWLIST,
-    prefix: CHAT_PREFIX,
+    prefixes: CHAT_PREFIXES,
     greeted: greetedHumans,
     now: Date.now(),
     cooldownMs: CHAT_GREET_COOLDOWN_MS,
@@ -476,7 +481,7 @@ async function maybeGreetHumans (obs) {
     // ogni passo (niente spam verso il server né nei log).
     greetedHumans.set(greet.username.toLowerCase(), Date.now());
     const result = await api('POST', '/say', {message: greet.message}).catch(error => ({ok: false, error: error.message}));
-    log('chat_greet', {to: greet.username, distance: greet.distance, message: greet.message, ok: !!result?.ok, error: result?.error ?? null});
+    log('chat_greet', {to: greet.username, distance: greet.distance, prefixes: CHAT_PREFIXES, message: greet.message, ok: !!result?.ok, error: result?.error ?? null});
     console.log(`GREET ${greet.username}: ${greet.message}`);
   }
 }

@@ -1,5 +1,35 @@
 # Log
 
+## [2026-10-04] ingest | Multi-trigger chat orders (`CHAT_PREFIXES`)
+
+Implemented several triggers per bot: `CHAT_PREFIXES` (comma/space separated,
+e.g. `@bot,@hermes`) alongside the legacy single `CHAT_PREFIX` (default
+`@bot`, summed into the list). Motivation: one bot must answer to both a generic
+word and its own name, and several bots on the same server need **distinct**
+triggers each.
+
+- **Code**: `human-replies.mjs` exports `DEFAULT_CHAT_PREFIX`,
+  `normalizePrefixes(value, {fallback})` and `matchChatPrefix(message, prefixes)`
+  → `{prefix, rest}` (longest trigger wins, so `@bot1` is not `@bot`);
+  `isSelfTriggering` now checks the whole list. `controller.mjs` builds
+  `CHAT_PREFIXES` from `CHAT_PREFIXES`+`CHAT_PREFIX`, strips the matched prefix
+  and logs it in `chat_command`; `human-greeting.mjs` gained `formatPrefixes`
+  and renders every trigger (`@bot o @hermes <ordine>`, `{prefixes}` in
+  `CHAT_GREET_TEMPLATE`) and `chat_greet` carries `prefixes`.
+- **Tests**: `tests/human-replies.test.mjs` (normalisation, longest-wins,
+  self-trigger), `tests/human-greeting.test.mjs` (rendered syntax list) and
+  `tests/controller-chat-ack.test.mjs` (an order with the second trigger is acked
+  and stripped; an unconfigured prefix is ignored with no reply and no
+  `chat_command`). Complete suite **1156/1156, zero failures**; the touched
+  integration file is green (5/5).
+- **Docs**: [human-command](wiki/human-command.md) new *Several triggers per
+  bot* section plus updated env/open questions, [sources](sources.md) and this
+  index refreshed; `README.md`, `BEDROCK.md`, `.env.example` and `AGENTS.md`
+  document `CHAT_PREFIXES`. Bug found and fixed while testing: `planGreetings`
+  passed the already-joined label to `renderGreeting`, which re-split it on
+  whitespace (`@bot o @hermes` → `['@bot','o','@hermes']`), so a joined
+  string must never be re-passed to `renderGreeting`.
+
 ## [2026-10-04] ingest | Apiculture merged into main with visibility/probe fixes
 
 Merged `feat/bees-honeycomb` (`b2cb688`) into clean `main` after the concurrent

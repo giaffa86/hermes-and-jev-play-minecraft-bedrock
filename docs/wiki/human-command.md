@@ -40,7 +40,7 @@ human chat message
 | Mine iron the bot can see | **Ready** | `mine_iron_ore` / `mine_deepslate_iron_ore` options and the "obtain iron" progression skill already exist. |
 | Autonomous exploration ("go find iron alone") | **Missing / hard** | No real exploration: see [headless-client](headless-client.md#8-render-distance-not-comparable) and [open-questions](open-questions.md). "Follow me and mine the iron you see" is realistic; "go find iron by yourself" is out of reach for now. |
 | Reply/ack in chat | **Implemented + live-verified (M5)** | `sendChat()` in `bedrock-adapter.mjs` queues a `text`/`chat` packet (rate-limited, sanitised); exposed as `POST /say`. The controller acks an accepted order (`@<name> ok: <obiettivo>`) and reports the outcome when the goal closes (`@<name> fatto: … (N azioni)` / `non ce l'ho fatta: …` / `mi fermo qui: …`). |
-| Proactive greeting / syntax hint | **Implemented** | `maybeGreetHumans()` in `controller.mjs`: a trusted human within `CHAT_GREET_RANGE` (default 24 blocks) gets one greeting naming the exact syntax `CHAT_PREFIX <ordine>`, with a per-gamertag cooldown. Suppressed when the allowlist is empty (never advertise a closed channel). |
+| Proactive greeting / syntax hint | **Implemented** | `maybeGreetHumans()` in `controller.mjs`: a trusted human within `CHAT_GREET_RANGE` (default 24 blocks) gets one greeting naming the exact syntax (`CHAT_PREFIXES`, rendered as `@bot o @hermes <ordine>` when several triggers are configured), with a per-gamertag cooldown. Suppressed when the allowlist is empty (never advertise a closed channel). |
 
 ## Target flow
 
@@ -138,13 +138,17 @@ in 25 s → now 1).
   `username` in `_trackEntity`/`_nearbyEntities`; `_playerByName`; `follow_player`
   option and `_followPlayer` action.
 - `controller.mjs`: `CHAT_ALLOWLIST` (gamertag/xuid, comma-separated),
-  `CHAT_PREFIX` (default `@bot`), `CHAT_CONTROL` (default `on` when allowlist is
+  `CHAT_PREFIXES` (comma/space-separated list of triggers, e.g.
+  `@bot,@hermes`) plus the legacy single `CHAT_PREFIX` (default `@bot`; the two
+  are summed), `CHAT_CONTROL` (default `on` when allowlist is
   set), `CHAT_REPLY` (default: on when the channel is open),
   `CHAT_REPLY_MAX_LENGTH` (180), `CHAT_MAX_AGE_MS` (300000) ;
   `maybeHumanCommand`/`humanCommandPlan`/`isAllowedSender`/`replyChat`; follow
   plans are open-ended (`goalMet` returns false when `plan.follow` is set).
 - `human-replies.mjs`: pure rendering of the ack/outcome lines (`orderAck`,
-  `orderOutcome`, `renderReply`, `clampMessage`, `isSelfTriggering`).
+  `orderOutcome`, `renderReply`, `clampMessage`, `isSelfTriggering`) plus the
+  trigger matching (`normalizePrefixes`, `matchChatPrefix`,
+  `DEFAULT_CHAT_PREFIX = '@bot'`).
 - `bedrock-adapter.mjs`: `sendChat`, `_isOwnChatEcho` / `isSelfName`
   (`CHAT_ECHO_WINDOW_MS`, default 15000).
 - `controller-decisions.mjs`: `follow_player` ranked at tier 2 (just below drop
@@ -154,6 +158,40 @@ in 25 s → now 1).
 - **Live verification pending**: the inbound path with a **human** sender is not
 yet run on the BDS (no human player connects during autonomous runs); the M5
 reply lifecycle *is* live-verified, see *Live evidence* above.
+
+## Several triggers per bot (multi-trigger)
+
+One bot may answer to more than one trigger: the generic `@bot` **plus** its own
+name (e.g. `@hermes`). This is the prerequisite for running several bots on the
+same server — each bot then needs its **own distinct** trigger, otherwise two
+bots accept the same order.
+
+- **Config**: `CHAT_PREFIXES` (comma or space separated, e.g.
+  `@bot,@hermes`); the legacy single `CHAT_PREFIX` is still read and summed
+  into the list, and `@bot` is the default when nothing is set.
+- **Matching (pure)**: `human-replies.mjs` — `normalizePrefixes(value,
+  {fallback})` (trim + lowercase + dedupe, order preserved) and
+  `matchChatPrefix(message, prefixes)` → `{prefix, rest}` or `null`. The
+  **longest** trigger wins, so `@bot1` is not `@bot`; a message starting with an
+  unconfigured prefix is not an order; the rest of the message is the order text
+  (an empty rest is not an order either).
+- **Safety**: the bot's own replies are checked against **all** configured
+  triggers (`isSelfTriggering(message, CHAT_PREFIXES)`), so a reply can never
+  trigger itself or another bot — as important with a list as it was with one
+  prefix.
+- **Telemetry**: the `chat_command` event carries `{from, xuid, prefix, message}`
+  (the matched trigger included) and `chat_greet` carries `prefixes`, so the run
+  log shows which trigger fired.
+- **Greeting**: the syntax hint lists every trigger: with
+  `CHAT_PREFIXES=@bot,@hermes` the message reads `@bot o @hermes <ordine>`
+  (`{prefixes}` in `CHAT_GREET_TEMPLATE`; `formatPrefixes` joins with ` o `).
+  Note: `renderGreeting` re-parses the value, so pass an array or a CSV list —
+  never a string already joined by `formatPrefixes`.
+- **Tests**: `tests/human-replies.test.mjs` (normalisation, longest-wins,
+  multi-trigger `isSelfTriggering`), `tests/human-greeting.test.mjs` (rendered
+  syntax list) and `tests/controller-chat-ack.test.mjs` (an order sent with the
+  second trigger is acked and the prefix is stripped; a message with an
+  unconfigured prefix is ignored, no reply and no `chat_command`).
 
 ## Proactive greeting (§6 Attention System)
 
@@ -184,7 +222,7 @@ Ciao <nome>! Sono Hermes, il bot di casa. Assegnami un task scrivendo in chat:
 - **Env**: `CHAT_GREET` (default: on when `CHAT_CONTROL` is not `off` and the
   allowlist is set), `CHAT_GREET_RANGE` (24), `CHAT_GREET_COOLDOWN_MS`
   (600000; `0` = once per session), `CHAT_GREET_TEMPLATE` (placeholders `{name}`,
-  `{prefix}`).- Tests: `tests/human-greeting.test.mjs` — policy (`renderGreeting`,
+  `{prefix}`, `{prefixes}`).- Tests: `tests/human-greeting.test.mjs` — policy (`renderGreeting`,
   allowlist/range/cooldown filters, malformed humans) plus the adapter wire
   (`observe().humans`, the serialised `text` packet, the `sendChat` guards).
 
@@ -194,8 +232,13 @@ quieter hello is preferred (still an open question).
 
 ## Open questions
 
-- **Trigger**: settled to `CHAT_PREFIX` (default `@bot`), matched on both public
-  chat and whisper. Still open: require whisper only?
+- **Trigger**: settled to a **list** of triggers (`CHAT_PREFIXES`, default
+  `@bot`; the legacy `CHAT_PREFIX` still works and is summed into the list),
+  matched on both public chat and whisper. Several triggers let one bot answer
+  to both a generic word and its own name — needed once several bots share the
+  server, so each bot must use **distinct** triggers. The longest trigger wins
+  (`@bot1` is not `@bot`) and a message that starts with an unconfigured prefix
+  is not an order. Still open: require whisper only?
 - **Follow semantics**: settled to stop distance 3, 45 s window, ~64-block
   tracking range. Still open: long escort and behaviour on player disconnect.
 - **Priority vs autonomous plan**: settled to "human order overrides until

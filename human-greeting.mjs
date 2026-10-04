@@ -2,14 +2,16 @@
 //
 // AI-player roadmap section 6 ("Attention System"): when Hermes perceives a
 // human player nearby it should make itself known and explain how to command
-// it. The actual order syntax belongs to the controller (`CHAT_PREFIX`, default
-// `@bot`), so the greeting is rendered here from a template and handed to the
-// harness `/say` route (the bot speaking is the M5 capability of
-// wiki/human-command.md).
+// it. The actual order syntax belongs to the controller (`CHAT_PREFIXES` /
+// `CHAT_PREFIX`, default `@bot`), so the greeting is rendered here from a
+// template and handed to the harness `/say` route (the bot speaking is the M5
+// capability of wiki/human-command.md).
 //
 // Pure module: no I/O, no clock except the caller-supplied `now`, no knowledge
 // of the transport. `planGreetings` maps nearby humans + the allowlist +
 // already-greeted state to the messages to send *this step*.
+
+import {DEFAULT_CHAT_PREFIX, normalizePrefixes} from './human-replies.mjs';
 
 export const DEFAULT_GREETING_TEMPLATE =
   'Ciao {name}! Sono Hermes, il bot di casa. Assegnami un task scrivendo in chat: ' +
@@ -23,11 +25,21 @@ export const DEFAULT_GREET_RANGE = 24;
 export const DEFAULT_GREET_COOLDOWN_MS = 600000;
 
 // Replace the template placeholders. Kept separate so the rendered text is
-// trivially unit-testable and the caller can supply any template.
-export function renderGreeting (template, { username, prefix } = {}) {
+// trivially unit-testable and the caller can supply any template. `{prefix}`
+// and `{prefixes}` are aliases for the same thing: the exact syntax the
+// controller accepts, i.e. every configured trigger joined by `separator`
+// (`@bot o @hermes`).
+export function renderGreeting (template, { username, prefix, prefixes, separator = ' o ' } = {}) {
+  const label = formatPrefixes(prefixes ?? prefix, { separator }) || formatPrefixes(prefix, { separator });
   return String(template ?? '')
     .replaceAll('{name}', username ?? '')
-    .replaceAll('{prefix}', prefix ?? '');
+    .replaceAll('{prefixes}', label)
+    .replaceAll('{prefix}', label);
+}
+
+// Human-readable list of the configured triggers, in configuration order.
+export function formatPrefixes (value, { separator = ' o ' } = {}) {
+  return normalizePrefixes(value, { fallback: null }).join(separator);
 }
 
 // Which humans deserve a greeting right now.
@@ -41,7 +53,8 @@ export function renderGreeting (template, { username, prefix } = {}) {
 export function planGreetings ({
   humans = [],
   allowlist = null,
-  prefix = '@bot',
+  prefix = DEFAULT_CHAT_PREFIX,
+  prefixes = null,
   greeted = null,
   now = Date.now(),
   cooldownMs = DEFAULT_GREET_COOLDOWN_MS,
@@ -65,7 +78,7 @@ export function planGreetings ({
     out.push({
       username,
       distance: distance ?? null,
-      message: renderGreeting(template, { username, prefix }),
+      message: renderGreeting(template, { username, prefixes: prefixes ?? prefix }),
     });
   }
   return out;
