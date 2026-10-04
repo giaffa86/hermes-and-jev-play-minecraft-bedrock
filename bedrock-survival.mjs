@@ -152,7 +152,7 @@ const TAME_FEED = {
 // Cavalcabili da domare montandoli ripetutamente (nessun cibo): il flag `tamed`
 // compare quando smettono di disarcionare. Include il nautilus (compagno
 // acquatico aggiunto da poco, con armatura dedicata come i cavalli).
-const RIDE_TAMEABLE_TYPES = new Set(['horse', 'donkey', 'mule', 'llama', 'nautilus']);
+const RIDE_TAMEABLE_TYPES = new Set(['horse', 'donkey', 'mule', 'llama', 'trader_llama', 'nautilus']);
 
 // Animali da compagnia in senso lato, incluso l'axolotl che segue (tenendo in
 // mano un secchio di pesci tropicali) ma non ha flag `tamed`/`trusting`.

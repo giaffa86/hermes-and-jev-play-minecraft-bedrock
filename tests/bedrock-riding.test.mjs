@@ -35,6 +35,7 @@ test('isVehicleType and isRideableType classify boats, minecarts and mounts', ()
   assert.equal(isVehicleType('hopper_minecart'), true);
   assert.equal(isVehicleType('cow'), false);
   assert.equal(isRideableType('horse'), true); // cavalcabile domabile
+  assert.equal(isRideableType('trader_llama'), true); // cavalcati live il 04/10/2026
   assert.equal(isRideableType('nautilus'), true);
   assert.equal(isRideableType('boat'), true);
   assert.equal(isRideableType('cow'), false);
