@@ -8,7 +8,7 @@ import { BedrockWorld } from './bedrock-world.mjs';
 import { trackNethernetClient, closeBedrockClient } from './bedrock-lifecycle.mjs';
 import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isMilkableType, isTameableType, isRideTameableType, isCompanionType, isRideableType, animalFeed, tameFeed, cropForSeed, cropMaturity, seedForCrop, isCropBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS, BUCKET_INGREDIENTS, SHIELD_INGREDIENTS } from './bedrock-survival.mjs';
 import { professionName, normalizeProfession, professionMatches, pickBestTrade } from './bedrock-trading.mjs';
-import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
+import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, bobberVerdict, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
 import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
 import { detectStructures } from './structures.mjs';
 import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, swimInputFlags, deepWaterColumns, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT, LAVA_CONTACT_RANGE } from './bedrock-fluids.mjs';
@@ -10881,16 +10881,27 @@ export class BedrockAdapter {
     return null;
   }
 
-  // Contesto pesca per /observe.
+  // Dove è finito il bobber e se lì un morso può arrivare (diagnosi + cancello).
+  _bobberVerdict (bobber = this._findBobber()) {
+    const blockAt = typeof this.world?.blockAt === 'function' ? (p => this.world.blockAt(p) ?? null) : null;
+    return bobberVerdict({ bobber, blockAt });
+  }
+
+  // Bobber: dove galleggia e se lì un morso può arrivare.
   _fishingContext () {
     if (!this.position) return null;
     const spot = this._findFishingSpot();
+    const bobber = this._findBobber();
+    const verdict = bobber ? this._bobberVerdict(bobber) : null;
     return {
       available: !!spot,
       spot: spot ? { position: spot.position, waterAt: spot.waterAt, distance: spot.distance } : null,
       rod: (this.inventory.fishing_rod || 0) > 0,
       string: (this.inventory.string || 0) > 0,
-      bobberOut: !!this._findBobber(),
+      bobberOut: !!bobber,
+      bobber: bobber?.position
+        ? { x: +bobber.position.x.toFixed(1), y: +bobber.position.y.toFixed(1), z: +bobber.position.z.toFixed(1), ...verdict }
+        : null,
       fish: fishCount(this.inventory),
     };
   }
@@ -10929,7 +10940,18 @@ export class BedrockAdapter {
       while (Date.now() < waitUntil) {
         const bobber = this._findBobber();
         if (bobber?.position) {
-          return { ok: true, bobber: { x: +bobber.position.x.toFixed(1), y: +bobber.position.y.toFixed(1), z: +bobber.position.z.toFixed(1) }, waterAt: spot.waterAt };
+          const verdict = this._bobberVerdict(bobber);
+          const where = { x: +bobber.position.x.toFixed(1), y: +bobber.position.y.toFixed(1), z: +bobber.position.z.toFixed(1) };
+          // Un gancio sulla terraferma non prenderà mai nulla: si recupera la
+          // lenza e si dichiara il motivo, invece di aspettare la finestra del
+          // morso per riportare `no_bite` (che accuserebbe il server a torto).
+          if (!verdict.ok && !verdict.unknown) {
+            this.log('bobber_not_in_water', { bobber: where, ...verdict });
+            try { await this._reelIn({ timeoutMs: 1500 }); } catch (error) { this.log('reel_failed', { message: error.message }); }
+            return { ok: false, error: 'bobber_not_in_water', bobber: where, verdict, waterAt: spot.waterAt };
+          }
+          if (verdict.covered) this.log('bobber_water_covered', { bobber: where, waterCell: verdict.waterCell, above: verdict.above });
+          return { ok: true, bobber: where, verdict, waterAt: spot.waterAt };
         }
         await delay(100);
       }
@@ -11023,7 +11045,7 @@ export class BedrockAdapter {
       await delay(100);
     }
     const reel = await this._reelIn({ timeoutMs: reelTimeoutMs });
-    return { ...reel, biteDetected, biteSource };
+    return { ...reel, biteDetected, biteSource, bobber: cast.bobber, verdict: cast.verdict };
   }
 
   // Letto più vicino nel mondo caricato (scansione con TTL di 30 s).

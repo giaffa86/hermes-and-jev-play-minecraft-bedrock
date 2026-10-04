@@ -100,3 +100,53 @@ export function shoreCandidates (blocks, from, { castRange = CAST_RANGE } = {}) 
 export function nextBiteDelay (random = Math.random) {
   return BITE_MS_MIN + random() * (BITE_MS_MAX - BITE_MS_MIN);
 }
+
+// Dove è finito il bobber, e se lì un morso **può** arrivare.
+//
+// Un `fishing_hook` che atterra sulla terraferma non prenderà mai nulla: aspettare
+// la finestra vanilla (5-30 s) sarebbe tempo perso e un `no_bite` direbbe la cosa
+// sbagliata («il server non manda il morso» invece di «il gancio è sul prato»).
+// Il bobber galleggia **sopra** la cella d'acqua (la sua `y` arrotonda alla cella
+// d'aria sovrastante), quindi vale come «in acqua» anche la cella sotto.
+//
+// `covered` non è un verdetto: è il dato che serve alla diagnosi live (una
+// superficie d'acqua con un coperchio sopra è il pozzo del villaggio). `unknown`
+// (nessun `blockAt`, o cella non caricata) è **fail-open**: non si dichiara
+// «fuori dall'acqua» un mondo che non si sa leggere.
+export function bobberVerdict ({ bobber, blockAt } = {}) {
+  const p = bobber?.position;
+  if (!p) return { ok: false, reason: 'no_bobber', unknown: false };
+  if (typeof blockAt !== 'function') return { ok: true, reason: 'unknown', unknown: true };
+  const cell = { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) };
+  const at = blockAt(cell) ?? null;
+  const below = blockAt({ x: cell.x, y: cell.y - 1, z: cell.z }) ?? null;
+  const inAt = isWaterBlock(at?.name);
+  const inBelow = isWaterBlock(below?.name);
+  if (!inAt && !inBelow) {
+    return {
+      ok: false,
+      reason: 'not_in_water',
+      unknown: at == null && below == null,
+      cell,
+      at: at?.name ?? null,
+      below: below?.name ?? null,
+      waterCell: null,
+      covered: false,
+    };
+  }
+  const waterCell = inAt ? cell : { x: cell.x, y: cell.y - 1, z: cell.z };
+  // La cella sopra la superficie d'acqua: se è solida l'acqua è coperta.
+  const aboveSurface = blockAt({ x: waterCell.x, y: waterCell.y + 1, z: waterCell.z }) ?? null;
+  const covered = aboveSurface != null && aboveSurface.name !== 'air' && aboveSurface.name !== 'unknown' && !isWaterBlock(aboveSurface.name);
+  return {
+    ok: true,
+    reason: inAt ? 'in_water' : 'on_surface',
+    unknown: false,
+    cell,
+    at: at?.name ?? null,
+    below: below?.name ?? null,
+    waterCell,
+    covered,
+    above: aboveSurface?.name ?? null,
+  };
+}

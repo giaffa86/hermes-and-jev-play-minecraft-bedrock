@@ -24,6 +24,28 @@ Last lint: 2026-10-03.
   an immediate retry). The BDS console must be read *inside* the CT:
   `pct exec 108 -- runuser -u minecraft -- screen -S minecraft -X hardcopy -h /tmp/mcscreen.txt`
   then `pct exec 108 -- tail -12 /tmp/mcscreen.txt`.
+- **Reconfirmed 2026-10-04 (worse)**: the pattern is now a **session that dies after
+  ~1 min 46 s** followed by a `connecterror:9` loop that **never recovers**
+  (attempts 1-5, backoff 20/40/80 s). Evidence gathered in that round: the BDS
+  console shows the clean pair `Player connected: giaffa86` → `Player Spawned` →
+  `Player disconnected` 1 m 46 s later **with no kick reason**, and
+  `GET /v1/join` answers **`players: 0`** *while* joins keep failing — so this is
+  not the NetherNet single-slot limit (BDS-23121) but a signaling/ICE failure, the
+  family of BDS-23072 (BDS ≥ 1.26.30 timeouts) and BDS-23108. What does **not**
+  recover it: a container restart (`docker restart hermes-jev-bedrock`), even for a
+  fresh client (`attempt 1 failed: connecterror:9`); what does, for a few minutes:
+  `systemctl restart minecraft-bedrock.service` on CT 108 (from the VM 100:
+  `docker exec hermes proxmoxctl exec 108 --command 'systemctl restart minecraft-bedrock.service' --timeout 60`).
+  **Ruled out**: the `minecraft-public-ip-sync` timer (5 min). Its script
+  (`/usr/local/sbin/minecraft-public-ip-sync`) rewrites
+  `server-udp-ports=<public-ip>:19132:19132` and restarts the BDS **only** when the
+  public IP changed *and* `players == 0`; with an unchanged IP it logs
+  `OK mapping=…; no restart`. It also **enforces** a single `ip:19132:19132`
+  mapping and aborts with `unexpected UDP mapping; manual review required` on
+  anything else — so a future multi-mapping experiment (bot + human together,
+  `p3-multiplayer`) must be coordinated with that script. **Impact**: a multi-step
+  gameplay errand cannot be completed in one window (the fishing rod recovery of
+  row 47.43 was interrupted by exactly this).
 
 ## Bot stuck on a built platform (2026-10-02)
 
@@ -116,6 +138,11 @@ Last lint: 2026-10-03.
   rates are measurable, the blocker there is the absence of free-surface water at
   the bot's level, row 47.42; fishing: the server sends **no** bite event to this
   client — five `fish` runs, `grep -c fish_bite` = 0, hook despawns after ~40 s;
+  **update 04/10**: that reading is honest but was taken while the hook's landing
+  cell was unknown, so the cast now carries a verdict (row 47.43,
+  `bobber_not_in_water` / `covered: true`) and a **new** blocker sits in front of
+  the live test: there is **no rod** (and no string) in the reachable world after
+  the 03-04/10 death emptied the inventory;
   see row 28 and [fishing](fishing.md)).
 - **Still true**: the base furniture (beds, chests, planks) stays untouchable by
   design, and `mine_owned` only claims what the ledger recorded — the pre-ledger
@@ -801,16 +828,21 @@ Still missing (the rest of the original gap):
   it needs an iron ingot + 6 planks the cage cannot mine, and a hostile that
   reaches the bot. See [verification](verification.md) rows 32–38 and 19.3,
   [roadmap](roadmap.md).
-- **Fishing** — **implemented, bite detection rewritten 03/10**: the bite is no
+- **Fishing** — **implemented, bite detection rewritten 03/10, bobber verdict added
+  04/10**: the bite is no
   longer a local heuristic but the server's `fish_hook_hook` event (numeric id
   `13`), logged as `fish_bite` (`fish_hook_tease`, id `14`, logs `fish_tease` and
   is not a bite); the fallback is a dip of ≥ 0.2 **relative to the bobber's
   settled height** (the cast descent used to be read as a bite, so every cast
   reeled in early with `biteDetected: true` and zero fish). The settle phase
   needs 3 samples within 0.05 and a disappearing bobber is a typed `bobber_lost`.
-  6 new adapter tests (13 in `tests/bedrock-fishing.test.mjs`). What is left is
-  live: a reachable shore near the base, the real `fishing_hook` entity name and
-  whether the BDS really sends that event.
+  The 04/10 verdict answers *where the hook landed* (land → typed
+  `bobber_not_in_water` with the block names + the line reeled back; covered
+  surface → a valid cast flagged `covered: true`; unreadable world → fail-open)
+  and is exposed in `/observe.fishing.bobber`. 20 tests in
+  `tests/bedrock-fishing.test.mjs`. What is left is live: a rod (the inventory is
+  empty, row 47.43), water at the bot's level, and one cast to decide whether the
+  BDS sends that event at all.
   Roadmap in [fishing](fishing.md).
 - **Fluids** (swimming, drowning/breathing, waterfalls, lava avoidance, buckets/
   boats/potions) — M0 + M1 partial (wading + simulated air + the measurement

@@ -1,5 +1,44 @@
 # Log
 
+## [2026-10-04] feat | The fishing bobber gets a verdict (and the rod is gone)
+
+A cast used to be a blind bet: `_castRod` watched the bobber for the whole 5-30 s
+bite window, and a hook that had landed on the grass ended in
+`{ ok: true, note: 'no_bite' }` — a report that blames the server for a problem in
+front of the bot. That ambiguity is exactly what the 03/10 five-run round could not
+resolve, so it was removed first.
+
+`bobberVerdict ({ bobber, blockAt })` in the pure module `bedrock-fishing.mjs`
+answers where the hook landed. A bobber floats on the surface, so «in water» counts
+both the cell it occupies and the cell below; a landed hook is
+`{ ok: false, reason: 'not_in_water', at, below }` and `_castRod` now **refuses**
+with `bobber_not_in_water`, logs the block names and reels the line back in
+(`_reelIn({ timeoutMs: 1500 })`, best effort). A **covered** pool (a solid block
+over the water surface — the village well is exactly this shape) is *not* refused:
+the cast succeeds and carries `covered: true`, because whether a covered pool bites
+is a game rule the harness must not invent. An unreadable world is **fail-open**
+(`reason: 'unknown'`), so a missing chunk never becomes a false refusal.
+`/observe.fishing.bobber` exposes the verdict for a cast already out.
+
+Tests: `tests/bedrock-fishing.test.mjs` 14 → **20** (the verdict's land/surface/
+inside/covered/unknown branches, `_castRod` refusing a landed hook and reeling in,
+a covered surface casting with the flag), suite **1108 pass / 0 fail**. Deployed to
+`hermes-jev-bedrock` (md5 verified host/container) and confirmed live: the new
+`bobber` field is in `/observe.fishing` (`null` with no cast out).
+
+**The live cast could not be repeated**: the bot died in a cave on the night of
+03-04/10 and a Bedrock respawn empties the inventory, so `fishing_rod` and the 42
+string went with it. The reachable world has no replacement — the seven readable
+village chests (and the 27 containers in memory) hold no `string`, no
+`fishing_rod`, no `stick`; the string of the 03/10 rod came from the bot's own drop
+chest at `(92,73,165)`. The remaining string sources are spiders (night) or a
+mineshaft's cobwebs, i.e. a weapon first: that errand was started and then
+interrupted because sessions on the BDS now die every ~2 minutes (`connecterror:9`,
+recorded in [open-questions](wiki/open-questions.md) § NetherNet instability,
+including the `minecraft-public-ip-sync` timer that was checked and ruled out, and
+the `players: 0` that makes this an ICE/signaling failure rather than the
+single-slot limit).
+
 ## [2026-10-04] feat | Swimming M1: a measurement probe, and the water the bot cannot enter
 
 The missing half of M1 (the vertical rates) stopped being a guess and became a

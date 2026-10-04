@@ -5,7 +5,7 @@ Synthetic close-out of the priority campaign run against the goal contract
 below is backed by a repo commit, a unit test file or a live probe recorded in
 [verification](verification.md).
 
-Session shape: **66 commits**, suite **466 → 1069 tests** (`node --test
+Session shape: **75 commits**, suite **466 → 1108 tests** (`node --test
 tests/*.test.mjs`, 79 files), 14 of 23 goal tasks complete, 1 skipped as an
 environmental blocker.
 
@@ -93,7 +93,7 @@ environmental blocker.
 
 ## 4. Tests
 
-- `node --test tests/*.test.mjs` → **1068 pass / 0 fail** (79 files). The one flake
+- `node --test tests/*.test.mjs` → **1108 pass / 0 fail** (79 files). The one flake
   that used to appear under full-suite load
   (`tests/bedrock-circuits.test.mjs`, "a different delay is an error", which
   measured real tick timing) is **fixed**: the delay measurement reads an

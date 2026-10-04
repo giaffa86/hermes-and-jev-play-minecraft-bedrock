@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { BedrockAdapter } from '../bedrock-adapter.mjs';
 import {
   isWaterBlock, isFishItem, isEdibleFish, fishCount, fishItems,
-  shoreCandidates, nextBiteDelay, FISHING_ROD_INGREDIENTS,
+  shoreCandidates, nextBiteDelay, bobberVerdict, FISHING_ROD_INGREDIENTS,
   BITE_MS_MIN, BITE_MS_MAX,
 } from '../bedrock-fishing.mjs';
 
@@ -172,4 +172,110 @@ test('a bobber that disappears while settling is a typed failure', async () => {
   assert.equal(result.ok, false);
   assert.equal(result.error, 'bobber_lost');
   assert.equal(result.biteDetected, false);
+});
+
+// --- Dove è finito il bobber (2026-10-04) ----------------------------------
+// Un gancio che atterra sulla terraferma non prenderà mai nulla: aspettare la
+// finestra del morso (5-30 s) e riportare `no_bite` accuserebbe il server a torto.
+
+test('bobberVerdict: sulla terraferma il morso non può arrivare', () => {
+  const world = {
+    '3,63,0': 'grass_block',
+    '3,62,0': 'dirt',
+  };
+  const v = bobberVerdict({
+    bobber: { position: { x: 3.2, y: 63.1, z: 0.4 } },
+    blockAt: p => (world[`${p.x},${p.y},${p.z}`] ? { name: world[`${p.x},${p.y},${p.z}`] } : null),
+  });
+  assert.equal(v.ok, false);
+  assert.equal(v.reason, 'not_in_water');
+  assert.equal(v.unknown, false);
+  assert.deepEqual(v.cell, { x: 3, y: 63, z: 0 });
+  assert.equal(v.at, 'grass_block');
+  assert.equal(v.below, 'dirt');
+  assert.equal(v.waterCell, null);
+});
+
+test('bobberVerdict: un bobber che galleggia sta nella cella sopra l\'acqua', () => {
+  const world = { '3,63,0': 'water', '3,64,0': 'air' };
+  const v = bobberVerdict({
+    bobber: { position: { x: 3.5, y: 64.1, z: 0.5 } },
+    blockAt: p => (world[`${p.x},${p.y},${p.z}`] ? { name: world[`${p.x},${p.y},${p.z}`] } : null),
+  });
+  assert.equal(v.ok, true);
+  assert.equal(v.reason, 'on_surface');
+  assert.deepEqual(v.waterCell, { x: 3, y: 63, z: 0 });
+  assert.equal(v.covered, false, 'superficie aperta');
+  assert.equal(v.above, 'air');
+});
+
+test('bobberVerdict: acqua coperta — il dato che serve alla diagnosi (il pozzo)', () => {
+  const world = { '3,63,0': 'water', '3,64,0': 'oak_planks' };
+  const v = bobberVerdict({
+    bobber: { position: { x: 3.5, y: 64.1, z: 0.5 } },
+    blockAt: p => (world[`${p.x},${p.y},${p.z}`] ? { name: world[`${p.x},${p.y},${p.z}`] } : null),
+  });
+  assert.equal(v.ok, true, 'in acqua resta in acqua');
+  assert.equal(v.covered, true);
+  assert.equal(v.above, 'oak_planks');
+});
+
+test('bobberVerdict: fail-open su un mondo che non si sa leggere', () => {
+  assert.equal(bobberVerdict({}).reason, 'no_bobber');
+  assert.equal(bobberVerdict({ bobber: { position: { x: 1, y: 2, z: 3 } } }).unknown, true);
+  const blind = bobberVerdict({ bobber: { position: { x: 1.2, y: 2.9, z: 3.2 } }, blockAt: () => null });
+  assert.equal(blind.ok, false);
+  assert.equal(blind.reason, 'not_in_water');
+  assert.equal(blind.unknown, true, 'celle non caricate: non è una prova');
+});
+
+function castFixture ({ blockAt, bobber = { x: 4.5, y: 64.1, z: 0.5 } } = {}) {
+  const logs = [];
+  const adapter = new BedrockAdapter({ logger: { log () {} }, onLog: e => logs.push(e) });
+  adapter.spawned = true;
+  adapter.status = 'spawned';
+  adapter.position = { x: 0, y: 64, z: 0 };
+  adapter.inventory = { fishing_rod: 1 };
+  adapter.inventorySlots = [{ name: 'fishing_rod', count: 1, network_id: 1 }];
+  adapter.selectedHotbar = 0;
+  adapter.world = { blockAt: p => blockAt(p) };
+  adapter._findFishingSpot = () => ({ name: 'sand', position: { x: 1, y: 63, z: 0 }, waterAt: { x: 2, y: 63, z: 0 }, distance: 1 });
+  adapter._selectHotbarSlot = () => true;
+  adapter._lookAt = () => ({ yaw: 0, pitch: 0 });
+  adapter._queueAuthInput = async () => true;
+  adapter._useItemTransaction = () => ({ type_id: 'use_item' });
+  adapter._pointDistance = () => 1;
+  adapter._findBobber = () => ({ runtimeId: '9', type: 'fishing_hook', position: bobber });
+  adapter.reels = 0;
+  adapter._reelIn = async () => { adapter.reels++; return { ok: true, caught: [], gained: 0 }; };
+  adapter.logs = logs;
+  return adapter;
+}
+
+test('_castRod rifiuta il lancio finito sulla terraferma e recupera la lenza', async () => {
+  const world = { '4,64,0': 'grass_block', '4,63,0': 'dirt' };
+  const adapter = castFixture({ blockAt: p => (world[`${p.x},${p.y},${p.z}`] ? { name: world[`${p.x},${p.y},${p.z}`] } : null) });
+  const result = await adapter._castRod({ timeoutMs: 2000 });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'bobber_not_in_water');
+  assert.equal(result.verdict.reason, 'not_in_water');
+  assert.equal(adapter.reels, 1, 'la lenza si recupera invece di restare fuori 30 s');
+  assert.ok(adapter.logs.some(e => e.type === 'bobber_not_in_water'), 'rifiuto loggato');
+});
+
+test('_castRod conferma un bobber sulla superficie e segnala l\'acqua coperta', async () => {
+  const open = { '4,63,0': 'water', '4,64,0': 'air' };
+  const covered = { '4,63,0': 'water', '4,64,0': 'oak_planks' };
+  const asWorld = w => (p => (w[`${p.x},${p.y},${p.z}`] ? { name: w[`${p.x},${p.y},${p.z}`] } : null));
+
+  const ok = await castFixture({ blockAt: asWorld(open) })._castRod({ timeoutMs: 2000 });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.verdict.reason, 'on_surface');
+  assert.equal(ok.verdict.covered, false);
+
+  const lid = castFixture({ blockAt: asWorld(covered) });
+  const coveredReport = await lid._castRod({ timeoutMs: 2000 });
+  assert.equal(coveredReport.ok, true, 'coperta resta un lancio valido');
+  assert.equal(coveredReport.verdict.covered, true);
+  assert.ok(lid.logs.some(e => e.type === 'bobber_water_covered'), 'la copertura è loggata per la diagnosi');
 });
