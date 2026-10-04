@@ -205,6 +205,16 @@ Item movement, crafting and smelting are `item_stack_request` transactions
   `"<n> remembered container(s) hold <item>, none is reachable now"` rather than denying
   the item exists. Live 04/10: after a restart, 8 `take_*` options all `remembered`, and
   `take_bucket` returned `{ok:true, item:'bucket', from:'chest', remembered:true, ms:546}`.
+- **A remembered container that does not open stops being offered for a while.** The
+  durable memory can be wrong about a cell: the live round of 04/10 offered `take_egg`
+  from a chest remembered at (93,72,160) while the world has it one block higher, so every
+  attempt paid `container_open_timeout` after ~10-18 s. `_ensureStorageOpen` now records
+  the failure (`storage_open_failure`, `STORAGE_OPEN_FAILURE_MS` = 10 min) and the option
+  disappears from `/options` until the cooldown expires; an **explicit** `/act` still tries
+  it (the memory is a hint, not a veto), but it prefers a remembered container that has not
+  just failed (log `container_take_retrying` when none is left). Live 04/10: 4 `take_egg`
+  options before the failure, 3 after it, and the next `take_egg` took **16 eggs** from the
+  healthy chest at (72,71,153) with `remembered:true`.
 - `POST /debug/isr` (BEDROCK_DEBUG) drives one stack request by hand
   (`type_id`/`count`/`source`/`destination`/…), can open a container first (`container`) and,
   with `apply`, records the answer in the local model — the same bookkeeping a real action

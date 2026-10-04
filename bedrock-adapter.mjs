@@ -152,6 +152,12 @@ const STORAGE_READ_WALK_MS = 8000;
 const STORAGE_TAKE_WALK_MS = 75000;
 // TTL della cache contenitori: altri giocatori possono cambiare le scorte.
 const CONTAINER_TTL_MS = 5 * 60 * 1000;
+// TTL del «non si è aperto adesso»: un contenitore che non si apre costa fino a ~18 s
+// di tentativi (live 04/10/2026: la cassa ricordata a (93,72,160) non esiste più — in
+// quel punto il mondo ha il baule un blocco più in alto — e `take_egg` finiva in
+// `container_open_timeout`). Fallito, esce dalle opzioni per un po' invece di essere
+// riproposto a ogni passo; resta in memoria e torna offribile da solo.
+const STORAGE_OPEN_FAILURE_MS = 10 * 60 * 1000;
 const DISCOVERY_RESCAN_MS = 15000;   // ri-scansione scoperte nella stessa chunk (mondo appena caricato)
 // Ricognizione di strutture/ambienti (spec esplorazione M5/M6): una passata
 // sull'area caricata non è gratis, quindi si ripete al massimo ogni minuto.
@@ -390,6 +396,7 @@ export class BedrockAdapter {
     this._openContainerContentWindow = null; // finestra a cui quel contenuto appartiene
     this._containerContentWaiters = [];
     this.containers = new Map();       // "<x,y,z>" -> { type, readAt, contents: { item: count } }
+    this._storageOpenFailures = new Map();   // "<x,y,z>" -> { at, error } (contenitori che non si sono aperti)
     this._containerWaiters = [];
     this._craftingGrid = new Map();    // gridSlot -> { network_id, count, stack_id }
     this._cursor = null;               // { network_id, count, stack_id }
@@ -5965,7 +5972,25 @@ export class BedrockAdapter {
     return contents;
   }
 
-  async _ensureStorageOpen (target, { contentTimeoutMs = 2000, walkTimeoutMs = 30000 } = {}) {
+  // Il libro dei fallimenti di apertura: la finestra che non si apre è la voce più
+  // cara di un `take_*` da memoria, e va ricordata (vedi `STORAGE_OPEN_FAILURE_MS`).
+  async _ensureStorageOpen (target, options = {}) {
+    const key = this._containerCacheKey(target.position);
+    try {
+      const result = await this._openStorageWindow(target, options);
+      this._storageOpenFailures.delete(key);
+      return result;
+    } catch (error) {
+      this._storageOpenFailures.set(key, { at: Date.now(), error: error.message });
+      this.log('storage_open_failure', {
+        block: target.name, position: target.position, error: error.message,
+        distance: Math.round(this._pointDistance(target.position) * 10) / 10,
+      });
+      throw error;
+    }
+  }
+
+  async _openStorageWindow (target, { contentTimeoutMs = 2000, walkTimeoutMs = 30000 } = {}) {
     const alreadyOpen = this._openContainer?.type === 'container' && this._openContainerBlock
       && this._openContainerBlock.position.x === target.position.x
       && this._openContainerBlock.position.y === target.position.y
@@ -6063,19 +6088,34 @@ export class BedrockAdapter {
         remembered: true,
       }))
       .sort((a, b) => a.distance - b.distance);
-    // Stessa regola di `_readContainers`: il filtro vale solo con un modello di
-    // raggiungibilità utilizzabile, altrimenti si è fail-open.
-    if (!reachableOnly || !this._reachabilityUsable()) return containers;
-    return containers.filter(c => this.approachReachable(c.position));
+    // La richiesta esplicita (un `/act`) accetta anche un contenitore appena fallito:
+    // l'offerta no. Stessa regola di `_readContainers` per la raggiungibilità: il
+    // filtro vale solo con un modello utilizzabile, altrimenti si è fail-open.
+    if (!reachableOnly) return containers;
+    const usable = this._reachabilityUsable();
+    const now = Date.now();
+    return containers.filter(c => {
+      const failure = this._storageOpenFailures.get(c.key);
+      if (failure && now - failure.at < STORAGE_OPEN_FAILURE_MS) return false;
+      return !usable || this.approachReachable(c.position);
+    });
   }
 
   _rememberedContainerFor (itemName, options = {}) {
-    const known = this._rememberedStorage({ ...options, reachableOnly: false })
+    const declared = this._rememberedStorage({ ...options, reachableOnly: false })
       .filter(c => (c.contents[itemName] || 0) > 0);
-    if (!known.length) return null;
+    if (!declared.length) return null;
     const usable = this._reachabilityUsable();
+    // Un contenitore che non si è aperto poco fa non si ritenta per primo, ma resta
+    // l'ultima spiaggia: la richiesta esplicita non viene mai rifiutata a priori.
+    const now = Date.now();
+    const fresh = declared.filter(c => {
+      const failure = this._storageOpenFailures.get(c.key);
+      return !failure || now - failure.at >= STORAGE_OPEN_FAILURE_MS;
+    });
+    const known = fresh.length ? fresh : declared;
     const entry = usable ? known.find(c => this.approachReachable(c.position)) || null : known[0];
-    return { entry, known: known.length };
+    return { entry, known: declared.length, retrying: fresh.length === 0 };
   }
 
   async _takeFromContainer (itemName) {
@@ -6095,6 +6135,7 @@ export class BedrockAdapter {
       }
       entry = fromMemory.entry;
       remembered = true;
+      if (fromMemory.retrying) this.log('container_take_retrying', { item: itemName, position: entry.position });
       this.log('container_take_remembered', {
         item: itemName, block: entry.type, position: entry.position,
         distance: Math.round(entry.distance * 10) / 10, rememberedAt: entry.rememberedAt,

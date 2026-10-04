@@ -682,3 +682,82 @@ test('a remembered container gets a longer walk budget than a cached one', async
   assert.equal(cached.ok, true, JSON.stringify(cached));
   assert.deepEqual(budgets, [{ from: 'cache', walkTimeoutMs: undefined }], 'la cache fresca tiene il default');
 });
+
+test('a remembered container that just failed to open is not offered, but comes back later', () => {
+  const adapter = storageAdapter();
+  adapter.memory = {
+    findContainers: () => [{ type: 'chest', position: { x: 93, y: 72, z: 160 }, contents: { egg: 16 } }],
+  };
+  adapter._reachabilityUsable = () => true;
+  adapter.approachReachable = () => true;
+  const keys = () => adapter.options().filter(o => o.key.startsWith('take_')).map(o => o.key);
+  assert.deepEqual(keys(), ['take_egg'], 'senza fallimenti il contenitore è offribile');
+  // Live 04/10: la cassa ricordata a (93,72,160) non esiste più (il baule è un blocco
+  // più in alto) e l'apertura costa 18 s di tentativi.
+  adapter._storageOpenFailures.set('93,72,160', { at: Date.now(), error: 'container_open_timeout' });
+  assert.deepEqual(keys(), [], 'un fallimento recente toglie l\'offerta');
+  adapter._storageOpenFailures.set('93,72,160', { at: Date.now() - 11 * 60 * 1000, error: 'container_open_timeout' });
+  assert.deepEqual(keys(), ['take_egg'], 'scaduto il cooldown il contenitore torna offribile');
+});
+
+test('a failed open is recorded, and a success clears it', async () => {
+  const adapter = storageAdapter();
+  adapter.memory = {
+    findContainers: () => [{ type: 'chest', position: { x: 9, y: 64, z: 0 }, contents: { iron_ingot: 2 }, lastSeenAt: 1 }],
+  };
+  const events = [];
+  adapter.log = (type, data) => events.push([type, data]);
+  adapter._openStorageWindow = async () => { throw new Error('container_open_timeout'); };
+  const failed = await adapter._takeFromContainer('iron_ingot');
+  assert.equal(failed.error, 'container_open_timeout', `un fallimento di apertura resta un esito tipizzato: ${JSON.stringify(failed)}`);
+  assert.equal(adapter._storageOpenFailures.get('9,64,0').error, 'container_open_timeout', 'il fallimento è registrato');
+  assert.ok(events.some(e => e[0] === 'storage_open_failure'), `log diagnostico: ${events.map(e => e[0]).join(', ')}`);
+  // La richiesta esplicita resta possibile (l'offerta no): il secondo tentativo apre.
+  adapter._openStorageWindow = async (target, options) => {
+    assert.equal(options.walkTimeoutMs, 75000, 'da memoria il budget di cammino è quello lungo');
+    adapter._openContainer = { id: 2, type: 'container' };
+    adapter._openContainerSlots = [{ network_id: 55, name: 'iron_ingot', count: 2, stack_id: 8 }];
+  };
+  adapter._sendStackRequest = async () => ({
+    status: 'ok',
+    containers: [{ slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 2, item_stack_id: 12 }] }],
+  });
+  adapter._returnCursorToInventory = async () => { adapter._cursor = null; return true; };
+  const ok = await adapter._takeFromContainer('iron_ingot');
+  assert.equal(ok.ok, true, JSON.stringify(ok));
+  assert.equal(adapter._storageOpenFailures.has('9,64,0'), false, 'un\'apertura riuscita cancella il fallimento');
+});
+
+test('an explicit take prefers a remembered container that has not just failed', async () => {
+  const adapter = storageAdapter();
+  adapter.memory = {
+    findContainers: () => [
+      { type: 'chest', position: { x: 93, y: 72, z: 160 }, contents: { egg: 16 }, lastSeenAt: 1 },
+      { type: 'chest', position: { x: 71, y: 71, z: 153 }, contents: { egg: 16 }, lastSeenAt: 2 },
+    ],
+  };
+  adapter._storageOpenFailures.set('93,72,160', { at: Date.now(), error: 'container_open_timeout' });
+  const opened = [];
+  adapter._ensureStorageOpen = async target => {
+    opened.push(target.position);
+    adapter._openContainer = { id: 4, type: 'container' };
+    adapter._openContainerSlots = [{ network_id: 91, name: 'egg', count: 1, stack_id: 6 }];
+  };
+  adapter._sendStackRequest = async () => ({
+    status: 'ok',
+    containers: [{ slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 1, item_stack_id: 30 }] }],
+  });
+  adapter._returnCursorToInventory = async () => { adapter._cursor = null; return true; };
+  const result = await adapter._takeFromContainer('egg');
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(opened, [{ x: 71, y: 71, z: 153 }], 'il baule appena fallito non è il primo tentativo');
+  // E se è l'unico che lo dichiara, si ritenta comunque (nessun rifiuto a priori).
+  adapter.containers.clear();   // cache runtime fredda: si torna alla memoria
+  adapter.memory = { findContainers: () => [{ type: 'chest', position: { x: 93, y: 72, z: 160 }, contents: { egg: 16 } }] };
+  const events = [];
+  adapter.log = (type, data) => events.push([type, data]);
+  const retry = await adapter._takeFromContainer('egg');
+  assert.equal(retry.ok, true, JSON.stringify(retry));
+  assert.deepEqual(opened[1], { x: 93, y: 72, z: 160 });
+  assert.ok(events.some(e => e[0] === 'container_take_retrying'), `log: ${events.map(e => e[0]).join(', ')}`);
+});

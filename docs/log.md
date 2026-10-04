@@ -3799,6 +3799,24 @@ CT 108 — the harness reconnected **on its own** within ~30 s with the inventor
 the container does not need to be restarted when only NetherNet dies; and `mount_donkey`
 reports `no_rideable_nearby` while no donkey is in the census.
 
+## [2026-10-04] fix | A remembered chest that does not open stops being offered
+
+The durable memory is a hint, not an oracle: the live round of 04/10 offered `take_egg`
+from a chest remembered at (93,72,160), while the world has that chest one block higher —
+so the bot walked there and paid `container_open_timeout` (9-10 s of attempts) on every
+try, and the option came back at the next step.
+
+`_ensureStorageOpen` now records the failure (`storage_open_failure` with block, position
+and distance) and `STORAGE_OPEN_FAILURE_MS` (10 min) keeps that container out of
+`/options` until the cooldown expires; an explicit `/act` still tries it — the operator
+may know better — but `_rememberedContainerFor` prefers a remembered container that has
+not just failed and logs `container_take_retrying` when only failed ones are left.
+
+Live: the `take_egg` options went from 4 to 3 after the failed open (the memory keeps the
+entry), and the next `take_egg` answered
+`{"ok":true,"item":"egg","count":16,"from":"chest","position":{"x":72,"y":71,"z":153},"inventoryDelta":16,"ms":10613,"remembered":true}`.
+Three new cases in `tests/bedrock-storage.test.mjs` (suite **1125/1125**).
+
 ## [2026-10-04] feat | Container targets come from the durable memory (with a walk budget)
 
 `take_*` options came only from the **runtime** container cache (`_cachedContainers()`,
