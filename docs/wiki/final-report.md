@@ -5,7 +5,7 @@ Synthetic close-out of the priority campaign run against the goal contract
 below is backed by a repo commit, a unit test file or a live probe recorded in
 [verification](verification.md).
 
-Session shape: **80 commits**, suite **466 → 1126 tests** (`node --test
+Session shape: **81 commits**, suite **466 → 1126 tests** (`node --test
 tests/*.test.mjs`, 80 files), 14 of 23 goal tasks complete, 1 skipped as an
 environmental blocker.
 
