@@ -309,6 +309,30 @@ Last lint: 2026-10-03.
   walks, watching the console timestamps) would separate "many open/close windows" from
   "no traffic while walking". Not attempted: each round costs a reconnect of the live
   world, and the storage work it unblocks is done.
+- **Update 2026-10-04 (later) — the drop is cheap for the session, expensive for the
+  entity.** Four more drops in one evening, all around real work: a read that answered
+  `container_read_failed` after 33.5 s (the next request already said `spawned:false`,
+  `not_connected`), an earlier read that collected 2 chests in 121 s, and a `take_shears`
+  that ran two minutes before the session closed (the container then reconnected by
+  itself: `[spawn] entityId 260`, `bedrock harness connected after attempt 1`). New and
+  measured: **while the session is down the player entity stays in the world**. The bot
+  was at the world spawn at night, so `deaths` went **1 → 4** in a few minutes
+  (`[respawn_request]`, `[respawn_reconnect] {deadMs: 25042}`, `[respawn_limbo_recover]
+  {health: 0, deaths: 4}`), each death dropping the inventory (16 eggs, recovered only if
+  `recover_loot` runs before the drops expire) and the round ending at 2 HP in
+  `emergency` (`critical_health`, `hostile_critical`, `multiple_hostiles`, `night`).
+- **What still works live (re-observed 04/10)**: the respawn chain
+  (`player_action respawn` → the BDS answers `respawn` packets after ~25 s or a forced
+  reconnect → `respawn_ready` state 0/1 → `[respawn]` at the world spawn with health 20),
+  the `dead` fallback of `options()` (`[{key:'wait', description:'Dead; respawning
+  automatically'}]`) and `recover_loot` offered with a fresh `deathSite` after every
+  death.
+- **Operational consequence**: a live round that needs a walk *plus* an interaction costs
+  a session that the transport drops within ~30-60 s of real work, so the sessions of
+  04/10 were spent re-verifying what was already known. The bot container was stopped
+  (`docker stop hermes-jev-bedrock`) once the deaths started repeating, so the entity left
+  the world and stopped dying; the world itself is untouched and the bot comes back with
+  `docker start`.
 
 ## Missing Bedrock capabilities (for the full first-night milestone)
 

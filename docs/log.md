@@ -1,5 +1,26 @@
 # Log
 
+## [2026-10-04] verify | The session drops cost a death loop, not just an action
+
+Four more transport drops in one evening, all around real work (a read that answered
+`container_read_failed` after 33.5 s with `spawned:false` on the next request, a 121 s
+read that collected two chests, a `take_shears` that ran two minutes before the session
+closed and the container reconnected by itself). The new, measured part is the
+consequence: **while the session is down the player entity stays in the world**, so at
+night at the world spawn the bot was killed four times in a few minutes
+(`[respawn_request]`, `[respawn_reconnect] {deadMs: 25042}`,
+`[respawn_limbo_recover] {health: 0, deaths: 4}`), dropping its inventory (16 eggs) each
+time and ending at 2 HP in `emergency`.
+
+The respawn chain itself was re-observed working: `[respawn]` at health 20 after the
+watchdog reconnect, `options()` falling back to `wait` ("Dead; respawning automatically")
+while `dead`, and `recover_loot` offered with a fresh `deathSite`. Consequence for the
+plan: the bot container was stopped once the deaths repeated (`docker stop
+hermes-jev-bedrock`), the world is untouched, and the live-only tasks need a session that
+survives a walk plus an interaction. Details in
+[open-questions](wiki/open-questions.md) (row 47.34 section) and row 12 of
+[verification](wiki/verification.md).
+
 ## [2026-10-04] fix | A container read stops spending its budget on containers that cannot open
 
 A read is a walk plus an open plus a wait for `inventory_content`, so a chest that
