@@ -309,6 +309,15 @@ exists. Synthesis and gaps (incl. `beat_the_dragon` aliased only to
 
 ## Next planned work
 
+**Campaign close-out, 04/10:** the bot remains OFF by default. The immediate
+queued work is transport/entity lifecycle, bounded live rounds and remembered
+storage revalidation; see [promoted tasks](open-questions.md#promoted-follow-up-tasks-2026-10-04)
+for acceptance criteria. The older backlog below describes longer-term work,
+not instructions to restart the campaign. Shield is code ready but lacks
+materials for live validation; the full crafting chain is deferred. Riding,
+companion, trade, social and fishing remain declared live-only gaps in the
+[final report](final-report.md).
+
 1. **Goal Manager producers** (AI-player roadmap milestone 2+): the session
    loop, the goal queue, the first autonomy slice (survival-need goals in
    `IDLE`, `idle-goals.mjs`, opt-in `AUTONOMY=on`) and the first emergency

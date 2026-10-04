@@ -1,13 +1,21 @@
-# Final report — P0 → P7 campaign (2026-10-02 → 2026-10-03)
+# Final report — P0 → P7 campaign (2026-10-02 → 2026-10-04)
 
 Synthetic close-out of the priority campaign run against the goal contract
 (`P0 → P7`, one front at a time, live evidence for live-only tasks). Every claim
 below is backed by a repo commit, a unit test file or a live probe recorded in
 [verification](verification.md).
 
-Session shape: **81 commits**, suite **466 → 1126 tests** (`node --test
+Session shape at close-out (`1eda391`): **82 commits**, suite **466 → 1126 tests** (`node --test
 tests/*.test.mjs`, 80 files), 14 of 23 goal tasks complete, 1 skipped as an
 environmental blocker.
+
+**Campaign closed on 04/10 with declared validation gaps.** The bot stays
+OFF by default after the measured transport-drop/death loop. Future live work
+must have one precise objective, a bounded session and immediate shutdown with
+evidence retained. No final live round for `6984ea8` was run during close-out.
+The shield is **code ready, material unavailable / live validation blocked**:
+slot 1 is live-proven with a nautilus shell, but actual shield equipping,
+raising and protection are not proven. The full crafting chain is deferred.
 
 ## 1. Completed (code + tests + live where required + docs)
 
@@ -35,9 +43,15 @@ environmental blocker.
 | **P2** the dirty cursor and the offhand slot | `72fb5a8` | live A/B on the deployed BDS: with a stack on the cursor, two different container takes answer `50` (`FailedToValidateDstSlot`); the offhand is slot **1** (`place` of a nautilus shell → `ok`, slot 0 → `55`), so the old `shield_place_failed_50` was a wrong index; positive round with a cursor made dirty on purpose (`/debug/isr {apply:true}`) → real `take_tropical_fish` `{ok:true, inventoryDelta:1}` |
 | **P2/P4** container targets from the durable memory | `5eb8fb1`, `d6adc88` | after a container restart `options()` offered 8 `take_*` entries from the memory (`remembered: re-read on arrival`); `take_bucket` `{ok:true, remembered:true, ms:546}`; a remembered chest that no longer opens left the list (4 → 3 `take_egg`) and the next take brought **16 eggs** from the healthy chest (`ms:10613`) |
 | **P2** a read skips the containers that cannot open | `6984ea8` | offline only, honestly: the unit test carries the evidence because both live attempts ended with the server dropping the session at ~34 s (`container_read_failed` → `not_connected`) — the transport blocker below |
-| **P2** fishing bobber verdict / **M1** swim probe | `bedrock-fishing.mjs`, `bedrock-air.mjs` | a hook that lands on the ground is refused before the bite window (`bobber_not_in_water`); the swim rates were measured by probe, not guessed |
+| **P2** fishing bobber verdict / **M1** swim probe | `bedrock-fishing.mjs`, `bedrock-air.mjs` | a hook that lands on the ground is refused before the bite window (`bobber_not_in_water`); the swim measurement probe is implemented; live vertical rates remain pending accessible water |
 
 ## 2. Improved but not complete
+
+- **Campaign validation gaps**: `p2-riding`, `p2-companion`,
+  `p2-trade-timeout`, `p2-social`, `p2-fishing`, and `p4-shield` remain
+  live-only gaps. They are recorded here without becoming new architecture
+  tasks. Shield is validation pending due to missing material, rather than
+  an unresolved offhand protocol blocker.
 
 - **Riding**: `mount_donkey` → `mount_not_confirmed` after 20–26 s. The server
   receives ten `interact` and answers with the donkey's saddle inventory, never a
@@ -67,7 +81,8 @@ environmental blocker.
   arrives**: five `fish` runs answer `note:'no_bite'`, `grep -c fish_bite` over the
   event log is 0, the hook despawns after ~40 s. The `_onEntityEvent` guard that
   swallowed a bite (entity resolution before the event id) is fixed and tested; the
-  missing signal needs a real-client capture, like the mount/trade/offhand family.
+  missing signal needs further live evidence, like mount/trade. The offhand
+  destination was settled separately on 04/10 (slot 1).
 - **Trading (`p2-trade-timeout`)**: the budget defect is fixed and tested
   (`_waitTradeResult`/`_tradeAt`); the window still never opens
   (`trade_not_opened` with the vanilla `npc_open` packet and the `item_interact`
@@ -89,11 +104,11 @@ environmental blocker.
 
 | Blocker | Root cause | Attempts | Next action |
 |------|------|------|------|
-| No human player ever joins the BDS | Environmental (user-declared, m01312) | Chat order flow, allowlist, stale-inbox and self-echo handling all fixed and live-verified with the bot's own echo | Keep the multiplayer/social items documented as blocked; a real player would unblock chat orders, escort and the mount/trade captures at once |
+| Real-human social flow remains unverified | A human session occurred on 04/10, but the single NetherNet slot prevents simultaneous bot/human evidence | Chat order flow, stale-inbox and self-echo handling verified with the bot's own echo; human-side behavioral observations recorded | Keep `p2-social` as a live-only validation gap; an encrypted pcap alone does not expose client game-packet shapes |
 | ~~Entities and containers outside the walkable component~~ (resolved 03/10) | Low surfaces (`green_carpet`) read as walls, so the bot's feet cell was solid and the walkable component stayed one cell wide; the server also refused to move a bot whose own cell held a closed door | `_lowProfile`, `_selfCells`/`ignoreSelf`, `_doorAhead` (rows 47.27/47.28) | Closed: the bot walked out by itself (`y 73 → 72.62`), crops and containers were verified live, and a door closed on its cell now opens from the inside. No `setblock`, no world edit — (A)/(B)/(C) is moot |
 | BDS 1.26.52 ignores `player_action respawn` | Server-side bug (health never restored) | `respawn` packet state 2, `PACKET_DEBUG=1` packet dump | Mitigated by the auto-reconnect watchdog; a clean in-place respawn stays impossible |
 | Mounting and the trade window are never confirmed | The server wants a trigger the vanilla client produces; no capture available | M0+ two packet shapes for the mount, `npc_open` + `item_interact` for the trade | Capture a real client mounting a saddled donkey and opening a trade |
-| The BDS drops the session during a container read | NetherNet data-channel close (`connection.js:31,35,43,47` → `_lifecycleCloseReason`), not a kick and not an idle timeout: no `kicked` event, `player_auth_input` every 50 ms | Eight drops on 03/10, seven around a `read_container` (two after ~140 s, one at 180 s, one mid-read at 66 s with 8 windows); the adapter caps the read (8 containers, 90 s, 8 s per walk) so the action survives, and `connectLoop` restores the bot by itself (observed twice, inventory intact) | A bounded experiment separating "many window cycles" from "a long walk with no movement" by watching the console timestamps |
+| NetherNet transport drops leave an exposed player entity | Observed SCTP/WebRTC close; underlying trigger and server entity lifetime remain unresolved | Eight drops on 03/10; four more during real work on 04/10, including ~34 s reads. Entity remained exposed; deaths 1 → 4, inventory dropped, final health 2. Watchdog/respawn restored health 20, but did not prevent repeated deaths | Bot OFF by default; queued transport/entity-lifecycle task below. Compare window cycles and walks with timestamped traffic evidence; auth input already continues every 50 ms |
 | Live crop growth was `null` | `findBlocks` spread the prismarine Block, losing `getProperties()` | Added `_properties` fallback, then stopped spreading | Resolved (`growth 7/7/6/6` live); kept as a regression test |
 
 ## 4. Tests
@@ -117,21 +132,22 @@ environmental blocker.
   milk → shear → carrots round, and the bounded container read (66 s, `ok:true`,
   session drop survived).
 - `npm run wiki:lint` → no errors (39 files, 463 relative links).
-- **Deployment parity re-checked**: a full `git ls-files` + `rsync` + `docker cp`
+- **Historical deployment parity checks**: a full `git ls-files` + `rsync` + `docker cp`
   re-deploy followed the container rebuild (`docker compose up -d` drops every
   `docker cp` overlay, and enabling `BEDROCK_DEBUG=1` needs a recreate — a live
-  trap now written down). Every tracked file is in `/app` and the adapter md5 in
-  the container equals the md5 at HEAD (`c7827c9f…`), so the live evidence in
-  [verification](verification.md) was produced by the code at HEAD. The tracked
+  trap now written down). File hashes were compared at each recorded deployment; the latest storage
+  deployment is the `6984ea8` adapter (`cb535ff974fb5b460fcd1fe0a617e6a7`,
+  verification row 47.47). These checks describe the corresponding probes,
+  not parity with subsequent workspace changes. The tracked
   `Dockerfile` is part of that sync; the local-only paths are `docker-compose.yml`,
   `.gitignore`, `explore-find.mjs`, `tools/respawn-capture.mjs`.
-- **`BEDROCK_DEBUG` is off** in the running container: `/debug/reach` answers
+- **Historical deployment check: `BEDROCK_DEBUG` was off**: `/debug/reach` answered
   `{"error":"unknown route"}`, so the `/debug/*` routes (and `/debug/mine`, which
   bypasses `DIG_PROTECTED`) are unreachable until the env var is set and the
   container recreated. The earlier note about leaving `BEDROCK_DEBUG=1` on during
   the door-trap diagnosis is superseded: the deployed container does not have it,
-  and the flag must be *empty* (or absent) in `~/hermes-jev-bedrock/.env` before
-  closing the session.
+  and the flag must be *empty* (or absent) before a future ordinary live round.
+  The container is now stopped; no current API response is claimed.
 
 ## 5. Main changes
 
@@ -159,38 +175,25 @@ environmental blocker.
   front on its Minecraft page, plus a summary bullet, an open-questions row and a
   log entry for each front; both wikis are kept in sync at the end of every front.
 
-## 7. Next five tasks, ordered by technical dependency
+## 7. Reusable follow-up tasks (queued; outside the closed campaign)
 
-1. **Finish the shield round the honest way** (row 19.3): the destination question is
-   **settled** — the offhand is slot 1, live-proven with a legal offhand item, and
-   `_equipShield` targets it. What is missing is **material**: the village chest that
-   held a shield and 731 iron ingots at (90,73,160) no longer exists (live
-   `container_open_timeout` after 46 s, and it is absent from the container census), and
-   the craft chain from nothing is long (planks → sticks → table → wooden pickaxe →
-   cobblestone → stone pickaxe → `iron_ore` → furnace → smelt → `craft_shield`), every
-   step exposed to the session drops of row 47.34. Run it only in a session that survives
-   a walk plus an interaction.
-2. **Packet capture from a real client** (mount, trade, swim): the 04/10 human session did
-   settle the *behavioural* rules from the player's side (right-click without sneak mounts,
-   sneak opens the animal's inventory, shift dismounts, shears take the saddle off, sneak
-   dives and jump ascends), but the NetherNet data channel is DTLS, so the pcap carries no
-   game packets: only the harness packet logging can show the shapes. A capture of a client
-   *interacting* while the harness records is the only path left for `p2-riding` and
-   `p2-trade-timeout`.
-3. **`p2-companion` tame happy path**: the supply chain is live-settled
-   (`take_shears`/`take_cod` come from remembered chests now), the sheep/heep targets exist
-   in the census, and the only reason the 04/10 round did not run is the session drop during
-   the walk to the chest. Retry when the transports are stable.
-4. **The BDS session drop** (row 47.34): with tonight's measurements the cost is no longer
-   only the lost action — **the entity stays in the world while the session is down and gets
-   killed** (`deaths` 1 → 4, inventory dropped, `recover_loot` offered each time). Next
-   actions: the bounded read experiment (failing walks vs many windows), and keeping the bot
-   attended (or inside a lit base) so a dropped session cannot become a death loop; a second
-   `server-udp-ports` mapping is the only way to keep a human session and the bot alive at
-   once.
-5. **Dragon fight** (`beat_the_dragon`): the `bossDefeated` criterion exists and is
-   real, but crystals, the perching phase and the pursuit logic do not — the
-   largest remaining capability gap, and the only one with no live path yet.
+Only three open questions are promoted to tasks, with acceptance criteria in
+[open questions](open-questions.md#promoted-follow-up-tasks-2026-10-04):
+
+1. **NetherNet transport drop / ghost-player lifecycle** — explain the
+   transport close and measure server-side entity exposure independently of
+   reconnect/respawn recovery. This is the first operational priority.
+2. **Bounded live validation rounds** — start for one mission, collect
+   evidence, enforce a deadline and stop after success, failure or transport
+   loss. This provides the execution boundary for later transport experiments.
+3. **Remembered-storage invalidation/revalidation** — define when a failed
+   location becomes stale, how it is revalidated, and when it is invalidated
+   permanently. The current ten-minute in-memory cooldown is a mitigation.
+
+Riding, companion, trade, social, fishing and shield remain the declared
+validation gaps above. Dragon combat remains a separate long-term capability
+gap, not a new close-out task. An optional later round for `6984ea8` is deferred;
+the campaign does not require another live attempt to close.
 
 ## Related pages
 

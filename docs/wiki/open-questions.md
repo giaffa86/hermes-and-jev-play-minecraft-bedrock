@@ -5,7 +5,27 @@ and `docs/raw/SURVIVAL-INTELLIGENCE.md` (Verification status). For the per-
 capability collaudo checklist (done / pending live), see
 [verification](verification.md).
 
-Last lint: 2026-10-03.
+Last lint: 2026-10-04.
+
+## Promoted follow-up tasks (2026-10-04)
+
+The P0 → P7 campaign is closed with its live-only validation gaps declared in
+[final report](final-report.md). The following tasks are queued, not implemented
+or live-verified by this close-out. The bot remains OFF by default; future
+rounds must have one precise objective and stop immediately afterwards.
+
+| Task | Scope and evidence | Acceptance criteria |
+|---|---|---|
+| `nethernet-ghost-lifecycle` | Investigate SCTP/WebRTC drops and the player entity that remains exposed after transport loss (04/10: deaths 1 → 4, inventory loss, final 2 HP; row 47.34). Recovery is a separate, already observed chain. | Produce a timestamped timeline of channel close, server presence, health/death, reconnect and clean shutdown; compare a bounded walk with container window cycles; identify a supported mitigation or retain a precise external blocker. Do not infer client silence: auth input was sent every 50 ms. |
+| `bounded-live-rounds` | Build a reusable runner for start → one mission → evidence → stop, so diagnostics do not leave an unattended bot online. | Enforce a configurable session deadline; prevent simultaneous bot rounds on the shared slot; retain private before/after observations and action/transport outcomes; stop on success, failure, timeout, transport loss or interruption, and verify container exit. Record separately whether the server entity actually left. Offline failure-path tests must prove cleanup. |
+| `remembered-storage-revalidation` | Formalize stale locations beyond the ten-minute local open-failure cooldown (`d6adc88`, `6984ea8`; rows 47.45–47.47). An open timeout alone does not prove a chest was removed. | Define evidence-based `known`/`stale`/`invalid` transitions, retry and successful-reread behavior, restart semantics and permanent invalidation criteria; implement them consistently in both memory backends and options/actions, with tests for wrong coordinates, removed containers, transient failures and changed contents. |
+
+`p2-riding`, `p2-companion`, `p2-trade-timeout`, `p2-social`, `p2-fishing`
+and `p4-shield` remain live-only validation gaps, not new architecture tasks.
+Shield is **code ready, material unavailable / live validation blocked**;
+slot 1 is settled by the nautilus-shell A/B, while shield equipping, raising
+and protection still lack live evidence. No full crafting chain is planned.
+The optional conclusive live round for `6984ea8` is deferred.
 
 ## NetherNet instability
 
@@ -305,10 +325,10 @@ Last lint: 2026-10-03.
   90 s, and each walk gets 8 s instead of 30 s. Result: the same read now returns
   `{ok:true, read:3, ms:65644}` — the action **survives** the drop and reports what it
   read, instead of dying on the 180 s watchdog.
-- **Open**: a bounded experiment (reads whose walks always succeed vs reads with failing
-  walks, watching the console timestamps) would separate "many open/close windows" from
-  "no traffic while walking". Not attempted: each round costs a reconnect of the live
-  world, and the storage work it unblocks is done.
+- **Open**: a bounded experiment comparing window cycles and walks with timestamped
+  traffic evidence is queued as `nethernet-ghost-lifecycle` above. It must not assume
+  there is no traffic during walks: auth input is sent every 50 ms. No extra round
+  was attempted at campaign close-out.
 - **Update 2026-10-04 (later) — the drop is cheap for the session, expensive for the
   entity.** Four more drops in one evening, all around real work: a read that answered
   `container_read_failed` after 33.5 s (the next request already said `spawned:false`,
@@ -880,9 +900,10 @@ Still missing (the rest of the original gap):
   `craft_shield`, `equip_shield` on the offhand, `raise_shield`/`lower_shield`
   with the `start_using_item` flag). The take path was fixed and the offhand
   destination settled live on 04/10 (**slot 1**, row 47.44), so what the live round
-  still needs is simply a shield: the village chest that held one has been removed
-  from the world, and `craft_shield` needs an iron ingot + 6 planks the cage cannot
-  mine. See [verification](verification.md) rows 32–38, 19.3 and 47.44,
+  still needs is simply a shield: the village chest that held one is no longer
+  present in the live census. **Validation pending due to missing material**;
+  the full iron/planks crafting chain is deferred at campaign close-out.
+  See [verification](verification.md) rows 32–38, 19.3 and 47.44,
   [roadmap](roadmap.md).
 - **Fishing** — **implemented, bite detection rewritten 03/10, bobber verdict added
   04/10**: the bite is no
@@ -952,17 +973,14 @@ Still missing (the rest of the original gap):
   The current count lives in [roadmap](roadmap.md) (488 at 2026-10-02).
 - `verification.md` had duplicate row numbers (39/40 reused for the fluids rows);
   renumbered to 41–58 and all internal references updated.
-- **Language drift in `log.md`**: this repo requires all docs in English
-  (`AGENTS.md`: "Keep all docs in English"), but 47 of the 116 `log.md` entries
-  (~2.2k lines, from "Saluto proattivo dell'umano" through the R0–R6 / N0–N7 /
-  M2–M6 / P2 round / P6 fronts) are written in Italian, while the older entries
-  are English; `wiki-lint` does not check language. Correcting it means
-  translating ~2.2k lines of a historical record whose facts already live in the
-  English wiki pages, so it is recorded here rather than rewritten unilaterally —
-  **decision pending with the user**. The entry *type* set drifted the same way
-  and the `log.md` header now lists every type in use (`feat`, `fix`, `verify`,
-  `report` joined the original four), because `ingest`/`query`/`lint`/`doc` no
-  longer covered what the entries record.
+- **Language drift in `log.md` — resolved 04/10**: the user selected concise
+  English rewriting. The actual Italian span contained **46 entries** (the
+  previous note said 47), from proactive greetings through observation
+  retention. Each entry retains its date, type, position, result, evidence
+  and then-current blocker; later results do not retroactively upgrade earlier
+  probes. Full protocol detail remains in the linked capability pages and git
+  history. The entry type set is documented in the log header; mechanical lint
+  still does not detect language.
 - **Historical privacy leak (public repo)**: earlier commits still on the
   published fork contain private LAN IPs, the environment SSH username and links
   to the private Proxmox wiki pages. A later "privacy scrub" commit removed them

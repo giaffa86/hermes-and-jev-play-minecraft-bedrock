@@ -1,5 +1,42 @@
 # Log
 
+## [2026-10-04] lint | Campaign close-out: documentation and evidence checks
+
+Reviewed the report, verification policy and promoted tasks together; checked
+historical log date/type order against the pre-rewrite copy. The campaign test
+result remains the recorded **1126/1126** at `1eda391`; this documentation
+close-out introduces no gameplay code or live proof. Concurrent adapter/test
+changes are outside this close-out. Mechanical and privacy checks: `npm run wiki:lint:strict` passed with no
+errors or warnings; the seven historical date-order inversions remain an
+informational note.
+
+## [2026-10-04] report | Pragmatic close-out: bot OFF, shield pending, reusable tasks
+
+The user selected bot OFF by default, no full shield crafting chain, and concise
+English rewriting of the historical log. SSH inspection confirmed the bot
+container **exited** and no controller process was found; no bot start, BDS
+restart or world interaction was performed for close-out. Future live rounds
+must have one objective, a deadline, evidence collection and immediate shutdown.
+
+The shield is code ready, material unavailable / live validation blocked.
+Offhand slot **1** was proven with a nautilus shell; actual shield equipping,
+raising and damage protection remain unverified. Riding, companion, trade,
+social and fishing also remain declared live-only gaps. `6984ea8` stays
+unit-tested and deployed without a conclusive live proof; the optional round is
+deferred.
+
+Promoted three reusable questions to queued tasks with acceptance criteria:
+NetherNet transport/ghost-player lifecycle, bounded live validation rounds, and
+remembered-storage invalidation/revalidation. These tasks are not implemented
+by the close-out. See [open questions](wiki/open-questions.md),
+[final report](wiki/final-report.md) and [verification](wiki/verification.md).
+
+Rewrote the complete Italian span as **46 concise English entries** (the old
+estimate was 47), retaining historical dates/types/order, results, evidence and
+blockers. Detailed capability evidence remains in the English wiki and git
+history. The campaign snapshot is **82 commits / 1126 tests** at `1eda391`;
+close-out documentation commits are outside that historical count.
+
 ## [2026-10-04] verify | The session drops cost a death loop, not just an action
 
 Four more transport drops in one evening, all around real work (a read that answered
@@ -160,7 +197,8 @@ Tests: 2 new in `tests/bedrock-reachability.test.mjs`, 3 in
 `tests/bedrock-interact-probe.test.mjs`; suite 1080 → **1089**.
 
 
-Append-only record of wiki operations. Prefix: `## [YYYY-MM-DD] <type> | <title>`
+Chronological record of wiki operations; the 04/10 user-authorized English
+rewrite preserves historical dates/types/order. Prefix: `## [YYYY-MM-DD] <type> | <title>`
 where `<type>` is one of `ingest`, `query`, `lint`, `doc`, `feat`, `fix`,
 `verify`, `report` (the last four joined as the wiki grew).
 
@@ -1388,2158 +1426,498 @@ recall, hit to waypoint, both retention layers) and this parity check.
   and boundary), `wiki/ai-player-roadmap.md` (milestones 1/5/8),
   `wiki/roadmap.md`, `wiki/open-questions.md`, `docs/index.md`, `docs/sources.md`.
 
-## [2026-10-03] feat | Saluto proattivo dell'umano (Attention System §6)
-
-- **Goal** (roadmap §6 *Attention System*, milestone 4 *Social behaviour*):
-  quando il bot percepisce un umano vicino, si presenta e gli spiega la sintassi
-  esatta per assegnargli un ordine (`CHAT_PREFIX`, default `@bot`), invece di
-  restare muto. È il primo pezzo **deterministico** del milestone 4: gli eventi
-  di attenzione (crouch/jump/stare/hit → `PLAYER_REQUESTS_ATTENTION`) restano
-  aperti.
-- **Percezione**: `BedrockAdapter._nearbyHumanPlayers()` → `observe().humans`
-  (giocatori umani entro `HUMAN_RANGE`, default 32 blocchi, bot escluso,
-  ordinati per distanza). Lista **separata** da `entities` perché quella è
-  limitata a 8 righe: con otto mob addosso un umano vicino sparirebbe e non
-  verrebbe mai salutato.
-- **Policy pura**: `human-greeting.mjs` — `planGreetings({humans, allowlist,
-  prefix, greeted, now, cooldownMs, range, template})` restituisce i messaggi da
-  inviare *in questo passo*; `renderGreeting` sostituisce `{name}`/`{prefix}`.
-  Solo gamertag in allowlist; allowlist vuota → nessun saluto (non si pubblicizza
-  un canale che non accetta ordini).
-- **Voce**: `BedrockAdapter.sendChat(message, {type='chat'})` accoda un pacchetto
-  `text`/`chat` (schema 1.26.51: `category: 'authored'`, `has_filtered_message`,
-  `xuid: ''`), usato da `POST /say {message, type?}`. Guardie: richiede
-  `status === 'spawned'`, rimuove i ritorni a capo, rifiuta vuoto / >256 char,
-  intervallo minimo 1 s tra due messaggi del bot (`CHAT_MAX_LENGTH`,
-  `CHAT_MIN_INTERVAL_MS`).
-- **Loop**: `controller.mjs` chiama `maybeGreetHumans(obs)` sia nel loop del goal
-  sia nel loop `IDLE`, prima del check degli ordini; tenta solo se
-  `obs.spawned`, e segna subito il tentativo (su errore si ritenta dopo il
-  cooldown, non a ogni passo). Env: `CHAT_GREET` (default on se canale ordini
-  aperto), `CHAT_GREET_RANGE`, `CHAT_GREET_COOLDOWN_MS`, `CHAT_GREET_TEMPLATE`.
-- **Wire format** verificato offline: `createSerializer('1.26.51')` serializza il
-  pacchetto `text` (59 byte) senza errori; nel test l'adapter lo rilegge con il
-  deserializer e i campi tornano.
-- Tests: nuovo `tests/human-greeting.test.mjs` (8 casi: policy + filtri
-  allowlist/raggio/cooldown/umani malformati + `observe().humans` + pacchetto sul
-  filo + guardie di `sendChat`); suite completa **510 pass / 0 fail** (era 502).
-  `npm run wiki:lint` pulito.
-- **Non wired / aperto**: nessun ack di un ordine specifico; nessun `save` dello
-  stato "già salutato" tra sessioni (il cooldown vive in memoria); nessun round
-  live con un umano reale. Scelta del canale (pubblico vs whisper) e salto del
-  saluto in `emergency` annotati in `wiki/open-questions.md`.
-- Docs: `wiki/human-command.md` (nuova sezione *Proactive greeting*, M5 da ❌ a ◑,
-  tabella capacità, domande aperte), `wiki/ai-player-roadmap.md` (milestone 4),
-  `wiki/verification.md` (riga 18), `docs/index.md`, `docs/sources.md`,
-  `.env.example`.
-
-## [2026-10-03] doc | Punti aperti del saluto proattivo esplicitati in wiki
-
-- Richiesta: "segna i punti aperti sulla wiki". Registrati esplicitamente i
-  cinque punti aperti del saluto proattivo, con un bullet dedicato in
-  `wiki/open-questions.md` (sezione *Planned / in progress*) e la stessa lista
-  estesa nella sezione *Open questions* di `wiki/human-command.md`:
-  1. nessun **ack di un ordine specifico** (il bot saluta, non conferma
-     "ricevuto, arrivo");
-  2. **canale del saluto**: chat pubblica vs `type: whisper`;
-  3. saluto **non saltato in `emergency`** (arriva mentre il bot è attaccato);
-  4. **stato "già salutato" solo in memoria** (`greetedHumans` in
-     `controller.mjs`): un riavvio del controller risaluta subito lo stesso
-     umano, il cooldown non sopravvive al processo e non è persistito in
-     `runs/<RUN_ID>/`;
-  5. **nessun round live** su BDS: `POST /say` e il saluto sono coperti solo da
-     unit test e dalla verifica offline del wire format (1.26.51).
-- Nessuna modifica di codice; `npm run wiki:lint:strict` pulito.
-
-## [2026-10-03] feat | Primitive di raggiungibilità: niente azioni irraggiungibili
-
-- **Perché**: i round live P2 bruciavano decine di secondi su azioni che non
-  potevano riuscire — `collect_drop` → `item_not_collected` dopo 20 s (un drop
-  finito nella cavità sotto il pavimento), `read_container` →
-  `container_read_failed` dopo 30 s (container in un'altra componente
-  calpestabile). Sintomo unico: il planner riceveva un'offerta di azioni il cui
-  esito era **strutturalmente** impossibile.
-- **Cosa**: primitive di raggiungibilità in `bedrock-adapter.mjs` —
-  `reachableCells({limit,ttlMs,overrides})` (BFS su `_neighbors` dalla cella del
-  bot, cache 1 s invalidata dal movimento, tetto 1200 celle con flag
-  `truncated`), `cellReachable`, `approachReachable(position,{range,dy})`,
-  `dropReachable`, `mineDropReachable` (BFS con override di **air** sul blocco da
-  minare, così la cella d'atterraggio è valutata come sarà dopo la rottura),
-  `entityApproachable`, `reachReport({limit,maxCells})`. I filtri sono applicati
-  dove nascono le opzioni (drop, `mine_*`, container, entità ostili/animali/
-  trader/mount) e non come patch nei call-site.
-- **Fail-open obbligatorio**: `_reachabilityUsable()` è falso (quindi nessun
-  filtro) quando il componente ha 1 sola cella o il BFS è troncato — i mondi
-  sparsi dei test e i mondi grandi restano invariati.
-- **Verifica live** (container `jev-navdiag`, VM 100, :3078, codice poi deployato
-  in produzione): `/options` ha smesso di offrire `collect_drop`, `mine_*`,
-  `read_container`, `attack_*`, `mount_*` con il bot bloccato nella stanza;
-  `read_container` → `container_unreachable` in **19 ms** (era 30 355 ms),
-  `collect_drop` → `no_drop_nearby`, `flee` con destinazioni tutte fuori
-  componente → `flee_failed` in 27 ms; `GET /debug/reach` ha restituito il
-  componente reale di 10 celle (`x114-117, y73, z156-160`) e l'evento
-  `container_unreachable` elenca i container esclusi. `trader_unreachable` /
-  `no_matching_trader` per i villager fuori componente.
-- **Test**: `tests/bedrock-reachability.test.mjs` (14 casi, nuovo): componente +
-  tasca isolata, cache/ricalcolo al movimento, `dropReachable` nella geometria
-  reale (pavimento in planks `y=72`, piedi `y=73`, cavità `y=71`, terreno `y=70`),
-  `mineDropReachable` (cella senza supporto / cella sigillata), `options` senza
-  `collect_drop`/`mine_stone` impossibili, `_collectDrop` → `drop_unreachable`
-  con 0 move, `_readContainers` → `container_unreachable` con 0 move + rifiuto di
-  `_ensureStorageOpen`, filtri entità e trader, `_flee` che ignora destinazioni
-  fuori componente, fail-open su mondo degenere, limiti di `reachReport`.
-  Suite completa: **502 pass / 0 fail** (all'epoca; 514 dopo il fronte trading).
-- Commit `23c25c0 feat(nav): reachability primitive — filtro azioni irraggiungibili
-  (drop, mine, container, entità)` (`bedrock-adapter.mjs`, `bedrock-harness.mjs`,
-  `tests/bedrock-reachability.test.mjs`); rotta diagnostica `GET /debug/reach`
-  gated da `BEDROCK_DEBUG`.
-
-## [2026-10-03] verify | Trading: cattura a livello pacchetto, fix del budget di _tradeAt, ipotesi scartate
-
-- **Difetto registrato chiuso**: `_tradeAt (index, { timeoutMs = 20000 })` non
-  inoltrava il budget a `_waitTradeResult (timeoutMs = 5000)` (attesa effettiva
-  5 s, warning lint "declared but never used"). Ora
-  `await this._waitTradeResult(Math.max(500, started + timeoutMs - Date.now()))`;
-  test dedicato che cattura il budget inoltrato (20000 → >5000, 800 → 500-800).
-- **Strumenti nuovi**: `_armPacketDebug (ms = 25000)` (arma la dump clientbound
-  solo con `PACKET_DEBUG=1`), chiamato da `_onOwnHealth` e **all'inizio** di
-  `_openTradeWithEntity` (prima la finestra si armava solo dopo il fallimento,
-  quindi la cattura non copriva l'interact); rotta `GET /debug/packet-debug?ms=…`
-  (gated da `BEDROCK_DEBUG`) per armare la cattura a runtime; `_openTradeWithEntity`
-  ora ritorna `attempts` e `distance` sul fallimento e logga
-  `packet_debug_armed {reason:'trade_not_opened', trader, distance}`.
-- **Pacchetto di apertura**: oltre a `inventory_transaction`/`item_use_on_entity`
-  (mantenuto come fallback) il tentativo 1 manda il pacchetto del client vanilla
-  `interact { action_id: 'npc_open', target_entity_id, has_position: false }`
-  (`_npcOpen`); i tentativi 2-3 mandano anche un frame `player_auth_input` con una
-  transazione `click_air` vuota (`_airUseTransaction`), che è l'unico modo di
-  alzare il flag `item_interact` (InputData 34) prima della transazione
-  sull'entità (in modalità server-autoritativa il commercio **non** è esprimibile
-  dentro `player_auth_input`: `TransactionUseItem.action_type` ha solo
-  click_block/click_air/break_block/attack).
-- **Esito live (container diagnostico `jev-tradecap`, VM 100, :3078, produzione
-  fermata)**: `POST /act {"key":"open_trade"}` → `{"ok":false,
-  "error":"trade_not_opened","hint":"villager busy, obstructed or not a trader",
-  "attempts":3,"distance":3.1}` in ~12,6 s; event log 3× `npc_open`, 2× `interact`
-  + 2 `inventory_content` di resync, **nessun** `container_open`, **nessun**
-  `update_trade`. Cattura con `PACKET_DEBUG=1`: nella finestra armata il server
-  invia solo traffico di routine (7 050 `move_entity_delta`, 6 024
-  `set_entity_data`, …, 3 `take_item_entity`) più, dopo ogni `interact`, un
-  `inventory_content` con `window_id: 'inventory'` e 36 slot vuoti
-  (`container_id` che prismarine etichetta `anvil_input`, etichetta non
-  affidabile: enum 1.26.51 vs BDS 1.26.52) — cioè il **resync che il server manda
-  quando rifiuta una transazione**.
-- **Ipotesi scartate live**: forma del pacchetto (serializza pulito con lo schema
-  1.26.51 ed è identica al percorso `attack_<mob>` verificato), `legacy_request_id`,
-  pacchetto vanilla `npc_open`, flag `item_interact` nel frame auth, villager
-  addormentato (`/observe.time` da `{ticks:23308, phase:'dawn', night:true}` a
-  `{ticks:23804, phase:'day', night:false}`: stesso fallimento), behavior pack
-  custom (il server carica solo pack vanilla in `/opt/minecraft`).
-- **Blocco infrastrutturale attraversato**: durante i tentativi il container è
-  entrato nel noto `connecterror:9` (InactivityTimeout NetherNet, backoff
-  5→60 s) e non si è ripreso da solo; risolto con il rimedio dei runbook —
-  riavvio del BDS a zero giocatori (`pct exec 108 -- systemctl
-  stop/start minecraft-bedrock.service`, console letta dentro il CT) → il
-  harness si è riconnesso da solo in ~50 s. `jev-tradecap` rimosso, produzione
-  `hermes-jev-bedrock` riavviata e ri-deployata (bot spawned, `health 20`,
-  `standingOn: oak_planks`, `phase: day`).
-- **Test**: `tests/bedrock-trading.test.mjs` 15/15 (budget inoltrato, finestra di
-  cattura solo con `PACKET_DEBUG=1`, `npc_open` + fallback + ordine
-  `item_interact` prima della transazione, `serializeAll` sullo schema 1.26.51);
-  rimossi gli import morti `isVehicleType`/`isCropBlock`/`isFarmlandBlock` e il
-  `require('prismarine-nbt')` inutilizzato nel test. Suite completa **514 pass /
-  0 fail**.
-- **Stato del task**: la parte offline di `p2-trade-timeout` è chiusa; il round
-  live resta aperto (il server ignora l'interazione: prossimi passi in
-  `wiki/trading.md` — cattura da un client reale, secondo villager).
-
-## [2026-10-03] verify | Curriculum `first_night`: test di scenario, due bug del controller, catena live fino a `acquire_wood`
-
-- **Test di scenario nuovo** `tests/controller-curriculum.test.mjs` (2 casi):
-  fake harness HTTP **a stadi** (una sola azione valida per stadio:
-  `mine_oak_log` → `craft_crafting_table` → `hunt_cow` → `sleep`) + stub del
-  binario `hermes` che pesca le decisioni da una coda (`CONTROLLER=hermes`,
-  nessuna API esterna). Il test 1 asserisce l'intera catena
-  `wood → crafting_table → food_and_safety → first_night`, i record `plan` con
-  `notes = curriculum:<milestone>`, i `skills.jsonl`, l'assenza di
-  `curriculum_fallback` e `GOAL MET after 4 actions (curriculum first_night)`.
-  Il test 2 parte con i prerequisiti già soddisfatti e verifica che il motore
-  risolva direttamente a `first_night` (nessuna sequenza hardcoded).
-- **Due bug reali trovati dal test e corretti in `controller.mjs`**:
-  1. `goalMet()` chiudeva il goal al **primo** prerequisito completato (dopo
-     `skill_success` `skillRun` è `null`, quindi cadeva sul ramo target con
-     `planTargets: {}`). Fix: guardia `if (CURRICULUM) return false;` dopo i rami
-     `follow`/`need`/`recover` e prima del ramo target — in curriculum il goal si
-     chiude solo quando il milestone finale è verificato.
-  2. `planFromMilestone()` ereditava il `WAYPOINT` ambientale (knob della demo):
-     live il primo passo di `first_night` partiva per `{x:380,z:16}`
-     (`#1 goto_waypoint -> target_not_found`). Fix: `waypoint: null`.
-- **Collaudo live (BDS 1.26.52, container `hermes-jev-bedrock`, VM 100)**:
-  - run con il controller **vecchio** (rsync fallito: `rsync: [sender]
-    change_dir "/root/hermes-and-jev-play-minecraft-bedrock" failed: Permission
-    denied` — rsync va lanciato **dal locale**, non dentro la VM): evidenza live
-    del bug del waypoint (`PLAN … {"x":380,"z":16}`, `#1 goto_waypoint ->
-    target_not_found`, `#3` idem, goal exhausted);
-  - run dopo il deploy (`sudo docker cp controller.mjs hermes-jev-bedrock:/app/`,
-    il controller è un processo nuovo a ogni `docker exec`): `#1 sleep ->
-    {"ok":true,"slept":"night_skipped","bed":{"x":116,"y":76,"z":160}}`,
-    `#2/#3 mine_oak_log ok` → **la stanza non è un blocker assoluto**: il bot
-    dorme e raggiunge i tronchi sopra la stanza;
-  - run `MAX_STEPS=12` (`RUN_ID=p3-curriculum-live-3`): `#5 mine_oak_log ok`,
-    **`SKILL acquire_wood SUCCESS {"inventory.logs":8}`** dopo 5 azioni (39,9 s:
-    mining + `collect_drop`, inventario reale `{oak_log: 8, rabbit_foot: 2,
-    torch: 1}`), `REPLAN curriculum Craft a crafting table…` (il motore avanza da
-    solo al milestone successivo) e `#6 flee` (zombie_villager_v2 a 11,7 blocchi)
-    seguito da `REPLAN periodic … [skill acquire_crafting_table]`: la prelazione
-    d'emergenza **non perde il milestone**.
-- **Limiti residui**: il milestone finale (`first_night`) non è ancora chiuso live
-  (servono cibo e una notte reale dopo il crafting; il budget di 12 passi si
-  esaurisce su `acquire_crafting_table`); il test reale multiplayer resta
-  impossibile in questa sessione (nessun player umano collegato). Suite: 516
-  test verdi.
-
-## [2026-10-03] verify | CURRICULUM=first_night chiuso live + fix target del tavolo e lock `busy`
-
-- **P3 chiuso live**. `RUN_ID=p3-first-night-3` (`CURRICULUM=first_night`,
-  `MAX_STEPS=30`, `JEV_MODEL=jev-latest`, container `hermes-jev-bedrock`, BDS
-  1.26.52): `PLAN … [skill obtain_food]` → `SKILL obtain_food SUCCESS
-  {"inventory.food":3}` (6 azioni, 41,7 s, da `mine_potatoes` + `mine_carrots`)
-  → `REPLAN curriculum Survive the first night… [skill first_night]` →
-  `#25 sleep -> {"ok":true,"slept":"night_skipped","bed":{"x":113,"y":73,"z":156}}`
-  → **`SKILL first_night SUCCESS {"sawNight":true,"phase":"day","health":20}`**
-  (19 azioni, 152,7 s) → **`GOAL MET after 25 actions (curriculum first_night)`**,
-  `exit=0`. La missione `mission_curriculum_murjqnba` (`intent: curriculum`) si è
-  chiusa `outcome: found, success: true, result: {steps: 26, totalCost: 0}` e il
-  consolidamento P0 ha scritto l'**hint positivo** su `resource_site_7_9`
-  (`carrots score 1.2 successi 1`, `potatoes score 1.1`, sources
-  `mission_curriculum_murjqnba`) — prima prova live del consolidamento su missione
-  *riuscita* (finora solo il caso `failed`).
-- **Difetto: target del piano vuoto** (trovato dallo stallo live `#7-12` con 5
-  `craft_oak_planks` e nessun tavolo). `optionPriority`
-  (`controller-decisions.mjs:29`) assegna il tier 4 ai soli
-  `mine_/craft_/smelt_<target>` dell'item in `plan.targets`: con `planTargets: {}`
-  `craft_crafting_table` finiva nel tier 5 insieme a `craft_oak_planks`/`craft_stick`.
-  Fix: `skills/gameplay/bootstrap/acquire_crafting_table.json` →
-  `"planTargets": {"crafting_table": 1}` + assertion nel test di scenario. Verificato
-  live (`p3-first-night-1`: `#5 craft_crafting_table -> ok` + `SKILL
-  acquire_crafting_table SUCCESS` + `REPLAN … obtain_food`).
-- **Difetto: lock `busy` bruciava il budget**. Dopo che un controller veniva
-  ucciso a metà azione il harness restava occupato (`bedrock-adapter.mjs:1326`
-  `if (this.busy) return {ok:false, error:'busy'}`) e il run successivo consumava
-  **tutti** i 25 passi in ~2 minuti di risposte `busy` istantanee
-  (`p3-first-night-2`). Diagnosi via `docker logs --timestamps`: l'azione in volo
-  del run ucciso (`attack_chicken`, `ms: 25013`) è finita alle 22:37:54 e da lì
-  `wait` tornava `{"ok":true}` (nessun flag perso; `/observe` non espone `busy`).
-  Fix in `controller.mjs`: retry della stessa chiave ogni `HARNESS_BUSY_POLL_MS`
-  (default 2000) fino a `HARNESS_BUSY_MAX_WAIT_MS` (default 90000), evento
-  `harness_busy {step, key, attempts, waitedMs, ok, error}` e fallimento tipizzato
-  `{error:'busy', timeout:true}` solo alla scadenza — **`busy` non consuma più un
-  passo**. Nuovo `tests/controller-busy.test.mjs` (3 risposte `busy` poi l'azione
-  esegue: un solo evento `harness_busy` con `attempts: 3`, 2 eventi `result`, 5
-  `POST /act`).
-- **Limiti residui osservati live** (documentati in `docs/wiki/open-questions.md`,
-  nessuno blocca il milestone): `attack_chicken -> combat_timeout` con **35
-  fendenti** e nessun danno (item in mano `rabbit_foot`, `weapon: null`) — blocca
-  `attack_<animal>` di P2; due `item_not_collected` su drop di dirt poi recuperati
-  da un `collect_drop` successivo; un `go_home_failed: movement timeout` recuperato
-  al passo successivo. La notte è stata passata **dormendo** nel letto della base,
-  quindi resta non provata live la variante "notte sveglio senza letto".
-- Suite: **517 test verdi** (`tests/controller-curriculum.test.mjs`,
-  `tests/controller-busy.test.mjs` inclusi). Doc: `verification.md` riga 30
-  ✅, `survival-intelligence.md` (status + evidenza live + lock), `control-flow.md`
-  ("One action at a time: the harness `busy` lock"), `roadmap.md`,
-  `open-questions.md` (4 voci nuove), `AGENTS.md` (env var `HARNESS_BUSY_*`).
-
-## [2026-10-03] fix | Combattimento: lock del bersaglio per runtimeId (chiuso il `combat_timeout` sugli animali)
-
-- **Diagnosi live**: il log eventi del container (`/app/runs/demo/events.jsonl`,
-  scritto dall'adapter quando `BEDROCK_EVENT_LOG` è attivo) con il codice vecchio
-  conteneva **102 eventi `attack` e 0 `entity_death`**, distribuiti su **almeno 15
-  galline diverse** (679:14, 691:21, 676:11, 694:7 …) con `targetHealth` quasi
-  sempre 4 e qualche 1-3. Quindi il danno entrava sui singoli uccelli ma `_combat`
-  ri-risolveva "l'animale più vicino di quel tipo" **prima di ogni fendente**: il
-  danno veniva spalmato sul pollaio, nessuno moriva e l'azione chiudeva sempre
-  `combat_timeout` (33-35 fendenti). Causa = churn di identità, non tabella dei
-  danni.
-- **Fix** (`bedrock-adapter.mjs`): nuovo `_lockedTargetState(runtimeId)`
-  (`gone`/`dead`/`alive`) e `_combat` riscritto per acquisire il bersaglio **una
-  volta** e colpirlo sempre per quella identità. La morte è confermata solo da
-  `health <= 0` (`confirmedBy: 'health'`) o da una rimozione dell'entità subito
-  dopo un fendente (`'entity_removed'`); bersaglio sparito con l'ultimo fendente
-  più vecchio di 2 s ⇒ `target_lost` (prima il codice dichiarava `killed: true`
-  appena il "più vicino" non c'era più); nessun bersaglio tracciato ⇒ `target_gone`;
-  3 approcci falliti ⇒ `cannot_reach_target`. L'inventario viene scandito una sola
-  volta per scontro (`weaponChecked`), perché con il lock una lotta può durare
-  l'intero budget. +78/−18 righe.
-- **Test**: 4 nuovi casi in `tests/bedrock-survival.test.mjs` (lock su una gallina
-  con la vicina che si avvicina, uccisione confermata da rimozione, `target_lost`
-  quando l'entità sparisce tardi, `target_gone` senza bersaglio). Suite: **521
-  test verdi**.
-- **Evidenza live del fix**: deploy con `docker cp` + `docker restart`; l'harness
-  si è riconnesso da solo (`status: spawned`, health 20, food 19). `POST /act
-  {"key":"attack_pig"}` → `{ok:false,error:"cannot_reach_target: movement
-  timeout",hits:0}` in 24,3 s: il maiale è entro 32 blocchi (il recinto è appena
-  fuori dal muro della base) ma fuori dal componente raggiungibile, quindi il nuovo
-  percorso tipizzato risponde e **nessun animale è stato ucciso**. Il round live di
-  `attack_<animal>` resta quindi in attesa del consenso dell'utente (riga 23 di
-  `verification.md`) e di un ambiente con un animale raggiungibile (la stanza della
-  base resta sigillata: `goto_waypoint` → `path_failed`, `containers: 0`).
-- **Doc**: `verification.md` riga 8 aggiornata + nuova riga 8.1 (lock del
-  bersaglio), riga 23 ⏳ → 🧪 con l'esito live; `open-questions.md` (voce "danno agli
-  animali" riscritta come risolta con ipotesi e prova); `survival-intelligence.md`
-  (residuo aggiornato).
-
-## [2026-10-03] fix | Pesca: morso dall'evento di protocollo + il nome dell'evento non viene più clobberato nei log
-
-- **Difetto (pesca)**: `_fish` prendeva la quota del bobber subito dopo il lancio e
-  dichiarava morso quando scendeva di 0,2 ⇒ la **caduta del lancio** veniva letta
-  come abboccata: il recupero avveniva prima di ogni morso, con `biteDetected:
-  true` e zero pesci (`note: 'no_bite'`). Nessun test copriva `_fish`.
-- **Fix (pesca)**: nuova `_fish({castTimeoutMs, reelTimeoutMs, biteWindowMs,
-  settleTimeoutMs, settleTolerance = 0.05, settleSamples = 3, biteDepth = 0.2})`
-  a tre fasi: (1) attesa che il bobber si posi (3 campioni consecutivi a 100 ms
-  entro 0,05, altrimenti si usa l'ultima quota letta; bobber sparito ⇒
-  `bobber_lost`); (2) attesa del morso entro la finestra, **prima** con l'evento
-  di protocollo `fish_hook_hook` (`entity_event` 13) ⇒ `biteSource: 'event'`,
-  poi in fallback con un affondo di ≥ 0,2 rispetto alla quota di riposo su **due
-  campioni consecutivi** ⇒ `biteSource: 'dip'`; (3) `_reelIn` e merge
-  `{...reel, biteDetected, biteSource}`. `_onEntityEvent` riconosce anche
-  `fish_hook_tease` (14) ⇒ `_fishTeaseAt` + log `fish_tease`.
-- **Scoperta (log)**: `log(type, data)` faceva `{ t, type, ...data }`, quindi un
-  `type` nel payload **rinominava l'evento**: nel log live `entity_add` finiva
-  come `zombie` (385), `skeleton` (238), `creeper` (202), `entity_death` come il
-  nome del mob, `chat`/`chat_out` come il canale. Conseguenza: la diagnosi del
-  combattimento ("0 `entity_death`") va letta come "nessuna morte **nella
-  finestra** dello scontro (22:37:01→22:40:51, 102 fendenti)"; le 10 morti di
-  gallina presenti nel log sono alle 14:43, ~8 h prima, e sotto il nome `chicken`.
-- **Fix (log)**: merge `{ t, ...data, type }` in `bedrock-adapter.mjs`,
-  `bedrock-harness.mjs:35` e `harness.mjs:18`; payload rinominati in `entityType`
-  (`mount`, `entity_add`, `entity_death`, `fish_bite`, `fish_tease`) e `chatType`
-  (`chat`, `chat_out`, `chat_out_error`). Pulizie di lint: `safeJson` con `_k`,
-  try/catch sul caricamento di `flying-squid` in `harness.mjs`.
-- **Test**: 6 nuovi in `tests/bedrock-fishing.test.mjs` (il lancio non è un morso,
-  evento `fish_hook_hook`, id numerici 13/14, il dip richiede due campioni, un
-  solo campione non è un morso, `bobber_lost`) + `the event name survives a
-  payload type` in `tests/bedrock-survival.test.mjs`. Suite: **528 test verdi**.
-- **Doc**: `fishing.md` (stato, tabella azioni, sezione bite detection, verifica),
-  `verification.md` (riga 28 ⏳ → 🧪, riga 8.1 corretta, nuova riga 8.2),
-  `open-questions.md` (pesca e combattimento animale), `roadmap.md`.
-
-## [2026-10-03] fix | Pickup automatico: salta i drop in celle irraggiungibili (residuo `item_not_collected` chiuso)
-
-- **Diagnosi live** (`runs/p3-first-night-3`, event log 00:34:59→00:43:30): la
-  raccolta funziona — `pickup` per `torch`, `oak_log`, `potato`, `carrot`, `egg`
-  (`mine_potatoes picked: [{potato: 1}]`, `mine_carrots picked: [{carrot: 1}]` →
-  `obtain_food SUCCESS {inventory.food: 3}`), ~14× `collect_drop ok {egg}` con il
-  conteggio 1→27 dal pollaio sopra la stanza. I `collect_drop ERR
-  item_not_collected` residui sono i drop la cui cella d'arrivo sta **fuori dal
-  componente camminabile**: la `dirt` scavata dentro la stanza cade nella cavità
-  sotto le assi (il `dirt` entrato in inventario più tardi veniva da un altro
-  scavo). La vecchia lettura "regressione del pickup" del 02/10 va quindi
-  riletta come caso geometrico, non come handshake `take_item_entity` rotto.
-- **Fix**: `_pickupNearby` era l'ultimo percorso di raccolta senza filtro di
-  raggiungibilità — prendeva il drop più vicino entro 3.5 blocchi e tentava
-  `_moveTo` (budget 3 s) anche su un drop imprigionato, restituendo `picked: []`
-  senza motivo. Ora legge `_reachabilityUsable()` e sceglie solo drop
-  `dropReachable`, rileggendo la lista a ogni giro; se nessuno è raggiungibile
-  marca `failedAt` su tutti i vicini, logga `pickup_skipped {item, count,
-  reason: 'unreachable', skipped}` e ritorna subito **senza spendere move**. La
-  shape del ritorno (array `picked`) è invariata per i due chiamanti
-  (`_mineBlock`, mining raw).
-- **Fix di robustezza**: `_startNode()` leggeva `this._feet` senza guardia e
-  `_reachabilityUsable()` lanciava `Cannot read properties of null (reading
-  'x')` in 6 test di mining (adapter senza piedi risolti). Ora `_startNode()`
-  ritorna `null`, `reachableCells()` ritorna `{start: null, cells: new Set(),
-  truncated: false}` e `_reachabilityUsable()` ritorna `false` — fail-open,
-  coerente col principio già in vigore per componente degenere e BFS troncato.
-- **Test**: 2 nuovi in `tests/bedrock-reachability.test.mjs` (16 nel file) — il
-  pickup salta il drop imprigionato con `moves === 0` e `failedAt` + log
-  `pickup_skipped`; con un drop raggiungibile e uno imprigionato raccoglie il
-  primo (`picked: [{item:'dirt',count:1}]`, `moves === 1`) e salta il secondo.
-  Suite completa: **530 test verdi**, `npm run wiki:lint` pulito.
-- **Residuo**: la prova live di `pickup_skipped` richiede un mining con cella
-  d'arrivo irraggiungibile — impossibile nella stanza sigillata (nessun `mine_*`
-  offerto, pavimento protetto, `dig_down` indisponibile); va rifatta a ambiente
-  sbloccato.
-- **Doc**: `verification.md` (riga 4 ⚠️ → ✅ con l'evidenza live e la
-  rilettura del caso cavità; riga 42.3 estesa con il filtro dell'auto-pickup, il
-  fail-open sui piedi ignoti e i 16 test), `open-questions.md` (bullet
-  "Drop collection regression" chiuso, "Drop pickup residue" riscritto).
-
-## [2026-10-03] feat | Maturazione colture (`harvest_<crop>`) + fix della lettura degli stati di blocco
-
-- **Bug (causa radice)**: `BedrockWorld.findBlocks` (`bedrock-world.mjs:241`)
-  restituiva `{ ...this.blockAt(pos), distance }`. Spalmare un `Block`
-  prismarine perde i metodi, quindi `getProperties()` non esisteva e *ogni*
-  stato letto via `findBlocks` risultava ignoto. Live: `/observe.nearby`
-  riportava `growth: null, mature: null` su tutte le colture. Fix: `findBlocks`
-  ora restituisce l'oggetto blocco stesso (con `distance` allegata), e
-  `blockProperties()` in `bedrock-survival.mjs` accetta anche la forma spalmata
-  (`_properties` + `computedStates`) per robustezza.
-- **Feature**: `CROP_MAX_GROWTH` (`growth` 0..7 per wheat/carrots/potatoes/
-  beetroots/melon_stem/pumpkin_stem/sweet_berry_bush, `age` 0..3 per
-  nether_wart), `cropMaturity(block)` (`null` per i non-coltura, `mature: null`
-  quando lo stato non è leggibile = fail-open) e `seedForCrop()` in
-  `bedrock-survival.mjs`. L'adapter offre `harvest_<crop>` solo per le piante
-  mature (al posto di `mine_<crop>`; la descrizione dice cosa verrà ripiantato e
-  quante restano a crescere), rifiuta `mine_<crop>` su una pianta acerba
-  (`crop_not_mature: <crop>`), ricontrolla lo stato dentro `_mineBlock` e con
-  `_harvestCrop()` miete + ripianta il seme in best-effort (`_mineBlock` +
-  `_plantSeed`) restituendo `{crop, growth, harvest, replanted, immature}`;
-  errori tipizzati `not_a_crop`/`no_crop_found`/`crop_not_mature`/`drop_unreachable`.
-- **Test**: `tests/bedrock-farming.test.mjs` 20 → 34 (maturità e `age`, blocchi
-  spalmati, opzioni, rifiuto con **0 pacchetti** inviati, mietitura+ripianto,
-  senza seme, campo vuoto vs ancora in crescita, drop irraggiungibile,
-  annotazione in `/observe`), `tests/bedrock-world.test.mjs` +1 (`findBlocks`
-  restituisce un blocco con `getProperties()` funzionante). Suite completa
-  `node --test tests/*.test.mjs` → **543 pass / 0 fail**; `npm run wiki:lint` pulito.
-- **Live (BDS 1.26.52, container `hermes-jev-bedrock`, VM 100)**: dopo il deploy
-  (`rsync` + `docker cp` + `docker restart`) `/observe.nearby` →
-  `potatoes growth 7/7/6/6` (`mature: true/false`) e `carrots growth 7`;
-  `POST /act harvest_wheat` → `no_crop_found`; `harvest_potatoes` →
-  `drop_unreachable` in 0.01 s; `mine_potatoes` → `path_failed` in 0.03 s
-  (fallimento rapido invece dei 20-30 s di prima). La mietitura end-to-end resta
-  bloccata: gli unici campi (z ≈ 188) sono fuori dal componente camminabile del
-  bot (gabbia, riga 4 di verification.md).
-- **Doc**: `verification.md` (nuova riga 19.1, nota sulla riga 100, lista "still
-  not implemented"), `survival-intelligence.md` (543 test + paragrafo feature),
-  `open-questions.md`, `roadmap.md`, `headless-client.md` (percezione:
-  `findBlocks` restituisce il blocco, non una copia).
-
-## [2026-10-03] feat | Chat M5: ack dell'ordine e esito (+ fix dell'eco e degli ordini vecchi)
-
-M5 non è più "metà fatto": il bot conferma un ordine ricevuto in chat e comunica
-l'esito quando il goal si chiude. Round live sul BDS reale (CT 108, container
-`hermes-jev-bedrock` su VM 100).
-
-**Implementazione**
-- `human-replies.mjs` (nuovo, puro): `orderAck`, `orderOutcome`, `renderReply`,
-  `clampMessage` (una riga, spazi collassati, troncamento con `…`),
-  `isSelfTriggering`; template di default `@<nome> ok: <obiettivo>` /
-  `@<nome> fatto: <obiettivo> (N azioni)` / `non ce l'ho fatta: <motivo>` /
-  `mi fermo qui: <motivo>`.
-- `controller.mjs`: `replyChat()` (POST `/say`, mai throw, log `chat_reply` /
-  `chat_reply_refused`), ack dopo il piano in `maybeHumanCommand`, esito a fine
-  goal (ramo `humanOrder` o `source === chat`); `human_order` loggato anche nel
-  percorso IDLE (prima solo nel ramo di un goal già attivo); env `CHAT_REPLY`,
-  `CHAT_REPLY_MAX_LENGTH`.
-
-- **Due difetti trovati dal round live**
-- **Eco di sé**: il server rimanda al mittente il proprio messaggio con il
-  gamertag reale, che **non** è `BEDROCK_USERNAME` (nome di autenticazione: dal
-  vivo 10 vs 8 caratteri). Il filtro confrontava i nomi, quindi il bot sentiva se
-  stesso e — con il proprio gamertag in `CHAT_ALLOWLIST` — si ordinava da solo
-  (osservati live i goal g2/g3/g4 nati dai propri messaggi). Fix:
-  `_isOwnChatEcho()` confronta il testo dei messaggi appena inviati entro
-  `CHAT_ECHO_WINDOW_MS` (15000), logga `chat_echo` e impara il nome del server
-  (`selfName`, evento `self_name_learned`); `isSelfName()` protegge anche la
-  chat e la lista umani (`_nearbyHumanPlayers`).
-- **Ordini vecchi rieseguiti**: l'inbox dell'harness conserva gli ultimi 32
-  messaggi, quindi un controller riavviato rieseguiva ordini già evasi (dal vivo
-  lo stesso messaggio ha prodotto tre goal distinti). Fix: `CHAT_MAX_AGE_MS`
-  (default 300000, fail-open se `at` manca) con evento `chat_stale`. Inoltre la
-  telemetria del rifiuto ora è una per messaggio: dal vivo 122 `chat_ignored`
-  identici in 25 s → 1.
-
-- **Evidenza live**
-- Catena: `POST /say {"@bot fermati e resta qui"}` → `chat_command {from, xuid,
-  message}` → `plan_fallback` (Hermes non installato nel container, 6 ms) →
-  `chat_reply {context:ack, ok:true}` (il messaggio ricompare in
-  `GET /observe.chat` come voce nuova: la risposta ha davvero attraversato il
-  server) → `human_order {via:idle}` → `goal_start {source:chat, priority:80}` →
-  `goal_end` → `chat_reply {context:outcome}`.
-- Dopo il fix dell'eco: `POST /say "@bot FERMATI-TEST-ECO"` → log harness
-  `chat_echo: 1`, `[chat]: 0`, `chatInbox` 0, nessun `chat_command`/`chat_reply`.
-- Limiti: `POST /say` ha un rate limit dell'adapter (`CHAT_MIN_INTERVAL_MS`,
-  1000 ms) — gli ack ravvicinati possono uscire `rate_limited`; il mittente
-  **umano** resta da verificare (nessun umano si collega al BDS durante i run
-  autonomi).
-
-**Test**: `tests/human-replies.test.mjs` (9), `tests/controller-chat-ack.test.mjs`
-(3: ack+esito, mittente non in allowlist, ordine stantio), `tests/bedrock-chat.test.mjs`
-(9: eco, apprendimento del gamertag, inbox di un altro giocatore, tipi ignorati,
-finestra scaduta, `isSelfName`, lista umani, guardie di `sendChat`).
-Suite completa: **564 test, 564 pass, 0 fail**.
-
-**Doc**: `human-command.md` (stato, riga tabella, milestone M5 ✅, sezione "Live
-evidence" con i due difetti e i limiti), `verification.md` (riga 18 → 🧪),
-`open-questions.md`, `roadmap.md`, `AGENTS.md` (env `CHAT_REPLY`,
-`CHAT_REPLY_MAX_LENGTH`, `CHAT_MAX_AGE_MS`, `CHAT_ECHO_WINDOW_MS`).
-
-## [2026-10-03] feat | Mungitura: `craft_bucket` + `milk_<animale>` (P4.1)
-
-Implementata la mungitura (latte). Codice completo e testato offline; il round
-live resta bloccato dall'ambiente.
-
-- **Dati** (`bedrock-survival.mjs`): `MILKABLE_TYPES`/`isMilkableType` (cow,
-  mooshroom; `pig`/`sheep`/villager restano fuori) e `BUCKET_INGREDIENTS`
-  (`iron_ingot: 3`), coerenti con lo stile dei dati già presenti nel modulo.
-- **Adapter**: nuova opzione `craft_bucket` (3 lingotti + crafting table, come
-  `craft_shears`) e `milk_<animale>` nel blocco fattoria, offerta solo con un
-  secchio e una mucca raggiungibile (eredita il gate `entityApproachable`).
-  `_milkAnimal(type, timeoutMs = 15000)` equipaggia il secchio, si avvicina e
-  ripete `item_use_on_entity interact` come `feed`/`shear`; la conferma è il
-  delta d'inventario (`milk_bucket` +1, oppure `bucket` −1) perché il server non
-  manda un evento dedicato; errori tipizzati `not_milkable`, `missing_bucket`,
-  `no_milkable_nearby`, `animal_unreachable`, `milk_not_confirmed`.
-- **Test**: `tests/bedrock-milk.test.mjs` (10 casi: dati, opzioni col/gate del
-  secchio e mai per un maiale, `craft_bucket` a 3 lingotti ma non a 2, conferma
-  da `milk_bucket` e da `bucket_consumed`, errori tipizzati, timeout breve,
-  dispatch di `executeAction('milk_cow')`). Suite completa: **574 test, 574 pass,
-  0 fail**.
-- **Live (BDS 1.26.52, container `hermes-jev-bedrock`)**: i gate tengono sul
-  server vero — `/options` non contiene né `milk_*` né `craft_bucket` (nessun
-  secchio, nessun lingotto, e il censimento animali è `sheep` + `chicken`,
-  **nessuna mucca/mooshroom**); `POST /act milk_cow` → `missing_bucket` in
-  **0,00 s** (tre volte), `POST /act craft_bucket` → `missing_ingredients` (la
-  ricetta del secchio **è** nei crafting data del server, altrimenti sarebbe
-  `craft_recipe_missing`).
-- **Blocker del round live** (documentato, non un difetto): servono una mucca e
-  un secchio (3 lingotti di ferro) che la gabbia non permette di procurarsi. La
-  gabbia è la stessa domanda A/B/C in vigore **(C)**.
-- **Doc**: `verification.md` nuova riga 19.2 + lista "still not implemented"
-  aggiornata, `open-questions.md` (due punti sul latte), `roadmap.md` (riga
-  farming, leftovers, prossimi passi).
-
-## [2026-10-03] feat | Scudo: craft/equip/raise/lower (P4.3, offline + evidenza gate live)
-
-- **Implementazione** (`bedrock-survival.mjs`, `bedrock-adapter.mjs`):
-  `SHIELD_INGREDIENTS = { iron_ingot: 1, planks: 6 }`; opzione `craft_shield`
-  (ricetta reale + tavolo + 1 lingotto + 6 assi di legno qualsiasi), opzione
-  `equip_shield` (scudo in inventario, offhand libera), `raise_shield` (scudo
-  equipaggiato + ostile entro `SHIELD_THREAT_RANGE`, default 8) e
-  `lower_shield` (solo a scudo alzato).
-- **Equipaggiamento**: `_equipShield()` muove l'item nell'offhand con la stessa
-  forma di `_equipArmor` — `take` sul cursor + `place` sul container `offhand`
-  (id 34) — e conferma dal pacchetto `mob_equipment` che il server rimanda per
-  la mano secondaria (`confirmedBy: mob_equipment`), altrimenti dalla forma
-  della risposta degli stack request (`confirmedBy: stack_response`). Errori
-  tipizzati: `missing_shield`, `shield_take_failed_*`, `shield_place_failed_*`,
-  con il cursor restituito all'inventario quando il `place` fallisce. Il nuovo
-  `_onMobEquipment(packet)` traccia `selected_slot` e lo stato dell'offhand.
-- **Alzare lo scudo**: `_raiseShield()`/`_lowerShield()` dichiarano l'uso
-  dell'item nel frame `player_auth_input` con il flag `start_using_item`
-  (binario 53, presente nello schema 1.26.51: il test serializza il frame con il
-  serializer live). Non si inventa uno stato di successo: la conferma
-  osservabile è il pacchetto + il log `shield_up`, e lo scudo va abbassato
-  esplicitamente.
-- **Test**: `tests/bedrock-shield.test.mjs` (14 casi: dati, opzioni per tutti e
-  quattro i comandi, forma dei due stack request, conferma autorevole via
-  `mob_equipment`, errori tipizzati, frame auth con/senza `start_using_item` e
-  serializzazione, tracking dell'offhand, dispatch). Suite completa **588 test,
-  588 pass, 0 fail**.
-- **Evidenza live (BDS 1.26.52, container `hermes-jev-bedrock`, 03/10)**: i gate
-  tengono sul server reale — `/options` (11 chiavi) non offre nulla dello scudo
-  (nessuno scudo e nessun lingotto di ferro in inventario), `POST /act
-  equip_shield` → `missing_shield` in 0.025 s, `raise_shield` →
-  `shield_not_equipped` in 0.014 s, `lower_shield` →
-  `{ok:true,raised:false,already:true}` in 0.021 s, `craft_shield` →
-  `missing_ingredients` in 0.018 s (quindi la ricetta `shield` **esiste** nei
-  crafting data del server, non è `craft_recipe_missing`).
-- **Blocker del round live** (documentato, non un difetto): per equipaggiare e
-  alzare lo scudo servono 1 lingotto di ferro + 6 assi e un ostile che arrivi al
-  bot; nella gabbia il ferro non è raggiungibile e il combattimento non è
-  testabile a distanza utile. Resta la stessa domanda A/B/C in vigore **(C)**.
-- **Doc**: `verification.md` nuova riga 19.3 + lista "still not implemented"
-  aggiornata, `open-questions.md` (bullet difesa), `roadmap.md` (riga
-  `DEFENSE-TASK.md` + leftovers), `AGENTS.md` (`SHIELD_THREAT_RANGE`).
-
-## [2026-10-03] feat | Esplorazione: hardening M1 + M2 route replay (collaudo live)
-
-- **M1 (planner deterministico)**: già implementato (`exploration.mjs`, `POST/GET
-  /explore`, driver `explore.mjs`) e verificato live il 02/10; questo giro lo ha
-  irrobustito con tre difetti trovati in ricognizione. (1) Il report di un `found`
-  ora porta `found: true`: chiudere una missione è un atto che dichiara successo,
-  quindi la prova viaggia nel risultato (il DB live aveva una missione
-  `state: found` con `result: {found: false}`, falso positivo storico di una
-  versione precedente). (2) `GET /explore` avanza **solo** una missione
-  `find_biome`: prima usava qualunque `adapter.missionId`, quindi dopo un run
-  curriculum/autonomo il planner dell'esplorazione girava su una missione di
-  altro tipo. (3) `POST /explore` chiude le esplorazioni rimaste `running` come
-  `superseded` (`outcome: superseded`, `failureReason: superseded_by_new_mission`):
-  un riavvio del servizio non lascia più missioni zombie (live: 5 chiuse in un
-  colpo) e non riprende una ricerca vecchia.
-- **M2 route replay (nuovo)**: "torna al <posto già scoperto>" con le tappe
-  registrate come **guide**, non come percorso obbligato. Primitive pure in
-  `exploration.mjs`: `replayRouteFromMission` (destinazione = `targetPosition`,
-  altrimenti ultima tappa, altrimenti posizione; le tappe coincidenti con la
-  destinazione non sono guide), `replayRouteFromPlace` (posto del world graph),
-  `planReplayStep` (una tappa guida solo se ci **avvicina** alla destinazione: le
-  tappe alle spalle si saltano; `arrived` entro `arrivedRadius`, default 6),
-  `buildReplayReport`. Harness: `POST /explore/replay {missionId|placeId|x,z}`
-  crea una missione `replay` (arco `replay_of` verso la missione sorgente, o
-  `replays` verso il posto) e la attiva; `GET /explore/replay` restituisce un
-  passo (`move` con `via` = tappa guida, oppure `arrived`), e su `arrived` chiude
-  con `outcome: arrived`, `success: true`. Driver `explore-replay.mjs`.
-- **Evidenza live** (container `hermes-jev-bedrock`, BDS 1.26.52, VM 100):
-  `POST /explore {target:'pale garden'}` → missione nuova +
-  `superseded: [mission_find_biome_murmt124, …murfeku4, …murfe6om, …murfe67n,
-  …murey8jr]`; `GET /explore` ha continuato a servire la missione di esplorazione
-  mentre era attiva una missione di replay (fix 2 verificato). Replay:
-  `POST /explore/replay {missionId:'mission_autonomous_murgzqlh',
-  arrivedRadius:2}` → `mission_replay_murmyn84`, rotta con destinazione
-  (117,75,159) presa dai dati registrati → `GET /explore/replay` → `move`
-  (`remaining 2.6`, `legs 0`) → `POST /plan` + `goto_waypoint` → **ok,
-  `pathNodes: 4`** → `arrived` (`stopPosition {115.7,74.6,157.5}`) → `GET
-  /mission` → `state: arrived`, `outcome: arrived`, `success: true`,
-  `completedAt` valorizzato; in SQLite l'arco
-  `mission_replay_murmyn84|replay_of|mission_autonomous_murgzqlh`. Secondo caso
-  `POST /explore/replay {placeId:'home'}` → destinazione risolta dal world graph
-  (108,74,138) → `goto_waypoint` → `path_failed`: 21 blocchi fuori dal
-  componente camminabile.
-- **Limiti residui**: il run end-to-end dell'esplorazione resta bloccato
-  dall'ambiente (primo waypoint della spirale a 96 blocchi → `target_not_found`;
-  nessun bioma nuovo, nessun checkpoint di viaggio), e il caso **multi-tappa** di
-  M2 (rotta con checkpoint intermedi) è coperto solo dai test unitari: nella
-  stanza non è possibile guadagnare tappe (i checkpoint si scrivono ogni 48
-  blocchi di viaggio). Resta la domanda A/B/C in vigore **(C)**.
-- **Test**: 11 casi nuovi in `tests/exploration-replay.test.mjs` (derive della
-  rotta da missioni e posti **persistiti** su entrambi i backend, tappe avanti vs
-  indietro, soglia di arrivo, report) + asserzione `found: true` in
-  `tests/exploration.test.mjs`; suite completa **599 test, 599 pass, 0 fail**.
-- **Doc**: `exploration.md` (status, sezione "Route replay (M2)", stato del
-  codice con evidenza live e limiti, API `explore.returnTo`),
-  `verification.md` (riga 45 aggiornata, nuova riga 45.1, riga 46),
-  `open-questions.md` (bullet "No real exploration"),
-  `roadmap.md` (voce 10).
-
-## [2026-10-03] feat | Esplorazione M4: ricerca di blocchi ed entità osservabili (collaudo live)
-
-M4 (spec: `explore.findBlock(target)`, EXPLORE → SCAN → MATCH BLOCK/ENTITY →
-REPORT) è implementato sul modello della missione M1: stesso ciclo, target
-osservabile invece di un bioma.
-
-**Implementazione**
-- `exploration.mjs`: `SEARCH_ALIASES` / `SEARCH_ENTITIES`,
-  `resolveSearchTarget(text)` → `{kind: 'block'|'entity', name, id}` (alias
-  naturali per funghi, zucca, bambù, mangrovia, canna da zucchero, melone,
-  cactus, vite, ninfee, cacao + animali; escape hatch `block:<name>` /
-  `entity:<name>` per qualunque id; i biomi restano di competenza di M1),
-  `SUPPORTED_SEARCH_TARGETS`, `buildSearchReport` (count, `best`
-  posizione+distanza, ≤5 match, `distanceFromOrigin`, `scannedChunks`,
-  durata), `planSearchStep` (report se la scansione ha trovato qualcosa,
-  altrimenti la spirale di M1). La corrispondenza degli alias usa un **confine
-  di parola**: trovato dai test, `'canna da zucchero'.includes('zucche')`
-  attivava l'alias di pumpkin.
-- `bedrock-harness.mjs`: `scanSearchTarget` (blocchi dai chunk caricati con
-  `world.findBlocks`, entità dal registro percepito `_nearbyEntities`, cap 24
-  blocchi — il bot promette solo ciò che vede); `POST /explore/find {target}`
-  (400 `unknown_search_target` + lista supportata) crea la missione
-  `find_block`/`find_entity` e supersede le ricerche `running`;
-  `GET /explore/find[?radius&limit]` restituisce un passo e, al `report`,
-  chiude la missione con `updateMission({targetPosition})` +
-  `completeMission`.
-- Driver `explore-find.mjs` (stesso schema di `explore.mjs`).
-
-**Collaudo live** (container `hermes-jev-bedrock`, BDS 1.26.52; il bot è nella
-stanza x114-117 / z156-160)
-- `{target:'block:oak_log'}` → missione `mission_find_block_murn5tz9` →
-  `GET /explore/find` → `report`: `found: true`, `count: 16`,
-  `best {oak_log (114,75,155), distance 2}`, 5 match, `scannedChunks: 125`.
-  Missione chiusa `state: found` / `outcome: found` / `success: true`, arco
-  `targets → minecraft:oak_log` in SQLite.
-- `{target:'brown mushroom'}`, `{target:'zucche'}`, `{target:'mucca'}` → nessun
-  match nei chunk caricati → `move` (spirale) con `found: 0` e **nessun falso
-  positivo**; il `goto_waypoint` successivo è `target_not_found` (gabbia, non
-  `arrived`).
-- `{target:'cherry grove'}` (un bioma) → 400 `unknown_search_target` + lista.
-- Una ricerca nuova chiude la precedente come `superseded`
-  (`superseded_by_new_search`).
-
-**Test**: 5 casi in `tests/exploration-search.test.mjs` (risoluzione NL e
-confine di parola, escape hatch, rifiuti, forma del report, report-vs-spirale);
-suite completa **604 test, 604 pass, 0 fail**.
-
-**Doc**: `exploration.md` (sezione "Observable targets (M4)", stato del codice,
-limiti aggiornati: l'M4 funziona da fermo perché scansiona i 125 chunk caricati,
-un target non caricato richiede viaggio), `verification.md` (riga 45.2, riga 46),
-`open-questions.md`, `roadmap.md` (voce 10).
-
-## [2026-10-03] feat | Esplorazione M5/M6: detector di strutture e cavità + round live
-
-**Obiettivo**: dare all'esplorazione i target "dove sono le cose" (M5 strutture,
-M6 sottosuolo) con un detector deterministico, non con una lista di coordinate
-cablata.
-
-**Implementazione**
-- `bedrock-world.mjs`: `surveyBlocks(point, radius = 48, {limit = 20000,
-  maxDistinct = 96, airBelow = 3, ignore})` → istogramma **per nome di blocco**
-  (`names: Map(name → {count, first})`, `scanned`, `truncated`, `distinct`) in
-  una sola passata limitata. Il budget di celle si spende **partendo dalle
-  sezioni più vicine** (prima un `limit` raggiunto lasciava fuori l'area attorno
-  al bot). L'aria resta rumore ignorato, **tranne** quella sotto i piedi
-  (`y <= point.y - airBelow`): finisce nel bucket sintetico `air_below`, che è
-  ciò che rende osservabile una cavità non visibile.
-- `structures.mjs` (nuovo, puro): `STRUCTURE_DEFS` (village, mineshaft,
-  ancient_city, trial_chamber, spawner, amethyst_geode, cave) con regole
-  `{matcher, min, score, label}`, `anchors` e `minScore`; `detectStructures`
-  restituisce `{id: 'structure:<type>', position, confidence, evidence:{score,
-  matched, missing, blocks, entities}}`, l'ancora è il marker più specifico
-  combaciato e un tipo esce solo sopra `minScore` (nessun villaggio per un tavolo
-  da lavoro).
-- `world-memory.mjs`: `rememberStructure(...)` → landmark `kind: structure`
-  (`structure_<tipo>_x_y_z`) + `is_a` verso il nodo-concetto `structure:<tipo>`
-  con l'evidenza; idempotente per id. `findLandmarks` ora scarta i nodi
-  `category: conceptual` (sono conoscenza, non luoghi).
-- `bedrock-adapter.mjs`: `_surveyStructures({radius, limit, force})` con
-  throttle `STRUCTURE_RESCAN_MS` (60 s), `this.structures`,
-  `_structureSurvey` in `/observe`, log `structure_detected`; `GET
-  /observe.structures[?force&radius&limit]`; `scanStructureTarget` unisce
-  detection live e landmark ricordati (una struttura resta trovabile dopo un
-  riavvio); `resolveSearchTarget` risolve gli alias `structure:*` prima delle
-  tabelle blocco/entità.
-- Nomi Bedrock corretti grazie al round live: il letto è **`bed`** (non
-  `oak_bed`) e il tagliapietre è **`stonecutter_block`** (non `stonecutter`).
-
-**Collaudo live** (container `hermes-jev-bedrock`, BDS 1.26.52, bot in un
-villaggio a (115, 74.6, 157))
-- `GET /observe.structures?force=1&radius=24&limit=60000` (`scanned 60000`,
-  `distinct 47`, `truncated: true`): `structure:village` a **(113,73,156)**
-  `confidence 0.6` score 6 (30 letti, 315 workstation fra cui
-  `stonecutter_block`, 11 villager, manca `bell (0/1)`) e `structure:cave` a
-  **(112,71,144)** `confidence 0.5` score 3 (`air below: 831` celle d'aria sotto
-  i piedi: la rete di tunnel a y=71 già nota). Entrambe scritte in SQLite come
-  landmark + archi `is_a` con l'evidenza; ricognizioni ripetute non duplicano i
-  record.
-- `POST /explore/find {target:'grotta'}` → missione `mission_find_structure_*`
-  → `report {kind: 'structure', found: true, best: {cave (112,71,144), 13.1}}`;
-  `{target:'città antica'}` → `move` con `found: 0` (**nessun falso positivo**
-  con la soglia `minScore`).
-
-**Test**: 6 casi in `tests/structures.test.mjs` (villaggio solo-letti → nessuno,
-letti+sentieri senza abitanti → nessuno, villaggio completo con ancora sui letti
-e `missing` per il campanile, marker M6, `air_below`, soglie/ordinamento) +
-`rememberStructure` su entrambi i backend in `tests/world-memory.test.mjs` +
-asserzioni su `surveyBlocks` in `tests/bedrock-world.test.mjs` + strutture in
-`tests/exploration-search.test.mjs`. Suite completa **612 test, 612 pass, 0
-fail**.
-
-**Limiti residui**: il survey è un istogramma (conta una cavità, non la segue) e
-vede solo ciò che è caricato attorno al bot (48 blocchi, con budget); le soglie
-sono tarate su questo mondo (meglio mancare una struttura che inventarla); la
-regola Ancient City/Deep Dark non è mai stata osservata dal vivo.
-
-**Doc**: `exploration.md` (sezione "Structures and underground targets (M5/M6)" +
-stato del codice + limiti), `memory.md` (slice "Structures" → implementata),
-`verification.md` (riga 45.3), `open-questions.md`, `roadmap.md` (voci 10 e 11),
-`AGENTS.md` (env `STRUCTURE_RESCAN_MS`/`STRUCTURE_RADIUS`/
-`STRUCTURE_SURVEY_LIMIT`).
-
-## [2026-10-03] feat | Kit di viaggio: loadout, pillar-up, hut + il piazzamento dei blocchi
-
-Implementati in `bedrock-adapter.mjs` (`travel_kit`, `pillar_up`, `build_hut`,
-con `_travelKit`, `_nextKitCraft`, `_ensureCraftingTable`, `_pillarUp`,
-`_buildHut`, `_jumpOnce`, `_headroom`, `_airAt`, `_badSupport`,
-`_placeableBlock({richest})`, `_findPlacementTarget` ad anello) e collaudati
-live sul container `hermes-jev-bedrock` (BDS 1.26.52, VM 100). `travel_kit`
-crafta spada e tavolo (`missing: [armor, night]`, niente lana/cuoio
-raggiungibile); `pillar_up` si rifiuta con `no_headroom` perché la stanza del
-bot è alta due blocchi (`/observe.headroom` = 1) e non invia un solo pacchetto;
-`build_hut` ha piazzato davvero un blocco (`oak_log` 6→5, confermato dal
-server), ha saltato le 8 celle già murate e riporta `hut_incomplete` sulle 3 con
-supporto d'arredamento. Due bug di piazzamento trovati dal vivo e corretti:
-cella bersaglio non-aria (`unexpected_block_torch`: una torcia non è solida ma
-occupa la cella) e supporto "usabile" che consuma il click
-(`place_not_confirmed` con cella vuota); un terzo fix riguarda il salto, che ora
-usa il canale `_freeJump` invece di riscrivere `_motion` (il codice precedente
-faceva crashare l'harness: `TypeError: Cannot read properties of undefined
-(reading 'x')` in `_updateMotionState`). Aggiunta anche la diagnostica
-`/observe.placement`. Suite: 634 test (`tests/bedrock-travel-kit.test.mjs`, 20
-casi). Doc: `exploration.md` (sezione travel kit riscritta + limiti di
-piazzamento e residui live), `verification.md` (riga 45.4),
-`open-questions.md`, `roadmap.md` (voce 12).
-
-## [2026-10-03] feat | Observation log + indice vettoriale (P6)
-
-Chiuse le due sotto-slice P6 rimaste sulla memoria. L'**observation log**
-(`memory-store.mjs`, `sqlite-memory.mjs` schema v5, `world-memory.mjs`,
-`bedrock-harness.mjs`) rende il grafo una *proiezione* di un log
-`subject/predicate/object` con `confidence`/`observedAt`/`source`: i produttori
-(`rememberContainer`, `rememberResourceSite`, `rememberStructure`) continuano a
-scrivere gli archi e registrano anche l'osservazione; `materialize()` riproietta
-il log in modo idempotente (vince l'osservazione più recente per
-`subject|predicate`, un arco non più supportato viene **invalidato** e non
-cancellato, le osservazioni senza nodo soggetto sono contate `orphaned` e non lo
-ricreano) e `hydrate()` lo esegue all'avvio. Rotte nuove: `GET
-/memory/observations`, `POST /memory/materialize`. Un bug trovato dai test: nel
-repository JSON il campo `this.observations` ombreggiava l'omonimo metodo.
-
-L'**indice vettoriale** (`vector-index.mjs`, nuovo modulo puro senza dipendenze) è
-un indice *derivato* sui record correnti: tokenizer con stopword en/it, hash
-FNV-1a, embedding bag-of-words con segno, 2048 dimensioni, normalizzazione L2,
-similarità coseno, cache con TTL invalidata dalle scritture e dal consolidamento.
-`VECTOR_KINDS` + posizione obbligatoria escludono i nodi-concetto (stesso `kind`
-ma non destinazioni). Rotte: `GET /memory/search`, `POST /memory/reindex`,
-`GET /observe.memory.vector`.
-
-Prova comparativa richiesta dalla slice: per *"the iron rich cave near the
-mountain"* il percorso per parola chiave non trova nulla (i `contains` sono id di
-gioco: `iron` ≠ `iron_ore`) o restituisce due grotte non ordinate senza punteggio,
-mentre il vettoriale mette la grotta giusta **prima** (`precision@1 = 1`) con la
-posizione. L'integrazione col consolidamento P0 funziona: `documentText()`
-indicizza le chiavi dei productivity hint più `successful productive rich abundant
-proven`, quindi *"productive dirt site"* restituisce il sito consolidato.
-
-Verifica live (container `hermes-jev-bedrock`, VM 100): migrazione **v4 → v5 senza
-perdita** (`schema_version 5`, 141 record `world_memory`, 39 missioni, 80
-relazioni, 34 osservazioni); `POST /memory/materialize {limit:500}` ripetuto due
-volte con gli stessi numeri (`linked:6`, `invalidated:0`, `orphaned:0`);
-`POST /memory/reindex` → `{documents:44, dims:2048}`; `GET
-/memory/search?q=productive%20dirt%20site` → `resource_site_7_9` primo (0.407) coi
-hint `dirt`/`potatoes`/`carrots`, `?q=where did I find potatoes and carrots` →
-stesso sito (0.124, dopo aver alzato le dimensioni da 512 a 2048 per togliere le
-collisioni spurie), `?q=village with beds and villagers` →
-`structure_village_113_73_156`. Suite: 667 test (`tests/memory-observations.test.mjs`
-16 casi ×2 backend, `tests/vector-index.test.mjs` 7, `tests/memory-semantic.test.mjs`
-5 ×2).
-
-Limiti residui: recall solo lessicale-semantico (nessun sinonimo: la query deve
-usare il vocabolario del gioco), nessun consumatore nel planner (la rotta è oggi
-di osservabilità) e retention/pruning dell'episodico non ancora definite. Doc:
-`memory.md` (sezioni "Observation log" e "Semantic recall"), `verification.md`
-(righe 42.4/42.5), `open-questions.md` (bullet goal/episodic), `roadmap.md`
-(voce 11).
-
-## [2026-10-03] feat | Fluidi M0: consapevolezza di acqua e lava, fuga dalla lava, scavo sicuro
-
-Prima milestone della roadmap [fluids](wiki/fluids.md) (M0–M6). Il bot non sa
-ancora nuotare (M1), quindi M0 si ferma a *sapere dove sono i fluidi* e a
-rifiutare le mosse che finirebbero nella lava.
-
-Nuovo modulo puro `bedrock-fluids.mjs`: classificazione (`fluidKind`,
-`isWaterBlock` riusato da `bedrock-fishing.mjs`, `isLavaBlock`, prefisso
-`minecraft:` case-insensitive), `summarizeFluids` (conteggi + cella più vicina
-per tipo), `fluidCells`, la scala di pericolo `fluidHazard` (critical: in lava,
-lava ≤2, annegamento con `headInWater && air ≤8`; high: lava ≤5; medium: lava
-≤10; low: immerso; none), `rankEscapeCells` (tiene solo le celle che *guadagnano*
-distanza dal pericolo) e `digFluidRisk` (uno scavo con lava — sempre — o acqua —
-su richiesta — in una cella adiacente è rifiutato).
-
-Nell'adapter: `_fluidCensus()` scandisce `water`/`flowing_water`/`lava`/
-`flowing_lava` con `world.findBlocks` dentro `FLUID_SCAN_RADIUS` (TTL
-`FLUID_RESCAN_MS`) e costruisce il set delle celle di lava; se il mondo non ha
-**nessuna colonna caricata** il censimento non viene messo in cache e si dichiara
-`ready: false` (un mondo non ancora guardato non è un mondo senza lava);
-`_fluidsView()` legge le celle di piedi/testa a ogni chiamata e unisce censimento
-+ verdetto, esposta in `observe().fluids` e da `GET /observe.fluids[?force=1]`;
-`_standable()` respinge le celle adiacenti alla lava (repulsione); `_digTargets()`
-e `_upTargets()` controllano le celle *intorno* a ogni bersaglio con
-`digFluidRisk` (il fluido *dentro* la cella resta il motivo più specifico);
-`avoid_lava` è offerto solo con lava entro `LAVA_AVOID_RANGE` e `_avoidLava()`
-ordina 16 direzioni × raggi 12/8/16 con `rankEscapeCells`, filtra per
-raggiungibilità e si muove una volta (errori tipizzati `no_position`,
-`no_lava_nearby`, `no_safe_cell`, `avoid_lava_failed`); `_applyOwnAttributes`
-memorizza un attributo d'aria **se il server lo manda**.
-
-Nel layer survival, vocabolari chiusi estesi (mai aggirati): condizioni
-`inWater`/`headInWater`/`inLava`/`lavaWithin`/`airBelow`, tre regole in
-`knowledge/survival-rules.json` (`lava_contact` 100 → `avoid_lava`, `drowning`
-98 → `surface`, `lava_near` 88 → `avoid_lava`; la lava batte ogni regola ostile),
-`perceiveFluids()` (fluidi ignoti ⇒ `known:false`, nessun allarme inventato),
-punteggi in `risk.mjs` (`in_lava` +60, `lava_adjacent` +45, `drowning` +45,
-`lava_near` +22, `lava_in_range` +8), bisogno `surface`, intenti
-`swim`/`surface`/`descend`/`ascend`/`fluid`, criteri `inWater`/`notInLava`/
-`airAtLeast` (gli ultimi due **falliscono rumorosamente** se lo stato è ignoto
-invece di passare).
-
-Collaudo live (container `hermes-jev-bedrock`, VM 100, BDS 1.26.52):
-`GET /observe.fluids?force=1` → `ready:true`, 259 celle fluide in 24 blocchi
-(`water 8`, più vicina a 20.6 — uno stagno; `lava 251`, più vicina a **15.4,
-y=59**); bot asciutto ⇒ `hazard {level:'none'}`, `air: null`; `GET /options` (23
-chiavi) **non** offre `avoid_lava` (lava oltre il range) e `POST /act
-{"key":"avoid_lava"}` risponde `{ok:true,moved:false,reason:'no_lava_nearby'}` in
-millisecondi; `GET /survival` resta `night_with_bed` con rischio `low` e nessun
-bisogno fluido (nessun falso positivo su un bot asciutto); `POST /act
-{"key":"dig_down"}` → `protected_front` (il pavimento della stanza); durante un
-riavvio, con nessun chunk caricato, il censimento ha riportato `ready:false,
-scanned:0`.
-
-Limiti documentati in `fluids.md` e in `verification.md` (riga 47): il
-*movimento* di fuga non è stato esercitato live (dalla stanza base la lava a 15.4
-blocchi sotto è irraggiungibile e il gate dell'opzione resta giustamente chiuso),
-`air` non è mai stato osservato (quindi `drowning` e il bisogno `surface` restano
-inerti finché M1 non trova o simula il budget) e il rifiuto dello scavo accanto
-all'**acqua** è una prudenza voluta di M0 che M1 rilasserà.
-
-Test: `tests/bedrock-fluids.test.mjs` (8 casi) e
-`tests/bedrock-fluids-adapter.test.mjs` (10 casi, mondo finto che rispetta
-`world.loaded`); suite completa **685 test verdi**. Doc: `fluids.md` (stato +
-sezione M0 + limiti + tabella milestone), `verification.md` (riga 47),
-`roadmap.md` (voce Fluids e prossimi passi), `open-questions.md`,
-`survival-intelligence.md` (vocabolario + conteggio test), `AGENTS.md` (env
-`FLUID_RESCAN_MS`/`FLUID_SCAN_RADIUS`/`FLUID_SCAN_LIMIT`/`LAVA_AVOID_RANGE`).
-
-## [2026-10-03] feat | Fluidi M1 parziale: guado dell'acqua bassa + budget d'aria simulato
-
-M1 (fisica e navigazione in acqua) è implementato solo per la parte verificabile
-offline; il nuoto vero resta bloccato e documentato, non "indovinato".
-
-**Guado.** `_passable()` continua a rifiutare `water|lava` (il bot non nuota), ma
-`_standable()` accetta una cella con **acqua ai piedi e cella sopra libera** —
-cioè camminare sul fondo con la testa fuori. L'acqua profonda (acqua anche nella
-cella della testa) resta un muro, quindi l'invariante "niente nuoto" è
-preservata per costruzione; la lava non è mai guadabile. L'A* lo eredita gratis
-perché `_neighbors` è gated da `_standable`, e `_reachableCells` include le celle
-di guado mentre l'acqua profonda resta fuori dal componente. In acqua bassa
-`_physicsStep` cammina a `WALK_SPEED * WADE_SPEED_FACTOR` (default `0.5`): il
-server rallenta il giocatore in acqua e una previsione locale più veloce viene
-corretta (rubber-band). `observe().fluids.wading` espone lo stato.
-
-**Aria simulata** (`bedrock-air.mjs`, modulo puro): il server non ha mai mandato
-un attributo `minecraft:air`, quindi il budget è simulato col modello vanilla —
-`MAX_AIR = 300` tick (15 s) con la testa sott'acqua, recupero `4` per tick fuori.
-`AirMeter` tiene il contatore, `_airTick()` lo avanza una volta per tick simulato
-dentro `_physicsStep`, e `observe().fluids` riporta `air`, `airSeconds` e
-**`airSource: 'simulated' | 'server'`** (se l'attributo arriva, vince il server e
-il contatore si riallinea). **Nessun danno simulato**: la salute resta del
-server, il contatore serve solo alle decisioni (`drowning`, bisogno `surface`,
-scala `fluidHazard`).
-
-**Round live** (VM 100, container `hermes-jev-bedrock`, BDS 1.26.52):
-`GET /observe.fluids?force=1` → `ready:true`, `scanned:259`, `lavaCells 251`
-(nearest 15.4, y=59), `waterCells 8` (nearest 20.6: `(116,71,180)`,
-`(117,71,180)`, `(116,70,180)`), `wading:false`, `air:300`, `airSeconds:15`,
-`airSource:'simulated'`, `hazard {level:'none'}`; `GET /survival` → `mode
-normal`, `risk none`, bisogni `[continue_progression]` (**nessun annegamento
-inventato** su un bot asciutto); `GET /options` 19 chiavi invariate nel tipo;
-`POST /plan {waypoint:{x:116,z:180}}` + `goto_waypoint` → `path_failed`.
-
-**Blocker documentato (M1).** L'accettazione live di M1 — attraversare un
-fiume/lago fino alla sponda opposta — **non è eseguibile**: l'unica acqua nota
-dal censimento è una pozza profonda **due celle** (y=70 e y=71) a 20.6 blocchi,
-cioè acqua profonda che richiede il nuoto, e il bot è sigillato nella stanza
-della base (waypoint → `path_failed`/`target_not_found`). Il guado è quindi
-verificato solo dagli unit test e l'opzione non è stata esercitata live. Il
-movimento di nuoto non viene implementato a intuito: i flag `input_data` da
-confermare sono `start_swimming`/`stop_swimming` (29/30), `want_up`/`want_down`
-(16/17), `auto_jumping_in_water` (7), oltre al modello di `delta` e alle
-costanti di galleggiamento/drag; il task di scoperta — catturare il traffico di
-un **giocatore reale che nuota** in questo BDS — richiede un client umano
-collegato mentre nuota (nessun umano si collega durante i run autonomi).
-Conseguentemente `surface`/`swim_to`, i nodi d'acqua nell'A* e la fisica di
-galleggiamento restano non implementati; anche lo scavo accanto all'acqua resta
-rifiutato (la prudenza di M0) e `WADE_SPEED_FACTOR` è una stima da tarare al
-primo guado reale.
-
-Test: `tests/bedrock-air.test.mjs` (5 casi) e
-`tests/bedrock-fluids-adapter.test.mjs` portato a 15 (5 di guado — standable
-basso/profondo, `wading`, componente raggiungibile, lava non guadabile,
-`_neighbors`, velocità `0.1079` contro `0.2158` — e 3 d'aria: 292 tick → air 8
-con `hazard.critical` e `airSeconds 0.4`, recupero fuori dall'acqua, attributo
-del server che vince). Suite completa **698 test verdi**. Doc: `fluids.md`
-(stato, sezione M1, limiti/blocker, tabella milestone M1 → ◑, key risks),
-`verification.md` (righe 47 e 47.1), `roadmap.md` (voce Fluids + prossimi passi,
-con la deviazione verso Redstone R0), `open-questions.md`,
-`survival-intelligence.md` (conteggio 698 + bullet M1), `index.md`, `AGENTS.md`
-(env `WADE_SPEED_FACTOR`).
-
-## [2026-10-03] feat | Redstone R0: consapevolezza e protezione dei componenti
-
-Prima slice della macro-area Redstone (`docs/wiki/redstone.md`, spec in
-`docs/raw/REDSTONE_ROADMAP.md`): il bot *vede* la redstone e smette di scavarla,
-ma non costruisce ancora circuiti (R1+).
-
-Implementazione. Nuovo modulo puro `bedrock-redstone.mjs`: vocabolario chiuso
-(`REDSTONE_ORES`, `REDSTONE_COMPONENTS`, `REDSTONE_SOURCES`/`REDSTONE_OUTPUTS`,
-`REDSTONE_HAZARDS` = `tnt`) e lettura di stato (`blockProperties` tollerante a
-`getProperties()`/`properties`/`_properties`/`states`+`computedStates`,
-`powerOf` → 0..15 **o `null` quando lo stato non è leggibile** — un componente
-illeggibile non deve sembrare spento —, `isPowered`, `facingOf`, `isSource`,
-`isOutput`, `isHazard`, `componentState`, `redstoneView`). I nomi `lit_*`/
-`powered_*` sono blocchi distinti e valgono 15; il minerale è nella lista di
-censimento ma **resta minabile** (non è un circuito) e non entra negli output.
-
-`DIG_PROTECTED` ora copre i componenti (wire, block, leva, pulsanti, piastre,
-repeater, comparator, observer, pistoni, dispenser, dropper, lampade, daylight
-detector, tripwire hook, target, crafter, sculk sensor): `dig_down`/`dig_up` non
-possono più distruggere un circuito. In `bedrock-adapter.mjs` arrivano
-`REDSTONE_RESCAN_MS` (default 5000), `REDSTONE_NEARBY_NAMES`, `_redstoneScan`/
-`_redstoneScanAt`, `_blockProps(position)`, `_redstoneCensus({force})` (una sola
-`world.findBlocks` per l'intero vocabolario, TTL, e `ready: false` senza cache su
-un mondo senza colonne caricate) e `_redstoneView({force})`, chiamati da
-`_refreshNearby()` e esposti in `observe().redstone` e `GET /observe.redstone`
-(`?force=1` rifà il censimento). In `bedrock-world.mjs` la scansione è stata
-estratta in `_scanBlocks(names, point, radius, count, accept)` — il predicato
-gira **prima** che il budget di `count` venga speso, quindi le celle rifiutate
-non consumano il tetto — e nasce `findBlocksByState(names, predicate, point,
-radius, count)`: cercare per stato ("un repeater alimentato", "una leva aperta")
-non è esprimibile per nome.
-
-Collaudo live (container `hermes-jev-bedrock`, BDS 1.26.52). `GET
-/observe.redstone` → `{components: [], ore: [], power: [], hazards: [],
-tntNearby: false, counts: {0,0,0}, found: 0, loaded: 125, ready: true}`; lo
-stesso oggetto è dentro `GET /observe`; `POST /act {dig_down}` → `protected_front`
-e `POST /act {dig_up}` → `protected_head` (la protezione è viva — la stanza del
-bot è in assi, quindi il rifiuto scatta prima di qualunque redstone). Limite
-dichiarato del round live: nella stanza non c'è alcun componente redstone (né un
-piccone di ferro per il minerale), quindi la lettura di un `redstone_signal`
-reale e lo scavo dell'ore non sono stati esercitati dal vivo.
-
-Test: `tests/bedrock-redstone.test.mjs` (pure: potenza per famiglia, `null` su
-stato ignoto, blocco spalmato, `facingOf`, sorgenti/output, pericolo TNT,
-`redstoneView` con ordine/troncamento/conteggi), `tests/bedrock-redstone-adapter
-.test.mjs` (censimento con potenza e distanza dai piedi, nessun falso pericolo,
-cache + `force`, guardia del mondo non caricato, `_blockProps`) e il caso
-redstone in `tests/bedrock-dig.test.mjs` (`protected_step`/`protected_front`/
-`protected_head`, ore ancora scavabile). Suite completa **714 test verdi**.
-
-Doc: `redstone.md` (stato, sezione R0, tabella milestone R0 → ◑, limiti),
-`verification.md` (nuova riga 47.2 + riga 46 "Redstone sensing" → ◑),
-`roadmap.md` (voce Redstone + prossimi passi), `open-questions.md` (bullet
-redstone + voce spec-only), `AGENTS.md` (env `REDSTONE_RESCAN_MS`), `index.md`.
-
-## [2026-10-03] feat | Redstone R1: piazzamento orientato e ritardo del repeater
-
-Seconda slice Redstone (`docs/wiki/redstone.md`): il bot piazza un componente
-*con una direzione voluta* e ne cambia il ritardo, verificando il risultato sullo
-stato del mondo invece di fidarsi della forma del pacchetto.
-
-Implementazione. In `bedrock-redstone.mjs` arrivano `normalizeFacing` (numeri
-0..5 → `down`/`up`/`north`/`south`/`west`/`east`), `facingMatches` — tollerante
-per progetto: uguaglianza dopo normalizzazione **oppure** token contenuto in un
-valore composto (una leva a pavimento è `lever_direction = down_east_west`, che
-conta come `east`/`west`) —, `isRepeater`, `repeaterDelay` (0..3, clampato,
-`null` se illeggibile) e `PLACEMENT_YAW_STEPS = [0, 90, 180, 270]`.
-
-Il punto chiave: **come il BDS derivi lo stato da yaw + faccia cliccata +
-`click_pos` non è documentato per famiglia, quindi R1 non lo indovina.** Il
-piazzamento orientato piazza, rilegge lo stato dal mondo e corregge sul
-candidato yaw successivo — la cattura pacchetti che la roadmap prevedeva si è
-rivelata **non necessaria**. Un tentativo sbagliato viene prima *rimosso*
-(`_mineBlock`, budget 8 s), quindi sul percorso di correzione non resta un
-blocco orfano; `tries` è limitato (4 yaw cardinali di default).
-
-In `bedrock-adapter.mjs`: `_placeAtCell(..., { yaw, pitch })` accetta un override
-di orientamento (i call-site esistenti non cambiano, il yaw resta puntato alla
-cella bersaglio quando non c'è override); `_placeOriented(itemName, blockName,
-{ facing, face, tries })` ritorna `{ok, block, position, face, facing, wanted,
-attempts, corrected, tried}` con `facing`/`tried` **normalizzati** e fallimenti
-tipizzati (`no_place_spot`, l'errore propagato di `_placeAtCell`,
-`orientation_not_confirmed` a tentativi esauriti, log `oriented_place_stuck`
-quando il blocco appena piazzato non è rimovibile — in quel caso il caller
-riceve la direzione reale). `_pickRepeaterTarget` prende il primo repeater dal
-censimento R0, `_cycleRepeater(position, { clicks, timeoutMs })` clicca
-`(target − current + 4) % 4` volte **rileggendo lo stato dopo ogni click** (un
-click che non cambia nulla è un errore, non un successo) e `_setRepeaterDelay`
-accetta `null` (valore successivo) o 0..3. Opzioni nuove: `place_<component>`
-per ogni componente in inventario (il **minerale è escluso** — è una risorsa, non
-un circuito — e la polvere mappa al suo blocco via `REDSTONE_ITEM_BLOCKS`, quindi
-`place_redstone` piazza `redstone_wire`) e `set_repeater_delay` quando un
-repeater è nel censimento; `executeAction` instrada un componente su
-`_placeOriented` (un non-componente resta sul `_placeBlock` semplice) e accetta
-`set_repeater_delay` / `set_repeater_delay_<0..3>` (altrimenti `bad_delay`).
-
-Bug reale trovato dai test: in `_cycleRepeater` il locale `let delay` **ombreggiava
-la funzione `delay` importata da `node:timers/promises`**, così il primo click che
-non cambiava lo stato lanciava `TypeError: delay is not a function` invece di
-riportare `repeater_delay_not_confirmed`; il locale è ora `current`.
-
-Test: 4 casi puri nuovi in `tests/bedrock-redstone.test.mjs` e
-`tests/bedrock-redstone-place.test.mjs` (12 casi) con un mondo finto che
-**modella il server** (la direzione del blocco piazzato deriva dal yaw, quindi il
-percorso di correzione è reale: 1 rimozione + 2 tentativi), direzione impossibile
-→ `orientation_not_confirmed` dopo 4 tentativi, rimozione fallita che ferma il
-loop, errore di piazzamento propagato, routing di `executeAction`, ritardo del
-repeater che avanza/fa wrap/rifiuta. Suite completa: **730 test, 730 pass, 0 fail**.
-
-Round live (VM 100, container `hermes-jev-bedrock`, BDS 1.26.52, bot nella sua
-stanza): `GET /observe.redstone` → `counts {components 0, ore 0, hazards 0}`,
-`ready: true`, `loaded: 125` (in stanza non c'è alcun componente). Le rotte R1
-sono vive e tipizzate: `place_lever` → `{ok:false, error:'missing_item', attempts:1,
-tried:[]}`, `set_repeater_delay` → `no_repeater_nearby`, `set_repeater_delay_9` →
-`bad_delay`. Percorso non-componente non regredito: `place_torch` →
-`{ok:true, block:'torch', position:{x:116,y:73,z:158}}` (piazzamento reale
-confermato dal server, torce 2→1). La catena verso un componente reale è stata
-percorsa fino all'ultimo passo consentito: `craft_lever` → `missing_ingredients`
-(il ramo generico `craft_*` esiste; manca la cobblestone), `craft_wooden_pickaxe`
-→ `{ok:true}` (consuma 3 assi + 2 bastoni) e **con il piccone `mine_cobblestone`
-compare in `/options`**.
-
-**Round live bloccato (ambientale, non lacuna di codice)**: i passi restanti sono
-`mine_cobblestone` → `craft_lever` → `place_lever` → rilettura dello stato, cioè
-la verifica live piena di R1; l'unica cobblestone a portata è il **muro della
-base** ((114–116, 73–74, 161), 1.7–2.3 blocchi) e scavarla modifica la base, cosa
-che il piano C in vigore (nessuna modifica alla base, dopo la domanda A/B/C
-m01403 senza risposta) vieta. Il drop sarebbe recuperabile e il blocco
-ripiazzabile: il round è **a una sola autorizzazione di distanza**.
-
-Limite osservato (non R1): durante le sonde il world view ha perso per qualche
-secondo la sezione sotto il bot (`standingOn` da `oak_planks` a `null`, `headroom`
-0, `place_redstone` → `no_place_spot`, `world.columns` 414 vs 417) pur senza
-movimento; il codice tratta `unknown` come solido, quindi il fallimento è
-tipizzato e conservativo, mai un piazzamento sbagliato.
-
-Doc: `redstone.md` (status, sezione R1, tabella milestone R1 → ◑, "Key risks"
-riscritti — la cattura pacchetti non serve più), `verification.md` (nuova riga
-47.3 + riga 47 "Oriented placement" → ◑), `roadmap.md` (voce Redstone + voce 7 dei
-prossimi passi → R2), `open-questions.md` (bullet redstone + voce spec-only).
-
-## [2026-10-03] feat | Redstone R2: azionare e sentire un circuito (interazione + sensing)
-
-Implementata la seconda slice della redstone (`docs/wiki/redstone.md`, riga R2
-della tabella milestone → ◑): il bot non solo *vede* la redstone (R0) e la
-*piazza orientata* (R1), ma la **comanda** e la **sente** in continuo.
-
-- `bedrock-redstone.mjs`: `REDSTONE_INPUTS` (chiuso: leva, pulsanti di pietra,
-  legno, blackstone) perché un click aziona solo un input, non una sorgente;
-  `isRedstoneInput`, `inputOn` (`true`/`false` da `open_bit`/`button_pressed_bit`
-  o dal segnale, **`null` se illeggibile**), `isActiveOutput` (i pericoli — TNT —
-  sono esclusi; un output con potenza ignota non è "acceso"), `activeOutputs`,
-  `componentAt`, `summarizeRedstone` (`maxPower: null` quando non c'è nulla di
-  leggibile — la fusione con la vista R0 non perde campi).
-- `bedrock-adapter.mjs`: `_buildRedstoneView`, `_noteRedstoneUpdate` (l'update del
-  server corregge la cache **in place**, niente nuova `findBlocks`, e registra
-  `_redstoneChange`), `_pickRedstoneInput` (input più vicino e raggiungibile),
-  `_useRedstone` (click → verifica stato **ed effetto a valle** → **ripristino**,
-  nessun clock lasciato attivo; errori tipizzati `no_redstone_input`,
-  `not_an_input`, `input_unreachable`, `redstone_state_unreadable`,
-  `redstone_not_toggled`), `_clickRedstoneInput` (un solo `click_block` e attesa
-  della conferma dal mondo), opzioni `use_redstone`/`sense_redstone` (la seconda
-  solo con un censimento non vuoto), rami `executeAction`, `observe().redstone`.
-- `bedrock-harness.mjs`: `GET /survival` espone `redstone: {maxPower, active,
-  activeOutputs, counts, lastChange}`. `survival/intents.mjs`: intents `redstone`/
-  `toggle`/`sense` + mapping. `survival/verify.mjs`: criteri `blockPoweredAt` e
-  `circuitActive` (falliscono rumorosamente su un dato mancante).
-- Test: 18 casi puri in `tests/bedrock-redstone.test.mjs`, 10 in
-  `tests/bedrock-redstone-use.test.mjs` (censimento vero su mondo finto che
-  *modella il server*: il click inverte `open_bit` e accende la lampada collegata;
-  verifica anche l'aggiornamento in place della cache con **una sola** `findBlocks`
-  prima e dopo l'`update_block`), 4 in `tests/bedrock-redstone-criteria.test.mjs`.
-  Suite completa: **748 test, 748 pass, 0 fail**. Due bug trovati dai test:
-  `REDSTONE_ORES.has(...)` su un array (`TypeError`, risolto con
-  `isRedstoneOre`) e `input_unreachable` irraggiungibile via `_pickRedstoneInput`
-  (che già scarta gli input non raggiungibili ⇒ il test è stato corretto).
-- Round live (VM 100, container `hermes-jev-bedrock`, BDS 1.26.52, bot nella sua
-  stanza senza componenti): `GET /observe.redstone` con le chiavi R2 e valori
-  onesti (`maxPower: null`, `active: false`, `sourceCount/outputCount/
-  componentCount: 0`, `lastChange: null`, `ready: true`, `loaded: 125`);
-  `GET /survival` con la sezione `redstone`; `POST /act {"key":"use_redstone"}` →
-  `{ok:false,error:'no_redstone_input',position:null}` (tipizzato, nessun burn);
-  `POST /act {"key":"sense_redstone"}` → `{ok:true,power:[],maxPower:null,
-  active:false,...}`; `/options` non offre nulla di redstone a censimento vuoto.
-  Il percorso click → effetto → ripristino non è esercitabile live per lo stesso
-  blocker ambientale di R1 (l'unica cobblestone a portata è il muro della base) e
-  resta coperto dai test con il server modellato.
-- Limiti noti: gli `effects` si leggono subito dopo il click (una linea di ritardo
-  o un pistone lento richiedono il verifier di R4), un pulsante è un impulso e non
-  si tiene premuto, `circuitActive` è un riassunto e non un controllo di topologia.
-
-File: `bedrock-redstone.mjs`, `bedrock-adapter.mjs`, `bedrock-harness.mjs`,
-`survival/intents.mjs`, `survival/verify.mjs`, `tests/bedrock-redstone.test.mjs`,
-`tests/bedrock-redstone-use.test.mjs`, `tests/bedrock-redstone-criteria.test.mjs`,
-`docs/wiki/redstone.md`, `docs/wiki/verification.md` (nuova riga 47.4 + riga 48
-→ ◑), `docs/wiki/roadmap.md` (macro-area + voce 7 → R3),
-`docs/wiki/open-questions.md` (bullet redstone + voce spec-only),
-`docs/wiki/survival-intelligence.md` (748 test + bullet R2).
-
-## [2026-10-03] feat | Redstone R3: circuiti dichiarativi (`circuits/*.json` + `build_circuit_<id>`)
-
-Un circuito non è più codice: è un documento che il bot valida, pianifica,
-costruisce, aziona, verifica e riporta.
-
-**Implementazione.** Nuovo modulo puro `circuits.mjs` (`CIRCUIT_SCHEMA_VERSION
-= 1`): `validateCircuit` rifiuta *prima* che il bot si muova un supporto
-piazzato dopo il passo che lo usa, una cella duplicata, un materiale non
-dichiarato o sottodichiarato (`requires.repeater: 2 < 3 step`), un trigger o un
-check su una cella che nessun passo piazza, un `post` su qualcosa che non è un
-repeater, un delay fuori 0..3, più di `MAX_CIRCUIT_STEPS = 48` passi e **qualunque
-oggetto pericoloso** (`DANGEROUS_ITEMS`: `tnt`, `trapped_chest`, `tripwire_hook`,
-`sculk_shrieker`, `respawn_anchor`) — un circuito con trappole non si costruisce
-mai; `loadCircuits()` fallisce all'avvio su un file rotto (come le skill) e
-rifiuta gli id duplicati. La rotazione è derivata dallo sguardo del bot
-(`ROTATIONS`: south identità, north `[-x,y,-z]`, east `[z,y,x]`, west `[-z,y,-x]`,
-la "destra" segue `FORWARD`), `circuitAnchor(feet, facing)` mette il cantiere **un
-passo davanti** al bot, `planCircuit` calcola celle/supporti/trigger/check/post
-assoluti e i materiali mancanti, `circuitSiteBlocked` classifica le celle
-(`occupied`/`no_support`/`usable_block`: un baule è un supporto che il
-piazzamento aprirebbe), `checkCircuitSuccess` confronta le proprietà e
-**rifiuta il successo vuoto** (`empty: true` ⇒ `ok: false`).
-
-Otto blueprint in `circuits/`: quattro costruibili (`lamp_switch`, `delay_line`
-con i delay impostati dopo il piazzamento e `expectedDelayTicks: 6`, `auto_lamp`
-senza trigger né check di stato — il `verifyNote` dice perché: l'uscita segue
-l'ora del giorno —, `auto_door` con cancello) e quattro dichiarati e **rifiutati
-con motivazione** (`auto_harvest` → M1 fluidi e direzione dell'hopper;
-`auto_dispense` → un clock è un loop acceso e il teardown è R4; `hopper_chain` →
-l'hopper sta *su* un baule; `crafter_pulse` → serve un impulso e il verifier R5).
-
-L'adapter guadagna `_circuitCatalogue`, `_circuitsView`, `_facingFromYaw`,
-`_circuitOptions` (offre solo i blueprint costruibili con materiali e sito
-liberi), `_approachFor` (si avvicina solo se la cella non è già a portata),
-`_placeCircuitStep` (mira la cella e **rifiuta** `orientation_not_confirmed`
-quando il server non onora la direzione: per i componenti il retry di R1
-minerebbe, e `DIG_PROTECTED` lo vieta) e `_buildCircuit`: materiali → sito →
-piazzamento in ordine → delay dei repeater → censimento forzato → trigger →
-verifica **con il trigger ancora attivo** → secondo toggle di ripristino (esito
-in `trigger.restored`). Esiti tipizzati: `unknown_circuit`, `circuit_not_buildable`,
-`missing_materials`, `circuit_site_blocked`, `circuit_incomplete`,
-`circuit_delay_not_confirmed`, `<errore del trigger>`, `circuit_verify_failed`.
-`observe().circuits` espone catalogo e ultimo report; il harness appende **un
-record per tentativo** in `runs/<run>/circuits.jsonl` (anche i rifiuti prima del
-cantiere), come `skills.jsonl`.
-
-**Test.** `tests/circuits.test.mjs` (10 casi: catalogo, ogni messaggio di
-validazione, rigidità della rotazione, `circuitAnchor` nelle quattro direzioni,
-piano, sito — incluso il falso positivo del supporto——, check, `loadCircuits` su
-directory temporanee) e `tests/bedrock-circuits.test.mjs` (9 casi: due costruzioni
-complete `lamp_switch` e `delay_line` con delay `[0,1,2]`, ripristino del trigger,
-`missing_materials`, `circuit_site_blocked` (`occupied`, `usable_block`),
-`circuit_incomplete` su `place_not_confirmed`, rifiuto della direzione sbagliata,
-`auto_lamp` che non si dichiara verificato, gating delle opzioni, `_facingFromYaw`)
-con un finto server che consuma l'inventario, scrive il blocco con la direzione
-che decide lui e accende la lampada collegata. **767 test verdi**.
-
-**Collaudo live** (VM 100, container `hermes-jev-bedrock`, BDS 1.26.52, bot a
-(115.5, 74.62, 159.47)): `GET /observe.circuits` → `count: 8`, `buildable:
-[auto_door, auto_lamp, delay_line, lamp_switch]`, i quattro dichiarati con la loro
-motivazione, `invalid: null`; `/options` non offre nessun `build_circuit_*` (in
-stanza non ci sono materiali redstone); `build_circuit_lamp_switch` →
-`{ok:false, error:'missing_materials', missing:[{redstone_lamp,1,0},{lever,1,0}]}`,
-`build_circuit_auto_harvest` → `circuit_not_buildable` (+motivo),
-`build_circuit_nope` → `unknown_circuit` (+8 id noti) — tutte in millisecondi e
-tutte registrate in `runs/demo/circuits.jsonl`. La *costruzione* di accettazione
-del roadmap (`lamp_switch`, `delay_line`) non è eseguibile live: una
-`redstone_lamp` richiede glowstone (Nether) e le quattro redstone dust, e il
-piano C vieta di toccare il cobblestone della base — stesso blocker ambientale di
-R1/R2, coperto dai test con il server modellato.
-
-**Doc.** `docs/wiki/redstone.md` (status, sezione R3, milestone R3 → ◑, voce del
-vocabolario, rischi), `docs/wiki/verification.md` (nuova riga 47.5),
-`docs/wiki/roadmap.md` (macro-area + voce 7 → R4), `docs/wiki/open-questions.md`
-(tre punti), `docs/wiki/survival-intelligence.md` (767 test + bullet R3),
-`docs/index.md` (riga redstone), `AGENTS.md` (`circuits/*.json` nella project
-shape e nella regola "data, not code").
-
-## [2026-10-03] feat | Redstone R4: misurare il ritardo, smontare solo il proprio, rollback
-
-**Codice.** `circuits.mjs`: `measureCircuitDelay({trace, cell, triggeredAt,
-expectedTicks, toleranceMs})` (primo cambio **all'output dichiarato** dopo il
-trigger: `measuredMs`/`measuredTicks`/`ok`, con `ok: null` quando non arriva
-nessun campione — mai un successo vuoto; `TICK_MS = 50`,
-`DEFAULT_DELAY_TOLERANCE_MS = 60`), `planCircuit` che risolve `measure` in
-`{expectedTicks, toleranceMs, required, output}`, validazione di
-`measure.outputOffset` (deve essere una cella di un passo) / `toleranceMs` /
-`required`. `bedrock-adapter.mjs`: `_redstoneTrace` (limitata da
-`REDSTONE_TRACE_LIMIT`, default 32) alimentata da `_noteRedstoneUpdate(position,
-at = Date.now())`; registro `_placedBlocks` scritto da `_placeAtCell` e marcato
-con l'id del circuito da `_buildCircuit`; `_ownedCircuitCells`,
-`_teardownCells` (salta `not_owned` e `changed`), `_teardownCircuit` (`removed`,
-`skipped`, `failed`, `remaining`), rollback di default dei passi già piazzati
-quando un passo fallisce (`rollback: {removed, skipped, failed}`), scala d'errore
-`circuit_verify_failed` → `circuit_delay_not_confirmed` →
-`circuit_delay_unmeasured` → `circuit_delay_mismatch`; opzione e azione
-`teardown_circuit` (e `teardown_circuit_<id>`), `observe().circuits.owned`;
-`circuits/delay_line.json` dichiara `measure: {expectedTicks: 6, outputOffset:
-[0,0,4], required: true, toleranceMs: 60}`; `auto_dispense` aggiorna il motivo
-del rifiuto (un clock resta attivo finché la leva è tenuta, e lo stato del
-dispenser non è esprimibile nel blueprint); `survival/intents.mjs` mappa
-`teardown_circuit`/`teardown_circuit_<id>` su `build` + `redstone`.
-
-**Test.** `tests/circuits.test.mjs` +2 casi (misura pura: nessun campione,
-campione giusto, cella diversa, cambio precedente al trigger, ritardo tardivo;
-validazione del blocco `measure`) e `tests/bedrock-circuits.test.mjs` +5
-(`delay_line` con `linkDelayMs: 300` ⇒ `measuredMs: 300`/6 tick; `900 ms` ⇒
-`circuit_delay_mismatch` con i blocchi tutti corretti; `traceUpdates: false` ⇒
-`circuit_delay_unmeasured`; rollback sul passo rifiutato; teardown delle celle
-possedute con l'opzione che compare e sparisce, cella cambiata da altri saltata,
-`nothing_to_tear_down`/`no_circuit_built`). Il fixture modella anche l'effetto
-del registro e il `_mineBlock` del server. Suite: **774 test verdi**.
-
-**Live (VM 100, container `hermes-jev-bedrock`, BDS 1.26.52).**
-`GET /observe.circuits` → `{count: 8, buildable: [4], declared: [4 con motivo],
-invalid: null, last: null, owned: 0}`; `/options` → 22 chiavi **senza**
-`teardown_circuit` (niente di posseduto) e senza `build_circuit_*`;
-`POST /act {"key":"teardown_circuit"}` → `{ok:false, error:'nothing_to_tear_down',
-id:null, owned:0}` in millisecondi, anche dopo un `place_torch` fallito;
-`build_circuit_delay_line` → `missing_materials` (cobblestone/lever/repeater×3/
-redstone_lamp) e la riga è finita in `runs/demo/circuits.jsonl`.
-
-**Doc.** `docs/wiki/redstone.md` (status → R0–R4, nuova sezione R4, milestone R4
-→ ◑, vocabolario, limiti R3 aggiornati dove citavano R4), `docs/wiki/verification.md`
-(nuova riga 47.6), `docs/wiki/roadmap.md` (due punti → R5), `docs/wiki/open-questions.md`,
-`docs/wiki/survival-intelligence.md` (774 test + bullet R4), `docs/index.md`,
-`AGENTS.md` (`REDSTONE_TRACE_LIMIT` e la regola "data, not code" estesa a misura
-e teardown).
-
-**Limiti.** Il percorso misurato, il rollback e la rimozione di celle reali sono
-coperti dai test dell'adapter con un server modellato: la stanza non ha materiale
-redstone e il piano C vieta di toccare la base (il suo cobblestone è il muro), e
-una `redstone_lamp` richiede glowstone dal Nether. La misura dipende dal fatto
-che il server riporti il cambio del blocco di output: se sta zitto la risposta
-onesta è `circuit_delay_unmeasured`. La tolleranza ±60 ms assorbe il tick da
-50 ms ma non distingue "6 tick di ritardo" da "1 tick ripetuto sette volte".
-`teardown_circuit` non verifica se la cella è ancora alimentata da altro: rimuove
-il blocco posseduto e lascia stare il filo del vicino.
-
-## [2026-10-03] feat | Redstone R5: i circuiti entrano nella progressione (skill, milestone, bridge dei materiali)
-
-R5 collega i circuiti R3/R4 al gioco invece di lasciarli come catalogo di azioni
-accanto. Tre milestone concatenate sotto `iron_age` — `redstone_ore` (requires
-`iron_age`, skill `redstone_basics`, `inventoryTagGte {redstone_dust: 1}`) →
-`redstone_basics` (skill `craft_redstone_part`, `inventoryTagGte {redstone_parts: 1}`)
-→ `redstone_automation` (skill `build_lamp_switch`, **nessun** `satisfiedWhen`) —
-con l'alias `goals.redstone`, quindi `CURRICULUM=redstone_automation` funziona
-come `CURRICULUM=first_night`. L'ultima milestone non ha scorciatoia di
-inventario di proposito: un baule pieno di leve e lampade non è automazione, si
-chiude solo con la verifica reale (`completedMilestones`, come `first_night`).
-
-Sei skill dichiarative in `skills/gameplay/redstone/`: `redstone_basics`
-(preconditions `iron_tools` — la redstone ore vuole il piccone di ferro),
-`craft_redstone_part`, e le quattro integrazioni nominate dalla roadmap
-(`build_lamp_switch`, `build_auto_lamp`, `build_auto_harvest`,
-`build_hopper_chain`), tutte con success `{circuitBuilt: {id: <blueprint>}}`. Le
-due skill che dichiarano un blueprint ancora `buildable: false` restano nel grafo
-con il motivo e la nota "NON raggiungibile oggi": il buco si vede nel grafo
-invece di sparire in un documento.
-
-Nuovi tag in `survival/item-tags.mjs`: `redstone_dust`, `redstone_parts`
-(17 componenti), `hoppers`. Nuovo criterio `circuitBuilt` in `survival/verify.mjs`:
-legge `after.circuits.last` (il report che `_buildCircuit` ora timbra con `at`) e
-fallisce senza report, con l'id sbagliato, con `ok: false` e — non secondario —
-quando `before.circuits.last.at === after.circuits.last.at`, perché un circuito
-già in piedi **non** è il successo della skill. Evidenza:
-`{circuitBuilt, circuitAt, circuitSteps, circuitDelay}`.
-
-Ponte materiali↔blueprint in `bedrock-adapter.mjs`: quando `plan.missing` non è
-vuoto, `_circuitOptionFor` pubblica `craft_<item>` per il primo materiale
-mancante **fabbricabile adesso** (`_craftableNow`: ricetta nota + ingredienti +
-tavolo entro 32 blocchi se la ricetta è più grande di 2×2), con descrizione
-`Craft <item> for the <id> circuit (missing …)`; quando non manca nulla pubblica
-`build_circuit_<id>` dopo il controllo del sito. Così `/options` non mostra mai un
-cantiere che il bot non può pagare e non lascia un vicolo cieco al posto del passo
-successivo.
-
-Test: `progression` (tag + le tre milestone, incluso che un inventario pieno di
-lamp/lever non chiude `redstone_automation`), `bedrock-redstone-criteria`
-(`circuitBuilt` in tutte le forme), `gameplay-skills` (le sei skill e il success
-esatto di ogni builder), `controller-curriculum` (scenario a stadi con fake
-harness e finto `hermes`: `GOAL MET after 3 actions`, milestone e skill in ordine,
-evidenza `circuitBuilt` in `skills.jsonl`), `bedrock-circuits` (il ponte: ricetta
-2×3 che vuole il tavolo, materiale non fabbricabile che non offre nulla,
-inventario completo che offre il sito). Suite: **780 test, 780 pass**.
-
-Round live (VM 100, container `hermes-jev-bedrock`, BDS 1.26.52): il grafo esteso
-si carica e risolve sul server — 26 skill caricate (6 redstone),
-`resolveMilestone` → `{status:'next', milestone:'redstone_automation', skill:
-'build_lamp_switch'}`, piano finale `targets {redstone_lamp: 1, lever: 1}` con
-success `{circuitBuilt: {id: 'lamp_switch'}}`; `CURRICULUM=redstone_automation`
-avanzata fino a un prerequisito reale (`stone_age`, 3× `mine_cobblestone`
-confermati dal server) prima di esaurire il budget. `GET /observe.circuits` → 8
-blueprint, 4 costruibili, `owned: 0`, `last: null`; `/options` senza
-`build_circuit_*` né `craft_lever`, cioè il ponte risponde correttamente "con
-questo inventario non è fabbricabile niente".
-
-La *build* end-to-end live resta bloccata da tre cause indipendenti: i drop della
-stanza cadono nella cavità sotto il pavimento e riportano `reachable: false` (il
-blocker di pickup già noto), l'unico cobblestone a tiro **è** il muro della base,
-e una `redstone_lamp` richiede glowstone del Nether. Limiti dichiarati anche su
-`_craftableNow`, che vede solo il crafting (non la fusione: cobblestone → stone,
-che `auto_door` chiede) e offre solo il primo materiale mancante.
-
-## [2026-10-03] feat | Redstone R6: limiti e sicurezza (divieti, tetti di lag, bot fuori dal cantiere)
-
-R6 era l'ultima voce "spec only" dell'area redstone e non è una feature ma un
-insieme di regole: ogni regola è imposta nel codice, ha un test, e quelle sondabili
-sul server sono state sondate. `circuits.mjs` guadagna `FORBIDDEN_BLOCKS` (TNT,
-`trapped_chest`, `tripwire[_hook]`, `sculk_shrieker`, `respawn_anchor`,
-`end_crystal`, i tre command block, structure block/void, `jigsaw`, `barrier`,
-`bedrock`, `fire`, `soul_fire`, `lava`), `forbiddenBlock(name)` (normalizza
-`minecraft:` e il case), `lagComponent(name)`, `MAX_CIRCUIT_COMPONENTS = 24`,
-`MIN_CLOCK_TICKS = 8`, `PISTON_SAFETY_DISTANCE = 3`, `botCells(feet)`,
-`pistonPath(plan)` e `circuitSafety(plan, {feet})`; `validateCircuit` rifiuta un
-passo proibito e un blueprint `clock: true` senza post o più veloce di 8 tick, e
-conta i soli componenti che *lavorano* (leva e lampada non contano: una parete di
-pietra non è un circuito, venticinque repeater sono lag). `bedrock-adapter.mjs`:
-`_placeAtCell` rifiuta **prima** di cercare lo slot (`forbidden_block` +
-`forbidden_place`), `DIG_PROTECTED` copre command block, `barrier`, bedrock, end
-crystal e fuoco (il bot non li rompe, oltre a non piazzarli), `_useRedstone`
-limita lo **stesso** input a un toggle per `REDSTONE_TOGGLE_MIN_INTERVAL_MS`
-(default 500, `redstone_toggle_too_soon` con il `waitMs` residuo) ed è esente per
-il cantiere (`guard: false`: trigger e ripristino sono due click voluti e
-contigui, e il trigger finisce sempre a riposo), `_buildCircuit` risponde
-`circuit_unsafe_for_bot` se il piano passa per le celle del bot o per la corsa di
-un pistone, e `GET /observe.circuits.limits` pubblica `{maxSteps 48,
-maxComponents 24, minClockTicks 8, toggleMinIntervalMs 500}`. `bedrock-harness.mjs`
-espone la rotta gated `POST /debug/forbidden-place` (chiama `_placeAtCell`
-direttamente, aggirando le opzioni, e riporta `before`/`after` della cella) — 789
-test verdi (6 casi puri nuovi + 4 di adapter).
-
-Collaudo live 03/10 (container diagnostico `jev-r6` su VM 100, `BEDROCK_DEBUG=1`,
-API :3078, produzione ferma per liberare l'account): `observe.circuits.limits` →
-`{48, 24, 8, 500}`; `POST /debug/forbidden-place {"block":"tnt"}` →
-`{"ok":false,"error":"forbidden_block","block":"tnt"}` con la cella bersaglio
-`crafting_table` **prima e dopo**; stessa risposta per
-`minecraft:chain_command_block` (nome normalizzato) e `respawn_anchor`; la sonda di
-controllo con `torch` **supera** il divieto e fallisce più tardi sul supporto
-(`unexpected_block_crafting_table`), quindi i tre rifiuti sono opera del divieto e
-non di un errore generico; `build_circuit_lamp_switch` → `missing_materials`
-(`redstone_lamp` 1/0, `lever` 1/0) e `build_circuit_delay_line` → `missing_materials`
-con la lista completa; `use_redstone` ×2 → `no_redstone_input` (la stanza della base
-non ha leve, quindi il rate limit resta coperto solo dai test unitari). Limite
-dichiarato: `bot_in_piston_path` è raggiungibile solo da un piano sintetico, perché
-nessun blueprint costruibile muove un pistone; i tetti sono per blueprint, non
-globali; i nomi vietati sono una lista, non un motore di regole.
-
-## [2026-10-03] feat | Nether N0: consapevolezza (portali, fuoco, proiettili, sguardo) + 7 regole del governor
-
-Prima milestone della macro-area Nether/End (`docs/wiki/nether.md`). N0 è solo
-*percezione*: nessuna azione nuova porta il bot verso un portale o schiva un
-ghast.
-
-**Modulo puro `bedrock-nether.mjs`** (nessun I/O): `portalKind`/`hazardKind`
-(`portal` → nether, `end_portal`/`end_gateway` → end, `end_portal_frame` →
-frame; `fire`/`soul_fire` → fire, `magma` → magma), `isFireBlock`,
-`isSpawnerBlock`, `isProjectileType` (20 tipi: fireball/small_fireball/
-dragon_fireball/wither_skull/arrow/thrown_trident/snowball/egg/ender_pearl/
-llama_spit/shulker_bullet/pozioni/xp_bottle/fishing_hook/firework_rocket/
-wind_charge/evoker_fang…), `isEndermanType`, `isNetherDimension`/`isEndDimension`,
-`waterEvaporates`, `bedsExplode`, `summarizePortals`, `summarizeHazards`,
-`projectileThreat` (velocità **oppure** due campioni; `known: false` quando non
-sa, mai un falso "tutto libero"), `projectileIncoming` (il più urgente),
-`gazeVector`/`gazeAngle`/`gazedAtEnderman` (occhi 2,55 blocchi sopra i piedi,
-tolleranza 8°), `netherHazard` (scala critical/high/medium/low).
-**Bug reale trovato dai test**: `isProjectileType`/`isEndermanType`
-normalizzavano con `toLowerCase()` e non riconoscevano gli id namespaced
-(`minecraft:arrow`); ora usano `normalizeNetherName`.
-
-**Adapter**: `_netherCensus({force})` con lo stesso TTL dei fluidi
-(`NETHER_RESCAN_MS` 10 s, raggio 32, limite 64; mai in cache su un mondo non
-caricato) e `_netherView({force,cells})` esposto da `observe().nether` e dalla
-rotta `GET /observe.portals`. `_onEntityMove` conserva `entity.prev` **solo** per
-i tipi proiettile; `_sleepInBed` rifiuta la dimensione dove i letti esplodono
-(`beds_explode_here`) e l'opzione `sleep` non viene nemmeno offerta.
-
-**Layer survival**: `perceiveNether()` (forma "ignota" se il campo manca),
-`perceive()` che la include, pesi di rischio (`on_fire` +50, `magma_contact`
-+35, `projectile_incoming` +45/+30, `gazed_at_enderman` +12 solo nel Nether/End,
-`spawner_nearby` +6), bisogno `escape`, 8 condizioni nuove e **7 regole** in
-`knowledge/survival-rules.json`: `on_fire` (98), `projectile_incoming` (96),
-`magma_contact` (95), `fire_adjacent` (92), `fire_near` (72),
-`gazed_at_enderman` (62), `spawner_nearby` (58).
-
-**Test**: `tests/bedrock-nether.test.mjs` (12 casi), 
-`tests/bedrock-nether-adapter.test.mjs` (10) e `tests/survival-nether.test.mjs`
-(7) — suite completa **818/818**. `npm run wiki:lint` pulito.
-
-**Collaudo live** (BDS 1.26.52, container `hermes-jev-bedrock`): `GET
-/observe.portals` → `dimension overworld`, `isNether false`, `inFire false`,
-nessun portale/spawner, `hazard {level none}`, `scanned 0`, `ready true`, **5
-chiamate in 56 ms** (censimento in cache); `GET /observe` porta `nether` e il
-governor resta `{mode normal, risk 0, needs [continue_progression]}` con
-`/options` invariato (24 opzioni); **proiettili live**: `throw_egg` → `{ok true,
-thrown egg}` e `/observe.portals` ha catturato l'entità in volo a 14,3 → 15,7 →
-18,4 blocchi con `projectile: null` (correttamente non in arrivo).
-
-**Limiti dichiarati**: il bot non ha mai lasciato l'Overworld, quindi `inFire`,
-`magma`, `beds_explode_here` e i rami `isNether`/`isEnd` sono coperti solo dai
-test unitari; il verdetto "incoming" non è mai stato innescato da un proiettile
-ostile reale (la schivata è N3); `gazedAtEnderman` è solo rilevazione, non
-disciplina (N5); il censimento è limitato a raggio 32/limite 64.
-
-## [2026-10-03] feat | Nether N1: il portale — raggiungere, costruire, accendere, entrare
-
-Implementato N1 (`docs/wiki/nether.md`): quattro azioni sull'adapter con geometria
-pura in `bedrock-nether.mjs`.
-
-- **Geometria** (`planPortalFrame`, `checkPortalFrame`): cornice classica 4×5
-  (14 ossidiana con gli angoli, `withCorners: false` → 10), interno 2×3 su due
-  assi, cella di accensione (il blocco della riga in basso che il click deve
-  colpire, con la sua faccia) e cella d'ingresso. `checkPortalFrame` verifica una
-  cornice già in piedi contro il mondo vero (ossidiana intorno, aria o `portal`
-  dentro) e riporta `missing`/`blocked` con la cella colpevole: un candidato non
-  diventa un portale per somiglianza. `portalSiteBlocked` rifiuta un sito
-  occupato o sospeso (solo la riga in basso vuole terreno) e
-  `portalFrameCandidates` deriva i candidati dall'ossidiana vista, così
-  `light_portal` funziona anche su una cornice che il bot non ha costruito.
-- **Azioni** (`bedrock-adapter.mjs`): `goto_portal` (cammina verso il `portal`
-  più vicino dal censimento N0, filtrato dalla raggiungibilità),
-  `build_portal` (primo sito libero attorno al bot, **mai dentro di lui**,
-  piazzamento dal basso verso l'alto), `light_portal` (trova la cornice, equipaggia
-  l'accendino e clicca la cella di accensione con la transazione `click_block`,
-  poi attende un blocco `portal`) e `enter_portal` (entra nella colonna e attende
-  che il server cambi dimensione). `enter_portal` **non indovina**: la conferma è
-  `this.dimension`, aggiornata dal packet `change_dimension`; senza cambio la
-  risposta è `dimension_unchanged`. Rifiuti tipizzati ovunque
-  (`no_portal_known`, `portal_unreachable`, `move_failed`, `missing_materials`,
-  `no_portal_site`, `portal_frame_incomplete`, `missing_flint_and_steel`,
-  `no_portal_frame`, `portal_not_lit`), nessun budget di pathfinding bruciato su
-  un obiettivo impossibile. La transazione del click è stata estratta in
-  `_itemUseOnBlockTransaction` e riusata dal ripianto dei semi (una sola
-  definizione del gesto "usa l'oggetto su un blocco").
-- **Opzioni e intenti**: `goto_portal`/`enter_portal` compaiono solo con un
-  portale visto **e** raggiungibile, `build_portal` richiede 14 ossidiana,
-  `light_portal` accendino più una cornice spenta; `survival/intents.mjs` mappa
-  `goto_portal`/`enter_portal` → `travel` e `build_portal`/`light_portal` →
-  `build`, così la skill `enter_nether` (criterio `dimension: nether`) ha azioni
-  da eseguire. `/observe.portals` espone anche `portalFrame` (ultimo cantiere).
-- **Test**: 830 verdi. 5 casi puri nuovi in `tests/bedrock-nether.test.mjs`
-  (geometria, verifica con buco/interno occupato/già acceso, sito occupato o
-  sospeso, candidati), 6 in `tests/bedrock-nether-adapter.test.mjs` (rifiuti,
-  cammino, entrata che aspetta il server, cantiere completo e a metà,
-  accensione reale con conferma, gating delle opzioni) e 4 asserzioni di intenti
-  in `tests/gameplay-skills.test.mjs`. La fixture del mondo ora restituisce
-  **celle intere** come `findBlocks` in produzione: le distanze N0 sono state
-  ribasate (1.6/3.5/5.5/7.5) e l'errore `+0.5` sul bersaglio di avvicinamento
-  che le posizioni-centro nascondevano è stato corretto.
-- **Collaudo live (03/10/2026, BDS 1.26.52)**: `GET /observe.portals` →
-  `portals.nether.count 0`, `portalFrame null`, `ready true` (~14 ms);
-  `goto_portal` e `enter_portal` → `no_portal_known` (13 ms); `build_portal` →
-  `missing_materials {obsidian: need 14, have 0}` (13 ms); `light_portal` →
-  `missing_flint_and_steel` (14 ms); `/options` invariato (nessuna chiave
-  portale). Una ricerca `block:portal` su 125 colonne caricate riporta
-  `found 0`: la base non ha ossidiana né un portale, quindi il round live copre i
-  **rifiuti** e il percorso felice resta coperto dai soli test unitari (limite
-  dichiarato in `docs/wiki/nether.md`).
-
-## [2026-10-03] feat | Nether N2: sopravvivenza — hub senza legna, cadute corte, atterraggi sicuri
-
-Implementato N2 (`docs/wiki/nether.md`): nel Nether cadono tre certezze
-dell'Overworld — l'acqua evapora (niente MLU, niente doccia salvavita dopa una
-caduta), il pavimento può essere magma o fuoco, e le assi del rifugio notturno
-bruciano.
-
-- **Primitivi puri** (`bedrock-nether.mjs`): `landingHazard`/`safeLanding`
-  (lava/flowing_lava → lava, magma, fire/soul_fire → fire, cactus) e
-  `maxFallDepth(dimension)` (4 in Overworld, 2 nel Nether/End);
-  `isFlammableBlock` (set esplicito più i suffissi `_planks`/`_log`/`_wood`/
-  `_stem`/`_hyphae`/`_wool`/`_fence`/`_slab`/`_stairs`/`_door`/`_leaves`/…);
-  `pickHubBlock(owned)` (il blocco **non infiammabile** più abbondante);
-  `shellCells(feet, {roofCenter})` e `netherHubPlan({feet, block})`: la geometria
-  del rifugio sta nel modulo puro, così `build_hut` e l'hub condividono una sola
-  definizione di "casetta" (12 celle: quattro pareti di due blocchi più la corona
-  del tetto, mai sopra la testa del bot).
-- **Pathfinder**: `_neighbors` limita la caduta a `maxFallDepth` e si ferma al
-  primo atterraggio il cui appoggio è un `landingHazard`; `_standable` rifiuta in
-  **qualsiasi** dimensione una cella il cui sostegno fa danno (magma, fuoco,
-  cactus), quindi valgono anche i vicini di passo. `/observe.portals` espone
-  `maxFall` e l'ultimo hub.
-- **Azione `build_nether_hub`**: rifiuta fuori dal Nether/End
-  (`wrong_dimension`), sceglie un materiale che non brucia (`no_hub_materials`
-  con la lista `flammable` se possediamo solo legna), costruisce con l'helper
-  condiviso `_shellAround` (estratto da `_buildHut`: stessa forma, stesse
-  regole: cella già solida saltata, budget di tempo, mai un blocco a metà senza
-  dirlo) e ricorda il punto in memoria come `kind: home` **solo se la dimora è
-  chiusa**; una dimora incompleta risponde `hub_incomplete` e non lascia il
-  landmark. Il sonno nel Nether era già vietato da N0 e nessuna azione piazza
-  acqua: "niente acqua" è strutturale, non una guardia — per questo la metà
-  interessante di N2 è la regola sulle cadute.
-- **Test**: 843 verdi (6 casi puri nuovi, 5 sull'adapter, 2 sul pathfinder in
-  `tests/bedrock-reachability.test.mjs`, 1 asserzione di intento). **Bug trovato
-  dai test**: il campo `this._netherHub = null` nel costruttore **ombreggiava**
-  il metodo `_netherHub` (stessa classe di errore del `this.observations` di P6)
-  — rinominato `_netherHubLast`.
-- **Collaudo live (03/10/2026, BDS 1.26.52)**: `GET /observe.portals` →
-  `dimension overworld`, **`maxFall: 4`**, `hub: null`, `ready true`;
-  `POST /act build_nether_hub` → `{ok:false, error:'wrong_dimension',
-  dimension:'overworld'}` (immediato, tipizzato, zero pacchetti); `/options` 25
-  chiavi senza portale/hub; `POST /act wait` → `{ok:true}` (dispatch sano dopo il
-  nuovo ramo). **I rami Nether restano coperti solo dai test unitari**: il bot
-  live non ha mai lasciato l'Overworld (limite dichiarato in
-  `docs/wiki/nether.md`), quindi "un hub di cobblestone nasce davvero nel Nether",
-  il tetto di caduta a due blocchi e il rifiuto dell'atterraggio sul magma non
-  hanno prova live. Manca anche la protezione dal vuoto (una caduta nel vuoto non
-  è un "atterraggio") e l'attraversamento della lava (M4 dei fluidi).
-- **Lezione operativa**: un `docker cp` può copiare un file vecchio se la copia
-  sulla VM è stantia (qui `survival/intents.mjs` era rimasto indietro): dopo il
-  deploy conviene confrontare gli **md5** host/container, non solo il numero di
-  occorrenze di una stringa.
-
-## [2026-10-03] feat | Nether N3: schivare un proiettile — uscire dalla linea di tiro, non correre via
-
-Implementato N3 (`docs/wiki/nether.md`): la percezione dei proiettili esisteva da
-N0 (`projectileIncoming`), l'unica azione con intento `escape` era `flee` —
-scappare dall'entita piu vicina — che e la risposta sbagliata a qualcosa piu
-veloce del bot.
-
-- **Primitivi puri** (`bedrock-nether.mjs`): `projectileVelocity` (velocita
-  dichiarata, altrimenti stimata dai due campioni, altrimenti `null`: una
-  traiettoria ignota non si indovina; ora usata anche da `projectileThreat`,
-  cosi percezione e schivata misurano la velocita in un solo posto),
-  `perpendicularDirs` (le due perpendicolari orizzontali, o la congiungente
-  proiettile→bot quando la velocita non e nota), `lateralOffset` (distanza dalla
-  linea di tiro, la grandezza che una schivata deve far crescere), `breaksLine`,
-  `dodgeCandidates` (due lati, alla quota dei piedi, ordinati per distanza
-  laterale decrescente, mai la colonna del bot).
-- **Azione `dodge_projectile`**: rifiuta `no_projectile_incoming` quando non
-  arriva niente; filtra le candidate per `breaksLine` (spostarsi lungo la
-  traiettoria non e una schivata), `cellReachable` (fail-open), `_standable`
-  (N2: un appoggio che fa danno non e una destinazione) e `_lavaAdjacent`; prova
-  in ordine e **verifica dall'osservazione** (la minaccia non c'e piu) invece che
-  dal movimento. Esiti `no_dodge_spot`/`dodge_failed` tipizzati. L'opzione e
-  offerta solo se una candidata sopravvive ai filtri; intento
-  `['escape','travel']`, che e esattamente cio che la regola `projectile_incoming`
-  chiedeva.
-- **Test**: 851 verdi (4 casi puri, 4 sull'adapter, 1 asserzione di intento). La
-  fixture dell'adapter ora assegna un `boundingBox` ai blocchi (`_standable` ne
-  pretende uno pieno per l'appoggio). Un caso reale trovato nei test: `-0` come
-  zero negativo in `perpendicularDirs`, corretto con `|| 0`, perche `-0` e `0`
-  sono valori diversi in un confronto stretto senza essere informazioni diverse.
-- **Collaudo live (03/10/2026, BDS 1.26.52)**: `POST /act dodge_projectile` a
-  mondo quieto → `{ok:false, error:'no_projectile_incoming'}` (immediato, zero
-  pacchetti); `/options` 24 chiavi senza `dodge_projectile`; `POST /act
-  throw_egg` → `{ok:true, thrown:'egg', chick:'none'}` e subito dopo
-  `dodge_projectile` → di nuovo `no_projectile_incoming` (l'uovo va *via*: un
-  proiettile in allontanamento non e un proiettile in arrivo);
-  `/observe.portals` invariato (`maxFall: 4`, `projectile: null`), bot sano
-  (salute 20, cibo 19, inventario intatto). **Nessun fireball in arrivo reale
-  osservato**: la base non ha ghast, quindi il percorso felice resta coperto solo
-  dai test unitari (stesso limite dichiarato di N1/N2), e la geometria della
-  schivata e rettilinea in pianta con passo costante (`DODGE_DISTANCE` 3) — la
-  calibrazione contro la velocita reale del fireball richiede un ghast vivo.
-
-## [2026-10-03] feat | Nether N4: bartering con un piglin (e mai colpirlo)
-
-Quarta milestone del Nether (`docs/wiki/nether.md`): l'oro è l'unica valuta che il
-Nether accetta e i piglin sono l'unica banca.
-
-- **Primitive pure** (`bedrock-nether.mjs`): `PIGLIN_TYPES`/`isPiglinType`,
-  `BARTER_INGOT`/`isBarterPayment`, il vocabolario dell'oro addosso
-  (`GOLD_ARMOR_PIECES`, `goldArmorWorn`, `piglinNeutral` — in Bedrock *qualsiasi*
-  pezzo d'oro rende neutrali), `BARTER_REWARDS`/`isBarterReward` (loot table usata
-  **solo per il resoconto**: la conferma è un drop nuovo, non una whitelist, così
-  un aggiornamento del gioco non trasforma la verifica in un falso negativo) e
-  `barterTarget` → `{target, nearest}` (il più vicino fra gli adulti non bruti +
-  il più vicino in assoluto, per poter dire *perché* si rifiuta).
-- **`_equipItemInHotbar`**: il preambolo "tieni l'item in mano e interagisci"
-  (resync una volta, spostamento in hotbar, selezione, chiusura del container
-  aperto) è stato estratto da `_feedEntity` ed è ora condiviso da nutrimento,
-  addomesticamento e bartering.
-- **Azione `barter_piglin`**: rifiuti tipizzati `no_piglin_nearby`,
-  `piglin_brute_not_barterable`, `piglin_baby_not_barterable`,
-  `missing_gold_ingot`, `piglin_gone`, `piglin_unreachable`; poi sguardo al
-  piglin e `item_use_on_entity` con **`interact`** (mai `attack`) ogni secondo, e
-  **verifica dall'osservazione**: successo = un drop *nuovo* entro 8 blocchi dal
-  piglin, raccolto con la primitiva `_collectDrop` già esistente. Il timeout
-  riporta `barter_not_confirmed` **con** `gaveIngot`, cioè distingue "il piglin ha
-  preso l'oro e non ha gettato nulla" da "il passaggio non è mai avvenuto".
-- **Un piglin non è mai un bersaglio**: `piglin` e `piglin_brute` sono in
-  `HOSTILE_TYPES`, quindi l'adapter offriva `attack_piglin`; colpirlo chiude il
-  bartering per sempre. L'opzione non esiste più (test dedicato).
-- **Test**: 859 verdi (3 casi puri + 5 sull'adapter, di cui uno esegue la
-  `_interactEntity` vera e controlla che **ogni** transazione catturata sia
-  `item_use_on_entity`/`interact`, il lingotto speso e il pegno raccolto).
-- **Collaudo live (03/10/2026, BDS 1.26.52)**: `/observe.portals` espone
-  `piglin: null`, `goldArmor {worn: [], neutral: false}`, `barter: null`;
-  `POST /act barter_piglin` → `{ok:false, error:'no_piglin_nearby', range:16}`
-  (immediato, zero pacchetti); `/options` 22 chiavi senza piglin/barter mentre
-  `attack_zombie` resta invariato (nessuna regressione sul percorso di attacco);
-  entità vicine: villager, gatto, asino, mercante — **nessun piglin** (nell'
-  Overworld i piglin si zombificano); `wait` ok, armatura vuota, salute 20.
-  **Nessun piglin incontrato live**: il percorso felice resta coperto solo dai test
-  unitari (come N1–N3) e l'accettazione del roadmap ("un barter live completato")
-  non è soddisfatta.
-
-## [2026-10-03] feat | Nether N5: disciplina dello sguardo, maschera di zucca, mira al torso, perle
-
-Quinta milestone del Nether (commit successivo, **870 test verdi**): in `bedrock-nether.mjs` `endermanAimPoint` (torso a 1.45, sotto gli occhi a 2.55), `aimsAtEndermanEyes`, `isPumpkinMask`/`pumpkinMaskWorn`, `isEnderPearl`, e `gazedAtEnderman` che ora separa `aimingAtEyes` (dove si guarda) da `gazed` (se l’enderman se ne accorge, falso con la maschera). Nell’adapter: `_combat`/`_attackEntity` mirano il torso, `avoid_enderman_gaze` (`_avoidGaze`, candidati a ±120°/180° col pitch in basso, verificati dalla percezione), `equip_pumpkin` (`_equipPumpkin`, slot elmo 0), `_pearlsHeld` dagli slot osservati, `_netherView()` con `enderman.aimingAtEyes/gazed/protected`, `pearls`, `pumpkin`; `_entityOfType` ora confronta nomi normalizzati (un tipo `minecraft:enderman` era invisibile: bug trovato dai test). Live: percezione esposta e inerte (`enderman: null`, `pearls: 0`, `pumpkin: false`), `avoid_enderman_gaze` → `no_enderman`, `equip_pumpkin` → `missing_pumpkin` (0.01 s), `/options` senza le due chiavi, `wait` ok; nessun enderman nel mondo live. Dettagli in `docs/wiki/nether.md` §N5, riga 47.14 di `verification.md`.
-
-## [2026-10-03] feat | Nether N6: fortezza del Nether e caccia al blaze (copertura prima, poi mischia)
-
-Sesta milestone del Nether (**885 test verdi**, commit successivo). Riconoscimento: `structures.mjs` ha il def `nether_fortress` (dimension `nether`, mattoni `nether_brick*` >= 12 = 3 punti, finiture >= 2 = 2, `nether_wart` >= 1 = 1, spawner >= 1 = 1, un blaze in raggio = 3, soglia 6, ancore blaze -> mattoni -> spawner) e `exploration.mjs` gli alias `SEARCH_STRUCTURES.nether_fortress` (fortress/fortezza/…), così `POST /explore/find {"target":"fortezza del nether"}` funziona come ogni altro target M4. Caccia: in `bedrock-nether.mjs` `lineBlocked` (campiona il segmento di tiro, l'ultimo campione *è* il bersaglio: un muro nella cella del blaze non è copertura), `coverCandidates` (celle da cui il tiro è intercettato, la più vicina per prima; mira del bot a 1.62, petto del blaze a 0.9), `blazeTactics` (prima la sopravvivenza: `low_health`, poi il fuoco addosso, poi copertura e avvicinamento), `blazeRodProgress`; nell'adapter `_blazeRows`, `_coverFrom` (celle calpestabili, raggiungibili e non adiacenti alla lava — una cella **ignota non è copertura**), `_inFire` (legge il campo di primo livello della view, non `hazard.inFire`), `_huntBlaze` (rifiuti tipizzati `not_ready`/`no_blaze_nearby`/`too_hurt`, poi ritirata o copertura, `_combat('blaze')` e `_collectDrop`), opzione `hunt_blaze` visibile solo con un blaze entro 16 blocchi e salute > 6, `_netherView` estesa con `blaze`/`rods`/`hunt`; `hunt_blaze: ['fight','collect']` negli intenti.
-
-Due bug reali trovati dai test: `_inFire()` leggeva `hazard.inFire` (il campo vive al primo livello della view) quindi il bot non era mai "in fiamme" e avrebbe duellato mentre bruciava; `_coverFrom` accettava come copertura qualunque cella che `_solidAt` chiamasse solida, incluse le celle ignote — un chunk non caricato contava come muro e il bot sarebbe uscito allo scoperto credendosi al riparo.
-
-Live (VM 100, container `hermes-jev-bedrock`, BDS 1.26.52, deploy scp + `docker cp` + md5 + restart): `/observe.nether` -> `blaze: null`, `rods: 0`, `hunt: null`; `POST /act {"key":"hunt_blaze"}` -> `{"ok":false,"error":"no_blaze_nearby","range":16}` immediato; `/options` 24 chiavi senza `hunt_blaze`; `POST /explore/find {"target":"fortezza del nether"}` accettato (missione `find_structure` su `structure:nether_fortress`, supersede la ricerca precedente), `GET /explore/find` -> `scan {radius:48, found:0, scannedChunks:125}` (il def è del Nether: nessuna fortezza fantasma nell'Overworld), `GET /observe` continua a riportare solo `village` e `cave`, `structure:nether_fortress` presente nella lista dei target supportati; missione diagnostica chiusa come `cancelled/diagnostic_probe`. Nessun blaze e nessuna fortezza nel mondo live: il percorso felice è coperto dai soli test unitari, refusi tipizzati e guardia di dimensione sono verificati live. Dettagli in `docs/wiki/nether.md` §N6, riga 47.15 di `verification.md`.
-
-## [2026-10-03] feat | Nether N7: endgame (occhi di ender, stronghold, telai, portale, verdetto sul drago)
-
-Ultima milestone della catena Nether/End (**909 test verdi**, commit successivo): il modulo puro `bedrock-end.mjs` legge lo stato dei telai (`frameHasEye`: booleano, `{value}` o numero, `null` se illeggibile), conta i telai (`frameStatus`/`eyesNeeded`, `complete` solo con zero vuoti **e** zero illeggibili), pianifica il craft (`eyeCraftPlan`: 1 rod = 2 polveri, 1 polvere + 1 perla = 1 occhio), legge la direzione di un occhio lanciato (`eyeReading`, yaw client `-atan2(dx,dz)`) e triangola la stronghold (`triangulateStronghold`) con ogni rifiuto tipizzato: `missing_readings`, `invalid_reading`, `stale_reading` (10 minuti), `readings_too_close` (< 16 blocchi), `parallel_rays` (< 12°) e `no_intersection` (dietro a chi lancia). In più `endGate`, `bossVerdict` e `endSummary`.
-
-L'adapter guadagna `_endFrames` (il censimento dei portali ora porta anche le `properties` dei blocchi, senza le quali lo stato dell'occhio non si legge), `_eyeRows`, `_endReadings`, `_endView`, `_equipForUse`, `_craftPowderFromRods`, `_craftEyesOfEnder` (macina prima la polvere se manca), `_throwEyeOfEnder` (equipaggia, transazione `click_air`, legge l'entità `eye_of_ender_signal` comparsa 250 ms dopo), `_findStronghold` (`already` entro 24 blocchi, `needs_second_throw` con meno di due letture, poi triangola e cammina), `_awaitFrameEye`, `_fillEndPortal` (per ogni telaio vuoto: avvicinamento, sguardo, `item_use_on_block`, conferma **dal mondo**) e `_approachCell`; `_enterPortal({kind:'end'})` condivide il percorso di N1 e rifiuta `no_end_portal_known`, `_nearestPortal`/`_gotoPortal` ora prendono la dimensione. Le sei opzioni (`craft_blaze_powder`, `craft_ender_eye`, `throw_eye_of_ender`, `find_stronghold`, `fill_end_portal`, `enter_end_portal`) compaiono solo col materiale davvero in mano.
-
-Il pezzo più delicato è il verdetto sul drago: nuovo criterio `bossDefeated` in `survival/verify.mjs` che accetta **solo** `true` e lo legge da `observation.boss`, riempito da un handler del pacchetto Bedrock `boss_event` (`show_bar`/`hide_bar`/`set_bar_progress`) — non da un'entità che sparisce, perché uscire dall'End la fa sparire ugualmente. Il criterio c'è, il combattimento no (mancano cristalli, fase sulla fonte e combattimento a distanza): `beat_the_dragon` resta `success: null`.
-
-Test: 13 casi puri in `tests/end.test.mjs` e 11 in `tests/bedrock-end-adapter.test.mjs` (il bit dell'occhio riletto dal mondo, le perle contate **dagli slot**, il lancio con e senza entità, i rifiuti di `find_stronghold`, il riempimento dei telai, `_enterPortal('end')`, il gating delle opzioni, l'handler della barra del boss). Live (VM 100, container `hermes-jev-bedrock`, deploy scp + `docker cp` + md5 + restart): `GET /observe.end` -> `frames.total: 0`, `craft.craftable: 0` (`missingPearls: 12`, `missingPowder: 12`), `readings: []`, `stronghold: null`, `boss: {defeated: false, reason: "no_boss_bar"}`, `bossBar.events: 0`; `/observe.portals.end` la stessa proiezione compatta; le sei azioni rifiutano in 19–21 ms (`missing_ingredients`, `missing_eye_of_ender`, `needs_second_throw`, `no_frame_known`, `no_end_portal_known`); `/options` 23 chiavi senza nessuna delle sei. Nessun telaio, occhio, portale o barra del boss nel mondo live: il percorso felice è coperto dai soli test unitari. Dettagli in `docs/wiki/nether.md` §N7, riga 47.16 di `verification.md`.
-
-## [2026-10-03] feat | Fluidi M2: respirazione e budget di discesa
-
-M2 è la metà "decisione" dei fluidi: non sa nuotare, ma non annega per sbaglio.
-
-**Modulo puro `bedrock-dive.mjs`**: `waterBreathingSources({armor, effects, conduits})`
-riconosce le fonti **reali** (elmo di tartaruga, effetto normalizzato a
-`water_breathing` con `duration` in tick — `-1` infinito, `0` già scaduto) e
-riporta i conduit senza mai fidarsene (servirebbe un prisma d'acqua 3×3 validato
-dal server: dichiarare sicurezza inventata è peggio che rifiutare).
-`divePlan({air, depth, workSeconds, waterBreathing})` costa la discesa
-(0,6 s/blocco), il lavoro e la risalita (0,7 s/blocco) contro `airSeconds − 3 s`
-di riserva, con rifiuti tipizzati `no_water`/`unknown_air`/`air_too_low`/
-`work_too_long` e, quando passa, l'istante `abortAtSeconds`. `underwaterWork(...)`
-è l'unica porta: testa fuori dall'acqua → permesso, altrimenti `budget_ok`,
-`water_breathing` o il motivo del rifiuto.
-
-**Adapter**: `this.effects` è riempito dal pacchetto `mob_effect`
-(`add`/`update`/`remove`, filtrato sull'runtime id del bot) e ogni voce porta
-`expiresAt`, perché il server non manda sempre il `remove`: `_activeEffects()`
-scarta da sé ciò che è scaduto. `_diveDepth()` conta le celle d'acqua sopra la
-testa (la distanza dalla superficie), `_waterBreathing()` fonde elmo ed effetti,
-`GET /observe.dive` espone `{depth, workSeconds, waterBreathing, plan, last}`, e
-`_underwaterWorkAllowed()` viene chiamato da `_mineBlock` (prima di ogni
-pacchetto) e da `_collectDrop`: un'immersione che non entra nel budget si rifiuta
-in millisecondi invece di bruciare 20–30 s di movimento.
-
-**Layer survival**: nuova condizione booleana `waterBreathing`; la regola
-`drowning` ora richiede `waterBreathing: false` e il bisogno `surface` e il
-punteggio `drowning` tacciono mentre si respira (ignoto = `false` = prudente).
-
-**Test**: 920 verdi (5 in `tests/bedrock-dive.test.mjs`, +5 nell'adapter per
-effetti/scadenza/fonti/cancello, +1 nel governor).
-
-**Live** (VM 100, container `hermes-jev-bedrock`, deploy scp + `docker cp` +
-md5 + restart): `/observe.dive` → `{depth: 0, workSeconds: 3, waterBreathing:
-{active: false, sources: [], conduitsNear: 0}, plan: null, last: null}`;
-`mine_cobblestone` → `{ok: true, confirmedBy: 'server_world', ms: 2768}` con
-`last: null` (il cancello è trasparente da asciutto); un `effect @a
-water_breathing 600 0` digitato nella console del BDS è stato ricevuto come evento
-`mob_effect` e riportato come `{kind: 'effect', seconds: 600}`, poi contato alla
-rovescia tra le sonde (493 → 481 → 469 → 461 s): la conversione tick→secondi è
-allineata al server reale. `effect @a clear` e un secondo `effect … 5 0` non hanno
-invece avuto effetto osservabile, quindi il percorso `remove` resta coperto dai
-soli test unitari. La scadenza automatica invece è ora **verificata live**:
-lasciando scadere l'effetto, `/observe.dive` è tornato `active: false` con il log
-che conteneva ancora solo due pacchetti `mob_effect` (`add` + `update`, nessun
-`remove`) — cioè il caso è gestito da `expiresAt`/`_activeEffects()` come previsto.
-
-**Limiti**: il rifiuto sott'acqua (`air_too_low`/`work_too_long`) è verificato solo
-offline — il bot non riesce a mettere la testa sotto (stanza chiusa, e nuotare è il
-blocker di M1); l'elmo di tartaruga non è disponibile in partita; `DIVE_WORK_SECONDS
-(3 s)` è una stima per un blocco a mano, il cancello non consulta ancora il
-piccone.
-
-## [2026-10-03] feat | Fluidi M3: cascate e colonne di bolle (rilevamento, verdetti tipizzati, rifiuti live)
-
-**Obiettivo**: M3 della roadmap fluidi — trasformare un salto d'acqua e una colonna
-di bolle in *rotte*, senza fabbricare fisica che il bot non ha (il nuoto di M1 è
-ancora bloccato).
-
-**Implementazione**:
-- `bedrock-waterfall.mjs` (puro): `landingVerdict` (acqua e terreno solido sicuri,
-  `lava`/`magma`/`fire`/`cactus`/… pericolosi, `air` = caduta nel vuoto, blocco
-  illeggibile = **unknown**, mai trattato come sicuro); `findWaterfalls` (run
-  verticali di almeno `WATERFALL_MIN_HEIGHT` = 3 celle d'acqua, atterraggio letto
-  **sotto** il fondo, ordinamento per distanza dalla cima); `findBubbleColumns`
-  (`soul_sand` verso l'alto con `airRefill`, `magma` verso il basso);
-  `withinColumn`; `columnTactic` come **unica** decisione con precedenza
-  `no_column` → `already_inside` → `too_far` → `sneak_not_supported` → `unsafe_landing`
-  → `unknown_landing` → **`swimming_unavailable`** → `bubble_column` (se ripristina
-  l'aria) → il budget di discesa di M2 (`divePlan`, profondità = altezza della
-  colonna, `workSeconds: 0`); `summarizeColumn` per le viste.
-- `bedrock-adapter.mjs`: il censimento fluidi costruisce anche `waterfalls`/`bubbles`;
-  `_fluidsView` espone `waterfall`/`bubbleColumn`/`onWaterfall`; `swimSupported` è
-  `false` per dichiarazione (è il nome onesto del blocker M1, così il motivo è
-  scritto una volta sola e non sparso nei call site); `_useColumn` (verdetto,
-  avvicinamento alla cima, attesa della traversata) verifica la **realtà del server**
-  — se i piedi non si muovono risponde `column_not_traversed` con `deltaY` invece di
-  fingere un successo — e le azioni `descend_waterfall`/`climb_waterfall`/
-  `use_bubble_column` sono offerte solo con verdetto positivo; `_digDown` preferisce
-  una cascata utilizzabile e altrimenti esegue esattamente la scalinata di prima.
-- `bedrock-harness.mjs`: `GET /observe.waterfall[?force=1]` pubblica conteggi,
-  righe compatte e i tre verdetti **senza eseguirli**.
-- Layer sopravvivenza: condizione `onWaterfall` (ignoto = `false`), regola
-  contestuale `ride_waterfall` (priorità 54: restare nella colonna fino alla pozza
-  d'atterraggio) e intenti `descend_waterfall`/`climb_waterfall`/`use_bubble_column`.
-
-**Test**: `tests/bedrock-waterfall.test.mjs` (8, puri: atterraggi, run, ordinamenti,
-tutti i rami della tattica) + `tests/bedrock-fluids-adapter.test.mjs` (32, +9) +
-`tests/survival-governor.test.mjs` (+1). Suite completa **938 test, 0 failure**. Un
-bug reale trovato dai test puri: la lunghezza del run in `runsOf` era calcolata al
-contrario e nessuna cascata veniva riconosciuta.
-
-**Collaudo live (03/10/2026, container `hermes-jev-bedrock`, BDS 1.26.52)**:
-`GET /observe.waterfall?force=1` → `swimSupported: false`, `waterfallCount: 0`,
-`bubbleCount: 0`, i tre verdetti `no_column`, `last: null`; l'unica acqua nel raggio
-è una **pozza 2×2×2** (`x 116..117, z 180..181, y 70..71`, due blocchi: sotto la
-soglia di 3) e non esiste alcuna colonna di bolle. Le tre azioni rifiutano in
-millisecondi (`descend_waterfall` 10,6 ms; `climb_waterfall`/`use_bubble_column`
-3,7 ms) senza inviare pacchetti né bruciare percorsi; `/options` (28 chiavi) non le
-offre; `/survival` resta `night_with_bed` (la regola `ride_waterfall` non scatta su
-un bot asciutto). Nel container `loadSurvivalRules` mostra la regola e
-`keyMatchesIntents('descend_waterfall', ['descend'])` è vero.
-
-**Decisioni**: nessuna cascata fabbricata con `setblock`/secchi (modificherebbe il
-mondo condiviso della base e lascerebbe acqua corrente); gli **edge di pathfinding
-per le colonne non sono stati aggiunti** — una discesa in acqua da cui non si può
-risalire è una trappola: atterreranno con il nuoto di M1.
-
-**Limiti**: la cavalcata reale (e il ramo `swimming_unavailable`) resta coperta solo
-dai test unitari, perché serve il nuoto; `WATERFALL_MIN_HEIGHT = 3` è una scelta di
-giudizio; l'atterraggio si legge dal chunk caricato (una cascata che finisce fuori
-dal caricato viene ignorata); il danno da caduta non è ancora modellato, quindi una
-cascata è sicura *perché* atterra in acqua, non perché il bot capisca la caduta.
-
-## [2026-10-03] feat | Fluidi M4: lava — sponde, loot distrutto, gate di attraversamento
-
-**Cosa**: milestone M4 della roadmap fluidi. Nuovo modulo puro `bedrock-lava.mjs`
-(`deathVerdict` con `recoverable: false` dentro la lava o entro `LAVA_DEATH_RADIUS`
-2, `lostDrops`, `safeShorePlan` che preferisce la sponda **con acqua accanto**
-(`gain + 2`) e rifiuta le celle a meno di `SAFE_SHORE_MIN_GAP` 2 dal bordo,
-`fireResistance` con gli effetti scaduti scartati, `lavaGap` che misura il **primo**
-tratto di lava a passi di un blocco e dichiara `truncated` invece di inventare la
-sponda opposta, `lavaCrossingGate` con `gap_unknown`/`gap_too_wide` (oltre 4)/
-`water_in_nether`/`not_equipped`/`no_fire_resistance`/`{ok, route: none|bridge|water,
-blocks}`).
-
-**Adapter**: `_dropInLava` filtra i drop bruciati da `_nearestDrop`; `_deathVerdict`
-ricalcolato dal censimento e `_recoverLoot` che ritorna `drops_lost_in_lava` + log
-`recover_loot_skipped` **prima** di muoversi (l'opzione `recover_loot` sparisce); la
-misura del varco parte dalla **cella** occupata (i piedi sono frazionari: da `0.5`
-nessuna cella intera verrebbe riconosciuta); `_lavaView`; `_moveToSafe` (rifiuto
-`not_in_danger`, candidati su anelli 4/8/12, verdetto *dopo* il movimento in
-`_lavaLast`); `_crossLava` con i rifiuti tipizzati e, a gate aperto,
-**`bridge_not_implemented`** con il piano in mano (il ponte è M5/M6: un falso
-successo qui sarebbe la bugia più costosa della milestone). `GET /observe.lava`
-(+`lava` in `/observe`). `survival/intents.mjs`: `move_to_safe: ['escape','travel']`,
-`cross_lava: ['travel','fluid']`.
-
-**Test**: 955 verde (era 938). `tests/bedrock-lava.test.mjs` (9 puri),
-`tests/bedrock-fluids-adapter.test.mjs` 39 (+7 M4), `tests/survival-governor.test.mjs`
-+1 (lava addosso ⇒ emergenza con l'obiettivo `lava_contact`, lava entro 4 ⇒ cautela).
-
-**Collaudo live** (VM 100, container `hermes-jev-bedrock`, BDS 1.26.52):
-`GET /observe.lava?force=1` → `inLava: false`, `lavaDistance: 15.4` (251 celle in una
-cava **sotto** la stanza, `nearest {x:111,y:59,z:155}`), `gap: {gap: 0, reason:
-'no_lava'}`, `gate: {ok: true, route: 'none'}`, `lostDrops: []`, `death: null`;
-`move_to_safe` → `not_in_danger` e `cross_lava` → `no_lava_ahead` immediati (nessun
-movimento, nessun burn); `/options` 26 chiavi **senza** le due azioni (e senza
-`recover_loot`); `/survival` resta `normal` senza regole di lava.
-
-**Limiti**: la fuga non è stata esercitata live (la lava è 15.4 blocchi sotto una
-stanza sigillata) e nessuna lava è stata fabbricata con `setblock`/secchi (il mondo
-è condiviso e resterebbe lava che scorre): fuga, ponte e verdetto sul loot bruciato
-restano coperti solo dagli unit test. La misura del varco è limitata dal raggio del
-censimento (un lago più largo è `truncated` ⇒ `gap_unknown`). Il route "acqua →
-ossidiana" è una decisione: `place_water` arriva con M5.
-
-## [2026-10-03] feat | Fluidi M5: secchi, barche, gate dell'alchimia e il ponte sulla lava
-
-Dietro il fronte P7 `p7-fluids`, quinta milestone. Nuovo modulo puro
-`bedrock-bucket.mjs`: `bucketSourceVerdict` (una **sorgente** si riconosce dal nome
-del blocco — `water` contro `flowing_water`, `lava` contro `flowing_lava` — non da
-`liquid_depth`), `placeBucketVerdict` (acqua su lava **sorgente** ⇒ ossidiana, su
-lava che scorre ⇒ cobblestone, pietra su acqua sorgente, e l'acqua rifiutata a
-priori in Nether/End: `water_in_nether`), `bucketDelta` (un secchio si considera
-riempito solo se il prodotto è comparso **e** il recipiente è stato speso;
-`spentItem` serve alla fiala), `boatVerdict` (barca in inventario + 3 celle d'acqua
-entro 16 blocchi) e `brewPlan` (ricette `water_breathing`/`fire_resistance`/
-`night_vision`, i tre passi e la lista di ciò che manca).
-
-Adapter: `_bucketsHeld`, `_bucketSources` (legge il **nome dal mondo**, così l'acqua
-che scorre non viene offerta come sorgente), `_useOnSource` (equipaggia, avvicina,
-guarda, usa, conferma dal delta inventario), `_fillBucket`, `_fillBottle`,
-`_emptyBucket` (il verdetto puro **prima** di ogni pacchetto; conferma dal mondo —
-la cella è cambiata o c'è acqua sopra), `_boatCount`/`_nearestBoat`/`_craftBoat`/
-`_mountBoat`, `_brewStand`/`_brew` (che risponde `brew_not_implemented` con il
-piano: l'interazione col tavolo di alchimia è l'unico buco di M5, dichiarato),
-`_bucketView` + `GET /observe.bucket`, e `_bridgeLava`: il ponte che esegue il gate
-di M4 una cella per volta — versa l'acqua sulla lava (ossidiana) se ha il secchio,
-altrimenti piazza il blocco più abbondante, e avanza solo su una cella che il mondo
-ha confermato; un ponte inceppato si ferma su un appoggio sicuro e lo dichiara.
-`_crossLava` ora delega a `_bridgeLava` (il `bridge_not_implemented` di M4 non
-esiste più). Nove intenti nuovi in `survival/intents.mjs`.
-
-**Difetto trovato dal round live e corretto**: `place_water` rispondeva
-`missing_item` e `mount_boat` `no_rideable_nearby` — i rami nuovi erano stati
-inseriti **dopo** i prefissi generici `key.startsWith('mount_')`/`('place_')`;
-ora stanno prima, con un test di dispatch che fissa l'ordine.
-
-**Test**: 977 (erano 955) — 9 puri in `tests/bedrock-bucket.test.mjs` e 12 nuovi
-nell'adapter (`tests/bedrock-fluids-adapter.test.mjs` 51), fra cui la riscrittura
-del test M4 di `cross_lava`, che ora asserisce il **ponte** invece del rifiuto.
-
-**Collaudo live** (VM 100, container `hermes-jev-bedrock`): `GET
-/observe.bucket?force=1` → nessun secchio, **4 sorgenti di lava** a y=59 (la più
-vicina a 15.68 blocchi), acqua 8 celle a 20.6, lava 251 a 15.4, `boat
-{error:'missing_boat'}`, `brew {stand:false}`. Le sonde rispondono in 14–21 ms con
-rifiuti tipizzati: `fill_bucket` `missing_bucket`, `place_water`
-`missing_water_bucket`, `place_lava` `missing_lava_bucket`, `fill_bottle`
-`missing_glass_bottle`, `craft_boat` `craft_recipe_missing`, `mount_boat`
-`missing_boat`, `brew_water_breathing` `missing_brewing_stand` + i cinque item
-mancanti + il piano in tre passi, `cross_lava` `no_lava_ahead`; `/options` 22
-chiavi senza nessuna azione M5.
-
-**Limiti**: il round live è un round di rifiuti (nessun secchio, nessuna barca,
-nessun tavolo, nessuna lava raggiungibile), quindi catena riempi→versa→ossidiana,
-ponte e barca restano coperti dagli unit test; nessuna lava è stata fabbricata con
-`setblock` (mondo condiviso e resterebbe lava che scorre). Il tavolo di alchimia è
-pianificato ma mai cliccato.
-
-## [2026-10-03] feat | Fluidi M6: skill fluide, milestone del curriculum e criteri spaziali
-
-Sesta e ultima milestone fluidi, quella che porta il lavoro dentro la Survival
-Intelligence. Nove contratti in `skills/gameplay/fluids/` (`cross_water`,
-`survive_drowning`, `escape_lava`, `descend_waterfall`, `climb_waterfall`,
-`craft_bucket`, `bucket_and_place_water`, `boat_travel`, `brew_water_breathing`) e
-una decisione di schema: una skill può dichiarare un campo **`blocked`** con il
-motivo per cui non è eseguibile oggi. Le cinque che dipendono dal nuoto di M1 o dal
-tavolo di alchimia di M5 lo dicono da sole, invece di sembrare pronte. Tag nuovi
-(`buckets`, `boats`, `potions`) e quattro criteri nuovi nel verifier:
-`waterBreathing` (l'effetto del server o l'elmo di tartaruga, in entrambe le forme
-che l'adapter espone) e i tre spaziali `descendedAtLeast`/`climbedAtLeast`/
-`movedAtLeast`, che confrontano le due osservazioni (`before`/`after`) e **falliscono**
-se la posizione manca: "sono sceso di 8 blocchi" diventa una misura, non un racconto.
-
-Tre milestone in `knowledge/progression.json` — `bucket` (da `iron_age`, chiuso da
-`inventoryTagGte {buckets: 1}`), `water_travel` (da `bucket`, `satisfiedWhen: null`:
-una traversata in barca non si vede da un criterio statico, la chiude solo una skill
-verificata) e `nether_cross_lava` (da `water_travel`) — con le voci corrispondenti in
-`goals`, che è ciò che rende `CURRICULUM=bucket|water_travel|nether_cross_lava`
-instradabile.
-
-**Test**: 984 (erano 977) fra `tests/gameplay-skills.test.mjs` (i nove id, l'insieme
-`blocked` esatto e con motivazioni vere, i criteri su osservazioni reali, i criteri
-spaziali che rifiutano una posizione mancante) e `tests/progression.test.mjs` (tag,
-catena dei milestone, `satisfiedWhen` nullo, secchio che non nasce dal ferro grezzo).
-
-**Collaudo live** (VM 100, container `hermes-jev-bedrock`): `loadGameplaySkills()` →
-**35 skill, 9 fluide**; `loadProgression()` → **23 milestone** e 8 obiettivi di
-curriculum; `resolveMilestone('water_travel')` → `{status:'next', milestone:'wood',
-skill:'acquire_wood'}` (il nuovo goal si risolve **lungo la catena**, non con un
-errore); `verifySkill('descend_waterfall', {y:90}, {y:82})` → `success` con
-evidenza `{deltaY:-8}`; i tag contano `{water_bucket:2, oak_boat:1, potion:1}` come
-`buckets: 2, boats: 1, potions: 1`. Poi un giro vero (`RUN_ID=m6-live-1`,
-`CURRICULUM=water_travel`, `MAX_STEPS=2`): obiettivo accettato, primo piano
-`stone_age`, `#1 sleep -> night_skipped`, `#2 mine_cobblestone -> ok
-(confirmedBy: server_world)`, budget esaurito, `exit=0`.
-
-**Limiti**: le cinque skill bloccate restano non eseguibili (nuoto di M1, tavolo di
-alchimia di M5); `water_travel`/`nether_cross_lava` non hanno un criterio statico per
-scelta; `movedAtLeast` non distingue una traversata da una camminata sulla riva (la
-skill chiede anche `inWater: false` e lo dichiara).
-
-## [2026-10-03] verify | Round live P2: riding bloccato dal server, lock `busy` che non si liberava
-
-Round live capability-per-capability sul bot reale (container `hermes-jev-bedrock`,
-BDS 1.26.52), con il metodo dell'**evidenza osservata** invece della dichiarazione.
-
-**Riding**: `mount_donkey` su un donkey sellato a 0.75 blocchi finisce
-`mount_not_confirmed` dopo 20-26 s; il log eventi mostra 10 `interact
-{target:'donkey', distance:0.75}` e la risposta del server è **l'inventario della
-sella del donkey** (`inventory_slot {window_id:2, slot:0, item:'saddle:1:579'}` più
-un `inventory_content` per `anvil_input`), mai un `set_entity_link`. Provate due
-forme di pacchetto (la `inventory_transaction` vanilla con `item_use_on_entity` e un
-`interact` nudo con `action_id: 0`, che il mapper 1.26.51 non nomina): entrambe
-ignorate. Il trasporto non è il problema — la stessa transazione con
-`action_type:'attack'` uccide entità live. Ipotesi: serve una cattura pacchetti di un
-client reale che monta. `dismount` → `{ok:true, alreadyDismounted:true}`.
-
-**Rifiuti tipizzati raccolti** (tutti in millisecondi): `shear_sheep` →
-`missing_shears`; `tame_wolf` → `missing_feed {bone}`; `tame_cat` →
-`missing_feed {raw_cod/raw_salmon}`; `breed_pig` → `need_2_feed {carrot}`; `fish` →
-`missing_fishing_rod`; `take_item` → `item_not_in_container`; `deposit_item` →
-`missing_item`. **Un successo reale**: `eat` → `{ok:true, item:'carrot', food:20,
-health:20}` in 1741 ms (cibo 19 → 20, la carota è sparita dall'inventario: la prova
-è il delta). **Finding nuovo**: i 4 contenitori trovati (chest (105,72,138), barrel
-(111,72,160), chest (95,72,161), chest (95,73,161)) falliscono tutti con
-`container_read_failed: movement timeout` — il componente BFS li dice raggiungibili,
-il cammino reale no (30 s per tentativo).
-
-**Bug corretto (trovato perché il bot è morto a metà azione)**: il lock `busy` non si
-liberava più. La morte durante una `read_container` ha lasciato la promise dell'azione
-appesa per sempre: `adapter.busy` restava `true` e **tutta** l'API rispondeva
-`{ok:false, error:'busy'}` (anche `wait`) fino al riavvio del container — e nessun
-evento `action` era nel log, prova che il `finally` non veniva raggiunto. Ora
-`executeAction` è guardie + watchdog + log e il corpo è `_runAction(key)`:
-`Promise.race` con un timer `HARNESS_ACTION_TIMEOUT_MS` (default 180000) che risolve
-`{ok:false, error:'action_timeout'}` e logga `action_timeout`; il `finally` azzera il
-timer e libera il lock, e una rejection non gestita diventa un errore tipizzato.
-Nuovo `tests/bedrock-action-lock.test.mjs` (3 casi). **Suite 987/987.**
-
-**Corretti anche due errori di diagnostica**: `ride` e `follow_player` rispondevano
-`unknown_action`; ora `not_riding`/`no_ride_destination` e `no_player_target` con
-hint (verificato live dopo il deploy: md5 adapter `a3fee1bbbd257e2883e95502e483c2d2`).
-
-**Limiti**: i percorsi felici di riding, taming, tosatura, pesca e contenitori
-restano non esercitabili (servono una cattura di client reale, un osso, 2 lingotti di
-ferro, una canna da pesca e contenitori dentro il componente camminabile).
-
-## [2026-10-03] report | Chiusura della campagna P0 → P7
-
-Pagina nuova `docs/wiki/final-report.md` (collegata da `docs/index.md`): il
-bilancio della campagna a priorità — 51 commit, suite da 466 a **987 test**, 11
-task di goal completi e 1 saltato per blocker ambientale. Sette sezioni: completato
-(P0 consolidamento, P1 goal→missione, P3 `first_night`, P4 latte/colture/scudo/chat
-M5, P4 esplorazione M1–M6, P5 kit di viaggio, P6 observation log + indice
-vettoriale, P7 fluidi M0–M6, redstone R0–R6, nether/End N0–N7, più l'affidabilità
-del harness in P2), migliorato ma non completo (riding, percorsi felici dei
-compagni e della pesca, apertura del commercio, nuoto di M1, build redstone/Nether
-senza materiali), blocker con causa radice e tentativi (nessun player umano,
-entità e contenitori fuori dal componente, respawn del BDS, trigger di
-montaggio/commercio, crescita delle colture — quest'ultima risolta), test e prove
-live, modifiche principali, traccia documentale e i cinque task successivi ordinati
-per dipendenza tecnica.
-
-## [2026-10-03] feat | Il planner consuma il recall semantico (P6)
-
-Chiuso il limite dichiarato della riga 42.5 di `verification.md` e della pagina
-`memory.md` ("nothing in the planner reads `GET /memory/search` yet"). In
-`controller.mjs` il recall entra nel prompt del planner accanto agli indizi di
-provenienza di P0:
-
-- `recallQuery(goal)` costruisce la query dall'obiettivo in corso (obiettivo +
-  tipo del goal + nomi degli item target, tagliata a 200 caratteri), perché
-  l'harness non conosce l'obiettivo e il controller sì;
-- `semanticRecall(goal)` chiama `GET /memory/search?q=…&limit=3` **prima di ogni
-  `hermesPlan`** (avvio e replan) e logga l'evento `semantic_recall` con query,
-  hit (id + score) ed errore; non lancia mai: la rotta mancante o rotta lascia il
-  piano senza indizi (**fail-open**);
-- `semanticRecallLines(hits)` rende le righe nel blocco "Similar places from
-  memory (semantic recall — hints, re-verify on the spot)" con posizione, score
-  e flag `proven` quando la memoria ha un suggerimento di produttività: il recall
-  resta un indizio, mai un fatto.
-
-Test: `tests/controller-recall.test.mjs` (2 casi di integrazione con harness
-HTTP scriptato e finto binario `hermes` che registra il proprio `argv`, quindi
-l'asserzione legge il prompt esatto): il prompt del planner contiene le righe di
-recall e l'evento porta query + hit; con una rotta rotta il piano procede con
-`error` nell'evento e nessuna riga di recall. Suite completa: **989 test, 989
-pass** (era 987).
-
-Round live sul container `hermes-jev-bedrock` (VM 100, BDS 1.26.52; deploy del
-solo `controller.mjs` con `scp` + `docker cp` + md5 identico
-`227b9d023c82cef087a8e7e6b811797e`): la sonda diretta
-`GET /memory/search?q=dirt%20near%20home&limit=3` ha restituito tre documenti con
-il payload di produttività consolidato di P0; il giro
-`RUN_ID=recall-live-1 GOAL="Collect dirt near home" TARGETS={"dirt":2}
-JEV_MODEL=jev-latest` ha prodotto
-`semantic_recall {"query":"Collect dirt near home autonomous dirt","hits":[{"id":"home","score":0.342},{"id":"container_95_72_161","score":0.101},{"id":"resource_site_7_9","score":0.093}],"error":null}`,
-`PLAN Collect dirt near home`, `#1`/`#2 mine_dirt ok confirmedBy server_world`,
-`CANCELLED (exhausted) after 2 actions`, `exit=0` — nessuna regressione sul
-percorso normale. Resta aperto: trasformare un hit in un **waypoint reale**
-quando il goal è libero ("la grotta ricca").
-
-## [2026-10-03] feat | Retention dell'episodico: potatura a dry-run di missioni, azioni e checkpoint (P6)
-
-Chiuso l'ultimo item dichiarato aperto di `memory.md`/`roadmap.md` ("missions,
-action events and checkpoints only grow today"). Nuovo
-`WorldMemory.pruneEpisodic({keepMissions = 50, keepActions = null,
-keepCheckpoints = null, minAgeMs = 0, dryRun = true})` e rotta
-`POST /memory/prune`; nuovo `removeAction(id)` in entrambi i repository
-(`memory-store.mjs`, `sqlite-memory.mjs`, con statement preparato).
-
-Tre regole rendono la potatura sicura: il **dry-run e il default** (senza
-`{"dryRun": false}` esplicito non si cancella niente), si potano **solo missioni
-terminali gia consolidate** (la relazione `consolidated_into` e il watermark:
-l'hint di produttivita sul nodo e la copia dell'episodio — una missione non
-consolidata finisce in `skipped.unconsolidated` e una in corso non e nemmeno una
-candidata), e `minAgeMs` protegge il passato recente (`skipped.tooYoung`). La
-finestra `keepMissions` e ordinata per tempo di chiusura con l'id come tie-break
-(niente scelte arbitrarie); dentro la finestra la missione resta intera salvo
-`keepActions`/`keepCheckpoints`, che tagliano gli episodi piu vecchi. La potatura
-porta via action event, checkpoint, archi di goal e il record della missione; gli
-hint semantici restano (i loro `sources` possono puntare a missioni non piu
-esistenti, ed e esattamente il motivo per cui devono sopravvivere) e l'indice
-vettoriale viene invalidato dopo una potatura reale che ha rimosso qualcosa.
-
-Test: `tests/memory-prune.test.mjs`, **13 casi x 2 backend** (dry-run che non
-tocca niente, potatura reale solo fuori finestra, la conoscenza semantica che
-sopravvive agli episodi, non consolidata/in corso/troppo giovane mai potate,
-`keepActions`/`keepCheckpoints`, report serializzabile). Suite completa: **1002
-test, 1002 pass** (era 989).
-
-Collaudo live sul container `hermes-jev-bedrock` (deploy di `world-memory.mjs`,
-`memory-store.mjs`, `sqlite-memory.mjs`, `bedrock-harness.mjs` + restart, md5
-identici, bot `spawned`): `POST /memory/prune {}` →
-`{dryRun: true, candidates: 40, kept: 40, deleted: {missions: 0, actions: 0,
-checkpoints: 0, relations: 0}}`; `{"keepMissions": 0}` → `{deleted: {missions: 8,
-actions: 59, checkpoints: 8, relations: 13}, skipped: {unconsolidated: 32}}`
-(solo le 8 consolidate sono eleggibili); poi una chiamata **reale**
-`{"dryRun": false, "keepMissions": 50}` → 0 cancellazioni con i conteggi
-identici prima/dopo (44 missioni, 95 action event, 36 checkpoint, 34 mission
-relation, 5372 osservazioni) e `GET /memory/hints` che continua a restituire
-`carrots` (found 2, confidence 1) e `potatoes` (found 1). Per la regola
-dell'obiettivo "non eliminare dati" il ramo distruttivo e stato verificato live
-solo con una finestra che non cancella nulla; le cancellazioni sono coperte dai
-13 test unitari sui due backend. Limiti noti: il **log delle osservazioni**
-(5372 righe) non viene potato e un backlog non consolidato blocca la potatura per
-progetto (`POST /memory/consolidate` prima).
-
-
-## [2026-10-03] feat | Memoria P6: da un hit semantico a un waypoint reale (con verdetto del mondo)
-
-Chiuso il follow-up dichiarato di P6 ("turning a hit into a real waypoint").
-`GET /memory/search` accetta `reachable=1`: `Adapter.placeReach` da a ogni hit il
-verdetto di raggiungibilita (`cell`/`approach`/`unreachable`, o
-`reachability_unknown` quando il componente e degenere o troncato) e
-`placeCandidate` restituisce `candidate` (il **primo luogo che il mondo
-conferma** camminabile) + `candidateReason`. In `controller.mjs`
-`applySemanticWaypoint` trasforma il candidato nel waypoint del piano (eventi
-`semantic_waypoint`/`semantic_waypoint_skipped`) solo se il piano non ne ha gia
-uno, il goal non e `CURRICULUM` e non c'e un `WAYPOINT` esplicito. **Asimmetria
-voluta**: i filtri sulle azioni restano fail-open (non si toglie un'opzione su un
-mondo inaffidabile), ma **creare una nuova destinazione e fail-closed** —
-`reachability_unknown` non e una conferma, quindi il bot non parte.
-`placeReach.detail` riporta anche, per un componente di una sola cella, il
-verdetto dei quattro vicini (`_standableWhy`), e cosi il blocco live si e letto in
-una richiesta.
-
-Test: `tests/bedrock-reachability.test.mjs` 20 casi (nuovi `placeCandidate` e
-`placeReach`) e `tests/controller-recall.test.mjs` 5 (waypoint dal candidato,
-rifiuto con `reachability_unknown`, il `WAYPOINT` esplicito vince). Suite
-completa: **1007 test, 1007 pass**.
-
-Collaudo live sul container `hermes-jev-bedrock` (deploy di `bedrock-adapter.mjs`,
-`bedrock-harness.mjs`, `controller.mjs` con md5 identici + restart):
-`GET /memory/search?q=productive iron cave&limit=3&reachable=1` -> tre hit con
-`reachability_unknown` e `candidate: null`; `RUN_ID=p6-waypoint-live` con goal
-libero -> `semantic_recall` (tre hit) e `semantic_waypoint_skipped
-{"reason":"reachability_unknown","hits":3}`, nessun waypoint nel piano, due
-`mine_dirt` confermati dal server, `collect_drop` -> `item_not_collected`,
-`CANCELLED (exhausted)`, `exit=0`.
-
-**Scoperta live importante (blocca i round che richiedono movimento)**: il
-componente camminabile del bot e **una sola cella**. Il dettaglio lo dice: piedi a
-(115,73,159) con pavimento `oak_planks` a y=72, **letti** a est e ovest,
-`crafting_table` a sud e `oak_log` in testa a nord — gli ultimi due **piazzati
-dalle sonde del fronte P5**. Effetti: i filtri di raggiungibilita di P2 restano
-fail-open (`/options` offre di nuovo `mount_donkey`, `attack_zombie`,
-`read_container` a qualunque distanza) e tutto cio che richiede di camminare
-fallisce; `mine_*` entro il braccio e `craft_*` sul tavolo adiacente funzionano
-(`mine_dirt` ok due volte), i drop finiscono nella cavita sotto il pavimento
-(`collect_drop` -> `item_not_collected`). Il bot non ha una azione per uscirne
-(`pillar_up` -> `no_headroom`, `dig_up` -> blocco protetto). Opzioni in
-`open-questions.md` (raccomandata: una azione mirata sui soli blocchi piazzati dal
-bot, oppure un `setblock` di console sui due blocchi delle sonde).
-## [2026-10-03] feat | Retention del log delle osservazioni: dedupe in scrittura e potatura dell'evidenza superata (P6)
-
-La memoria aveva ancora uno strato senza limite: il **log delle osservazioni**
-(P6). Il round live della retention episodica lo aveva misurato a 5372 righe, e
-il fronte lo ha chiuso nel modo corretto, cioè dalla causa radice.
-
-**Causa**: il censimento rilegge gli stessi blocchi a ogni giro. Live, il log
-conteneva **5654 righe per 32 fatti distinti** (5523 letture identiche, ~280
-righe al minuto).
-
-**Fix, due strati**:
-1. `observationDedupeMs` (default 5 min, `OBSERVATION_DEDUPE_MS`): una rilettura
-   identica (`subject|predicate|object` + `source`) dentro la finestra non crea
-   una riga nuova — si tiene quella già in log. Un valore **diverso** è sempre un
-   fatto nuovo, quindi storia e contraddizioni restano. La finestra copre il
-   periodo di ricensimento (`STRUCTURE_RESCAN_MS` 60 s, censimento minerali ~15 s).
-2. `pruneObservations({ keepPerFact = 5, minAgeMs = 0, dryRun = true })` +
-   `POST /memory/observations/prune`: tiene le `keepPerFact` letture più recenti
-   per fatto e rimuove l'evidenza superata. Non può cambiare la proiezione: la
-   `materialize()` legge solo la più recente. Dry-run per default;
-   `removeObservation(id)` nei due repository (JSON + SQLite).
-
-**Verifica**: `tests/memory-observations.test.mjs` 20 casi e
-`tests/memory-prune.test.mjs` 21 casi, per entrambi i backend (dedupe dentro/fuori
-finestra, fonte diversa, valore diverso, finestra a 0 = log append-only; retention
-con minAgeMs, proiezione invariata, report limitato); suite completa **1019 test**;
-`npm run wiki:lint` pulito.
-
-**Collaudo live** (container `hermes-jev-bedrock`, VM 100, BDS 1.26.52): dry-run
-`{}` -> `{facts: 32, kept: 131, deleted: {observations: 5523}}`; potatura reale
-`{keepPerFact: 5, dryRun: false}` -> log **5654 -> 131 righe** con gli altri
-conteggi (record, relazioni, missioni, action event) **identici** e
-`GET /memory/search?q=productive%20iron%20cave` che restituisce gli **stessi tre
-hit con gli stessi punteggi** (0.355) più gli stessi hint (`carrots` 1.2,
-`potatoes`). Dopo il deploy del dedupe il log è rimasto a **131 righe per altri
-180 s con `delta = 0`** mentre il censimento continuava (prima: ~840 righe nello
-stesso tempo).
-
-**Limiti residui**: un backlog non consolidato blocca per progetto la potatura
-episodica; il conteggio "fatti" è quello dei `(subject|predicate|object)` distinti.
-Vedi `docs/wiki/memory.md` (sezioni "Observation log" e "Retention of the
-observation log") e la riga 47.25 di `verification.md`.
+## [2026-10-03] feat | Proactive human greeting (Attention System §6)
+
+Added `observe().humans`, the pure greeting policy in `human-greeting.mjs`,
+`sendChat` and `POST /say`. The controller greets trusted nearby humans in both
+goal and IDLE loops, with range and cooldown guards. The 1.26.51 text packet
+round-trips through the serializer. Eight new tests; suite **510/510**, wiki lint
+clean. At this point order acknowledgements, persistent greeting state,
+emergency suppression and a real-human live round remained open. See
+[human-command](wiki/human-command.md), verification row 18.
+
+## [2026-10-03] doc | Open questions for proactive greetings recorded
+
+Documented five greeting gaps: order acknowledgement, public chat versus
+whisper, emergency suppression, cooldown lost across controller restarts, and
+no live `/say` or real-human greeting round. No code changed; strict wiki lint
+clean. See [human-command](wiki/human-command.md) and
+[open questions](wiki/open-questions.md). These are historical findings;
+later entries record the acknowledgement and echo fixes.
+
+## [2026-10-03] feat | Reachability primitives filter impossible actions
+
+Added BFS reachability, approach/drop/mining/entity checks and gated
+`GET /debug/reach` in `bedrock-adapter.mjs`/`bedrock-harness.mjs` (commit
+`23c25c0`). Filters apply where options originate; a one-cell or truncated
+component remains fail-open. Live: `read_container` returned
+`container_unreachable` in **19 ms**, previously 30,355 ms; the diagnostic
+component contained 10 cells. Fourteen reachability tests; suite **502/502**
+at this front, 514 after trading. See verification row 42.3.
+
+## [2026-10-03] verify | Trading packet capture and _tradeAt budget fix
+
+Forwarded the remaining `_tradeAt` budget to `_waitTradeResult`, added a
+packet-debug window before interaction, and tried `npc_open` plus entity-use
+fallbacks with `item_interact`. Live: three attempts returned `trade_not_opened`
+in **12.6 s**, with no `container_open` or `update_trade`. Packet shapes,
+legacy ids, daylight and custom packs were investigated; a zero-player BDS
+restart recovered a `connecterror:9` loop. Fifteen trading tests passed.
+The initial interpretation of inventory resync as rejection was later
+disproved by the accepted attack probe (04/10). See [trading](wiki/trading.md).
+
+## [2026-10-03] verify | first_night scenario tests and live wood prerequisite
+
+Added two staged controller scenarios and fixed premature curriculum
+completion plus inheritance of the demo `WAYPOINT`. Live after deployment:
+sleep and wood mining worked; `p3-curriculum-live-3` reached
+`acquire_wood SUCCESS` with **8 logs after 5 actions (39.9 s)** and replanned
+to the table skill. Emergency replanning preserved the milestone. The
+12-action budget ended before the final night milestone; no human was
+connected. Suite **516 tests**. See [survival intelligence](wiki/survival-intelligence.md).
+
+## [2026-10-03] verify | first_night completed live; table target and busy retries fixed
+
+`p3-first-night-3` completed **GOAL MET after 25 actions**, with food acquired
+and `first_night SUCCESS {sawNight:true, phase:day, health:20}` after sleeping
+in the base bed. The successful mission produced positive productivity hints.
+Added `planTargets: {crafting_table:1}` to prevent repeated planks/sticks;
+controller `busy` retries now wait up to 90 s without consuming an action.
+Suite **517/517**, including curriculum and busy scenarios. Remaining live
+failures included animal combat, unreachable drops and a home timeout;
+surviving awake without a bed was not tested. Verification row 30.
+
+## [2026-10-03] fix | Combat locks one target by runtimeId
+
+The live log showed **102 attacks across at least 15 chickens**: resolving
+the nearest animal before every hit spread the damage. `_combat` now locks
+one runtimeId, confirms death by health or prompt removal, and distinguishes
+`target_lost`, `target_gone` and failed approaches. Four regression cases;
+suite **521/521**. Live `attack_pig` returned `cannot_reach_target: movement
+timeout`, zero hits, in **24.3 s**; no animal was killed in that probe. A
+reachable-animal happy path remained pending. Verification rows 8.1 and 23.
+
+## [2026-10-03] fix | Fishing uses protocol bite events; payloads cannot rename log events
+
+Replaced the cast-descent false bite with settling, `fish_hook_hook` (event
+13), or two dips below the settled height; event 14 records teasing.
+`bobber_lost` is explicit. Log merges now preserve the event type and use
+`entityType`/`chatType` for payloads. This also corrected the combat evidence:
+earlier chicken deaths existed outside the 102-hit combat window. Seven new
+tests; suite **528/528**. Bite success still required live verification.
+See [fishing](wiki/fishing.md), verification rows 8.2 and 28.
+
+## [2026-10-03] fix | Automatic pickup skips unreachable drops
+
+Live `p3-first-night-3` confirmed crop, wood and egg pickup; residual dirt
+failures came from drops below the plank floor, outside the walkable
+component. `_pickupNearby` now skips those cells without movement, records
+`failedAt` and `pickup_skipped`, and remains fail-open with unresolved feet.
+Two new reachability tests; suite **530/530**, wiki lint clean. A live probe
+of the new skip branch was blocked by the sealed room and protected floor.
+Verification rows 4 and 42.3.
+
+## [2026-10-03] feat | Mature crop harvesting and block-state preservation
+
+`findBlocks` now preserves the Prismarine Block instead of spreading away
+`getProperties()`. Added crop maturity, seed selection, guarded
+`harvest_<crop>` and best-effort replanting. Fifteen new tests; suite
+**543/543**, wiki lint clean. Live: potatoes reported growth **7/7/6/6** and
+carrots 7; missing wheat and unreachable potatoes returned typed refusals.
+End-to-end harvesting remained blocked by the walkable component at this
+round. See verification row 19.1 and [headless client](wiki/headless-client.md).
+
+## [2026-10-03] feat | Chat M5 acknowledges orders and outcomes; echo and stale inbox fixed
+
+Added `human-replies.mjs` and controller acknowledgement/outcome replies.
+Live bot-echo testing exposed self-orders because the server sender name
+differed from the authentication name; text matching within 15 s now records
+`chat_echo` and learns `selfName`. Orders older than 5 min are dropped, and
+repeat rejection logs are deduplicated. Live `/say` → inbox → goal → outcome
+worked; after the echo fix the test message produced one echo and no order.
+Suite **564/564**. A real-human sender and closely spaced, rate-limited replies
+remained unverified. See [human command](wiki/human-command.md), row 18.
+
+## [2026-10-03] feat | Milking: craft_bucket and milk_<animal> (P4.1)
+
+Added bucket crafting and cow/mooshroom milking with reachability gates,
+inventory-delta confirmation and typed failures. Ten milk tests; suite
+**574/574**. Live `/options` offered neither action without ingredients;
+`milk_cow` returned `missing_bucket` immediately and `craft_bucket` returned
+`missing_ingredients`, confirming the recipe existed. No cow or accessible
+iron was available in the sealed-room round, so the happy path remained
+pending at this date. Verification row 19.2.
+
+## [2026-10-03] feat | Shield craft/equip/raise/lower: offline tests and live gates (P4.3)
+
+Implemented shield crafting (1 iron ingot + 6 planks), offhand stack
+requests, equipment confirmation and `start_using_item` in auth input.
+Fourteen shield cases; suite **588/588**. Live gates returned
+`missing_shield` (25 ms), `shield_not_equipped` (14 ms), already lowered
+(21 ms) and `missing_ingredients` (18 ms); the server supplied the recipe.
+Actual equipping and raising remained pending for materials and a reachable
+threat. The later 04/10 A/B corrected the offhand index to slot 1;
+this entry does not prove shield protection. Verification row 19.3.
+
+## [2026-10-03] feat | Exploration M1 hardening and M2 route replay verified live
+
+Fixed truthful `found` reports, isolated biome stepping from other mission
+types, and superseded abandoned searches. Added replay from persisted
+missions/places with forward-only guide checkpoints. Live: five stale
+searches closed, a replay walked **4 path nodes** and completed `arrived`
+with a `replay_of` relation. Replay to remembered home returned `path_failed`.
+Eleven replay cases plus a found assertion; suite **599/599**. Long-range
+biome exploration and multi-checkpoint replay remained unverified because
+the room prevented travel. See [exploration](wiki/exploration.md), row 45.1.
+
+## [2026-10-03] feat | Exploration M4 searches observable blocks and entities
+
+Added natural aliases with word boundaries, `block:`/`entity:` escape
+hatches, bounded scan reports, `POST/GET /explore/find` and its driver.
+Live `block:oak_log` reported **16 matches across 125 loaded chunks** and
+closed successfully; absent mushrooms, pumpkins and cows returned spiral
+steps without false positives. A biome request returned
+`unknown_search_target`; new searches superseded old ones. Five tests;
+suite **604/604**. Unloaded targets still required travel, blocked by the
+room. See [exploration](wiki/exploration.md), row 45.2.
+
+## [2026-10-03] feat | Exploration M5/M6 detects structures and cavities
+
+Added bounded nearest-section block surveys, deterministic structure
+scores and persistent structure landmarks. Bedrock names `bed` and
+`stonecutter_block` were corrected live. A 60,000-cell survey found a
+village at **(113,73,156), score 6**, and a cave at **(112,71,144), 831 air
+cells below**; repeat surveys did not duplicate landmarks. Cave search
+reported found; Ancient City search did not invent a match. Suite
+**612/612**. Histograms do not follow cavities, only loaded cells are visible,
+and Ancient City detection remained offline. Verification row 45.3.
+
+## [2026-10-03] feat | Travel kit, pillar-up, hut and placement fixes
+
+Added `travel_kit`, `pillar_up`, `build_hut` and placement diagnostics.
+Live: the kit crafted a sword/table but lacked armor/night supplies;
+pillar-up returned `no_headroom`; the hut placed **one server-confirmed log
+(6 → 5)**, skipped eight solid cells and reported `hut_incomplete`.
+Fixed placement into occupied non-solid cells, clickable furniture supports,
+and a jump path that crashed motion updates. Twenty travel-kit cases;
+suite **634/634**. A complete hut and live pillar ascent remained pending.
+See [exploration](wiki/exploration.md), row 45.4.
+
+## [2026-10-03] feat | Observation log and derived vector index (P6)
+
+Added schema-v5 observations, idempotent materialization and a derived
+2048-dimension hashed lexical vector index. Live v4 → v5 preserved
+**141 records, 39 missions and 80 relations**; repeated materialization
+kept the same counts. Reindex produced **44 documents** and productive-dirt
+search ranked the consolidated site first (**0.407**). Suite **667/667**,
+with both memory backends covered. At this point the planner did not yet
+consume recall and retention was undefined; later P6 entries close those
+gaps. See [memory](wiki/memory.md), rows 42.4/42.5.
+
+## [2026-10-03] feat | Fluids M0: water/lava awareness and safe digging
+
+Added fluid census, hazard levels, escape ranking, adjacent-fluid digging
+guards and survival conditions/rules. Unloaded worlds remain `ready:false`.
+Live: **259 fluid cells**, water 8 and lava 251; nearest lava was **15.4
+blocks below**, so no escape option or false drowning alarm appeared.
+`avoid_lava` returned `no_lava_nearby` without movement; protected digging
+remained refused. Eighteen fluid cases; suite **685/685**. Actual escape and
+drowning were not exercised, and air was still unknown. See
+[fluids](wiki/fluids.md), verification row 47.
+
+## [2026-10-03] feat | Fluids M1 partial: shallow wading and simulated air
+
+Allowed water at feet with a dry head, at `WADE_SPEED_FACTOR=0.5`, while
+deep water and lava remain excluded. Added `AirMeter` (300 ticks) with
+explicit `airSource`; server attributes override simulation and health is
+never simulated. Live: air **300 / 15 s**, dry hazard none, and the water
+waypoint returned `path_failed`. Suite **698/698**. Wading speed remained
+uncalibrated live; swimming, surfacing and water pathfinding were absent
+pending protocol evidence and accessible water. See [fluids](wiki/fluids.md),
+row 47.1.
+
+## [2026-10-03] feat | Redstone R0: component awareness and protection
+
+Added component census, nullable power/state readings, state-filtered
+block search and protection of built redstone; ore remains mineable.
+Live `/observe.redstone` reported a ready empty census across **125 loaded
+columns**; protected up/down digging returned typed refusals. Suite
+**714/714**, covering pure state interpretation, adapter census and digging.
+The room had no components or iron pickaxe, so real signal readings and
+redstone-ore mining were not demonstrated. See [redstone](wiki/redstone.md),
+verification row 47.2.
+
+## [2026-10-03] feat | Redstone R1: oriented placement and repeater delay
+
+Added bounded cardinal-yaw placement with world rereads and correction,
+plus repeater delay cycling verified after each click. Fixed a local
+variable shadowing the imported delay function. Suite **730/730**.
+Live: missing lever, missing repeater and invalid delay returned typed
+failures; a torch placement was server-confirmed (**2 → 1**) and crafting a
+wooden pickaxe enabled cobblestone mining. Full component placement was
+blocked because reachable cobblestone belonged to the protected base;
+temporary unloaded cells failed conservatively. Verification row 47.3.
+
+## [2026-10-03] feat | Redstone R2: circuit interaction and sensing
+
+Added readable input/output states, in-place census updates, verified
+input toggling with restoration, and survival power criteria. Suite
+**748/748**, including a modeled server that toggles a lever and lamp.
+Live: nullable empty readings, `use_redstone → no_redstone_input`, and
+`sense_redstone` returning an inactive census; no unusable option appeared.
+The click → effect → restore happy path remained offline for lack of
+materials. Delayed effects needed R4; summary activity did not prove circuit
+topology. See [redstone](wiki/redstone.md), row 47.4.
+
+## [2026-10-03] feat | Redstone R3: declarative circuit blueprints and builders
+
+Added `circuits.mjs`, eight validated blueprints, site/material checks,
+bounded placement, trigger restoration and one report per attempt.
+Four blueprints were buildable and four carried explicit refusal reasons;
+empty success was rejected. Suite **767/767**, with modeled builds of
+`lamp_switch` and `delay_line`. Live catalogue returned eight circuits;
+missing materials, unsupported blueprints and unknown ids failed in
+milliseconds and were logged. Full builds remained offline: no redstone/
+glowstone and base cobblestone could not be mined. Verification row 47.5.
+
+## [2026-10-03] feat | Redstone R4: measured delay, owned teardown and rollback
+
+Added bounded output-change traces, delay measurement (50 ms/tick,
+±60 ms tolerance), placed-cell ownership, teardown and failed-step
+rollback. Missing traces produce `circuit_delay_unmeasured`.
+Suite **774/774**: 300 ms measured as 6 ticks, 900 ms rejected, changed or
+unowned cells skipped. Live: `owned:0`, `teardown_circuit → nothing_to_tear_down`
+and delay-line build → `missing_materials`. Real delay, rollback and removal
+remained offline; measurement requires server output updates and ownership
+does not establish electrical isolation. Verification row 47.6.
+
+## [2026-10-03] feat | Redstone R5: progression, skills and craftable materials bridge
+
+Added the `redstone_ore → redstone_basics → redstone_automation` chain,
+six skills, item tags and `circuitBuilt` verification of a fresh builder
+report; an already-standing circuit cannot close the skill. Missing
+materials offer only immediately craftable next actions. Suite **780/780**.
+Live graph loading resolved automation and the curriculum advanced to
+`stone_age`, with **three server-confirmed cobblestone mines**. A complete
+build remained blocked by inaccessible drops, base protection and absent
+glowstone. The bridge handles crafting, not smelting. See
+[redstone](wiki/redstone.md), row 47.7.
+
+## [2026-10-03] feat | Redstone R6: forbidden blocks, lag limits and site safety
+
+Enforced forbidden placements, **48 steps / 24 working components**,
+minimum clock period **8 ticks**, a **500 ms** same-input toggle interval,
+and bot/piston-path exclusion. Suite **789/789**. Live gated diagnostic
+probes refused TNT, command blocks and respawn anchors while the target
+cell stayed unchanged; torch passed the ban and failed later on support.
+Builds still lacked materials. Toggle timing and piston safety remained
+unit-tested; limits apply per blueprint, and the forbidden set is explicit.
+See [redstone](wiki/redstone.md), row 47.8.
+
+## [2026-10-03] feat | Nether N0: hazards, projectiles, gaze and governor rules
+
+Added portal/fire/magma/spawner census, projectile prediction, enderman
+gaze detection and seven governor rules; namespaced entity names were
+fixed in tests. Suite **818/818**, wiki lint clean. Live Overworld probes
+reported no hazards or portals; five cached calls took **56 ms**. A thrown
+egg was tracked moving away (**14.3 → 18.4 blocks**) without a false incoming
+threat. Nether/End behavior, dangerous beds and hostile projectile/gaze
+branches remained offline. See [nether](wiki/nether.md), row 47.9.
+
+## [2026-10-03] feat | Nether N1: reach, build, light and enter a portal
+
+Added frame planning/validation and four portal actions. Entry requires
+the server's `change_dimension`, and placement avoids the bot's cells.
+Suite **830/830**, including geometry, option gates and modeled server
+confirmation; tests exposed a half-block approach error. Live: no portal
+across 125 loaded columns, `no_portal_known`, missing **14 obsidian** and
+`missing_flint_and_steel`, all in **13–14 ms**. No portal happy path was
+exercised because the base lacked materials. See [nether](wiki/nether.md),
+verification row 47.10.
+
+## [2026-10-03] feat | Nether N2: non-flammable hub and safe landings
+
+Added hazardous-support rejection, maximum falls of **4 blocks in the
+Overworld / 2 in Nether/End**, and a shared shelter plan using non-flammable
+materials. Home is remembered only for a complete hub. Fixed a constructor
+field shadowing `_netherHub`; suite **843/843**. Live Overworld reported
+`maxFall:4` and `build_nether_hub → wrong_dimension`, while wait still worked.
+Nether hub/fall behavior, void protection and lava traversal remained
+unverified. Deployment checks now compare file md5s to catch stale VM
+copies. See [nether](wiki/nether.md), row 47.11.
+
+## [2026-10-03] feat | Nether N3: lateral projectile dodge
+
+Added velocity-based perpendicular candidates and `dodge_projectile`,
+filtered for line clearance, reachability, safe support and lava. Success
+requires the observed threat to disappear. Suite **851/851**; corrected
+negative zero in pure directions. Live quiet-world and outgoing-egg probes
+both returned `no_projectile_incoming`; the bot remained healthy with its
+inventory intact. No ghast/fireball was encountered, so the happy path
+remained offline and the fixed **3-block** dodge distance uncalibrated.
+See [nether](wiki/nether.md), row 47.12.
+
+## [2026-10-03] feat | Nether N4: piglin barter without attacks
+
+Added gold-equipment awareness, adult/non-brute target selection,
+shared hotbar preparation and `barter_piglin` using interaction only.
+Confirmation is a new nearby drop; timeouts report whether the ingot was
+spent. Piglin attack options are removed. Suite **859/859**, including the
+real transaction shape in a fixture. Live: no piglin, no barter option,
+`no_piglin_nearby` immediately, normal zombie attacks unchanged.
+No barter completed on the server; that acceptance criterion remained
+pending. See [nether](wiki/nether.md), row 47.13.
+
+## [2026-10-03] feat | Nether N5: gaze discipline, pumpkin mask, torso aim and pearls
+
+Added torso aiming below enderman eyes, explicit gaze versus perceived
+aggression, pumpkin-mask equipping and observed pearl counts. Namespaced
+enderman lookup was fixed. Suite **870/870**. Live: `enderman:null`,
+`pearls:0`, `pumpkin:false`; gaze avoidance returned `no_enderman` and
+equipping returned `missing_pumpkin` in **10 ms**, with no invalid options.
+No real enderman or mask was available, so those happy paths remained
+unit-tested. See [nether](wiki/nether.md) §N5, verification row 47.14.
+
+## [2026-10-03] feat | Nether N6: fortress detection and blaze hunting with cover
+
+Added dimension-aware fortress scoring/search and blaze tactics that
+prioritize health, fire and verified cover before combat. Tests fixed the
+wrong `inFire` field and unknown cells falsely treated as cover; suite
+**885/885**. Live `hunt_blaze → no_blaze_nearby`; fortress search was accepted
+but found **0 across 125 loaded chunks** in the Overworld, then the diagnostic
+mission was cancelled. No fortress or blaze was present; successful
+hunting remained offline. See [nether](wiki/nether.md) §N6, row 47.15.
+
+## [2026-10-03] feat | Nether N7: eyes, stronghold, End portal and boss verdict
+
+Added eye crafting, throwing and bounded triangulation, world-confirmed
+frame filling and End entry. `bossDefeated` reads real boss-bar state;
+dragon combat is absent and `beat_the_dragon` retains `success:null`.
+Suite **909/909**, with 13 pure and 11 adapter cases. Live: zero frames,
+pearls/powder missing, no boss bar; six actions returned typed refusals in
+**19–21 ms** and their options stayed hidden. No End happy path or dragon
+fight was verified. See [nether](wiki/nether.md) §N7, row 47.16.
+
+## [2026-10-03] feat | Fluids M2: breathing sources and dive work budget
+
+Added real breathing-source tracking, effect expiry and descent/work/
+ascent budgeting with a 3 s reserve; underwater mining/pickup share the
+gate. Suite **920/920**. Live dry mining remained server-confirmed;
+an isolated console diagnostic applied Water Breathing, observed as a
+**600 s** effect and counted down. Expiry was live-confirmed without a
+remove packet; explicit removal remained unobserved. Underwater refusal
+and turtle helmets stayed offline, swimming was unavailable, and the
+3 s work estimate did not consult the tool. Verification row 47.17.
+
+## [2026-10-03] feat | Fluids M3: waterfall and bubble-column verdicts
+
+Added vertical-column detection, landing checks, breathing budgets and
+three traversal actions requiring real position change. `swimSupported:false`
+explicitly blocks unsafe traversal; water pathfinding edges were deferred.
+Suite **938/938**, including a corrected inverted run length. Live:
+zero waterfalls/bubbles in a **2×2×2** pool, all three actions returned
+`no_column` in **3.7–10.6 ms**, no false survival rule. No artificial water
+was placed in the shared world. Actual traversal and unreadable/out-of-range
+landings remained unverified. See [fluids](wiki/fluids.md), row 47.18.
+
+## [2026-10-03] feat | Fluids M4: safe shores, destroyed loot and crossing gates
+
+Added lava death/drop verdicts, safe-shore ranking, bounded gap
+measurement and equipment/fire-resistance crossing checks. Lost loot is
+refused before walking; crossing initially returned
+`bridge_not_implemented` with its plan. Suite **955/955**. Live nearest lava
+was **15.4 blocks below**; `move_to_safe → not_in_danger` and
+`cross_lava → no_lava_ahead` returned immediately, with no false options.
+Escape, destroyed-loot behavior and traversal remained offline; no lava was
+created in the shared world. See [fluids](wiki/fluids.md), row 47.19.
+
+## [2026-10-03] feat | Fluids M5: buckets, boats, brewing gate and lava bridge
+
+Added source/placement verdicts, inventory-delta bucket confirmation,
+boat actions, brewing plans and a bridge advancing only onto
+server-confirmed cells. Brewing interaction explicitly remains
+`brew_not_implemented`. Fixed dispatch where generic `place_`/`mount_`
+branches intercepted water and boat actions. Suite **977/977**.
+Live census found **four lava sources**; missing buckets, bottles, boat,
+recipe and brewing stand returned typed failures in **14–21 ms**.
+Fill/pour/obsidian, boat mounting and the bridge remained offline because
+materials and accessible lava were absent. Verification row 47.20.
+
+## [2026-10-03] feat | Fluids M6: gameplay skills, curriculum and spatial criteria
+
+Added nine fluid skills, five with explicit `blocked` reasons, item
+tags, breathing/spatial criteria and the `bucket → water_travel →
+nether_cross_lava` chain. Suite **984/984**. Live load returned **35 skills
+(9 fluid), 23 milestones**; the new curriculum resolved prerequisites.
+A local verifier call measured `deltaY:-8` on supplied observations; this
+was not an actual waterfall traversal. The two-action live curriculum
+slept and mined cobblestone, then exhausted its budget. Swimming/brewing
+skills stayed blocked; water travel was not completed. Verification row 47.21.
+
+## [2026-10-03] verify | P2 live round: riding unconfirmed and action lock watchdog
+
+Live saddled-donkey mounting at **0.75 blocks** returned
+`mount_not_confirmed` after **20–26 s**: ten interactions opened saddle
+inventory without an entity link; two packet shapes failed. Other actions
+returned missing-supply refusals; eating a carrot succeeded with food
+**19 → 20**. Four container walks timed out despite BFS reachability.
+A death during reading exposed a permanent busy lock; a 180 s watchdog
+now returns `action_timeout` and releases it. Three tests; suite **987/987**.
+Diagnostic `ride`/`follow_player` errors became typed; live happy paths
+remained pending. See [final report](wiki/final-report.md).
+
+## [2026-10-03] report | P0 → P7 campaign report created
+
+Created [final report](wiki/final-report.md) and indexed it: a historical
+snapshot of **51 commits**, suite **466 → 987**, 11 goal tasks complete and
+one skipped for the environment. The report distinguished implemented
+fronts and live refusals from incomplete riding, companion, fishing,
+trade, swimming and material-dependent builds, recorded blocker attempts,
+and ordered five follow-ups by dependency. These counts describe this
+03/10 snapshot; the report has since been updated.
+
+## [2026-10-03] feat | Planner consumes semantic recall (P6)
+
+Added bounded goal-derived recall before every Hermes plan, logged
+queries/hits/errors and injected place hints with provenance. A failed
+search leaves planning operational. Two controller integration cases;
+suite **989/989**. Live recall returned **three hits**, `error:null`, then
+two dirt mines were server-confirmed; the two-action round exhausted its
+budget and exited 0. Recall-to-waypoint selection was still open at this
+front. See [memory](wiki/memory.md), verification row 42.5.
+
+## [2026-10-03] feat | Episodic retention: dry-run pruning of missions and episodes (P6)
+
+Added `pruneEpisodic` and `POST /memory/prune`: default dry-run, only
+terminal consolidated missions eligible, age protection, semantic hints
+preserved and vector cache invalidated. Thirteen cases across both
+backends; suite **1002/1002**. Live default kept **40 candidates**;
+zero-window dry-run proposed **8 missions / 59 actions / 8 checkpoints /
+13 relations**, protecting 32 unconsolidated missions. A real default-window
+call deleted nothing and preserved all counts/hints. Destructive deletion
+was tested offline; observation retention remained open. Row 47.23.
+
+## [2026-10-03] feat | P6: semantic hit becomes a world-confirmed waypoint
+
+Added reachability verdicts to memory search and candidate-to-waypoint
+selection only when no explicit/curriculum waypoint exists. Creating a
+destination fails closed on unknown reachability; action filters remain
+fail-open. Suite **1007/1007**. Live three hits were `reachability_unknown`,
+so `candidate:null` and `semantic_waypoint_skipped`; two dirt mines still
+worked. Diagnostic neighbors exposed a one-cell component enclosed by
+beds, a table and a log placed in P5 probes. Walking and drop pickup stayed
+blocked; this round verified honest refusal, not waypoint travel. Row 47.24.
+
+## [2026-10-03] feat | Observation retention: write dedupe and superseded evidence pruning
+
+The live log held **5654 rows for 32 distinct facts**, growing about
+280 rows/min. Added 5 min write dedupe (changed values always append)
+and dry-run-first per-fact pruning on both backends. Suite **1019/1019**,
+wiki lint clean. Live pruning reduced **5654 → 131 rows**, preserving
+graph/mission/action counts and identical search hits/scores. After dedupe
+deployment, growth stayed **0 for 180 s**. Unconsolidated episodes remain
+protected by design; facts are distinct subject/predicate/object triples.
+See [memory](wiki/memory.md), verification row 47.25.
 
 ## [2026-10-03] fix | Circuit delay measurement: injectable clock, load-independent test
 
