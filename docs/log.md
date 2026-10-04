@@ -3695,3 +3695,26 @@ takes a client-side dump or a DTLS-terminating proxy),
 [open-questions](wiki/open-questions.md) §Mounting, and
 [headless-client](wiki/headless-client.md) §4.5 (the probe's new options and the
 `hex` packet dump).
+
+## [2026-10-04] verify | Companion actions live: shears, shearing, wool — and why the cat waits
+
+The round that the sealed room had blocked ran end to end on the live server:
+`take_shears` (`{ok:true, item:'shears', from:'chest', position:(72,71,153),
+inventoryDelta:1}`) → a 42-node walk to the shearing pasture → `shear_sheep`
+(`{ok:true, sheared:true}`). The success was verified **from the server's side**, not from
+our own flag: `/observe.drops` showed `gray_wool x3` appearing at the sheep, and
+`collect_drop` (`{ok:true, picked:3}`) left `gray_wool: 3` in `/observe.inventory`.
+
+The other half of `p2-companion` is blocked by material, not by protocol: the four untamed
+cats are visible in `companions` (15.3-21.1 blocks) but `tame_cat` refuses with
+`{"ok":false,"error":"missing_feed","feed":"cod/salmon"}` — correct for Bedrock
+(`tameFeed`) and honest, since no chest holds raw cod or salmon (only tropical fish and
+pufferfish) and fishing still cannot land a bite. See
+[verification](wiki/verification.md) row 47.41 and
+[companions](wiki/companions.md) §"shearing verified live".
+
+Two operational notes from the round: the BDS transport dropped once
+(`connecterror:9`) and recovered with a `systemctl restart minecraft-bedrock.service` on
+CT 108 — the harness reconnected **on its own** within ~30 s with the inventory intact, so
+the container does not need to be restarted when only NetherNet dies; and `mount_donkey`
+reports `no_rideable_nearby` while no donkey is in the census.

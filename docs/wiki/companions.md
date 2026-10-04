@@ -196,6 +196,26 @@ behaviour. Measured and ruled out on the live server (see
   before every interaction (a command, not an assumed state), and the mount still
   ends `mount_not_confirmed`.
 
+### 2026-10-04 (later): shearing verified live, taming blocked on fish
+
+The companion round that had been blocked by the sealed room is now done on the live
+server, and the success was checked from the server's side:
+
+| step | live result |
+|---|---|
+| `take_shears` | `{ok:true, item:'shears', from:'chest', position:(72,71,153), inventoryDelta:1, ms:4965}` |
+| `goto_waypoint (97,172)` | `{ok:true, distance:0.54, pathNodes:42}` |
+| `shear_sheep` | `{ok:true, sheared:true, type:'sheep'}` |
+| `/observe.drops` (independent) | `{item:'gray_wool', count:3, position:(87.76,73.06,171.40)}` |
+| `collect_drop` | `{ok:true, picked:3, item:'gray_wool'}` → `gray_wool: 3` in the inventory |
+
+**Taming** is the half that is still open, and it fails for a *material* reason, not a
+protocol one: the four untamed cats are 15-21 blocks away and `tame_cat` answers
+`{"ok":false,"error":"missing_feed","feed":"cod/salmon"}` before touching the world. The
+feed table is the Bedrock one (`tameFeed('cat') = ['cod','salmon']`), and no chest in the
+village holds raw cod or salmon — only `tropical_fish` and `pufferfish` — so the cat waits
+for the fishing front (no bite yet) or for a fish to be brought home.
+
 ### Still not implemented
 
 - **Saddle** equipping for `horse`/`donkey`/`mule` (they need a saddle to be
