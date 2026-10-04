@@ -43,8 +43,10 @@ const ENTITY_HEIGHTS = {
 };
 
 // Cibi usabili per mangiare, in ordine di preferenza. Restano fuori gli item
-// con effetti negativi (carne cruda di pollo, patata cruda/velenosa, occhio di
-// ragno, pesce palla, carne putrefatta) e le golden apple, conservate per dopo.
+// con effetti negativi (carne cruda di pollo, occhio di ragno, pesce palla,
+// carne putrefatta) e le golden apple, conservate per dopo. Le uova NON sono
+// cibo in Minecraft: servono solo come ingrediente di torta e pumpkin pie,
+// quindi non entrano in nessuna lista (nemmeno di ultima istanza).
 const FOOD_PRIORITY = [
   'cooked_beef', 'cooked_porkchop', 'cooked_mutton', 'cooked_chicken', 'cooked_rabbit',
   'cooked_cod', 'cooked_salmon',
@@ -52,6 +54,14 @@ const FOOD_PRIORITY = [
   'beef', 'porkchop', 'mutton', 'cod', 'salmon',
   'dried_kelp', 'cookie',
 ];
+
+// Cibi di ultima istanza: commestibili in vanilla ma con un effetto collaterale
+// (la patata cruda sfama per 1 e puo' avvelenare). Si usano solo quando la fame
+// e' critica e non c'e' niente di meglio: una fame a zero fa morire.
+export const LAST_RESORT_FOODS = ['potato'];
+
+// Fame sotto la quale anche i cibi di ultima istanza contano come cibo.
+export const STARVING_FOOD = 4;
 
 export function normalizeEntityType (type) {
   return String(type || '').replace(/^minecraft:/, '').toLowerCase();
@@ -70,9 +80,15 @@ export function entityHeight (type) {
 }
 
 // Restituisce il nome del cibo preferito disponibile in inventario, o null.
-export function bestFood (inventory = {}) {
+// Con `allowLastResort` (fame critica) accetta anche i cibi di ultima istanza.
+export function bestFood (inventory = {}, { allowLastResort = false } = {}) {
   for (const name of FOOD_PRIORITY) {
     if ((inventory[name] || 0) > 0) return name;
+  }
+  if (allowLastResort) {
+    for (const name of LAST_RESORT_FOODS) {
+      if ((inventory[name] || 0) > 0) return name;
+    }
   }
   return null;
 }

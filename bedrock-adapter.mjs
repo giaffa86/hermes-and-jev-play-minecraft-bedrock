@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { BedrockWorld } from './bedrock-world.mjs';
 import { HIVE_BLOCKS, BEE_CRAFT_ITEMS, BEE_SCAN_RADIUS, BEE_SCAN_LIMIT, isBeeProtected, hiveVerdict, honeyLevel, beeFlower, beeFlowerCount } from './bedrock-bees.mjs';
 import { trackNethernetClient, closeBedrockClient } from './bedrock-lifecycle.mjs';
-import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isMilkableType, isTameableType, isRideTameableType, isCompanionType, isRideableType, animalFeed, tameFeed, cropForSeed, cropMaturity, seedForCrop, isCropBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS, BUCKET_INGREDIENTS, SHIELD_INGREDIENTS } from './bedrock-survival.mjs';
+import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isMilkableType, isTameableType, isRideTameableType, isCompanionType, isRideableType, animalFeed, tameFeed, cropForSeed, cropMaturity, seedForCrop, isCropBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS, BUCKET_INGREDIENTS, SHIELD_INGREDIENTS, STARVING_FOOD } from './bedrock-survival.mjs';
 import { professionName, normalizeProfession, professionMatches, pickBestTrade } from './bedrock-trading.mjs';
 import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, bobberVerdict, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
 import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
@@ -3652,6 +3652,7 @@ export class BedrockAdapter {
       })),
       plan: this.plan,
       follow: this._followView(),
+      craft: this._craftNeeds(),
       chat: this.chatInbox.slice(-10),
       nearby: this.nearbyBlocks,
       structures: this.structures.slice(0, 8),
@@ -3910,7 +3911,7 @@ export class BedrockAdapter {
       const neutral = piglinNeutral({ worn: this._wornArmor() });
       o.push({ key: 'barter_piglin', description: `Barter with the piglin at ${JSON.stringify({ x: Math.round(barter.target.position.x), y: Math.round(barter.target.position.y), z: Math.round(barter.target.position.z) })} (${barter.target.distance} blocks away) handing it a ${BARTER_INGOT}${neutral ? '' : ' (no gold armour worn: it may turn hostile)'}` });
     }
-    const food = this._bestFoodItem();
+    const food = this._bestFoodItem({ allowLastResort: this.food <= STARVING_FOOD });
     if (food && (this.food < 18 || (this.health < 20 && this.food < 20))) {
       o.push({ key: 'eat', description: `Eat ${food} to restore hunger (hunger ${this.food}/20, health ${this.health}/20)` });
     }
@@ -4224,7 +4225,18 @@ export class BedrockAdapter {
     // lista e il pesce crudo dello scrigno piu lontano non veniva mai proposto,
     // quindi il planner non poteva chiederlo (round compagni, 03/10). Gli item
     // nominati in `plan.targets` passano comunque per primi.
+    // Regola dei materiali (05/10): un obiettivo di *costruzione* guarda prima
+    // l'inventario, poi i bauli noti, e solo alla fine raccoglie in natura. Gli
+    // item che servono al craft passano per primi nella lista dei prelievi, cosi'
+    // il tetto di 8 posti non li scarta.
+    const craft = this._craftNeeds({ offerKeys: o.map(option => option.key) });
     const wantedItems = new Set(Object.keys(this.plan?.targets || {}));
+    for (const need of craft?.needs ?? []) {
+      for (const miss of need.missing) {
+        for (const src of miss.sources) wantedItems.add(src.item);
+        for (const item of this._craftableCandidatesFor(miss.ingredient)) wantedItems.add(item);
+      }
+    }
     const takeEntries = [];
     const seenContainers = new Set();
     for (const c of cached) {
@@ -4257,6 +4269,22 @@ export class BedrockAdapter {
         ? `the ${e.c.type} at ${JSON.stringify(e.c.position)} (remembered: re-read on arrival)`
         : `the ${e.c.type} at ${JSON.stringify(e.c.position)} (container has ${e.count})`;
       o.push({ key: `take_${e.item}`, description: `Take ${e.count} ${e.item} from ${from}` });
+    }
+    // Il passo di approvvigionamento scelto dalla regola: se e' un prelievo da
+    // baulo, la descrizione dell'opzione gia' offerta si arricchisce; se e' un
+    // craft da inventario o una raccolta naturale, l'opzione nasce qui.
+    if (craft?.next) {
+      const step = craft.next;
+      const note = step.reason === 'craft_target_ready'
+        ? `Craft ${step.target} now: every material is already in the inventory`
+        : step.source === 'chest'
+        ? `Take ${step.short} ${step.item} from the ${step.chest.type} at ${JSON.stringify(step.chest.position)} to build ${step.target} (inventory first, then the chests; nothing is taken from buildings)`
+        : step.source === 'inventory'
+        ? `Craft ${step.item} from what the bot already holds to build ${step.target} (inventory first, then the chests)`
+        : `Gather ${step.item} in the wild to build ${step.target} (natural blocks only: nothing is taken from buildings)`;
+      const existing = o.find(option => option.key === step.key);
+      if (existing) existing.description = `${existing.description} — ${note}`;
+      else o.push({ key: step.key, description: note });
     }
     // Deposito: oggetti di valore verso il contenitore noto (o vicino) più prossimo.
     const depositTarget = cached.find(c => !this._reachabilityUsable() || this.approachReachable(c.position)) || reachableStorage[0];
@@ -7083,6 +7111,153 @@ export class BedrockAdapter {
       if ((count || 0) > 0 && this._ingredientMatches(ingredient, name)) total += count;
     }
     return total;
+  }
+
+  // ---- sorgenti dei materiali: inventario -> bauli -> natura (mai costruzioni) ----
+  //
+  // Regola chiesta dall'utente (05/10): per costruire qualcosa il bot guarda
+  // prima cosa ha addosso, poi cosa c'e' nei bauli vicini (letti o ricordati) e
+  // solo alla fine raccoglie in natura. Non smonta mai una costruzione: il
+  // censimento dei blocchi minabili e' una whitelist di blocchi naturali (vedi
+  // `_refreshNearby`) e `DIG_PROTECTED` copre i percorsi di scavo, quindi una
+  // casa non e' nemmeno una sorgente possibile. Le descrizioni lo dichiarano.
+
+  // Gli item dell'obiettivo che hanno una ricetta e non sono ancora in inventario.
+  _craftTargets () {
+    const wanted = new Map(Object.entries(this.plan?.targets || {}));
+    const declared = this.plan?.craft;
+    for (const item of Array.isArray(declared) ? declared : (declared ? [declared] : [])) {
+      if (!wanted.has(item)) wanted.set(item, 1);
+    }
+    const out = [];
+    for (const [item, need] of wanted) {
+      if (!this.recipes?.get(item)?.length) continue;
+      const have = this.inventory[item] || 0;
+      if (have >= need) continue;
+      out.push({ item, need, have });
+    }
+    return out;
+  }
+
+  // La ricetta di un target ridotta a cosa manca e dove si puo' prendere: cosa
+  // c'e' nei bauli noti (letti adesso o ricordati) per ogni ingrediente corto.
+  _craftNeedFor (target) {
+    const entry = (this.recipes?.get(target.item) || [])[0];
+    const recipe = entry ? this._recipeBody(entry) : null;
+    if (!recipe) return null;
+    const copies = Math.max(1, target.need - target.have);
+    const missing = [];
+    for (const { ingredient, count } of this._recipeIngredientCounts(recipe, true)) {
+      const need = count * copies;
+      const have = this._heldMatching(ingredient);
+      if (have >= need) continue;
+      const sources = [];
+      for (const c of [...this._cachedContainers(), ...this._rememberedStorage()]) {
+        for (const [item, n] of Object.entries(c.contents || {})) {
+          if (!n || !this._ingredientMatches(ingredient, item)) continue;
+          sources.push({
+            item, count: n, type: c.type || 'chest', position: c.position,
+            distance: +(c.distance ?? 0).toFixed(1), remembered: c.remembered === true,
+          });
+        }
+      }
+      sources.sort((a, b) => (b.count - a.count) || (a.distance - b.distance));
+      missing.push({
+        ingredient: ingredient.descriptor_type === 'name' ? ingredient.name : `#${ingredient.tag}`,
+        ref: ingredient,
+        need, have, short: need - have,
+        sources: sources.slice(0, 4),
+      });
+    }
+    return { target: target.item, need: target.need, have: target.have, missing };
+  }
+
+  // Cosa si puo' fabbricare *adesso* e soddisfa un ingrediente (planks, stick,
+  // cobblestone...): e' il lato "inventario" della regola.
+  _craftableCandidatesFor (ingredient) {
+    const names = [];
+    if (ingredient.descriptor_type === 'name') {
+      names.push(String(ingredient.name).replace(/^minecraft:/, ''));
+    } else if (ingredient.tag) {
+      for (const name of this.recipes?.keys?.() ?? []) {
+        if (name.endsWith(`_${ingredient.tag}`) || name === ingredient.tag) names.push(name);
+      }
+    }
+    return names.filter(name => this._craftableNow(name));
+  }
+
+  // Fonte naturale di un ingrediente: solo blocchi del censimento naturale, mai
+  // costruzioni. Un passo si accetta solo se l'opzione corrispondente esiste
+  // gia' (`offered`), altrimenti sarebbe un'azione che non puo' riuscire.
+  _gatherStepFor (ingredient, offered) {
+    const blocks = {
+      planks: ['oak_log', 'spruce_log', 'cherry_log', 'birch_log'],
+      log: ['oak_log', 'spruce_log', 'cherry_log', 'birch_log'],
+      stick: ['oak_log', 'spruce_log', 'cherry_log', 'birch_log'],
+      cobblestone: ['stone'],
+      stone: ['stone'],
+      coal: ['coal_ore'],
+      iron_ingot: ['iron_ore'],
+      copper_ingot: ['copper_ore'],
+    };
+    const crops = { potato: 'potatoes', carrot: 'carrots', wheat: 'wheat', beetroot: 'beetroot' };
+    const names = ingredient.descriptor_type === 'name'
+      ? [String(ingredient.name).replace(/^minecraft:/, '')]
+      : [String(ingredient.tag || '')];
+    for (const name of names) {
+      for (const block of blocks[name] || []) {
+        if (offered.has(`mine_${block}`)) return { key: `mine_${block}`, item: block, source: 'gather' };
+      }
+      const crop = crops[name];
+      if (crop && offered.has(`harvest_${crop}`)) return { key: `harvest_${crop}`, item: name, source: 'gather' };
+    }
+    return null;
+  }
+
+  // Il passo di approvvigionamento successivo: prima l'inventario (craft di un
+  // intermedio con quello che si ha), poi un baulo noto, poi la raccolta in
+  // natura. `offerKeys` limita il terzo caso alle opzioni davvero offerte.
+  _craftSourceStep (needs, offered) {
+    for (const need of needs) {
+      if (!need.missing.length && this._craftableNow(need.target)) {
+        return { key: `craft_${need.target}`, source: 'inventory', item: need.target, target: need.target, reason: 'craft_target_ready' };
+      }
+      for (const miss of need.missing) {
+        const ingredient = miss.ref ?? miss.ingredient;
+        for (const item of this._craftableCandidatesFor(ingredient)) {
+          return { key: `craft_${item}`, source: 'inventory', item, ingredient: miss.ingredient, target: need.target, short: miss.short, reason: 'craft_from_inventory' };
+        }
+        if (miss.sources.length) {
+          const src = miss.sources[0];
+          return {
+            key: `take_${src.item}`, source: 'chest', item: src.item, ingredient: miss.ingredient,
+            target: need.target, short: miss.short,
+            chest: { type: src.type, position: src.position, distance: src.distance, remembered: src.remembered },
+            reason: 'take_from_chest',
+          };
+        }
+        const gather = offered ? this._gatherStepFor(ingredient, offered) : null;
+        if (gather) return { ...gather, target: need.target, short: miss.short, reason: `gather_${gather.item}` };
+      }
+    }
+    return null;
+  }
+
+  // Vista completa dei bisogni di materiale: obiettivi, cosa manca e il passo
+  // scelto (o `null`). In `observe()` non ci sono opzioni offerte, quindi il
+  // ripiego "raccogli in natura" resta fuori e si vede solo nei casi in cui la
+  // sorgente e' certa (inventario o baulo).
+  _craftNeeds ({ offerKeys = null } = {}) {
+    const targets = this._craftTargets();
+    if (!targets.length) return null;
+    const offered = offerKeys ? new Set([...offerKeys].map(key => (typeof key === 'string' ? key : key.key))) : null;
+    const needs = targets.map(t => this._craftNeedFor(t)).filter(Boolean);
+    return {
+      rule: 'inventory_first_then_chests_never_buildings',
+      targets: targets.map(t => ({ item: t.item, need: t.need, have: t.have })),
+      needs,
+      next: this._craftSourceStep(needs, offered),
+    };
   }
 
   // Un item che il bot può fabbricare adesso: ricetta nota, ingredienti in
@@ -10992,8 +11167,8 @@ export class BedrockAdapter {
     return { ok: after.ready, before, after, crafted, failed };
   }
 
-  _bestFoodItem () {
-    return bestFood(this.inventory);
+  _bestFoodItem ({ allowLastResort = this.food <= STARVING_FOOD } = {}) {
+    return bestFood(this.inventory, { allowLastResort });
   }
 
   // Kit di viaggio: cosa manca per una spedizione multi-giorno (solo informativo:
@@ -11003,7 +11178,7 @@ export class BedrockAdapter {
     const inv = this.inventory;
     const total = (re) => Object.entries(inv).reduce((s, [n, c]) => s + (re.test(n) ? c : 0), 0);
     const items = {
-      food: !!this._bestFoodItem(),
+      food: !!this._bestFoodItem({ allowLastResort: this.food <= STARVING_FOOD }),
       sword: total(/_sword$/) > 0,
       armor: Object.values(this.armor).some(Boolean),
       blocks: total(/(cobblestone|dirt|_planks$|_log$|^stone$)/) > 0,
@@ -11040,7 +11215,7 @@ export class BedrockAdapter {
   }
 
   async _eat (timeoutMs = 8000) {
-    const itemName = this._bestFoodItem();
+    const itemName = this._bestFoodItem({ allowLastResort: this.food <= STARVING_FOOD });
     if (!itemName) return { ok: false, error: 'no_food' };
     if (this.food >= 20) return { ok: true, skipped: 'not_hungry' };
     const index = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && s.count > 0);

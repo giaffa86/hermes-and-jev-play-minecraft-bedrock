@@ -5,7 +5,7 @@
 // vocabolario di bedrock-survival.mjs (ostili, cibo, fasi del giorno) e i tag
 // item condivisi con le skill.
 
-import { bestFood, isHostileType, normalizeEntityType } from '../bedrock-survival.mjs';
+import { bestFood, isHostileType, normalizeEntityType, STARVING_FOOD } from '../bedrock-survival.mjs';
 import { tagCount } from './item-tags.mjs';
 
 export const MAX_HEALTH = 20;
@@ -178,7 +178,9 @@ export function perceive (observation = {}) {
   const nearestThreat = threats[0] || null;
   const food = Number.isFinite(observation.food) ? observation.food : null;
   const health = Number.isFinite(observation.health) ? observation.health : null;
-  const bestFoodItem = bestFood(inventory);
+  // Fame critica: anche un cibo di ultima istanza (patata cruda) conta come
+  // cibo, cosi' il governor chiede `eat` invece di mandare a raccogliere.
+  const bestFoodItem = bestFood(inventory, { allowLastResort: food != null && food <= STARVING_FOOD });
   const bed = observation.bed || null;
   return {
     hasState: !!observation.position || observation.spawned === true,

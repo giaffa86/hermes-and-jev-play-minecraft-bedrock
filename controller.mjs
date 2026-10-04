@@ -766,6 +766,7 @@ let stepsUsed = 0;
 let prevObs = null;             // osservazione del passo precedente (eventi del mondo)
 let lastFollowTarget = null;    // ultimo ordine "seguimi" annunciato nei log
 let lastNeedKey = null;         // ultimo bisogno di sopravvivenza annunciato nei log
+let lastCraftKey = null;        // ultimo passo di approvvigionamento annunciato nei log
 let lostFollowSteps = 0;        // passi consecutivi con l'ordine "seguimi" aperto ma senza bersaglio
 let lostNoticeSent = false;     // l'avviso in chat e' uno per episodio, non uno per cooldown
 let lostHoldSteps = 0;          // passi di attesa a tracce perse (nessuna azione, nessun modello)
@@ -1037,6 +1038,18 @@ for (let step = 1; step <= maxSteps; step++) {
   } else {
     lostHoldSteps = 0;
   }
+  // Provviste per una costruzione: la regola sta nell'harness (inventario ->
+  // bauli -> natura, mai costruzioni) e qui si esegue soltanto, senza chiedere
+  // al modello. Il passo vale solo se l'harness lo offre davvero.
+  const craftStep = !needKey && !pursuitKey && !lostWaitKey && !lostHold ? (obs.craft?.next ?? null) : null;
+  const craftKey = craftStep && filtered.options.some(o => o.key === craftStep.key) ? craftStep.key : null;
+  if (craftKey && lastCraftKey !== craftKey) {
+    lastCraftKey = craftKey;
+    console.log(`CRAFT SOURCE ${craftKey} (${craftStep.source}${craftStep.target ? ' for ' + craftStep.target : ''}): nessuna chiamata al modello`);
+    log('craft_source', {step, key: craftKey, source: craftStep.source, item: craftStep.item ?? null, ingredient: craftStep.ingredient ?? null, target: craftStep.target ?? null, reason: craftStep.reason ?? null});
+  } else if (!craftKey) {
+    lastCraftKey = null;
+  }
   const decision = needKey
     ? {key: needKey, reason: 'survival_' + (needIntent || 'need') + ':' + needKey, source: 'survival_need'}
     : followKey
@@ -1045,6 +1058,8 @@ for (let step = 1; step <= maxSteps; step++) {
     ? {key: seekKey, reason: `follow_seek:${goal.follow}`, source: 'follow_seek'}
     : lostWaitKey
     ? {key: lostWaitKey, reason: `follow_lost:${goal.follow}`, source: 'follow_lost'}
+    : craftKey
+    ? {key: craftKey, reason: `craft_source:${craftStep.source}:${craftKey}`, source: 'craft_source'}
     : (CONTROLLER === 'jev' ? await jevDecide(obs, filtered.options, decisionPlan) : await hermesDecide(obs, filtered.options, decisionPlan));
   const key = decision.key;
   if (typeof decision.cost === 'number') totalCost += decision.cost;
@@ -1052,7 +1067,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // lo stato desiderato (l'umano e' li'), non un loop da punire con l'anti-loop.
   // Ne' una ricerca ne' un'attesa di recupero sono stagnazione: la prima ha un
   // bersaglio verificato dall'harness, la seconda e' il tempo che l'umano torni.
-  chosenFingerprint = pursuitKey || lostWaitKey ? null : progressFingerprint(obs, plan);
+  chosenFingerprint = pursuitKey || lostWaitKey || craftKey ? null : progressFingerprint(obs, plan);
   const actStarted = Date.now();
   let result = await api('POST', '/act', {key});
   // `busy` non è un verdetto sull'azione: il harness sta ancora eseguendo
@@ -1087,7 +1102,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // Un bisogno risolto in pochi ms (notte saltata) non deve far girare il loop
   // a vuoto; il fingerprint resta comunque contato per il bisogno, cosi' un
   // `sleep` che fallisce e si ripete finisce nell'anti-loop.
-  if ((pursuitKey || needKey || lostWaitKey) && result?.ok && (result.ms ?? 0) < 250) await delay(FOLLOW_IDLE_POLL_MS);
+  if ((pursuitKey || needKey || lostWaitKey || craftKey) && result?.ok && (result.ms ?? 0) < 250) await delay(FOLLOW_IDLE_POLL_MS);
   if (goal.follow && step >= maxSteps) {
     // Il budget si rinnova finche' l'ordine "seguimi" resta aperto: l'impegno
     // finisce con un altro ordine (o con un'emergenza che preempta il goal).
