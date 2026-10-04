@@ -239,6 +239,8 @@ server = createServer(async (req, res) => {
       const u = new URL(req.url, 'http://x');
       const force = /^(1|true|on)$/i.test(u.searchParams.get('force') ?? '');
       response = [200, adapter._bucketView({ force })];
+    } else if (req.method === 'GET' && req.url === '/observe.bees') {
+      response = [200, adapter._beesView({ force: true })];
     } else if (req.method === 'GET' && req.url.startsWith('/observe.redstone')) {
       // Redstone (R0 di docs/wiki/redstone.md): componenti vicini con potenza e
       // direzione, minerali di redstone e TNT. Come per i fluidi il censimento è

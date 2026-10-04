@@ -1,5 +1,24 @@
 # Log
 
+## [2026-10-04] ingest | Apiculture merged into main with visibility/probe fixes
+
+Merged `feat/bees-honeycomb` (`b2cb688`) into clean `main` after the concurrent
+visibility/probe work was committed as `5652045`. No conflicts; both changes
+are preserved. Complete merged suite: **1152/1152**, including 24 bee tests;
+strict wiki lint is clean. Refreshed apiculture status, roadmap and verification
+row 47.48. The bot was verified stopped and no controller was running before
+integration; no deploy, live round or public push is part of this merge.
+
+## [2026-10-04] ingest | Bees and honeycomb bounded actions
+
+Added [apiculture](wiki/bees.md) after checking official Bedrock release notes,
+Mojang bee entity data and the installed Bedrock palette. Implemented hive/smoke
+observation, guarded honeycomb/honey harvest, flower feeding/breeding and four
+recipe-driven crafts; protected hives/campfires and classified the new actions
+as collection. **24 bee tests; complete suite 1150/1150, zero failures.** Work
+is isolated from concurrent adapter edits on a feature branch, with no deploy
+or live round; bot OFF policy remains in force.
+
 ## [2026-10-04] lint | Campaign close-out: documentation and evidence checks
 
 Reviewed the report, verification policy and promoted tasks together; checked

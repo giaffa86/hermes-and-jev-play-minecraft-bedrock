@@ -39,7 +39,7 @@ const ENTITY_HEIGHTS = {
   cow: 1.4, mooshroom: 1.4, sheep: 1.3, pig: 0.9, chicken: 0.7, rabbit: 0.5,
   wolf: 0.85, cat: 0.7, ocelot: 0.7, horse: 1.6, donkey: 1.5, mule: 1.6,
   llama: 1.87, goat: 1.3, fox: 0.6, panda: 1.25, turtle: 0.4, parrot: 0.9,
-  axolotl: 0.42, nautilus: 0.6,
+  axolotl: 0.42, nautilus: 0.6, bee: 0.6,
 };
 
 // Cibi usabili per mangiare, in ordine di preferenza. Restano fuori gli item
