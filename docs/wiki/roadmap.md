@@ -16,6 +16,15 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 > current-state authority going forward. `BEDROCK.md` remains the operational
 > runbook for per-action detail.
 
+## Apiculture follow-up (04/10)
+
+[Bees and honeycomb](bees.md) are implemented and offline-tested after the
+campaign close-out: hive/smoke sensing, `harvest_honeycomb`, `harvest_honey`,
+`feed_bee`, `breed_bee`, and recipe-driven beehive/honeycomb-block/honey-block/candle
+crafting. Full suite: **1150/1150**, including 24 bee tests. The feature is on an
+isolated branch, not deployed or live-verified; the bot stays OFF. The historical
+campaign snapshot and its six declared validation gaps remain as recorded.
+
 ## Legend
 
 - ✅ **Done** — implemented and verified live on the real BDS (or via unit tests where no live signal is obtainable).

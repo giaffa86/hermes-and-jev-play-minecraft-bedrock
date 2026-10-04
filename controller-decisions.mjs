@@ -38,6 +38,7 @@ export function optionPriority (option, { targets = {}, preferredIntents = [] } 
   if (preferredIntents.length && keyMatchesIntents(key, preferredIntents)) return 3;
   for (const target of Object.keys(targets)) {
     const normalized = target.replace(/_/g, '');
+    if (target === 'honey_bottle' && key === 'harvest_honey') return 4;
     if (key === `mine_${target}` || key === `craft_${target}` || key === `smelt_${target}` ||
         key.includes(target) || key.replace(/_/g, '').includes(normalized)) {
       return 4;

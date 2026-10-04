@@ -1,5 +1,15 @@
 # Log
 
+## [2026-10-04] ingest | Bees and honeycomb bounded actions
+
+Added [apiculture](wiki/bees.md) after checking official Bedrock release notes,
+Mojang bee entity data and the installed Bedrock palette. Implemented hive/smoke
+observation, guarded honeycomb/honey harvest, flower feeding/breeding and four
+recipe-driven crafts; protected hives/campfires and classified the new actions
+as collection. **24 bee tests; complete suite 1150/1150, zero failures.** Work
+is isolated from concurrent adapter edits on a feature branch, with no deploy
+or live round; bot OFF policy remains in force.
+
 ## [2026-10-04] lint | Campaign close-out: documentation and evidence checks
 
 Reviewed the report, verification policy and promoted tasks together; checked

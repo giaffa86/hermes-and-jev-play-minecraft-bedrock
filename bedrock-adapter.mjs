@@ -5,6 +5,7 @@
 import { createRequire } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BedrockWorld } from './bedrock-world.mjs';
+import { HIVE_BLOCKS, BEE_CRAFT_ITEMS, BEE_SCAN_RADIUS, BEE_SCAN_LIMIT, isBeeProtected, hiveVerdict, honeyLevel, beeFlower, beeFlowerCount } from './bedrock-bees.mjs';
 import { trackNethernetClient, closeBedrockClient } from './bedrock-lifecycle.mjs';
 import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isMilkableType, isTameableType, isRideTameableType, isCompanionType, isRideableType, animalFeed, tameFeed, cropForSeed, cropMaturity, seedForCrop, isCropBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS, BUCKET_INGREDIENTS, SHIELD_INGREDIENTS } from './bedrock-survival.mjs';
 import { professionName, normalizeProfession, professionMatches, pickBestTrade } from './bedrock-trading.mjs';
@@ -71,7 +72,7 @@ const TOOL_HARVEST_RANK = { wooden: 1, golden: 1, stone: 2, copper: 2, iron: 3, 
 const HARVEST_TOOL_RANK = { 941: 1, 956: 1, 946: 2, 951: 2, 961: 3, 966: 4, 971: 5 };
 // Blocchi funzionali o costruiti che dig_down non deve mai scavare per errore
 // (tavoli, contenitori, stazioni): il passo verrebbe rifiutato invece che distruggerli.
-const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|_bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$|farmland$|_fence$|_fence_gate$|wheat$|carrots$|potatoes$|beetroot$|melon_stem$|pumpkin_stem$|sweet_berry_bush$|nether_wart$|redstone_wire$|redstone_block$|lever$|_button$|pressure_plate$|_repeater$|_comparator$|observer$|piston$|dispenser$|dropper$|lamp$|daylight_detector$|tripwire_hook$|tripwire$|target$|crafter$|sculk_sensor$|sculk_shrieker$|command_block$|structure_block$|structure_void$|jigsaw$|barrier$|bedrock$|end_crystal$|fire$|soul_fire$)/;
+const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|_bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$|farmland$|_fence$|_fence_gate$|wheat$|carrots$|potatoes$|beetroot$|melon_stem$|pumpkin_stem$|sweet_berry_bush$|nether_wart$|redstone_wire$|redstone_block$|lever$|_button$|pressure_plate$|_repeater$|_comparator$|observer$|piston$|dispenser$|dropper$|lamp$|daylight_detector$|tripwire_hook$|tripwire$|target$|crafter$|sculk_sensor$|sculk_shrieker$|command_block$|structure_block$|structure_void$|jigsaw$|barrier$|bedrock$|end_crystal$|fire$|soul_fire$|beehive$|bee_nest$|campfire$)/;
 // Redstone (R0): un circuito non è un ostacolo da scavare ma un impianto della
 // base. I minerali di redstone restano **fuori** da DIG_PROTECTED (si estraggono
 // con `mine_redstone_ore`), i componenti no.
@@ -3281,6 +3282,206 @@ export class BedrockAdapter {
     return { ok: false, error: 'barter_not_confirmed', bartered: false, gaveIngot, piglin: { type: target.type, position: target.position, distance: target.distance }, neutral, lastInteract: last };
   }
 
+  _beeRows () {
+    return [...this.entities.values()]
+      .filter(e => normalizeEntityType(e.type) === 'bee' && e.position && this._entityDistance(e) <= BEE_SCAN_RADIUS)
+      .map(e => ({ runtimeId: String(e.runtimeId), position: { ...e.position },
+        distance: this._entityDistance(e), baby: !!e.baby, inlove: !!e.inlove, angry: !!e.angry }))
+      .sort((a, b) => a.distance - b.distance);
+  }
+
+  _hiveVisible (position) {
+    if (!this.position) return false;
+    const aim = { x: position.x + 0.5, y: position.y + 0.5, z: position.z + 0.5 };
+    const steps = Math.ceil(Math.hypot(aim.x - this.position.x, aim.y - this.position.y, aim.z - this.position.z) * 4);
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      const cell = { x: Math.floor(this.position.x + (aim.x - this.position.x) * t),
+        y: Math.floor(this.position.y + (aim.y - this.position.y) * t),
+        z: Math.floor(this.position.z + (aim.z - this.position.z) * t) };
+      if (cell.x === position.x && cell.y === position.y && cell.z === position.z) continue;
+      const block = this.world.blockAt(cell);
+      if (!block || block.name === 'unknown' || !this._passable(block)) return false;
+    }
+    return true;
+  }
+
+  _beesView ({ force = false } = {}) {
+    if (!this.position) return { hives: [], bees: [], flower: beeFlower(this.inventory), scanRadius: BEE_SCAN_RADIUS, scanLimit: BEE_SCAN_LIMIT };
+    // Cache only discovery positions; safety properties are reread every time.
+    const scanKey = `${this.dimension}:${Math.floor(this.position.x)}:${Math.floor(this.position.y)}:${Math.floor(this.position.z)}`;
+    if (force || this._beeHiveScan?.key !== scanKey || Date.now() - this._beeHiveScan.at > 3000) {
+      this._beeHiveScan = { key: scanKey, at: Date.now(),
+        positions: this.world.findBlocks(HIVE_BLOCKS, this.position, BEE_SCAN_RADIUS, BEE_SCAN_LIMIT)
+          .filter(b => b.position).map(b => ({ ...b.position })) };
+    }
+    const hives = this._beeHiveScan.positions.map(position => {
+      const block = this.world.blockAt(position);
+      if (!HIVE_BLOCKS.includes(block?.name)) return null;
+      const verdict = hiveVerdict(block, p => this.world.blockAt(p));
+      const reachable = !this._reachabilityUsable() || this.approachReachable(position, { range: 2.5, dy: 2 });
+      return { type: block.name, position, distance: this._pointDistance(position), reachable, ...verdict };
+    }).filter(Boolean).sort((a, b) => a.distance - b.distance);
+    return { hives, bees: this._beeRows(), flower: beeFlower(this.inventory), scanRadius: BEE_SCAN_RADIUS, scanLimit: BEE_SCAN_LIMIT };
+  }
+
+  _beeFeedable (row) {
+    const entity = this.entities.get(row.runtimeId);
+    if (!entity || row.angry || row.inlove || row.distance > 4.5) return false;
+    const visibility = this._entityVisible(entity);
+    return visibility.visible && !visibility.unknown && this.entityApproachable(entity, { range: 3, dy: 2 });
+  }
+
+  _beePair (rows) {
+    const adults = rows.filter(row => !row.baby && this._beeFeedable(row));
+    for (let i = 0; i < adults.length; i++) {
+      const a = adults[i];
+      const b = adults.slice(i + 1).find(b => Math.hypot(a.position.x - b.position.x,
+        a.position.y - b.position.y, a.position.z - b.position.z) <= 4);
+      if (b) return [a, b];
+    }
+    return null;
+  }
+
+  _beeOptions () {
+    const view = this._beesView();
+    const options = [];
+    if (!view.bees.some(b => b.angry)) {
+      const hive = view.hives.find(h => h.safe && h.reachable && (h.distance > 4.5 || this._hiveVisible(h.position)));
+      if (hive && (this.inventory.shears || 0) > 0) options.push({ key: 'harvest_honeycomb',
+        description: `Shear the full smoked ${hive.type} at ${JSON.stringify(hive.position)} (${hive.distance.toFixed(1)} blocks away); collect its honeycomb drops next` });
+      if (hive && (this.inventory.glass_bottle || 0) > 0) options.push({ key: 'harvest_honey',
+        description: `Bottle honey from the full smoked ${hive.type} at ${JSON.stringify(hive.position)} (${hive.distance.toFixed(1)} blocks away)` });
+      if (view.flower && view.bees.some(b => this._beeFeedable(b))) options.push({ key: 'feed_bee',
+        description: `Feed a nearby calm bee ${view.flower}; confirm flower consumption or love state` });
+      if (beeFlowerCount(this.inventory) >= 2 && this._beePair(view.bees)) options.push({ key: 'breed_bee',
+        description: 'Feed two nearby calm adult bees flowers and wait for a newly observed baby bee' });
+    }
+    for (const item of BEE_CRAFT_ITEMS) {
+      if (this._craftableNow(item)) options.push({ key: `craft_${item}`, description: `Craft ${item} using an available server recipe` });
+    }
+    return options;
+  }
+
+  async _harvestHoney (product, timeoutMs = 5000) {
+    if (!['honeycomb', 'honey_bottle'].includes(product)) return { ok: false, error: 'unknown_hive_product' };
+    const tool = product === 'honeycomb' ? 'shears' : 'glass_bottle';
+    if ((this.inventory[tool] || 0) < 1) return { ok: false, error: 'missing_hive_tool', tool };
+    const view = this._beesView({ force: true });
+    if (view.bees.some(b => b.angry)) return { ok: false, error: 'bee_angry' };
+    if (!view.hives.length) return { ok: false, error: 'no_hive_nearby' };
+    const hive = view.hives.find(h => h.safe && h.reachable && (h.distance > 4.5 || this._hiveVisible(h.position)));
+    if (!hive) return { ok: false, error: 'no_safe_hive', hives: view.hives };
+    const client = this.client;
+    const connected = () => this.client === client && this.spawned && this.status === 'spawned' && !this.dead;
+    const center = { x: hive.position.x + 0.5, y: hive.position.y + 0.5, z: hive.position.z + 0.5 };
+    if (hive.distance > 4.5) {
+      try { await this._moveTo(center, 2.5, 8000); }
+      catch { return { ok: false, error: 'hive_unreachable', position: hive.position }; }
+    }
+    if (!connected()) return { ok: false, error: 'not_connected' };
+    const equipped = await this._equipItemInHotbar(tool, { resync: false });
+    if (!equipped.ok) return equipped;
+    const look = this._lookAt(center);
+    await this._queueAuthInput(look);
+    await delay(120);
+    // Recheck after movement/equip/look: neither stale options nor a stale scan
+    // can authorize an unsafe click. Send exactly one harvesting interaction.
+    if (!connected()) return { ok: false, error: 'not_connected' };
+    if (this._beeRows().some(b => b.angry)) return { ok: false, error: 'bee_angry' };
+    const verdict = hiveVerdict(this.world.blockAt(hive.position), p => this.world.blockAt(p));
+    if (!verdict.safe) return { ok: false, error: verdict.reason, position: hive.position };
+    if (this._pointDistance(hive.position) > 4.5 || !this._hiveVisible(hive.position)) return { ok: false, error: 'hive_unreachable', position: hive.position };
+    const held = this.inventorySlots[this.selectedHotbar];
+    if (this._slotItemName(held) !== tool || !held?.count) return { ok: false, error: 'missing_hive_tool', tool };
+    const before = this.inventory[product] || 0;
+    const bottlesBefore = this.inventory.glass_bottle || 0;
+    const dropsBefore = new Set(this.drops.map(d => String(d.id)));
+    const face = this._faceForBlock(hive.position, this.position);
+    const click = { x: 0.5, y: 0.5, z: 0.5 };
+    if (face < 2) click.y = face;
+    else if (face < 4) click.z = face === 2 ? 0 : 1;
+    else click.x = face === 4 ? 0 : 1;
+    await this._queueAuthInput({ ...look, transaction: this._itemUseOnBlockTransaction(held, hive.position, face, click) });
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!connected()) return { ok: false, error: 'not_connected', interactionSent: true, position: hive.position };
+      const gained = Math.max(0, (this.inventory[product] || 0) - before);
+      const reset = honeyLevel(this.world.blockAt(hive.position)) === 0;
+      const bottleSpent = (this.inventory.glass_bottle || 0) < bottlesBefore;
+      if (gained > 0 && (product === 'honeycomb' ? reset : bottleSpent)) {
+        return { ok: true, product, gained, collected: gained, position: hive.position,
+          confirmedBy: product === 'honeycomb' ? 'hive_reset_and_inventory' : 'bottle_conversion' };
+      }
+      const drops = product === 'honeycomb' ? this.drops.filter(d => d.item === 'honeycomb' && d.position &&
+        !dropsBefore.has(String(d.id)) && Math.hypot(d.position.x - center.x, d.position.y - center.y, d.position.z - center.z) <= 3) : [];
+      if (reset && drops.length) return { ok: true, product, gained: 0, collected: 0,
+        dropped: drops.reduce((sum, d) => sum + (d.count || 1), 0), position: hive.position, confirmedBy: 'hive_reset_and_new_drop', nextAction: 'collect_drop' };
+      await delay(100);
+    }
+    return { ok: false, error: 'hive_harvest_not_confirmed', product, position: hive.position, interactionSent: true };
+  }
+
+  async _feedBee (runtimeId = null, timeoutMs = 3000) {
+    const flower = beeFlower(this.inventory);
+    if (!flower) return { ok: false, error: 'missing_bee_flower' };
+    const rows = this._beeRows();
+    if (rows.some(b => b.angry)) return { ok: false, error: 'bee_angry' };
+    const bee = rows.find(b => (!runtimeId || b.runtimeId === String(runtimeId)) && this._beeFeedable(b));
+    if (!bee) return { ok: false, error: 'no_feedable_bee' };
+    const client = this.client;
+    const equipped = await this._equipItemInHotbar(flower, { resync: false });
+    if (!equipped.ok) return equipped;
+    const live = this.entities.get(bee.runtimeId);
+    if (!live) return { ok: false, error: 'bee_gone' };
+    const look = this._lookAt({ ...live.position, y: live.position.y + entityHeight('bee') * 0.5 });
+    await this._queueAuthInput(look);
+    await delay(120);
+    if (this.client !== client || !this.spawned || this.status !== 'spawned' || this.dead) return { ok: false, error: 'not_connected' };
+    const current = this._beeRows().find(b => b.runtimeId === bee.runtimeId);
+    if (this._beeRows().some(b => b.angry)) return { ok: false, error: 'bee_angry' };
+    if (!current || !this._beeFeedable(current)) return { ok: false, error: 'no_feedable_bee' };
+    const held = this.inventorySlots[this.selectedHotbar];
+    if (this._slotItemName(held) !== flower || !held?.count) return { ok: false, error: 'missing_bee_flower' };
+    const before = this.inventory[flower] || 0;
+    this._interactEntity(this.entities.get(bee.runtimeId));
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (this.client !== client || !this.spawned || this.status !== 'spawned' || this.dead) return { ok: false, error: 'not_connected', interactionSent: true };
+      const watched = this.entities.get(bee.runtimeId);
+      if (watched?.inlove || (this.inventory[flower] || 0) < before) return { ok: true, fed: 'bee', flower,
+        runtimeId: bee.runtimeId, confirmedBy: watched?.inlove ? 'inlove' : 'flower_consumed' };
+      await delay(100);
+    }
+    return { ok: false, error: 'bee_feed_not_confirmed', interactionSent: true };
+  }
+
+  async _breedBees (timeoutMs = 8000) {
+    if (beeFlowerCount(this.inventory) < 2) return { ok: false, error: 'need_2_bee_flowers' };
+    const rows = this._beeRows();
+    if (rows.some(b => b.angry)) return { ok: false, error: 'bee_angry' };
+    const pair = this._beePair(rows);
+    if (!pair) return { ok: false, error: 'need_2_adult_bees' };
+    const known = new Set(this.entities.keys());
+    const client = this.client;
+    const fed = [];
+    for (const bee of pair) {
+      if (this.client !== client || !this.spawned || this.status !== 'spawned' || this.dead) return { ok: false, error: 'not_connected', fed };
+      const result = await this._feedBee(bee.runtimeId);
+      if (!result.ok) return { ...result, fed };
+      fed.push(result);
+    }
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (this.client !== client || !this.spawned || this.status !== 'spawned' || this.dead) return { ok: false, error: 'not_connected', fed };
+      const baby = this._beeRows().find(b => b.baby && !known.has(b.runtimeId) && pair.some(a =>
+        Math.hypot(a.position.x - b.position.x, a.position.y - b.position.y, a.position.z - b.position.z) <= 3));
+      if (baby) return { ok: true, bred: 'bee', baby, fed, confirmedBy: 'new_baby_entity' };
+      await delay(100);
+    }
+    return { ok: false, error: 'baby_not_observed', type: 'bee', fed };
+  }
+
   observe () {
     const heldSlot = this.inventorySlots[this.selectedHotbar];
     const heldInfo = heldSlot?.network_id ? this.world.registry?.items[heldSlot.network_id] : null;
@@ -3340,6 +3541,7 @@ export class BedrockAdapter {
       farmAnimals: this._nearbyFarmAnimals(8),
       companions: this._nearbyCompanion(8),
       fishing: this._fishingContext(),
+      bees: this._beesView(),
       traders: this._nearbyTraders(8),
       trade: this.tradeOffers.length ? {
         open: this._tradeWindowOpen(),
@@ -3656,6 +3858,7 @@ export class BedrockAdapter {
     // ripianta): un raccolto acerbo distrugge la pianta senza dare semi, e senza
     // ripiantare la fattoria si esaurisce. Maturità ignota = come prima.
     for (const [blockName, blocks] of Object.entries(this.nearbyBlocks || {})) {
+      if (isBeeProtected(blockName)) continue;
       const crop = isCropBlock(blockName);
       const { ready, immature } = crop ? this._harvestableCrops(blocks) : { ready: blocks, immature: 0 };
       const target = this._pickMineTarget(ready);
@@ -4013,6 +4216,7 @@ export class BedrockAdapter {
         o.push({ key: 'reel_in', description: 'Reel the fishing line in (bobber is out)' });
       }
     }
+    o.push(...this._beeOptions());
     // Fallback
     if (!o.length) o.push({ key: 'wait', description: 'Wait 2 seconds for fresh observations' });
     return o;
@@ -4094,6 +4298,7 @@ export class BedrockAdapter {
         result = await this._mineOwned();
       } else if (key.startsWith('mine_')) {
         const blockName = key.slice('mine_'.length);
+        if (isBeeProtected(blockName)) return { ok: false, error: 'bee_block_protected', block: blockName };
         const found = this.world.findBlocks(blockName, this.position, 96, 8);
         // Le colture acerbe non si toccano nemmeno se il nome dell'azione le
         // chiede: lo stesso filtro delle opzioni, applicato al bersaglio vero.
@@ -4105,6 +4310,12 @@ export class BedrockAdapter {
             : `no reachable ${blockName} found nearby`);
         }
         result = await this._mineBlock(target);
+      } else if (key === 'harvest_honeycomb' || key === 'harvest_honey') {
+        result = await this._harvestHoney(key === 'harvest_honeycomb' ? 'honeycomb' : 'honey_bottle');
+      } else if (key === 'feed_bee') {
+        result = await this._feedBee();
+      } else if (key === 'breed_bee') {
+        result = await this._breedBees();
       } else if (key.startsWith('harvest_')) {
         result = await this._harvestCrop(key.slice('harvest_'.length));
       } else if (key.startsWith('craft_')) {
@@ -6901,6 +7112,7 @@ export class BedrockAdapter {
       const block = this.world.blockAt(entry.cell);
       const name = String(block?.name ?? '').replace(/^minecraft:/i, '').toLowerCase();
       if (!name || name !== entry.block) continue;
+      if (isBeeProtected(name)) continue;
       if (block && block.diggable === false) continue;
       const distance = Math.round(Math.hypot(
         entry.cell.x + 0.5 - this.position.x,
@@ -7588,6 +7800,7 @@ export class BedrockAdapter {
     const pos = block.position;
     const blockData = this.world.blockAt(pos);
     if (!blockData || blockData.name !== block.name) throw new Error(`block ${block.name} not found at ${JSON.stringify(pos)}`);
+    if (isBeeProtected(blockData.name)) return { ok: false, error: 'bee_block_protected', block: blockData.name, position: pos };
     // Guardia di maturità: ogni percorso di scavo passa da qui, quindi il filtro
     // delle opzioni non basta. Maturità ignota non blocca (fail-open).
     const cropState = cropMaturity(blockData);
