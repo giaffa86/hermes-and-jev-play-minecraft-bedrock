@@ -1,8 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { createRequire } from 'node:module';
 import { BedrockAdapter } from '../bedrock-adapter.mjs';
 import { isVehicleType, isRideableType } from '../bedrock-survival.mjs';
+
+const require = createRequire(import.meta.url);
+const { createSerializer } = require('bedrock-protocol/src/transforms/serializer');
+const serializer = createSerializer('1.26.51');
 
 function spawnedAdapter () {
   const adapter = new BedrockAdapter({ logger: { log () {} } });
@@ -76,11 +81,96 @@ test('_dismount sends player_action start_sneak and clears riding', async () => 
   const actions = [];
   adapter.client.write = (name, payload) => {
     actions.push([name, payload]);
-    if (name === 'player_action') adapter.riding = null;
+    if (name === 'player_action' && payload.action === 'start_sneak') adapter.riding = null;
   };
   const result = await adapter._dismount();
   assert.equal(result.ok, true);
   assert.ok(actions.some(([n, p]) => n === 'player_action' && p.action === 'start_sneak'));
+  // `player_action` senza `position`/`result_position`/`face` non si serializza:
+  // lo smontaggio non sarebbe mai partito.
+  for (const [name, params] of actions) {
+    assert.doesNotThrow(() => serializer.createPacketBuffer({ name, params }), `serialize ${name}`);
+  }
+});
+
+// ---- mano libera e sneak (regole verificate con un client reale il 04/10/2026) ------
+
+test('_selectHotbarSlot libera la mano solo con allowEmpty', () => {
+  const adapter = spawnedAdapter();
+  adapter.inventorySlots = [{}, { name: 'dirt', network_id: 5, count: 1 }, {}, {}, {}, {}, {}, {}, {}];
+  adapter.selectedHotbar = 1;
+  const writes = [];
+  adapter.client.write = (name, payload) => writes.push([name, payload]);
+  assert.equal(adapter._selectHotbarSlot(0), false, 'uno slot vuoto non è selezionabile di default');
+  assert.equal(adapter.selectedHotbar, 1, 'senza allowEmpty non cambia nulla');
+  assert.equal(writes.length, 0);
+  assert.equal(adapter._selectHotbarSlot(0, { allowEmpty: true }), true);
+  assert.equal(adapter.selectedHotbar, 0);
+  const equip = writes.find(([n]) => n === 'mob_equipment');
+  assert.deepEqual(equip[1].item, { network_id: 0 }, 'slot vuoto = item vuoto');
+  assert.equal(equip[1].selected_slot, 0);
+});
+
+test('_freeHands spegne lo sneak e seleziona uno slot vuoto', () => {
+  const adapter = spawnedAdapter();
+  adapter.inventorySlots = [{ name: 'coal', network_id: 9, count: 3 }, {}, {}, {}, {}, {}, {}, {}, {}];
+  adapter.selectedHotbar = 0;
+  adapter._sneaking = true;
+  const writes = [];
+  adapter.client.write = (name, payload) => writes.push([name, payload]);
+  assert.equal(adapter._freeHands('mount'), 'empty');
+  assert.deepEqual(writes.map(([n]) => n), ['player_action', 'mob_equipment']);
+  assert.deepEqual([writes[0][1].action, writes[1][1].item.network_id], ['stop_sneak', 0]);
+  assert.equal(adapter.selectedHotbar, 1);
+  assert.equal(adapter._sneaking, false);
+  // già a mani libere e senza sneak: nessun pacchetto inutile
+  writes.length = 0;
+  assert.equal(adapter._freeHands('mount'), 'empty');
+  assert.deepEqual(writes, []);
+});
+
+test('_freeHands non inventa una slot vuota se la hotbar è piena', () => {
+  const adapter = spawnedAdapter();
+  const logs = [];
+  adapter.onLog = (entry) => logs.push(entry);
+  adapter.inventorySlots = Array.from({ length: 9 }, (_, i) => ({ name: 'dirt', network_id: i + 1, count: 1 }));
+  adapter.selectedHotbar = 3;
+  assert.equal(adapter._freeHands('mount'), 'full_hotbar');
+  assert.equal(adapter.selectedHotbar, 3, 'nessuno slot vuoto: la mano resta quella che era');
+  assert.ok(logs.some(e => e.type === 'hand_not_empty'), 'la diagnosi dichiara la hotbar piena');
+});
+
+test('_mountVehicle prepara mano libera e niente sneak, e riporta la mano nella diagnosi', async () => {
+  const adapter = spawnedAdapter();
+  adapter.inventorySlots = [{ name: 'dirt', network_id: 4, count: 2 }, {}, {}, {}, {}, {}, {}, {}, {}];
+  adapter.selectedHotbar = 0;
+  adapter._sneaking = true;
+  adapter._trackEntity({ runtime_id: 200n, unique_id: 2000n, entity_type: 'minecraft:donkey', position: { x: 2, y: 63, z: 0 } }, 'mob');
+  adapter._moveTo = async () => ({ ok: true });
+  const writes = [];
+  adapter.client.write = (name, payload) => writes.push([name, payload]);
+  adapter._interactEntity = () => true; // il server non manda il link: nessun mount
+  const result = await adapter._mountVehicle('donkey', 300);
+  assert.deepEqual([result.ok, result.error, result.hand], [false, 'mount_not_confirmed', 'empty']);
+  assert.ok(writes.some(([n, p]) => n === 'player_action' && p.action === 'stop_sneak'), 'sneak spento prima dell\'interact');
+  assert.ok(writes.some(([n, p]) => n === 'mob_equipment' && p.item.network_id === 0), 'slot vuoto selezionato');
+});
+
+test('_dismount spegne lo sneak dopo il link di rimozione', async () => {
+  const adapter = spawnedAdapter();
+  adapter.riding = { riddenEntityId: '200', at: Date.now() };
+  const actions = [];
+  adapter.client.write = (name, payload) => {
+    actions.push([name, payload]);
+    if (name === 'player_action' && payload.action === 'start_sneak') adapter.riding = null;
+  };
+  const result = await adapter._dismount(1000);
+  assert.equal(result.ok, true);
+  assert.deepEqual(actions.map(([n, p]) => `${n}:${p.action}`), ['player_action:start_sneak', 'player_action:stop_sneak']);
+  assert.equal(adapter._sneaking, false, 'lo sneak dello smontaggio non resta addosso al bot');
+  for (const [name, params] of actions) {
+    assert.doesNotThrow(() => serializer.createPacketBuffer({ name, params }), `serialize ${name}`);
+  }
 });
 
 // ---- movimento da montato -----------------------------------------------------------

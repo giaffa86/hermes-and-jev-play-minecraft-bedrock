@@ -340,6 +340,7 @@ export class BedrockAdapter {
     // un salto a comando usa un canale dedicato invece di sovrascriverlo.
     this._freeJump = null;
     this.riding = null;                // { riddenEntityId, at } quando il bot è montato
+    this._sneaking = false;            // sneak dichiarato al server (mount/dismount/trade)
     this.offhand = null;               // { name, count } dell'offhand (scudo), conferma dal server
     this.shieldUp = false;             // l'ultimo frame auth dichiarava l'uso dell'item
     this._ridingForward = false;       // vettore avanti continuo mentre cavalca
@@ -5373,7 +5374,11 @@ export class BedrockAdapter {
     const distance = this._entityDistance(live);
     if (distance > 5) return { ok: false, error: 'trader_unreachable', distance: +distance.toFixed(1) };
     this.tradeTarget = { type: live.type, runtimeId: live.runtimeId, position: live.position, distance: +distance.toFixed(1) };
+    let hand = null;
     for (let attempt = 1; attempt <= 3 && !this.tradeOffers.length; attempt++) {
+      // Mano libera e niente sneak: come per il mount, attrezzo in mano o sneak
+      // cambiano ramo dell'interazione (evidenza live 04/10/2026).
+      hand = this._freeHands('trade');
       const look = this._lookAt({ x: live.position.x, y: live.position.y + entityHeight(live.type) * 0.5, z: live.position.z });
       await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
       await delay(120);
@@ -5396,7 +5401,7 @@ export class BedrockAdapter {
       // nei secondi successivi all'interact, così si distingue "il server non
       // apre la finestra" da "il client non riconosce il pacchetto di apertura".
       if (this._armPacketDebug(15000)) this.log('packet_debug_armed', { reason: 'trade_not_opened', trader: live.type, distance: +distance.toFixed(1) });
-      return { ok: false, error: 'trade_not_opened', hint: 'villager busy, obstructed or not a trader', attempts: 3, distance: +distance.toFixed(1) };
+      return { ok: false, error: 'trade_not_opened', hint: 'villager busy, obstructed or not a trader', attempts: 3, distance: +distance.toFixed(1), hand };
     }
     return { ok: true, opened: true, offers: this.tradeOffers.length, trader: live.type, displayName: this.tradeDisplayName };
   }
@@ -5928,15 +5933,64 @@ export class BedrockAdapter {
 
   // ---- piazzamento blocchi -----------------------------------------------------------
 
-  _selectHotbarSlot (index) {
+  // `allowEmpty` serve a *liberare* la mano (item `{network_id: 0}`): senza
+  // l'opzione una slot vuota non è selezionabile (`return false`) e il bot resta
+  // con l'oggetto precedente in mano.
+  _selectHotbarSlot (index, { allowEmpty = false } = {}) {
     const item = this.inventorySlots[index];
-    if (!item?.network_id) return false;
+    if (!item?.network_id && !allowEmpty) return false;
     this.client.write('mob_equipment', {
-      runtime_entity_id: this.client.entityId, item,
+      runtime_entity_id: this.client.entityId,
+      item: item?.network_id ? item : { network_id: 0 },
       slot: index, selected_slot: index, window_id: 'inventory',
     });
     this.selectedHotbar = index;
     return true;
+  }
+
+  // `player_action` vuole anche una posizione: senza `position`/`result_position`/
+  // `face` il serializer del client lancia (`SizeOf error for undefined … reading
+  // 'x'`), quindi lo `start_sneak` dello smontaggio non sarebbe mai partito (bug
+  // latente trovato dal test del 04/10/2026). Un solo punto di costruzione.
+  _sendPlayerAction (action) {
+    if (!this.client) return false;
+    const feet = this._feet || this.position || { x: 0, y: 0, z: 0 };
+    this.client.write('player_action', {
+      runtime_entity_id: this.client.entityId,
+      action,
+      position: { x: Math.floor(feet.x), y: Math.floor(feet.y), z: Math.floor(feet.z) },
+      result_position: { x: 0, y: 0, z: 0 },
+      face: 0,
+    });
+    return true;
+  }
+
+  // Prepara un'interazione "mano libera e non in sneak": è la combinazione con
+  // cui un client vanilla monta un cavalcabile o apre il commercio di un villager.
+  // Regola verificata con l'utente il 04/10/2026: con **sneak** attivo (o con un
+  // attrezzo in mano) il tasto destro su un animale apre il suo inventario invece
+  // di montarlo. Due difetti veri dietro il `mount_not_confirmed` del 03/10/2026
+  // (sintomo: il server rispondeva `inventory_slot {window_id:2, slot:0,
+  // item:'saddle'}` invece del link di mount): `_selectHotbarSlot` rifiutava gli
+  // slot vuoti (la "mano vuota" non era quindi mai ottenuta) e lo `start_sneak`
+  // dello smontaggio non veniva mai annullato, quindi il server vedeva il bot in
+  // sneak. Ritorna come è stata lasciata la mano, per la diagnosi.
+  _freeHands (reason = 'interact') {
+    if (this._sneaking) {
+      this._sendPlayerAction('stop_sneak');
+      this._sneaking = false;
+    }
+    const selected = this.selectedHotbar < 9 ? this.inventorySlots[this.selectedHotbar] : null;
+    if (!selected?.network_id) return 'empty';   // mano già libera: nessun pacchetto
+    const empty = this.inventorySlots.findIndex((s, i) => i < 9 && !s?.network_id);
+    if (empty >= 0) {
+      this._selectHotbarSlot(empty, { allowEmpty: true });
+      return 'empty';
+    }
+    // Hotbar piena: resta in mano un blocco (non un attrezzo da usare
+    // sull'entità) e lo si dichiara nella diagnosi.
+    this.log('hand_not_empty', { reason, slot: this.selectedHotbar });
+    return 'full_hotbar';
   }
 
   // Cella dove piazzare un blocco: il vicino libero più vicino con un supporto
@@ -9947,9 +10001,9 @@ export class BedrockAdapter {
   // dargli cibo, poi item_use_on_entity `interact`. Il server disarciona finché
   // non è domato: si ripete finché il flag `tamed` non compare.
   async _mountEntity (entity, deadline) {
-    // Mano vuota: con del cibo in mano il click darebbe cibo, non monterebbe.
-    const empty = this.inventorySlots.findIndex((s, i) => i < 9 && !s?.network_id);
-    if (empty >= 0) this._selectHotbarSlot(empty);
+    // Mano vuota e niente sneak: con del cibo in mano il click darebbe cibo e con
+    // lo sneak attivo il server aprirebbe l'inventario del cavalcabile.
+    const hand = this._freeHands('mount');
     const live = this.entities.get(String(entity.runtimeId));
     if (!live) return;
     if (this._entityDistance(live) > 4.5) {
@@ -9962,6 +10016,7 @@ export class BedrockAdapter {
     await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
     await delay(120);
     this._interactEntity(current);
+    this.log('mount_interact', { target: current.type, hand, distance: +this._entityDistance(current).toFixed(2) });
   }
 
   // ---- cavalcare/veicoli -------------------------------------------------------------
@@ -9992,8 +10047,7 @@ export class BedrockAdapter {
     const wanted = normalizeEntityType(type);
     const target = this._nearbyRideable(64).find(e => e.type === wanted);
     if (!target) return { ok: false, error: 'no_rideable_nearby', type: wanted };
-    const empty = this.inventorySlots.findIndex((s, i) => i < 9 && !s?.network_id);
-    if (empty >= 0) this._selectHotbarSlot(empty);
+    const hand = this._freeHands('mount');
     const entity = this.entities.get(String(target.runtimeId));
     if (!entity) return { ok: false, error: 'vehicle_gone' };
     if (this._entityDistance(entity) > 4.5) {
@@ -10011,7 +10065,7 @@ export class BedrockAdapter {
       const waitUntil = Math.min(deadline, Date.now() + 2000);
       while (Date.now() < waitUntil && !this.riding) await delay(100);
     }
-    if (!this.riding) return { ok: false, error: 'mount_not_confirmed', type: wanted };
+    if (!this.riding) return { ok: false, error: 'mount_not_confirmed', type: wanted, hand };
     return { ok: true, mounted: wanted, ridden: this.riding.riddenEntityId };
   }
 
@@ -10020,9 +10074,15 @@ export class BedrockAdapter {
     if (!this.riding) return { ok: true, alreadyDismounted: true };
     this._ridingForward = false;
     const deadline = Date.now() + timeoutMs;
-    this.client.write('player_action', { runtime_entity_id: this.client.entityId, action: 'start_sneak' });
+    this._sendPlayerAction('start_sneak');
+    this._sneaking = true;
     while (Date.now() < deadline && this.riding) await delay(100);
     if (this.riding) return { ok: false, error: 'dismount_not_confirmed' };
+    // Lo sneak dello smontaggio è un comando, non uno stato da lasciare addosso:
+    // con sneak attivo il prossimo `interact` su un cavalcabile aprirebbe il suo
+    // inventario invece di montarlo (evidenza live 04/10/2026).
+    this._sendPlayerAction('stop_sneak');
+    this._sneaking = false;
     return { ok: true, dismounted: true };
   }
 

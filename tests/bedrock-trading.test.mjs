@@ -336,6 +336,25 @@ test('a failed trade open arms the packet capture window and reports distance', 
   }
 });
 
+test('aprire un commercio libera la mano e spegne uno sneak rimasto addosso', async () => {
+  const adapter = spawnedAdapter();
+  adapter._trackEntity({ runtime_id: 42n, entity_type: 'minecraft:villager', position: { x: 1, y: 63, z: 0 } }, 'mob');
+  adapter.inventorySlots = [{ name: 'baked_potato', network_id: 7, count: 4 }, {}, {}, {}, {}, {}, {}, {}, {}];
+  adapter.selectedHotbar = 0;
+  adapter._sneaking = true;
+  const packets = capture(adapter);
+  const entity = adapter.entities.get('42');
+  const res = await adapter._openTradeWithEntity(entity, { confirmMs: 1 });
+  assert.equal(res.error, 'trade_not_opened');
+  assert.equal(res.hand, 'empty');
+  assert.ok(packets.some(p => p.name === 'player_action' && p.params.action === 'stop_sneak'),
+    'lo sneak dello smontaggio non deve restare addosso al bot');
+  assert.ok(packets.some(p => p.name === 'mob_equipment' && p.params.item.network_id === 0),
+    'slot vuoto selezionato: mano libera come un client reale');
+  assert.equal(adapter._sneaking, false);
+  serializeAll(packets);
+});
+
 // ---- chiusura ------------------------------------------------------------------------
 
 test('closing a trading window clears offers and target', async () => {

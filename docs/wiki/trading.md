@@ -43,6 +43,18 @@ master** ("maxxing") using only cheap, non-precious inputs.
   every cheap trade is exhausted (the villager must restock at its workstation)
   or the bot has no cheap materials — the controller can re-invoke later.
 
+## Opening the trade window
+
+The first human session of the campaign (04/10/2026) traded live — baked potatoes
+and 24 paper for emeralds with a villager, water bottles with a wandering trader —
+and settled what the window needs: a **plain right click at close range**, with no
+sneak and nothing to "use" in hand. That is the same discriminator as mounting a
+horse (see [companions](companions.md)), so `_openTradeWithEntity` now calls
+`_freeHands('trade')` before each attempt (`stop_sneak`, then an empty hotbar
+slot) and reports `hand` in `trade_not_opened` — a reach problem and a
+hand/sneak problem are no longer the same error. The live round with the bot is
+still pending (the single NetherNet port was occupied by the human session).
+
 ## Verification status
 
 `open_trade`, offer parsing, the `trade_<index>` wire shape and the leveling loop

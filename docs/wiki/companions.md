@@ -104,6 +104,40 @@ answered `unknown_action` (they are not standalone keys — while mounted the bo
 steered with `goto_waypoint`, and `follow_player` needs a plan target). They now
 answer `not_riding` / `no_ride_destination` and `no_player_target` with a hint.
 
+### 2026-10-04: a free hand and no sneak (why the mount never linked)
+
+A human player joined the live server for the first time in the campaign, so the
+rule behind that failure became **observable** instead of guessed:
+
+| state | right click | effect |
+|---|---|---|
+| no sneak, no tool in hand | `interact` | **mounts** |
+| sneaking | `interact` | opens the animal's inventory (saddle/armor) |
+| shears in hand | `interact` | "use tool on entity": saddle on/off, lead off |
+| mounted, then shift | — | **dismounts** |
+
+The 03/10 round answered with the donkey's **saddle window** because the server
+read our interaction as a sneak (and/or as "use the held item"), and the bot was
+in exactly that state. Two real defects sat behind it:
+
+1. `_selectHotbarSlot (index, { allowEmpty = false })` — the mount code asked for
+   an **empty** hotbar slot to free the hand, but the method refused precisely
+   that (`if (!item?.network_id) return false`), so the bot kept the previous item
+   in hand: the "empty hand" the comment promised never happened.
+2. `player_action` was written as `{ runtime_entity_id, action }` only. The
+   1.26.51 schema also wants `position`, `result_position` and `face`, so
+   serializing it throws (`SizeOf error for undefined … reading 'x'`): the
+   `start_sneak` of the dismount would never have left the client and the sneak
+   flag would have stayed on. All writes now go through
+   `_sendPlayerAction (action)`, and `_dismount` clears the flag with
+   `stop_sneak` once the link is gone.
+
+`_freeHands (reason)` does both steps: `stop_sneak` when the adapter believes it
+is sneaking, then an empty hotbar slot (`{network_id: 0}`); if the hotbar is full
+it keeps the block it holds (not a tool) and logs `hand_not_empty`. `_mountEntity`,
+`_mountVehicle` and the trade-open loop call it, and `mount_not_confirmed` /
+`trade_not_opened` now report the hand state they used.
+
 ### Still not implemented
 
 - **Saddle** equipping for `horse`/`donkey`/`mule` (they need a saddle to be

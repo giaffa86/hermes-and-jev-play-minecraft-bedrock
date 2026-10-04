@@ -3581,3 +3581,34 @@ which the old order never reached), `take_honeycomb`, … — and `take_cod` ans
 Tests: 2 new in `tests/bedrock-storage.test.mjs` (the village's real cache shape, and a
 plan target coming from the farthest container), both checked to fail against the
 previous loop; suite 466 → 1057.
+
+## [2026-10-04] fix | Mounting and trading need a free hand and no sneak
+
+The first human player of the campaign joined the live BDS, and the rule
+behind the mount failure of 03/10 became **observable**: an `interact` mounts only
+with **no sneak and no tool in hand**; **sneak** opens the animal's inventory;
+shears in hand are the "use tool" branch (saddle on/off, lead off); shift
+dismounts. The bot was in the sneak/held-item state, which is why the server
+answered with the donkey's saddle window instead of `set_entity_link`.
+
+Two real defects were fixed, both in `bedrock-adapter.mjs`:
+
+- `_selectHotbarSlot` refused **empty** slots (`if (!item?.network_id) return
+  false`), so the "empty hand" the mount code asked for never happened; the new
+  `allowEmpty` option sends `{network_id: 0}`.
+- `player_action` was written as `{runtime_entity_id, action}` while 1.26.51 also
+  wants `position`, `result_position` and `face`: it raised `SizeOf error for
+  undefined … reading 'x'`, so the `start_sneak` of the dismount could never leave
+  the client. All writes go through the new `_sendPlayerAction`, and `_dismount`
+  clears the flag with `stop_sneak` after the link is gone.
+
+New `_freeHands (reason)` (`stop_sneak` + empty hotbar slot, `hand_not_empty` when
+the hotbar is full) runs before every mount and every trade attempt;
+`mount_not_confirmed` and `trade_not_opened` now report `hand`.
+
+Evidence: 6 new tests (`tests/bedrock-riding.test.mjs`, `tests/bedrock-trading.test.mjs`),
+suite 1069 → **1075 pass / 0 fail**; the serialization assertion is the one that
+caught the `player_action` defect. The live round with the bot is still pending
+(the single NetherNet port is occupied by the human session), so
+[verification](wiki/verification.md) row 47.35 records the fix with its proof and
+marks the live confirmation as pending.
