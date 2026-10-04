@@ -131,10 +131,25 @@ Last lint: 2026-10-03.
   `action_id: 0` changes nothing (the 1.26.51 mapper only names 3..6). The
   transport is not the problem: the same transaction with `action_type: 'attack'`
   kills entities live.
-- Hypothesis: BDS 1.26.52 expects a trigger only a real client produces (a
-  different ordering or a second interaction) — the same class of blocker as the
-  trade window (`trade_not_opened`). Next step: a packet capture from a real
-  client mounting a saddled donkey (a human player; see the multiplayer blocker).
+- Update 2026-10-04 — the **transaction family is accepted**, the *window still is
+  not*. `POST /debug/probe-interact {"action":"attack","variant":"current"}` on a
+  nearby pig lands: `healthBefore:10 → healthAfter:9` (`damage:1`) at 4.0 blocks,
+  so the standalone `inventory_transaction {item_use_on_entity}` is processed by
+  this server, and the `inventory_content` that follows it is **not** a refusal
+  signal (the accepted attack produced 8 resyncs, the refused villager
+  interaction 0). The same transaction with `action:"interact"` on an
+  unobstructed adult farmer opens nothing at 1.6/2.1/2.8/4.0 blocks, day or
+  night. Ruled out with evidence: packet shape, `legacy_request_id`,
+  `legacy` presence, `hotbar_slot`/`held_item` (empty **and** with an item in
+  hand), `player_pos` (already the eye position), `item_interact` before/after the
+  frame, `animate swing_arm`, `mouse_over_entity`, the vanilla `npc_open` packet,
+  sleeping villagers, behaviour packs, baby villagers. See
+  [trading](trading.md) §"Verification status" for the table.
+- Hypothesis (still open): BDS 1.26.52 expects a trigger only a real client
+  produces (a different ordering or an extra packet). Next step: a packet capture
+  from a real client mounting a saddled donkey **made with `PACKET_DEBUG=1`**, or
+  a client-side packet dump — the game channel is DTLS, so the pcap of the human
+  session carries only sizes and timing (no game packets).
 - Mitigation in place: the readiness filter refuses fast (`vehicle_unreachable`
   from the room, `no_boat_nearby` without a boat) instead of spending 20-26 s, and
   `ride`/`follow_player` answer `not_riding`/`no_player_target` with a hint

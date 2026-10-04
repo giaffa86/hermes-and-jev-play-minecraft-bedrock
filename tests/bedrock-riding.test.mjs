@@ -76,6 +76,23 @@ test('_mountVehicle reports no rideable and already riding', async () => {
   assert.equal((await adapter._mountVehicle('boat')).error, 'already_riding');
 });
 
+test('_mountEntity refuses a target behind a wall without interacting (live 04/10/2026)', async () => {
+  const adapter = spawnedAdapter();
+  adapter._trackEntity({ runtime_id: 210n, entity_type: 'minecraft:donkey', position: { x: 2, y: 63, z: 0 } }, 'mob');
+  const logs = [];
+  adapter.log = (event, fields) => logs.push({ event, fields });
+  const packets = [];
+  adapter.client.write = (name, params) => packets.push({ name, params });
+  adapter._entityVisible = () => ({ visible: false, blockedBy: 'oak_planks', blockedAt: { x: 1, y: 64, z: 0 }, t: 0.5, unknown: false });
+
+  await adapter._mountEntity(adapter.entities.get('210'), Date.now() + 5000);
+
+  assert.equal(packets.filter(p => p.name === 'inventory_transaction').length, 0,
+    'niente interact: il donkey è dietro un muro');
+  assert.equal(logs.filter(l => l.event === 'mount_target_blocked').length, 1);
+  assert.equal(logs.find(l => l.event === 'mount_target_blocked').fields.blockedBy, 'oak_planks');
+});
+
 test('_dismount sends player_action start_sneak and clears riding', async () => {
   const adapter = spawnedAdapter();
   adapter.riding = { riddenEntityId: '200', at: Date.now() };

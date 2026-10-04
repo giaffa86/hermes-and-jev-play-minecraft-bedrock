@@ -529,3 +529,35 @@ test('un bot dentro una porta chiusa esce dalla cella che occupa (ma non entra n
   for (let i = 0; i < 6; i++) inside._moveHorizontal(0.1, 0);
   assert.equal(Math.floor(inside._feet.x), 1, 'il bot resta nella cella che occupa: non entra nella porta accanto');
 });
+
+test('_entityVisible campiona la linea di vista e nomina il blocco che la blocca', () => {
+  const world = flatWorld({ minX: 0, maxX: 6, minZ: 0, maxZ: 0 });
+  const adapter = reachAdapter(world);
+  adapter._trackEntity({ runtime_id: 9n, entity_type: 'minecraft:villager', position: { x: 5, y: 71, z: 0 } }, 'mob');
+  const entity = adapter.entities.get('9');
+
+  const clear = adapter._entityVisible(entity);
+  assert.equal(clear.visible, true);
+  assert.equal(clear.unknown, false);
+  assert.equal(clear.blockedBy, null);
+
+  // Un muro nel segmento occhio→petto: l'interazione non ha linea di vista.
+  world.set(2, 72, 0, STONE);
+  const blocked = adapter._entityVisible(entity);
+  assert.equal(blocked.visible, false);
+  assert.equal(blocked.blockedBy, 'stone');
+  assert.deepEqual(blocked.blockedAt, { x: 2, y: 72, z: 0 });
+  assert.equal(typeof blocked.t, 'number');
+});
+
+test('_entityVisible è fail-open su un mondo illeggibile', () => {
+  const adapter = reachAdapter(flatWorld());
+  adapter.world = { blockAt: () => null, findBlocks: () => [] };
+  adapter._trackEntity({ runtime_id: 10n, entity_type: 'minecraft:villager', position: { x: 4, y: 71, z: 0 } }, 'mob');
+  const unknown = adapter._entityVisible(adapter.entities.get('10'));
+  assert.equal(unknown.visible, true, 'un modello incompleto non rifiuta l\'azione');
+  assert.equal(unknown.unknown, true);
+
+  assert.equal(adapter._entityVisible(null).visible, true);
+  assert.equal(adapter._entityVisible({ type: 'villager', position: { x: 1, y: 1, z: 1 } }).visible, true);
+});

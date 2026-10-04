@@ -362,6 +362,20 @@ server = createServer(async (req, res) => {
       found.sort((a, b) => a.distance - b.distance);
       response = [200, { count: found.length, containers: found, position: adapter.pos() }];
     }
+    else if (process.env.BEDROCK_DEBUG && req.method === 'POST' && req.url === '/debug/probe-interact') {
+      // Sonda delle interazioni entità: prova una forma del pacchetto e riferisce
+      // l'esito osservabile (delta di vita per un mob, apertura della finestra per
+      // un villager) più il numero di resync d'inventario (= transazione rifiutata).
+      const { type, action, variant, runtime_id: runtimeId, observe_ms: observeMs, approach } = JSON.parse(body);
+      response = [200, await adapter.probeInteract({
+        type: type || 'pig',
+        action: action === 'attack' ? 'attack' : 'interact',
+        variant: variant || 'current',
+        runtimeId: runtimeId != null ? runtimeId : null,
+        observeMs: Number(observeMs) > 0 ? Number(observeMs) : 2500,
+        approach: approach === true,
+      })];
+    }
     else if (process.env.BEDROCK_DEBUG && req.method === 'POST' && req.url === '/debug/isr') {
       const { type_id, count, source, destination, randomly, open } = JSON.parse(body);
       if (open) await adapter._ensureInventoryOpen();

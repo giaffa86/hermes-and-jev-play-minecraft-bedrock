@@ -1,5 +1,41 @@
 # Log
 
+## [2026-10-04] fix | Entity interactions respect a line of sight (and the packet family is proven accepted)
+
+A live diagnostic round on the real BDS (probe route `POST /debug/probe-interact`,
+container `hermes-jev-bedrock`, and a throwaway `jev-diag` clone) settled two
+things at once.
+
+**The entity transaction works.** `probe-interact {"action":"attack"}` on a pig
+reported `healthBefore:10 → healthAfter:9` (`damage:1`) at 4.0 blocks, so the
+standalone `inventory_transaction {transaction_type:'item_use_on_entity'}` is
+accepted by BDS 1.26.52. That falsifies the campaign's earlier reading: the
+`inventory_content` resync after an entity transaction is **not** a rejection (the
+accepted attack produced 8, a refused villager interaction 0, `variant:"none"` 0).
+The villager trade window still does not open, at 1.6-4.0 blocks, day or night,
+with an unobstructed adult farmer and a free hand; the full list of ruled-out
+hypotheses (packet shape, legacy ids, hotbar/held item, eye position, input flags,
+`animate`, `mouse_over_entity`, `npc_open`, baby villagers, sleeping villagers,
+behaviour packs) is in [trading](wiki/trading.md) and
+[verification](wiki/verification.md) row 47.38.
+
+**The real defect fixed here is geometry.** Villagers and mounts were being
+interacted with through walls: `open_trade` burned 12-14 s and three attempts on
+farmers **inside a house**, and `mount_donkey` hammered six `interact`s on a
+donkey 4.6 blocks below the walkable component. New primitive
+`_entityVisible (entity, { ratio, samples })` samples the eye→aim segment against
+`this.world.blockAt` (fail-open on unloaded chunks) and both paths now refuse
+before writing anything: `trade_target_blocked { blockedBy, distance }`,
+`trader_moved_away`, `mount_target_blocked`, live-verified in seconds instead of
+20 s. The trade loop also re-checks reach and sight **at every attempt** because
+villagers walk (nearest trader changed identity three times, distance 2.1 → 5.1
+blocks during one round), and `_nearbyTraders` reports the `baby` flag.
+
+Tests: 2 new in `tests/bedrock-reachability.test.mjs`, 3 in
+`tests/bedrock-trading.test.mjs`, 1 in `tests/bedrock-riding.test.mjs`, 1 in
+`tests/bedrock-interact-probe.test.mjs`; suite 1080 → **1089**.
+
+
 Append-only record of wiki operations. Prefix: `## [YYYY-MM-DD] <type> | <title>`
 where `<type>` is one of `ingest`, `query`, `lint`, `doc`, `feat`, `fix`,
 `verify`, `report` (the last four joined as the wiki grew).

@@ -138,6 +138,28 @@ it keeps the block it holds (not a tool) and logs `hand_not_empty`. `_mountEntit
 `_mountVehicle` and the trade-open loop call it, and `mount_not_confirmed` /
 `trade_not_opened` now report the hand state they used.
 
+### 2026-10-04: an unreachable mount is refused, not hammered
+
+The live round of 04/10 gave the mount code a second blind spot: `_mountEntity`
+interacted with whatever the entity map held, so a donkey 4.6 blocks **below** the
+bot (outside the walkable component, `_moveTo` could not descend) collected six
+`interact`s over 20-26 s before the action failed as `mount_not_confirmed`. A knob
+in the code, not a fact about the world.
+
+`_entityVisible (entity, { ratio = 0.5, samples = 3 })` samples the eye→aim
+segment against `this.world.blockAt` (fail-open `{visible:true, unknown:true}`
+when the chunk is not loaded) and `_mountEntity` now refuses before writing
+anything:
+
+```
+{"ok":false,"error":"vehicle_unreachable"}      # donkey 15 blocks away, 6 below
+```
+
+with `mount_target_blocked { blockedBy, at }` logged when the line of sight is
+what fails instead. The same primitive gates the trade loop (see
+[trading](trading.md)), and `_nearbyTraders` now reports the `baby` flag so a
+baby villager — which can never trade — is distinguishable from a refusal.
+
 ### Still not implemented
 
 - **Saddle** equipping for `horse`/`donkey`/`mule` (they need a saddle to be

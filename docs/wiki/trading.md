@@ -52,8 +52,11 @@ sneak and nothing to "use" in hand. That is the same discriminator as mounting a
 horse (see [companions](companions.md)), so `_openTradeWithEntity` now calls
 `_freeHands('trade')` before each attempt (`stop_sneak`, then an empty hotbar
 slot) and reports `hand` in `trade_not_opened` — a reach problem and a
-hand/sneak problem are no longer the same error. The live round with the bot is
-still pending (the single NetherNet port was occupied by the human session).
+hand/sneak problem are no longer the same error. The live round with the bot did
+run on 04/10 (the human session had ended): the packet the bot sends is now
+**proven accepted** on this server (a pig takes damage from the same
+transaction), but the villager window still does not open — the full list of what
+is ruled out is in §"Verification status".
 
 ## Verification status
 
@@ -65,35 +68,54 @@ are covered by unit tests and packet serialization tests against protocol
   flow is the vanilla one: place the inputs, then take the result);
 - the level-up detection via `trade_tier`/`max_trade_tier` metadata.
 
-**Live rounds (02-03/10, packet capture)**: `open_trade` still does not open the
-trade window on BDS 1.26.52. The capture (`PACKET_DEBUG=1` on the harness plus
-`GET /debug/packet-debug?ms=…`, which arms the clientbound dump *before* the
-interaction) shows that a `villager_v2` at 3.1-3.6 blocks receives the
-interaction and the server replies with **only** a player-inventory resync
-(`inventory_content`, 36 empty slots, `container_id` that prismarine labels
-`anvil_input`) — never `container_open`, never `update_trade`. The three
-`interact` attempts produce exactly three of those resyncs and nothing else.
+**Live rounds (02-04/10, on the real BDS)**: the trade window does not open. The
+campaign's first reading — "the server rejects every entity transaction" — was
+**wrong**, and the 04/10 probe falsified it:
 
-Hypotheses tested live and **ruled out**:
+- `POST /debug/probe-interact` with `action:"attack"` against a pig reports
+  `healthBefore:10 → healthAfter:9`, **`damage:1`** (an empty-handed punch), at
+  4.0 blocks with `sightline:["air","air","air"]` and a successful
+  `approach (12.41 -> 4.0)`. The standalone
+  `inventory_transaction {transaction_type:'item_use_on_entity'}` **is accepted
+  and applies damage**;
+- the `inventory_content` resync is therefore **not** a refusal signal: the
+  accepted attack produced 8, a refused villager interaction 0, and the `none`
+  baseline (no packet at all) 0;
+- the same transaction with `action:"interact"` on an unobstructed adult farmer
+  (`sightline:["air","air","air"]`, day, no sneak, free hand) produces **no
+  `update_trade` and no `container_open`** at 1.6, 2.1, 2.8 and 4.0 blocks.
 
-- packet shape — `item_use_on_entity` with `action_type: interact` serializes
-  cleanly against the 1.26.51 schema and is byte-identical to the live-verified
-  `attack_<mob>` path except for the extra `animate swing_arm`;
-- `legacy_request_id: 0` vs a non-zero request id;
-- the vanilla client packet `interact { action_id: 'npc_open' }` (now sent first,
-  with `item_use_on_entity` as fallback on the later attempts);
-- the `item_interact` input flag (bit 34) in `player_auth_input`, sent in the
-  same frame as the entity interaction;
-- a sleeping villager — same failure at `night: true` and `night: false`
-  (waited from ticks 23308 → 23804);
-- a behaviour pack disabling trading — the server loads vanilla packs only
-  (`/opt/minecraft/behavior_packs`, `vanilla_1.26.52` …).
+Hypotheses tested live and **ruled out**: the packet shape (41 bytes, identical
+to the working attack but for `action_type`); `legacy_request_id: 0` vs non-zero;
+`legacy` present/absent/empty list; `hotbar_slot` and the selected slot (the
+`oak_planks` in slot 0 matches the server, proven with `craft_oak_planks`);
+`held_item` empty vs an item in hand; `player_pos` (it already is the eye
+position — `_lookAt` documents that `this.position` is at eye height);
+`item_interact` (bit 34) before/after the frame; `animate swing_arm`;
+`interact {mouse_over_entity}` before the transaction; the sleeping-villager
+theory (same failure in day and night, ticks 10851 and 18695); behaviour packs
+(vanilla only); the vanilla `npc_open` packet; **baby villagers** (every nearby
+farmer reports `baby:false`).
 
-Next diagnostics: capture the same interaction from a **real client** on this
-server and compare byte by byte, test a second (freshly spawned) villager, and
-check whether a `villager_v2` has offers at all for this player. When the
-villager is >5 blocks away the approach `_moveTo` also stalls
-(`trade_approach_failed: stuck` → `trader_unreachable`).
+The reference implementation `mineflayer-for-bedrock` is **not** a valid
+comparison here: it sends `transaction_type: 3` (numeric), which the 1.26.51
+protodef `switch` cannot resolve — it serializes to 5 bytes instead of 41 and
+disconnects the client.
+
+**What the bot does get right (and did not before 04/10)**: `_entityVisible`
+samples the eye→aim line and refuses a villager **inside a building** with
+`trade_target_blocked { blockedBy: 'oak_planks' | 'cobblestone' | 'wooden_door',
+distance }` instead of burning three attempts; a villager that escapes past 5
+blocks is `trader_moved_away`; and every attempt re-checks reach and sight
+because villagers **walk** (in one round the nearest trader changed identity
+three times and its distance went 2.1 → 5.1 blocks during the 12 s of the three
+attempts).
+
+**Blocker**: the missing piece is the packet/state a **real client** uses to open
+the window on this build. The game channel is DTLS, so the packet capture of the
+human session (`/tmp/mc-client2.pcap` on CT 108) carries only sizes and timing,
+no game packets; `POST /debug/probe-interact` stays available for a capture made
+with `PACKET_DEBUG=1`.
 
 See [open-questions](open-questions.md) for the current gaps.
 

@@ -183,7 +183,36 @@ Item movement, crafting and smelting are `item_stack_request` transactions
 
 - Doors, beds, furnaces, chests, crafting tables → `click_block` / `item_interact`;
 - eating → `item_use` (`click_air`);
-- attacking a mob → `item_use_on_entity` (`action_type: attack`) + `animate swing_arm`.
+- attacking a mob → `item_use_on_entity` (`action_type: attack`) + `animate swing_arm`;
+- trading/shearing/feeding/mounting a mob → `item_use_on_entity`
+  (`action_type: interact`) with a free hand and no sneak, preceded by
+  `interact { action_id: 'npc_open' }` for traders.
+
+**Line of sight is part of "in range".** `_entityVisible (entity, { ratio = 0.5,
+samples = 3 })` samples the eye→aim segment against the local block model and
+names what blocks it (`{ visible: false, blockedBy: 'oak_planks', blockedAt, t }`);
+it is **fail-open** on unloaded chunks (`unknown: true`). `_mountEntity` and the
+trade loop call it before writing any packet, because the server silently ignores
+an interaction with a target behind a wall — and villagers/traders **walk**, so the
+trade loop re-checks reach and sight at every attempt (`trade_target_blocked`,
+`trader_moved_away`).
+
+### 4.5 Diagnosing an interaction: `POST /debug/probe-interact`
+
+Gated by `BEDROCK_DEBUG=1`. Body:
+`{ "type": "pig", "runtime_id": "716", "action": "attack"|"interact",
+"variant": "<see PROBE_VARIANTS>", "observe_ms": 3000, "approach": true }`.
+It looks at the target, samples the sightline, optionally walks into reach, sends
+the chosen packet shape and reports
+`{ sequence, sightline, distance, hand, heldName, selectedHotbar, healthBefore,
+healthAfter, damage, resyncs, rxNames, containerBefore/After, offersBefore/After }`.
+`variant: "none"` sends **no packet at all** — the baseline that proves whether the
+`inventory_content` resyncs that follow are a reaction to our transaction (they
+are) or a periodic synchronisation (they are not). `PROBE_VARIANTS` includes
+`current`, `legacy_minus1`, `legacy_empty_list`, `numeric_type`, `animate_first`,
+`eyes`, `flag_before`, `flag_after`, `hotbar`, `item_in_hand`, `legacy_seq`,
+`click_low`, `mouse_over`. `_invResyncCount` and `_rxLog` (filled only with
+`PACKET_DEBUG=1`) are the two counters behind the report.
 
 ---
 

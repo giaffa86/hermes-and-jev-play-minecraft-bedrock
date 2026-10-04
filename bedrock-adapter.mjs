@@ -40,6 +40,10 @@ const WALK_SPEED = 0.2158;      // blocchi per tick (4,317 m/s / 20 tick)
 // In acqua bassa il server muove il giocatore più lentamente: la fisica locale
 // cammina piano per non farsi correggere dal server (rubber-band) a ogni tick.
 const WADE_SPEED_FACTOR = +(process.env.WADE_SPEED_FACTOR || 0.5);
+// Il commercio si apre solo a distanza di braccio: a 4.3 blocchi il server non
+// apre la finestra (live 04/10/2026, `trade_not_opened` con mano vuota e niente
+// sneak, mentre un umano attaccato al villager commercia senza problemi).
+const TRADE_APPROACH_RANGE = 2.5;
 const GRAVITY = 0.08;           // blocchi per tick^2
 const JUMP_VELOCITY = 0.42;     // impulso verticale di un salto
 const MAX_SIM_STEPS = 8;        // tick di fisica massimi per singolo invio
@@ -367,6 +371,11 @@ export class BedrockAdapter {
     this._cursor = null;               // { network_id, count, stack_id }
     // Commercio: offerte del villager/mercante aperto, finestra e slot di trading.
     this.tradeOffers = [];             // offerte parse da update_trade
+    // Diagnostica interazioni entità (04/10/2026): ogni `item_use_on_entity`
+    // standalone è seguita da un resync dell'inventario, che è il segnale con cui
+    // il server rifiuta la transazione. Il contatore misura quel rifiuto.
+    this._invResyncCount = 0;
+    this._rxLog = [];                // anello dei nomi di pacchetto ricevuti (diagnostica)
     this.tradeTarget = null;           // { type, runtimeId, uniqueId, position, distance, profession? }
     this.tradeDisplayName = null;      // professione/descrizione mostrata nella UI di trading
     this.tradeTier = null;             // tier corrente del villager aperto
@@ -703,6 +712,7 @@ export class BedrockAdapter {
 
       this.client.on('inventory_content', (packet) => {
         const containerId = packet.container?.container_id;
+        this._invResyncCount++;
         if (packet.window_id === 'inventory' || packet.window_id === 0 || packet.inventory_id === 0) {
           this.log('inventory_content', {
             window_id: packet.window_id,
@@ -856,6 +866,12 @@ export class BedrockAdapter {
         this.client.on('packet', (des) => {
           if (this._packetDebugUntil && Date.now() < this._packetDebugUntil) {
             this.log('rx_packet', { name: des?.data?.name });
+          }
+          // Anche la sonda delle interazioni entità vuole i nomi dei pacchetti
+          // del suo turno: `_rxLog` è un anello corto, letto e svuotato dalla sonda.
+          if (this._rxLog && des?.data?.name) {
+            this._rxLog.push({ name: des.data.name, at: Date.now() });
+            if (this._rxLog.length > 200) this._rxLog.shift();
           }
         });
       }
@@ -5247,6 +5263,9 @@ export class BedrockAdapter {
         tradeTier: entity.tradeTier ?? null,
         maxTradeTier: entity.maxTradeTier ?? null,
         profession: this._professionFor(entity),
+        // Un villager cucciolo non apre il commercio: senza il flag non si
+        // distingue "rifiuto" da "bersaglio sbagliato" (indagine 04/10/2026).
+        baby: entity.baby ?? null,
         seenAt: entity.seenAt ?? null,
       });
     }
@@ -5342,6 +5361,202 @@ export class BedrockAdapter {
     return true;
   }
 
+  // ---- sonda diagnostica delle interazioni entità (04/10/2026) ---------------
+  // Misura live: il server risponde a ogni `item_use_on_entity` standalone
+  // (attacco e interact) con un resync di `inventory_content` e con **nessun**
+  // effetto nel mondo (9 colpi su un pig senza un punto di danno, nessuna
+  // `container_open`/`update_trade` dal villager). La distanza, il runtime id e
+  // il nome del campo di `interact` sono già esclusi. Questa sonda prova in
+  // sequenza le forme candidate e riporta l'esito **osservabile**: per un mob il
+  // delta di vita, per un villager l'apertura della finestra; il discriminante
+  // del rifiuto è il contatore dei resync (`resyncs > 0` ⇒ transazione rifiutata).
+  // `legacy` è **obbligatorio** nello schema 1.26.51 (`TransactionLegacy` non è
+  // dietro un `option`): ometterlo non è nemmeno serializzabile (`SizeOf error
+  // for undefined : reading 'legacy_request_id'`), quindi la variante che il
+  // riferimento ometteva non esiste in questa versione — si prova invece la
+  // lista legacy esplicitamente vuota, che cambia i byte (0x01 0x00 contro 0x00).
+  static PROBE_VARIANTS = ['none', 'current', 'legacy_minus1', 'legacy_empty_list', 'numeric_type', 'animate_first', 'eyes', 'flag_before', 'flag_after', 'hotbar', 'item_in_hand', 'legacy_seq', 'click_low', 'mouse_over'];
+
+  _entityTransactionPayload (entity, action, variant) {
+    const held = this.inventorySlots[this.selectedHotbar] || { network_id: 0 };
+    const runtimeId = BigInt(entity.runtimeId);
+    const centerY = isEndermanType(entity.type)
+      ? endermanAimPoint(entity.position).y
+      : entity.position.y + entityHeight(entity.type) * 0.5;
+    const feet = this.position || { x: 0, y: 0, z: 0 };
+    // `eyes`: il client vanilla manda la posizione degli occhi (`player_pos`),
+    // non i piedi (riferimento `mineflayer-for-bedrock/lib/plugins/vehicles.js`).
+    const playerPos = variant === 'eyes' ? { x: feet.x, y: feet.y + 1.62, z: feet.z } : { ...feet };
+    const payload = {
+      transaction_type: variant === 'numeric_type' ? 3 : 'item_use_on_entity',
+      actions: [],
+      transaction_data: {
+        entity_runtime_id: runtimeId,
+        action_type: action,
+        hotbar_slot: this.selectedHotbar,
+        held_item: held,
+        player_pos: playerPos,
+        click_pos: { x: entity.position.x, y: centerY, z: entity.position.z },
+      },
+    };
+    if (variant === 'legacy_empty_list') payload.legacy = { legacy_request_id: 0, legacy_transactions: [] };
+    // `legacy_seq`: il client vanilla manda un `legacy_request_id` che **cresce**
+    // a ogni transazione e il server lo usa per accoppiare transazione e
+    // correzione; un id sempre a 0 può far scartare la transazione come duplicato
+    // (l'ipotesi dietro il resync d'inventario che osserviamo a ogni interact).
+    else if (variant === 'legacy_seq') payload.legacy = { legacy_request_id: (this._legacySeq = (this._legacySeq ?? 0) + 1) };
+    else payload.legacy = { legacy_request_id: variant === 'legacy_minus1' ? -1 : 0 };
+    // `click_low`: punto di click sul bacino invece del centro del corpo — serve a
+    // escludere che il server scarti l'interazione perché il click cade fuori
+    // dall'hitbox (se le posizioni entità fossero salvate a un'altezza diversa).
+    if (variant === 'click_low') payload.transaction_data.click_pos.y = entity.position.y + 0.3;
+    return { payload, runtimeId };
+  }
+
+  // Bersaglio della sonda: qui NON si usa `_entityOfType` (che copre solo ostili
+  // e animali da fattoria) perché la sonda serve soprattutto sui villager, che
+  // non sono né l'uno né l'altro. Si può indicare il runtime id esatto (il
+  // villager visto in `/observe.traders`) oppure il tipo, scegliendo il più vicino.
+  _probeTarget ({ type = null, runtimeId = null } = {}) {
+    if (runtimeId != null) return this.entities.get(String(runtimeId)) || null;
+    if (!type) return null;
+    const wanted = normalizeEntityType(type);
+    const rows = [];
+    for (const entity of this.entities.values()) {
+      if (!entity?.position || typeof entity.type !== 'string') continue;
+      if (normalizeEntityType(entity.type) !== wanted) continue;
+      rows.push(entity);
+    }
+    rows.sort((a, b) => this._entityDistance(a) - this._entityDistance(b));
+    return rows[0] || null;
+  }
+
+  async probeInteract ({ type = 'pig', action = 'interact', variant = 'current', runtimeId = null, observeMs = 2500, approach = false } = {}) {
+    if (!this.client) return { ok: false, error: 'connection_lost' };
+    if (!BedrockAdapter.PROBE_VARIANTS.includes(variant)) return { ok: false, error: 'unknown_variant', variants: BedrockAdapter.PROBE_VARIANTS };
+    const entity = this._probeTarget({ type, runtimeId });
+    if (!entity) return { ok: false, error: 'no_entity', type, runtimeId };
+    const before = {
+      health: entity.health ?? null,
+      resyncs: this._invResyncCount,
+      rx: (this._rxLog || []).length,
+      container: this._openContainer ? `${this._openContainer.type}:${this._openContainer.id}` : null,
+      offers: this.tradeOffers.length,
+      distance: +this._entityDistance(entity).toFixed(2),
+    };
+    const sequence = [];
+    // `approach`: un bersaglio a più di 3 blocchi non è una prova valida (la
+    // portata dell'interazione è ~4-5 blocchi, e una linea di vista ostruita fa
+    // scartare l'interazione): la sonda cammina a 2 blocchi prima di provare.
+    if (approach && before.distance > 3) {
+      try {
+        await this._moveTo(entity.position, 2.0, 12000);
+        sequence.push(`approach (${before.distance} -> ${this._entityDistance(this.entities.get(String(entity.runtimeId)) || entity).toFixed(1)})`);
+      } catch (error) {
+        sequence.push(`approach_failed:${error.message}`);
+      }
+    }
+    // Il client vanilla guarda sempre il bersaglio prima di usarlo: senza questa
+    // rotazione il server può scartare l'interazione (l'ultima posizione nota
+    // della testa era un'altra). Si registra anche la linea di vista, campionata
+    // sui blocchi, per distinguere "il bersaglio non è visibile" da "la
+    // transazione è sbagliata".
+    const after = this.entities.get(String(entity.runtimeId)) || entity;
+    const look = this._lookAt({ x: after.position.x, y: after.position.y + entityHeight(after.type) * 0.5, z: after.position.z });
+    await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+    await delay(120);
+    sequence.push('player_auth_input (yaw/pitch sul bersaglio)');
+    const eye = this.position;
+    const aimPoint = { x: after.position.x, y: after.position.y + entityHeight(after.type) * 0.5, z: after.position.z };
+    const sightline = [];
+    for (let i = 1; i <= 3; i++) {
+      const t = i / 4;
+      const b = this.world.blockAt({
+        x: Math.floor(eye.x + (aimPoint.x - eye.x) * t),
+        y: Math.floor(eye.y + (aimPoint.y - eye.y) * t),
+        z: Math.floor(eye.z + (aimPoint.z - eye.z) * t),
+      });
+      sightline.push(b ? `${b.name}${this._passable(b) ? '' : '!'}` : 'null');
+    }
+    if (variant === 'hotbar') {
+      this._selectHotbarSlot(0, { allowEmpty: true });
+      sequence.push('mob_equipment slot 0');
+    }
+    if (variant === 'item_in_hand') {
+      // Il 03/10 l'unico interact riuscito live (`milk_cow`) era fatto **con un
+      // oggetto in mano** (il secchio). Questa variante mette in mano il primo
+      // oggetto della hotbar: se `held_item` vuoto è ciò che il server rifiuta,
+      // qui il resync deve sparire.
+      const slot = this.inventorySlots.findIndex((s, i) => i < 9 && s?.network_id);
+      if (slot >= 0 && this._selectHotbarSlot(slot)) sequence.push(`mob_equipment slot ${slot} (${this._slotItemName(this.inventorySlots[slot])})`);
+      else sequence.push('nessun oggetto in hotbar');
+    }
+    if (variant === 'mouse_over') {
+      // Il client tiene aggiornato il bersaglio sotto il mirino con
+      // `interact {mouse_over_entity}`: se il server accetta l'apertura solo per
+      // l'entità che il client dichiara di guardare, questa variante la prepara.
+      this.client.write('interact', {
+        action_id: 'mouse_over_entity',
+        target_entity_id: BigInt(entity.runtimeId),
+        has_position: false,
+      });
+      sequence.push('interact mouse_over_entity');
+    }
+    if (variant === 'animate_first') {
+      this.client.write('animate', { action_id: 'swing_arm', runtime_entity_id: this.client.entityId, data: 0, has_swing_source: false });
+      sequence.push('animate swing_arm');
+    }
+    if (variant === 'flag_before') {
+      await this._queueAuthInput({ yaw: this._lastYaw ?? 0, pitch: look.pitch, itemInteract: true });
+      sequence.push('player_auth_input item_interact');
+    }
+    const entity2 = this.entities.get(String(entity.runtimeId)) || entity;
+    const { payload } = this._entityTransactionPayload(entity2, action, variant);
+    // `none` non spedisce nulla: è la misura di riferimento per capire se i
+    // `inventory_content` che seguono sono davvero una reazione alla transazione
+    // o un sincronismo periodico del server.
+    if (variant !== 'none') {
+      this.client.write('inventory_transaction', { transaction: payload });
+      sequence.push(`inventory_transaction ${variant}`);
+    } else {
+      sequence.push('niente (misura di riferimento)');
+    }
+    if (variant === 'flag_after') {
+      await this._queueAuthInput({ yaw: this._lastYaw ?? 0, pitch: look.pitch, itemInteract: true });
+      sequence.push('player_auth_input item_interact (dopo)');
+    }
+    await delay(observeMs);
+    const later = this.entities.get(String(entity.runtimeId));
+    const healthAfter = later?.health ?? null;
+    const rx = (this._rxLog || []).slice(before.rx);
+    const rxNames = {};
+    for (const packet of rx) rxNames[packet.name] = (rxNames[packet.name] || 0) + 1;
+    return {
+      ok: true,
+      type: entity.type,
+      runtimeId: entity.runtimeId,
+      look: { yaw: +look.yaw.toFixed(1), pitch: +look.pitch.toFixed(1) },
+      sightline,
+      action,      variant,
+      sequence,
+      observeMs,
+      distance: before.distance,
+      hand: this.inventorySlots[this.selectedHotbar]?.network_id ? 'item' : 'empty',
+      heldName: this.inventorySlots[this.selectedHotbar]?.network_id ? this._slotItemName(this.inventorySlots[this.selectedHotbar]) : null,
+      selectedHotbar: this.selectedHotbar,
+      healthBefore: before.health,
+      healthAfter,
+      damage: before.health != null && healthAfter != null ? before.health - healthAfter : null,
+      resyncs: this._invResyncCount - before.resyncs,
+      rxNames,
+      containerBefore: before.container,
+      containerAfter: this._openContainer ? `${this._openContainer.type}:${this._openContainer.id}` : null,
+      offersBefore: before.offers,
+      offersAfter: this.tradeOffers.length,
+      variantCount: BedrockAdapter.PROBE_VARIANTS.length,
+    };
+  }
+
   // Si avvicina al trader più vicino e apre il commercio; attende le offerte.
   async _openTrade (opts) {
     const trader = this._nearestTrader();
@@ -5365,7 +5580,7 @@ export class BedrockAdapter {
     this.tradeOffers = [];
     this.tradeOpenedAt = 0;
     this.tradeTarget = { type: entity.type, runtimeId: entity.runtimeId, position: entity.position };
-    if (this._entityDistance({ ...entity, type: entity.type }) > 4.5) {
+    if (this._entityDistance({ ...entity, type: entity.type }) > TRADE_APPROACH_RANGE) {
       try {
         await this._moveTo(entity.position, 2.0, approachTimeoutMs);
       } catch (error) {
@@ -5382,11 +5597,39 @@ export class BedrockAdapter {
       // Mano libera e niente sneak: come per il mount, attrezzo in mano o sneak
       // cambiano ramo dell'interazione (evidenza live 04/10/2026).
       hand = this._freeHands('trade');
-      const look = this._lookAt({ x: live.position.x, y: live.position.y + entityHeight(live.type) * 0.5, z: live.position.z });
+      // Il villager cammina mentre si tenta: portata e linea di vista vanno
+      // riverificate a ogni tentativo, altrimenti i tre tentativi colpiscono un
+      // bersaglio già lontano (evidenza live 04/10/2026: il villager è passato da
+      // 2,1 a 5,1 blocchi durante i 12 s dei tentativi).
+      let current = this.entities.get(String(entity.runtimeId));
+      if (!current) return { ok: false, error: 'trader_gone', trader: entity.type };
+      if (this._entityDistance(current) > TRADE_APPROACH_RANGE) {
+        try { await this._moveTo(current.position, 2.0, Math.min(approachTimeoutMs, 8000)); } catch (error) { this.log('trade_approach_failed', { message: error.message, trader: current.type, attempt }); }
+        const moved = this.entities.get(String(entity.runtimeId));
+        if (!moved) return { ok: false, error: 'trader_gone', trader: entity.type };
+        if (this._entityDistance(moved) > 5) {
+          return { ok: false, error: 'trader_moved_away', trader: moved.type, distance: +this._entityDistance(moved).toFixed(1), attempts: attempt };
+        }
+        current = moved;
+      }
+      const tradeVisibility = this._entityVisible(current);
+      if (!tradeVisibility.visible) {
+        this.log('trade_target_blocked', { trader: current.type, distance: +this._entityDistance(current).toFixed(1), blockedBy: tradeVisibility.blockedBy, at: tradeVisibility.blockedAt, attempt });
+        return {
+          ok: false,
+          error: 'trade_target_blocked',
+          hint: 'the line of sight to the villager is blocked',
+          trader: current.type,
+          blockedBy: tradeVisibility.blockedBy,
+          distance: +this._entityDistance(current).toFixed(1),
+        };
+      }
+      const look = this._lookAt({ x: current.position.x, y: current.position.y + entityHeight(current.type) * 0.5, z: current.position.z });
       await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
       await delay(120);
-      const current = this.entities.get(entity.runtimeId);
-      if (!current) continue;
+      const after = this.entities.get(String(entity.runtimeId));
+      if (!after) continue;
+      current = after;
       // Primo tentativo col pacchetto del client vanilla (`npc_open`); i
       // tentativi successivi aggiungono item_use_on_entity come fallback.
       this._npcOpen(current);
@@ -7131,6 +7374,34 @@ export class BedrockAdapter {
     return { yaw, pitch };
   }
 
+  // Una linea di vista libera verso il centro dell'entità, campionata sui
+  // blocchi del modello locale: il server rifiuta in silenzio un'interazione con
+  // un bersaglio dietro un muro (evidenza live 04/10/2026: `open_trade` a 2,1
+  // blocchi con vista libera non apre nulla, e la sonda mostrava `wooden_door!`
+  // sul penultimo campione). Fail-open quando il mondo non è leggibile
+  // (`null`): non si rifiuta un'azione per un modello incompleto.
+  _entityVisible (entity, { ratio = 0.5, samples = 3 } = {}) {
+    if (!entity?.position || !this.position) return { visible: true, unknown: true, blockedBy: null };
+    const eye = this.position;
+    const aim = { x: entity.position.x, y: entity.position.y + entityHeight(entity.type) * ratio, z: entity.position.z };
+    let readable = 0;
+    for (let i = 1; i <= samples; i++) {
+      const t = i / (samples + 1);
+      const cell = {
+        x: Math.floor(eye.x + (aim.x - eye.x) * t),
+        y: Math.floor(eye.y + (aim.y - eye.y) * t),
+        z: Math.floor(eye.z + (aim.z - eye.z) * t),
+      };
+      const block = this.world.blockAt(cell);
+      if (!block) continue;
+      readable++;
+      if (this._passable(block)) continue;
+      return { visible: false, blockedBy: block.name, blockedAt: cell, t: +t.toFixed(2), unknown: false };
+    }
+    // Nessun campione leggibile (chunk non caricati): non è una conferma.
+    return { visible: true, blockedBy: null, unknown: readable === 0 };
+  }
+
   _faceForBlock (blockPos, fromPos) {
     // Determine which face of the block we are looking at based on relative position.
     const dx = fromPos.x - (blockPos.x + 0.5);
@@ -7469,7 +7740,8 @@ export class BedrockAdapter {
   }
 
   _sendAuthInput ({ yaw = 0, pitch = 0, moveVector = null, blockAction = null,
-    transaction = null, itemStackRequest = null, tick = null, useItem = false } = {}) {
+    transaction = null, itemStackRequest = null, tick = null, useItem = false,
+    itemInteract = false } = {}) {
     if (!this.client) return;
     this.tick = tick != null ? tick : this._advanceTick();
     const position = { ...this.position };
@@ -7508,7 +7780,10 @@ export class BedrockAdapter {
     if (headInWater !== this._swimming) this._swimming = headInWater;
     if (swimFlags.length) this.logger?.log?.('swim_input', { inWater, headInWater, wantUp, wantDown: this._sneaking, flags: swimFlags });
     if (blockAction?.length) inputData.push('block_action');
-    if (transaction) inputData.push('item_interact');
+    // `itemInteract` senza transazione serve alla sonda delle interazioni entità
+    // (probeInteract): il flag è l'unico modo per dichiarare "uso un item" in un
+    // frame in cui non c'è nulla da usare.
+    if (transaction || itemInteract) inputData.push('item_interact');
     if (itemStackRequest) inputData.push('item_stack_request');
     // Scudo (e altri item "use"): il binario 53 è il modo con cui il client
     // dichiara di tenere premuto l'uso; il server da lì applica il blocco.
@@ -10038,6 +10313,14 @@ export class BedrockAdapter {
     const current = this.entities.get(String(entity.runtimeId));
     if (!current) return;
     if (this._entityDistance(current) > 5) return;
+    // Un bersaglio dietro un muro non si monta: meglio un rifiuto tipizzato che
+    // sei `interact` a vuoto (evidenza live 04/10/2026: `mount_donkey` ha
+    // martellato sei volte su un donkey 4,6 blocchi sotto, non in vista).
+    const mountVisibility = this._entityVisible(current);
+    if (!mountVisibility.visible) {
+      this.log('mount_target_blocked', { target: current.type, distance: +this._entityDistance(current).toFixed(2), blockedBy: mountVisibility.blockedBy, at: mountVisibility.blockedAt });
+      return;
+    }
     const look = this._lookAt({ x: current.position.x, y: current.position.y + entityHeight(current.type) * 0.5, z: current.position.z });
     await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
     await delay(120);

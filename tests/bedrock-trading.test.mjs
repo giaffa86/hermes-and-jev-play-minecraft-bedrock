@@ -305,6 +305,65 @@ test('opening a trade sends the vanilla npc_open interact packet, then the legac
   serializeAll(packets);
 });
 
+test('a trader beyond arm\'s reach is approached before interacting (live 04/10/2026)', async () => {
+  const adapter = spawnedAdapter();
+  adapter._trackEntity({ runtime_id: 43n, entity_type: 'minecraft:villager', position: { x: 4, y: 63, z: 0 } }, 'mob');
+  const entity = adapter.entities.get('43');
+  const moves = [];
+  // L'avvicinamento vero sposta il bot: lo stub lo simula, altrimenti la
+  // riverifica per tentativo lo ri-avvicinerebbe per sempre (il villager
+  // immobile a 4 blocchi resta fuori portata).
+  adapter._moveTo = async (position, range, timeoutMs) => {
+    moves.push({ position, range, timeoutMs });
+    adapter.position = { x: position.x - 1, y: 64.62, z: position.z };
+    adapter._feet = { x: position.x - 1, y: 63, z: position.z };
+  };
+
+  await adapter._openTradeWithEntity(entity, { confirmMs: 1 });
+
+  assert.equal(moves.length, 1, 'a 4 blocchi il bot si avvicina invece di interagire da lontano');
+  assert.equal(moves[0].range, 2.0, 'si ferma a distanza di braccio');
+});
+
+test('a villager that walks out of reach is reported, not chased (live 04/10/2026)', async () => {
+  const adapter = spawnedAdapter();
+  adapter._trackEntity({ runtime_id: 45n, entity_type: 'minecraft:villager', position: { x: 4, y: 63, z: 0 } }, 'mob');
+  const entity = adapter.entities.get('45');
+  const packets = capture(adapter);
+  // Il villager cammina via dopo il primo tentativo: oltre 5 blocchi il
+  // tentativo va abbandonato con un errore tipizzato (evidenza live: il villager
+  // è passato da 2,1 a 5,1 blocchi durante i 12 s dei tre tentativi).
+  // L'avvicinamento non riesce a chiudere il divario (il villager corre).
+  adapter._moveTo = async () => {};
+  adapter._npcOpen = () => {
+    adapter.entities.get('45').position = { x: 30, y: 63, z: 0 };
+  };
+
+  const result = await adapter._openTradeWithEntity(entity, { confirmMs: 1 });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'trader_moved_away');
+  assert.ok(result.distance > 5, `distanza riportata: ${result.distance}`);
+  const transactions = packets.filter(p => p.name === 'inventory_transaction');
+  assert.equal(transactions.length, 0, 'niente interact verso un bersaglio fuori portata');
+  assert.ok(packets.some(p => p.name === 'player_auth_input'), 'il primo tentativo aveva già orientato il bot');
+});
+
+test('a villager behind a wall is refused with the blocking block (live 04/10/2026)', async () => {
+  const adapter = spawnedAdapter();
+  adapter._trackEntity({ runtime_id: 46n, entity_type: 'minecraft:villager', position: { x: 2, y: 63, z: 0 } }, 'mob');
+  const entity = adapter.entities.get('46');
+  const packets = capture(adapter);
+  adapter._entityVisible = () => ({ visible: false, blockedBy: 'wooden_door', blockedAt: { x: 1, y: 64, z: 0 }, t: 0.5, unknown: false });
+
+  const result = await adapter._openTradeWithEntity(entity, { confirmMs: 1 });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'trade_target_blocked');
+  assert.equal(result.blockedBy, 'wooden_door');
+  assert.equal(packets.length, 0, 'niente interact verso un villager dietro un muro');
+});
+
 test('the packet capture window opens only with PACKET_DEBUG=1', () => {
   const adapter = spawnedAdapter();
   delete process.env.PACKET_DEBUG;
