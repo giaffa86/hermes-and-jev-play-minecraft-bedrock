@@ -141,10 +141,12 @@ test('_freeHands spegne lo sneak e seleziona uno slot vuoto', () => {
   assert.deepEqual([writes[0][1].action, writes[1][1].item.network_id], ['stop_sneak', 0]);
   assert.equal(adapter.selectedHotbar, 1);
   assert.equal(adapter._sneaking, false);
-  // già a mani libere e senza sneak: nessun pacchetto inutile
+  // mani già libere: lo `stop_sneak` esce comunque — è un comando allo stato del
+  // server, non un'ipotesi locale (evidenza live 04/10/2026)
   writes.length = 0;
   assert.equal(adapter._freeHands('mount'), 'empty');
-  assert.deepEqual(writes, []);
+  assert.deepEqual(writes.map(([n]) => n), ['player_action']);
+  assert.equal(writes[0][1].action, 'stop_sneak');
 });
 
 test('_freeHands non inventa una slot vuota se la hotbar è piena', () => {
@@ -228,4 +230,37 @@ test('options offer mount_<type> and dismount', () => {
   adapter.riding = { riddenEntityId: '200', at: Date.now() };
   keys = adapter.options().map(o => o.key);
   assert.ok(keys.includes('dismount'), 'dismount offered');
+});
+
+// ---- link di mount: il pacchetto porta UN link, non una lista ------------------------
+
+test('_onEntityLink legge il campo `link` singolo e conferma il mount (live 04/10/2026)', () => {
+  const adapter = spawnedAdapter();
+  const logs = [];
+  adapter.log = (tag, data) => logs.push([tag, data]);
+  // Forma reale dello schema 1.26.51 (`packet_set_entity_link` -> `link`), con
+  // gli id decodificati come zigzag64 (BigInt): il gestore confrontava
+  // `packet.links`, che non esiste, e non impostava mai `riding`.
+  const seen = adapter._onEntityLink({
+    link: { ridden_entity_id: 200n, rider_entity_id: 7n, type: 1, immediate: false },
+  });
+  assert.equal(adapter.riding?.riddenEntityId, '200');
+  assert.equal(logs.at(-1)?.[0], 'mount');
+  assert.deepEqual(seen, [{ rider: '7', ridden: '200', type: 1 }]);
+});
+
+test('_onEntityLink ignora un altro cavaliere e il tipo 0 smonta', () => {
+  const adapter = spawnedAdapter();
+  adapter.riding = { riddenEntityId: '200', at: Date.now() };
+  // Un link di un altro giocatore non tocca lo stato locale.
+  adapter._onEntityLink({ link: { ridden_entity_id: 200n, rider_entity_id: 9n, type: 1 } });
+  assert.equal(adapter.riding?.riddenEntityId, '200');
+  // Il tipo 0 è lo smontaggio di questo cavaliere.
+  adapter._onEntityLink({ link: { ridden_entity_id: 200n, rider_entity_id: 7n, type: 0 } });
+  assert.equal(adapter.riding, null);
+  // Compatibilità: una lista `links` resta accettata.
+  adapter._onEntityLink({ links: [{ ridden_entity_id: 201n, rider_entity_id: 7n, type: 2 }] });
+  assert.equal(adapter.riding?.riddenEntityId, '201');
+  // Pacchetto vuoto: nessun effetto e nessuna eccezione.
+  assert.deepEqual(adapter._onEntityLink({}), []);
 });

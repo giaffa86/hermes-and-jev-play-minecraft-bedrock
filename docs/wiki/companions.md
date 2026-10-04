@@ -160,6 +160,42 @@ what fails instead. The same primitive gates the trade loop (see
 [trading](trading.md)), and `_nearbyTraders` now reports the `baby` flag so a
 baby villager — which can never trade — is distinguishable from a refusal.
 
+### 2026-10-04 (later): the link packet was never read
+
+The mount confirmation has a client-side bug of its own, found by dumping what the
+server sends while the bot interacts. `packet_set_entity_link` carries **one**
+`link` (`{ridden_entity_id, rider_entity_id, type, immediate, rider_initiated,
+angular_velocity}`), but the handler iterated `packet.links`: the loop never ran, so
+**no link was ever applied** — the mount link (type 1) and the dismount link
+(type 0) both fell on the floor and `this.riding` stayed `null` for the whole
+campaign. The live evidence is a `[packet] { name: 'set_entity_link' }` arriving
+during a `mount_donkey` attempt while no `[mount]` was logged.
+
+The handler is now `_onEntityLink (packet)` (single `link`, a `links` array is
+still accepted; a link whose rider is not this client is logged as
+`entity_link_other`), covered by `tests/bedrock-riding.test.mjs` (16 cases: the
+single-`link` shape, a rider that is somebody else, type 0 clearing the state).
+
+**After the fix the mount still fails, and the reason is not ours to fix blind**:
+the server never sends that link for our interact. Its only reaction to
+`item_use_on_entity {action_type: 'interact'}` on a saddled, tamed, adult donkey
+0.75 blocks away with a clear sightline (`air,air,air`) is the donkey's
+**inventory window** (`inventory_slot {window_id: 2, slot: 0, item: 'saddle:1:…'}`
+plus an `inventory_content`), i.e. the server reads the use as the **sneak**
+behaviour. Measured and ruled out on the live server (see
+[open-questions](open-questions.md) §Mounting):
+
+- `interaction_model` in the auth frames (`touch` vs `crosshair` vs `classic`): no
+  difference;
+- the 13 `PROBE_VARIANTS` shapes (`legacy` present/absent, `legacy_request_id`,
+  `hotbar`/`held_item`, `item_interact` before/after, `animate swing_arm`,
+  `mouse_over_entity`, numeric `transaction_type`): the probe sends *no* reaction
+  at all on the donkey (0 resyncs, no window, no link) — the window only appears
+  in the **action** path, after the repeated frames of a full action attempt;
+- a stale sneak flag: `_freeHands` now sends `stop_sneak` **unconditionally**
+  before every interaction (a command, not an assumed state), and the mount still
+  ends `mount_not_confirmed`.
+
 ### Still not implemented
 
 - **Saddle** equipping for `horse`/`donkey`/`mule` (they need a saddle to be

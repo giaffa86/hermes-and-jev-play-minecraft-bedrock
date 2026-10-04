@@ -320,8 +320,9 @@ server = createServer(async (req, res) => {
       // senza riavviare il container.
       const u = new URL(req.url, 'http://x');
       const ms = Number(u.searchParams.get('ms') || 15000);
-      const armed = adapter._armPacketDebug(Number.isFinite(ms) && ms > 0 ? ms : 15000);
-      response = [200, { ok: armed, until: adapter._packetDebugUntil ?? 0, hint: armed ? null : 'PACKET_DEBUG non attivo' }];
+      const hex = (u.searchParams.get('hex') || '').split(',').map(s => s.trim()).filter(Boolean);
+      const armed = adapter._armPacketDebug(Number.isFinite(ms) && ms > 0 ? ms : 15000, hex);
+      response = [200, { ok: armed, until: adapter._packetDebugUntil ?? 0, hex: hex.length ? hex : null, hint: armed ? null : 'PACKET_DEBUG non attivo' }];
     }
     else if (process.env.BEDROCK_DEBUG && req.method === 'POST' && req.url === '/debug/mine') {      const { x, y, z } = JSON.parse(body);
       const block = adapter.world.blockAt({ x, y, z });
@@ -366,7 +367,8 @@ server = createServer(async (req, res) => {
       // Sonda delle interazioni entità: prova una forma del pacchetto e riferisce
       // l'esito osservabile (delta di vita per un mob, apertura della finestra per
       // un villager) più il numero di resync d'inventario (= transazione rifiutata).
-      const { type, action, variant, runtime_id: runtimeId, observe_ms: observeMs, approach } = JSON.parse(body);
+      const { type, action, variant, runtime_id: runtimeId, observe_ms: observeMs, approach,
+        interaction_model: interactionModel, interact_rotation: interactRotation } = JSON.parse(body);
       response = [200, await adapter.probeInteract({
         type: type || 'pig',
         action: action === 'attack' ? 'attack' : 'interact',
@@ -374,6 +376,11 @@ server = createServer(async (req, res) => {
         runtimeId: runtimeId != null ? runtimeId : null,
         observeMs: Number(observeMs) > 0 ? Number(observeMs) : 2500,
         approach: approach === true,
+        // Modello di interazione dei frame della sonda (`touch` storico,
+        // `crosshair`/`classic` come un client PC): serve a capire se il server
+        // decide "monta" o "apri il contenitore" in base a questo campo.
+        interactionModel: typeof interactionModel === 'string' ? interactionModel : null,
+        interactRotation: interactRotation && typeof interactRotation === 'object' ? interactRotation : null,
       })];
     }
     else if (process.env.BEDROCK_DEBUG && req.method === 'POST' && req.url === '/debug/isr') {

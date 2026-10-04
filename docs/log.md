@@ -3662,3 +3662,36 @@ while the head is under water, tracking `_swimming` and logging `swim_input`.
 rates must be measured with the bot in water before any column or waterfall action
 is allowed to swim. Tests: `tests/bedrock-fluids.test.mjs` and
 `tests/bedrock-fluids-adapter.test.mjs`, suite 1077 pass / 0 fail.
+
+## [2026-10-04] fix | `set_entity_link` carries a single `link` (the mount confirmation was dropped)
+
+While chasing the mount, the live packet dump (`GET /debug/packet-debug?ms=45000`
+on the diagnostic container) showed what the schema had already said: BDS sends
+**`set_entity_link`** with a **single** `link`
+(`container([{ name: 'link', type: 'Link' }])`), but our handler iterated
+`packet.links`. The loop never ran, so no link was ever applied: a mount the server
+confirmed would have stayed invisible, and the `type 0` dismount link was dropped
+the same way. The handler is now `_onEntityLink (packet)` (single `link`, arrays
+still accepted, another rider is logged as `entity_link_other`, `type 0` clears
+`riding`), with 2 new cases in `tests/bedrock-riding.test.mjs` (16 in the file, suite **1091 pass / 0 fail**).
+
+The fix did not make the live mount work, and the round measured why instead of
+guessing: on a saddled, tamed, adult donkey **0.75 blocks** away, clear sightline,
+daytime, empty hand, the server's only answer to our
+`item_use_on_entity { action_type: 'interact' }` is the donkey's **inventory
+window** (`inventory_slot { window_id: 2, slot: 0, item: 'saddle:1:14' }`) — the
+sneak rule applied to a client that declared no sneak (`stop_sneak` is now sent
+unconditionally before every interaction). Ruled out with live measurements: the 13
+`PROBE_VARIANTS` (all give 0 resyncs and no window on the donkey; the probe only
+ever provokes a reaction in the action path), `interaction_model`
+(`touch`/`crosshair`/`classic`), a stale sneak flag, and the packet-shape variants
+already listed in [trading](wiki/trading.md). A packet census during the mount shows
+no window packet at all.
+
+Documented: [verification](wiki/verification.md) rows 47.39 (the fix, ✅) and 47.40
+(the measured gap, ◑, with the DTLS note: a network capture cannot resolve it, it
+takes a client-side dump or a DTLS-terminating proxy),
+[companions](wiki/companions.md) §"the link packet was never read",
+[open-questions](wiki/open-questions.md) §Mounting, and
+[headless-client](wiki/headless-client.md) §4.5 (the probe's new options and the
+`hex` packet dump).

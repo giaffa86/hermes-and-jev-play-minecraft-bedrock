@@ -688,20 +688,7 @@ export class BedrockAdapter {
       });
 
       // Collegamento cavaliere→veicolo: il server conferma montata/smontata.
-      client.on('set_entity_link', (packet) => {
-        const self = String(this.client?.entityId ?? '');
-        for (const link of packet.links || []) {
-          if (String(link.rider_entity_id) !== self) continue;
-          if (link.type === 0) {
-            this.riding = null;
-            this._ridingForward = false;
-            this.log('dismount', { ridden: String(link.ridden_entity_id) });
-          } else {
-            this.riding = { riddenEntityId: String(link.ridden_entity_id), at: Date.now() };
-            this.log('mount', { ridden: String(link.ridden_entity_id), entityType: link.type });
-          }
-        }
-      });
+      client.on('set_entity_link', (packet) => this._onEntityLink(packet));
 
       this.client.on('set_health', (packet) => {
         this.health = packet.health;
@@ -866,6 +853,9 @@ export class BedrockAdapter {
         this.client.on('packet', (des) => {
           if (this._packetDebugUntil && Date.now() < this._packetDebugUntil) {
             this.log('rx_packet', { name: des?.data?.name });
+            if (this._packetDebugHex?.includes(des?.data?.name)) {
+              this.log('rx_hex', { name: des.data.name, bytes: (des.buffer || des.fullBuffer)?.toString('hex').slice(0, 400) });
+            }
           }
           // Anche la sonda delle interazioni entità vuole i nomi dei pacchetti
           // del suo turno: `_rxLog` è un anello corto, letto e svuotato dalla sonda.
@@ -5431,7 +5421,7 @@ export class BedrockAdapter {
     return rows[0] || null;
   }
 
-  async probeInteract ({ type = 'pig', action = 'interact', variant = 'current', runtimeId = null, observeMs = 2500, approach = false } = {}) {
+  async probeInteract ({ type = 'pig', action = 'interact', variant = 'current', runtimeId = null, observeMs = 2500, approach = false, interactionModel = null, interactRotation = null } = {}) {
     if (!this.client) return { ok: false, error: 'connection_lost' };
     if (!BedrockAdapter.PROBE_VARIANTS.includes(variant)) return { ok: false, error: 'unknown_variant', variants: BedrockAdapter.PROBE_VARIANTS };
     const entity = this._probeTarget({ type, runtimeId });
@@ -5463,8 +5453,15 @@ export class BedrockAdapter {
     // transazione è sbagliata".
     const after = this.entities.get(String(entity.runtimeId)) || entity;
     const look = this._lookAt({ x: after.position.x, y: after.position.y + entityHeight(after.type) * 0.5, z: after.position.z });
-    await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+    // `interactionModel`: il bot dichiara `touch` (il valore storico), ma un
+    // client PC manda `crosshair`/`classic`. Se è quel campo a decidere se un
+    // "uso" apre un contenitore o monta l'animale, questa opzione lo dimostra.
+    const frame = { yaw: look.yaw, pitch: look.pitch };
+    if (interactionModel) frame.interactionModel = interactionModel;
+    if (interactRotation) frame.interactRotation = interactRotation;
+    await this._queueAuthInput(frame);
     await delay(120);
+    if (interactionModel) sequence.push(`interaction_model ${interactionModel}`);
     sequence.push('player_auth_input (yaw/pitch sul bersaglio)');
     const eye = this.position;
     const aimPoint = { x: after.position.x, y: after.position.y + entityHeight(after.type) * 0.5, z: after.position.z };
@@ -5553,6 +5550,7 @@ export class BedrockAdapter {
       containerAfter: this._openContainer ? `${this._openContainer.type}:${this._openContainer.id}` : null,
       offersBefore: before.offers,
       offersAfter: this.tradeOffers.length,
+      interactionModel: interactionModel || 'touch',
       variantCount: BedrockAdapter.PROBE_VARIANTS.length,
     };
   }
@@ -5594,9 +5592,6 @@ export class BedrockAdapter {
     this.tradeTarget = { type: live.type, runtimeId: live.runtimeId, position: live.position, distance: +distance.toFixed(1) };
     let hand = null;
     for (let attempt = 1; attempt <= 3 && !this.tradeOffers.length; attempt++) {
-      // Mano libera e niente sneak: come per il mount, attrezzo in mano o sneak
-      // cambiano ramo dell'interazione (evidenza live 04/10/2026).
-      hand = this._freeHands('trade');
       // Il villager cammina mentre si tenta: portata e linea di vista vanno
       // riverificate a ogni tentativo, altrimenti i tre tentativi colpiscono un
       // bersaglio già lontano (evidenza live 04/10/2026: il villager è passato da
@@ -5624,6 +5619,11 @@ export class BedrockAdapter {
           distance: +this._entityDistance(current).toFixed(1),
         };
       }
+      // Mano libera e niente sneak: come per il mount, attrezzo in mano o sneak
+      // cambiano ramo dell'interazione (evidenza live 04/10/2026). Solo **dopo**
+      // il gate: un villager dietro un muro non deve ricevere nemmeno un
+      // cambiamento di mano (test 04/10/2026).
+      hand = this._freeHands('trade');
       const look = this._lookAt({ x: current.position.x, y: current.position.y + entityHeight(current.type) * 0.5, z: current.position.z });
       await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
       await delay(120);
@@ -6222,10 +6222,16 @@ export class BedrockAdapter {
   // dello smontaggio non veniva mai annullato, quindi il server vedeva il bot in
   // sneak. Ritorna come è stata lasciata la mano, per la diagnosi.
   _freeHands (reason = 'interact') {
-    if (this._sneaking) {
-      this._sendPlayerAction('stop_sneak');
-      this._sneaking = false;
-    }
+    // Lo sneak è un comando, non uno stato di cui fidarsi: il server può
+    // considerare il bot in sneak anche se questa sessione non l'ha mai chiesto
+    // (stato del giocatore salvato dal server dopo uno smontaggio interrotto —
+    // `start_sneak` senza `stop_sneak`). Con sneak attivo il tasto destro su un
+    // cavalcabile apre il suo inventario invece di montarlo (regola dell'utente,
+    // 04/10/2026), quindi il `stop_sneak` è incondizionato: è un comando
+    // idempotente e costa un pacchetto per interazione.
+    this._sendPlayerAction('stop_sneak');
+    if (this._sneaking) this.log('sneak_off', { reason, wasDeclared: true });
+    this._sneaking = false;
     const selected = this.selectedHotbar < 9 ? this.inventorySlots[this.selectedHotbar] : null;
     if (!selected?.network_id) return 'empty';   // mano già libera: nessun pacchetto
     const empty = this.inventorySlots.findIndex((s, i) => i < 9 && !s?.network_id);
@@ -7741,7 +7747,7 @@ export class BedrockAdapter {
 
   _sendAuthInput ({ yaw = 0, pitch = 0, moveVector = null, blockAction = null,
     transaction = null, itemStackRequest = null, tick = null, useItem = false,
-    itemInteract = false } = {}) {
+    itemInteract = false, interactionModel = 'touch', interactRotation = null } = {}) {
     if (!this.client) return;
     this.tick = tick != null ? tick : this._advanceTick();
     const position = { ...this.position };
@@ -7798,8 +7804,8 @@ export class BedrockAdapter {
       input_data: inputData,
       input_mode: 'mouse',
       play_mode: 'screen',
-      interaction_model: 'touch',
-      interact_rotation: { x: pitch, z: yaw },
+      interaction_model: interactionModel,
+      interact_rotation: interactRotation || { x: pitch, z: yaw },
       tick: this.tick,
       delta: { x: this._velocity.x, y: this._velocity.y, z: this._velocity.z },
       transaction,
@@ -8921,6 +8927,41 @@ export class BedrockAdapter {
     entity.lastAt = Date.now();
   }
 
+  // Collegamento cavaliere→veicolo: il server conferma montata/smontata.
+  // Il pacchetto porta **un** `link` (schema 1.26.51:
+  // `packet_set_entity_link` -> campo `link`, non `links`): leggere `links`
+  // lasciava il gestore muto e ogni mount finiva in `mount_not_confirmed`
+  // benché il server mandasse il link — l'evidenza live del 04/10/2026 è la
+  // riga `[packet] { name: 'set_entity_link' }` nel dump dei pacchetti in
+  // arrivo durante un `mount_donkey`, con `riding` rimasto `null`.
+  _onEntityLink (packet = {}) {
+    const links = packet.link
+      ? [packet.link]
+      : (Array.isArray(packet.links) ? packet.links : []);
+    const self = String(this.client?.entityId ?? '');
+    const seen = [];
+    for (const link of links) {
+      const rider = String(link?.rider_entity_id ?? '');
+      const ridden = String(link?.ridden_entity_id ?? '');
+      seen.push({ rider, ridden, type: link?.type ?? null });
+      if (rider !== self) {
+        // Diagnostica: un link che non è nostro spiega un `riding` rimasto nullo
+        // quando il server l'ha comunque mandato (raro: pochi eventi per sessione).
+        this.log('entity_link_other', { rider, ridden, type: link?.type ?? null, self });
+        continue;
+      }
+      if (link.type === 0) {
+        this.riding = null;
+        this._ridingForward = false;
+        this.log('dismount', { ridden });
+      } else {
+        this.riding = { riddenEntityId: ridden, at: Date.now() };
+        this.log('mount', { ridden, entityType: link.type });
+      }
+    }
+    return seen;
+  }
+
   _onEntityEvent (packet) {
     const runtimeId = String(packet.runtime_entity_id ?? '');
     const entity = this.entities.get(runtimeId);
@@ -8967,9 +9008,13 @@ export class BedrockAdapter {
   }
 
   // Arma la finestra di logging dei pacchetti in arrivo (solo con PACKET_DEBUG=1).
-  _armPacketDebug (ms = 25000) {
+  // `hex`: nomi di pacchetto di cui registrare anche i byte grezzi (`rx_hex`),
+  // serve a decodificare a mano una risposta che il decoder non spiega
+  // (es. `inventory_slot` con `container: null` durante il mount).
+  _armPacketDebug (ms = 25000, hex = null) {
     if (!process.env.PACKET_DEBUG) return false;
     this._packetDebugUntil = Date.now() + ms;
+    this._packetDebugHex = Array.isArray(hex) && hex.length ? hex.map(String) : null;
     return true;
   }
 

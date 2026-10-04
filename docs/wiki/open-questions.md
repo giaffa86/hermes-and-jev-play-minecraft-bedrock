@@ -150,6 +150,31 @@ Last lint: 2026-10-03.
   from a real client mounting a saddled donkey **made with `PACKET_DEBUG=1`**, or
   a client-side packet dump — the game channel is DTLS, so the pcap of the human
   session carries only sizes and timing (no game packets).
+- Update 2026-10-04 (later) — **a real client-side bug was found and fixed, the
+  server's answer did not change**. `packet_set_entity_link` carries **one** `link`,
+  but the handler iterated `packet.links`: the loop never ran, so the mount link
+  (type 1) and the dismount link (type 0) were both dropped and `this.riding` never
+  became non-null. A live packet dump shows `[packet] { name: 'set_entity_link' }`
+  during a `mount_donkey` attempt while no `[mount]` was logged. The handler is now
+  `_onEntityLink (packet)` + `tests/bedrock-riding.test.mjs` (16 cases). **With the
+  fix in place the server still does not send that link for our interact**: on a
+  saddled, tamed, adult donkey at 0.75 blocks, sightline `air,air,air`, daytime,
+  empty hand, the only reaction is the donkey's inventory window
+  (`inventory_slot {window_id: 2, slot: 0, item: 'saddle:1:…'}`), i.e. the server
+  reads the use as **sneak** (open the animal's inventory). Ruled out with live
+  measurements: `interaction_model` (`touch`/`crosshair`/`classic`), the 13 probe
+  variants (which produce **no** reaction at all on the donkey — the window appears
+  only after the repeated frames of a full action), `legacy`/`legacy_request_id`,
+  `hotbar`/`held_item`, and a stale sneak flag (a `stop_sneak` is now sent
+  unconditionally before every interaction and the mount still fails).
+- New diagnostic surface (kept, gated by `BEDROCK_DEBUG`):
+  `POST /debug/probe-interact` takes `interaction_model`/`interact_rotation`/
+  `approach`, and `GET /debug/packet-debug?ms=5000&hex=inventory_slot,
+  set_entity_link` logs the raw bytes of the named inbound packets (`[rx_hex]`).
+- What would settle it: a **client-side** packet dump (or a MITM proxy that
+  terminates the DTLS) from a vanilla client mounting a saddled donkey. A network
+  capture is useless — NetherNet's game channel is DTLS, so the pcap of the human
+  session carried sizes and timing only.
 - Mitigation in place: the readiness filter refuses fast (`vehicle_unreachable`
   from the room, `no_boat_nearby` without a boat) instead of spending 20-26 s, and
   `ride`/`follow_player` answer `not_riding`/`no_player_target` with a hint

@@ -201,7 +201,12 @@ trade loop re-checks reach and sight at every attempt (`trade_target_blocked`,
 
 Gated by `BEDROCK_DEBUG=1`. Body:
 `{ "type": "pig", "runtime_id": "716", "action": "attack"|"interact",
-"variant": "<see PROBE_VARIANTS>", "observe_ms": 3000, "approach": true }`.
+"variant": "<see PROBE_VARIANTS>", "observe_ms": 3000, "approach": true,
+"interaction_model": "touch"|"crosshair"|"classic", "interact_rotation": {"x":0,"z":0} }`.
+`approach` walks into reach first (the distance is re-measured afterwards, and a
+failed approach lands in `sequence` as `approach_failed:<error>`);
+`interaction_model` overrides the model declared in the auth frames (the default is
+`touch`, which is what a phone client sends and what our transport used until now).
 It looks at the target, samples the sightline, optionally walks into reach, sends
 the chosen packet shape and reports
 `{ sequence, sightline, distance, hand, heldName, selectedHotbar, healthBefore,
@@ -213,6 +218,11 @@ are) or a periodic synchronisation (they are not). `PROBE_VARIANTS` includes
 `eyes`, `flag_before`, `flag_after`, `hotbar`, `item_in_hand`, `legacy_seq`,
 `click_low`, `mouse_over`. `_invResyncCount` and `_rxLog` (filled only with
 `PACKET_DEBUG=1`) are the two counters behind the report.
+
+`GET /debug/packet-debug?ms=5000&hex=inventory_slot,set_entity_link` (also gated by
+`BEDROCK_DEBUG`) additionally logs the raw bytes of the named inbound packets as
+`[rx_hex] { name, bytes }` (400 hex chars), which is how the `link`/`links` bug in
+the mount confirmation and the `window_id: 2` saddle window were read off the wire.
 
 ---
 
