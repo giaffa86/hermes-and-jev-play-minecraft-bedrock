@@ -5972,6 +5972,14 @@ export class BedrockAdapter {
     return contents;
   }
 
+  // Un contenitore che non si è aperto poco fa costa fino a ~18 s ogni volta che lo si
+  // riprova (cammino + tre tentativi di finestra): la lettura batch lo salta finché dura
+  // il cooldown, come fa l'elenco delle opzioni.
+  _inOpenFailureCooldown (position) {
+    const failure = this._storageOpenFailures.get(this._containerCacheKey(position));
+    return Boolean(failure) && Date.now() - failure.at < STORAGE_OPEN_FAILURE_MS;
+  }
+
   // Il libro dei fallimenti di apertura: la finestra che non si apre è la voce più
   // cara di un `take_*` da memoria, e va ricordata (vedi `STORAGE_OPEN_FAILURE_MS`).
   async _ensureStorageOpen (target, options = {}) {
@@ -6037,7 +6045,10 @@ export class BedrockAdapter {
     // Salta i contenitori che il bot non può raggiungere (fuori dal componente
     // calpestabile): senza il filtro ogni blocco costa 30 s di move fallito.
     const usable = this._reachabilityUsable();
-    const blocks = usable ? all.filter(b => this.approachReachable(b.position)) : all;
+    const skipped = all.filter(b => this._inOpenFailureCooldown(b.position));
+    const candidates = all.filter(b => !this._inOpenFailureCooldown(b.position));
+    if (skipped.length) this.log('container_read_skipped', { blocks: skipped.map(b => ({ name: b.name, position: b.position })) });
+    const blocks = usable ? candidates.filter(b => this.approachReachable(b.position)) : candidates;
     if (!blocks.length) {
       this.log('container_unreachable', { blocks: all.map(b => ({ name: b.name, position: b.position })) });
       return { ok: false, error: 'container_unreachable', containers: all.map(b => ({ type: b.name, position: b.position })) };
@@ -6093,10 +6104,8 @@ export class BedrockAdapter {
     // filtro vale solo con un modello utilizzabile, altrimenti si è fail-open.
     if (!reachableOnly) return containers;
     const usable = this._reachabilityUsable();
-    const now = Date.now();
     return containers.filter(c => {
-      const failure = this._storageOpenFailures.get(c.key);
-      if (failure && now - failure.at < STORAGE_OPEN_FAILURE_MS) return false;
+      if (this._inOpenFailureCooldown(c.position)) return false;
       return !usable || this.approachReachable(c.position);
     });
   }
@@ -6108,11 +6117,7 @@ export class BedrockAdapter {
     const usable = this._reachabilityUsable();
     // Un contenitore che non si è aperto poco fa non si ritenta per primo, ma resta
     // l'ultima spiaggia: la richiesta esplicita non viene mai rifiutata a priori.
-    const now = Date.now();
-    const fresh = declared.filter(c => {
-      const failure = this._storageOpenFailures.get(c.key);
-      return !failure || now - failure.at >= STORAGE_OPEN_FAILURE_MS;
-    });
+    const fresh = declared.filter(c => !this._inOpenFailureCooldown(c.position));
     const known = fresh.length ? fresh : declared;
     const entry = usable ? known.find(c => this.approachReachable(c.position)) || null : known[0];
     return { entry, known: declared.length, retrying: fresh.length === 0 };

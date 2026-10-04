@@ -1,5 +1,28 @@
 # Log
 
+## [2026-10-04] fix | A container read stops spending its budget on containers that cannot open
+
+A read is a walk plus an open plus a wait for `inventory_content`, so a chest that
+cannot open costs the whole round. The live read of 04/10 collected **two** chests in
+**121 s** while the eight-candidate budget went to cells that answered
+`container_open_timeout`, and the round before it died with the session dropped.
+
+The failure bookkeeping introduced for the remembered containers (row 47.46) already
+knows which cells just refused to open. `_readContainers` now filters its candidates
+through `_inOpenFailureCooldown` and logs `container_read_skipped` with the blocks it
+left out, so the budget goes to the containers that can actually answer. The
+reachability filter is untouched; a container is only skipped *after* it failed, and
+the cooldown expires on its own (`STORAGE_OPEN_FAILURE_MS`, 10 min).
+
+Offline: a new case in `tests/bedrock-storage.test.mjs` — with no recorded failure a
+read opens two containers, with the cooldown on one it opens only the healthy one
+(suite 1126/1126). Deployed to the live container (md5
+`cb535ff974fb5b460fcd1fe0a617e6a7`). **The live proof is missing on purpose**: both
+attempts ended with the server dropping the session at ~34 s
+(`container_read_failed` → `not_connected`), the transport failure already recorded in
+row 47.34 — not a fault of the filter, which is why the unit test carries the evidence
+and the attempt is written down here instead.
+
 ## [2026-10-04] feat | The fishing bobber gets a verdict (and the rod is gone)
 
 A cast used to be a blind bet: `_castRod` watched the bobber for the whole 5-30 s

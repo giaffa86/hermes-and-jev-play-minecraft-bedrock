@@ -215,6 +215,15 @@ Item movement, crafting and smelting are `item_stack_request` transactions
   just failed (log `container_take_retrying` when none is left). Live 04/10: 4 `take_egg`
   options before the failure, 3 after it, and the next `take_egg` took **16 eggs** from the
   healthy chest at (72,71,153) with `remembered:true`.
+- **A read skips the containers that just failed to open.** `_readContainers` drops every
+  cell in the open-failure cooldown (`_inOpenFailureCooldown`, log `container_read_skipped`)
+  before spending the read budget: a chest that answers `container_open_timeout` cannot start
+  working again inside the cooldown, and the live read of 04/10 spent 121 s to collect two
+  readable chests because the budget went to hopeless cells. Offline: a read opens two
+  containers with no failure recorded and only the healthy one after one
+  (`tests/bedrock-storage.test.mjs`). The live proof is still pending — both attempts ended
+  with the server dropping the session at ~34 s (`container_read_failed` → `not_connected`),
+  the transport failure of [row 47.34](verification.md), not a fault of the filter.
 - `POST /debug/isr` (BEDROCK_DEBUG) drives one stack request by hand
   (`type_id`/`count`/`source`/`destination`/…), can open a container first (`container`) and,
   with `apply`, records the answer in the local model — the same bookkeeping a real action

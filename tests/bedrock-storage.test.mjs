@@ -761,3 +761,30 @@ test('an explicit take prefers a remembered container that has not just failed',
   assert.deepEqual(opened[1], { x: 93, y: 72, z: 160 });
   assert.ok(events.some(e => e[0] === 'container_take_retrying'), `log: ${events.map(e => e[0]).join(', ')}`);
 });
+
+test('a container read skips a container that just failed to open', async () => {
+  const adapter = storageAdapter();
+  adapter._findNearbyStorageBlocks = () => [
+    { name: 'chest', position: { x: 2, y: 64, z: 0 } },
+    { name: 'chest', position: { x: 9, y: 64, z: 0 } },
+  ];
+  adapter._reachabilityUsable = () => false;
+  const opened = [];
+  adapter._ensureStorageOpen = async target => {
+    opened.push(target.position);
+    adapter._openContainer = { id: 2, type: 'container' };
+    adapter._openContainerSlots = [{ network_id: 5, name: 'dirt', count: 1, stack_id: 2 }];
+  };
+  const events = [];
+  adapter.log = (type, data) => events.push([type, data]);
+  const first = await adapter._readContainers();
+  assert.equal(first.ok, true, JSON.stringify(first));
+  assert.equal(opened.length, 2, 'senza fallimenti la lettura li tocca entrambi');
+  // Live 04/10: un baule che non si apre costa ~18 s a ogni lettura.
+  adapter._storageOpenFailures.set('2,64,0', { at: Date.now(), error: 'container_open_timeout' });
+  opened.length = 0;
+  const second = await adapter._readContainers();
+  assert.equal(second.ok, true, JSON.stringify(second));
+  assert.deepEqual(opened, [{ x: 9, y: 64, z: 0 }], 'il contenitore in cooldown è saltato');
+  assert.ok(events.some(e => e[0] === 'container_read_skipped'), `log: ${events.map(e => e[0]).join(', ')}`);
+});
