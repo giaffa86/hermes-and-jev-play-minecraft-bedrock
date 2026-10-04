@@ -561,3 +561,18 @@ test('_entityVisible è fail-open su un mondo illeggibile', () => {
   assert.equal(adapter._entityVisible(null).visible, true);
   assert.equal(adapter._entityVisible({ type: 'villager', position: { x: 1, y: 1, z: 1 } }).visible, true);
 });
+
+
+test('_entityVisible tests door geometry and every intervening cell', () => {
+  const world = flatWorld({ maxX: 8 });
+  const adapter = reachAdapter(world);
+  const entity = { type: 'villager', position: { x: 7.5, y: 71.72, z: 0.5 } };
+  const door = { name: 'wooden_door', boundingBox: 'block', shapes: [[0, 0, 0, 1, 1, 0.1875]] };
+  world.set(1, 72, 0, door);
+  assert.equal(adapter._entityVisible(entity).visible, true);
+  world.set(1, 72, 0, { ...door, shapes: [[0, 0, 0, 0.1875, 1, 1]] });
+  assert.equal(adapter._entityVisible(entity).visible, false);
+  world.set(1, 72, 0, AIR);
+  world.set(6, 72, 0, STONE);
+  assert.deepEqual(adapter._entityVisible(entity).blockedAt, { x: 6, y: 72, z: 0 });
+});

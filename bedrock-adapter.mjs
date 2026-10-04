@@ -5432,10 +5432,11 @@ export class BedrockAdapter {
     const centerY = isEndermanType(entity.type)
       ? endermanAimPoint(entity.position).y
       : entity.position.y + entityHeight(entity.type) * 0.5;
-    const feet = this.position || { x: 0, y: 0, z: 0 };
+    const eyes = this.position || { x: 0, y: 0, z: 0 };
+    const feet = this._feet || { ...eyes, y: eyes.y - EYE_HEIGHT };
     // `eyes`: il client vanilla manda la posizione degli occhi (`player_pos`),
     // non i piedi (riferimento `mineflayer-for-bedrock/lib/plugins/vehicles.js`).
-    const playerPos = variant === 'eyes' ? { x: feet.x, y: feet.y + 1.62, z: feet.z } : { ...feet };
+    const playerPos = variant === 'eyes' ? { ...eyes } : { ...feet };
     const payload = {
       transaction_type: variant === 'numeric_type' ? 3 : 'item_use_on_entity',
       actions: [],
@@ -5488,130 +5489,137 @@ export class BedrockAdapter {
     const before = {
       health: entity.health ?? null,
       resyncs: this._invResyncCount,
-      rx: (this._rxLog || []).length,
       container: this._openContainer ? `${this._openContainer.type}:${this._openContainer.id}` : null,
       offers: this.tradeOffers.length,
       distance: +this._entityDistance(entity).toFixed(2),
     };
-    const sequence = [];
-    // `approach`: un bersaglio a più di 3 blocchi non è una prova valida (la
-    // portata dell'interazione è ~4-5 blocchi, e una linea di vista ostruita fa
-    // scartare l'interazione): la sonda cammina a 2 blocchi prima di provare.
-    if (approach && before.distance > 3) {
-      try {
-        await this._moveTo(entity.position, 2.0, 12000);
-        sequence.push(`approach (${before.distance} -> ${this._entityDistance(this.entities.get(String(entity.runtimeId)) || entity).toFixed(1)})`);
-      } catch (error) {
-        sequence.push(`approach_failed:${error.message}`);
-      }
-    }
-    // Il client vanilla guarda sempre il bersaglio prima di usarlo: senza questa
-    // rotazione il server può scartare l'interazione (l'ultima posizione nota
-    // della testa era un'altra). Si registra anche la linea di vista, campionata
-    // sui blocchi, per distinguere "il bersaglio non è visibile" da "la
-    // transazione è sbagliata".
-    const after = this.entities.get(String(entity.runtimeId)) || entity;
-    const look = this._lookAt({ x: after.position.x, y: after.position.y + entityHeight(after.type) * 0.5, z: after.position.z });
-    // `interactionModel`: il bot dichiara `touch` (il valore storico), ma un
-    // client PC manda `crosshair`/`classic`. Se è quel campo a decidere se un
-    // "uso" apre un contenitore o monta l'animale, questa opzione lo dimostra.
-    const frame = { yaw: look.yaw, pitch: look.pitch };
-    if (interactionModel) frame.interactionModel = interactionModel;
-    if (interactRotation) frame.interactRotation = interactRotation;
-    await this._queueAuthInput(frame);
-    await delay(120);
-    if (interactionModel) sequence.push(`interaction_model ${interactionModel}`);
-    sequence.push('player_auth_input (yaw/pitch sul bersaglio)');
-    const eye = this.position;
-    const aimPoint = { x: after.position.x, y: after.position.y + entityHeight(after.type) * 0.5, z: after.position.z };
-    const sightline = [];
-    for (let i = 1; i <= 3; i++) {
-      const t = i / 4;
-      const b = this.world.blockAt({
-        x: Math.floor(eye.x + (aimPoint.x - eye.x) * t),
-        y: Math.floor(eye.y + (aimPoint.y - eye.y) * t),
-        z: Math.floor(eye.z + (aimPoint.z - eye.z) * t),
-      });
-      sightline.push(b ? `${b.name}${this._passable(b) ? '' : '!'}` : 'null');
-    }
-    if (variant === 'hotbar') {
-      this._selectHotbarSlot(0, { allowEmpty: true });
-      sequence.push('mob_equipment slot 0');
-    }
-    if (variant === 'item_in_hand') {
-      // Il 03/10 l'unico interact riuscito live (`milk_cow`) era fatto **con un
-      // oggetto in mano** (il secchio). Questa variante mette in mano il primo
-      // oggetto della hotbar: se `held_item` vuoto è ciò che il server rifiuta,
-      // qui il resync deve sparire.
-      const slot = this.inventorySlots.findIndex((s, i) => i < 9 && s?.network_id);
-      if (slot >= 0 && this._selectHotbarSlot(slot)) sequence.push(`mob_equipment slot ${slot} (${this._slotItemName(this.inventorySlots[slot])})`);
-      else sequence.push('nessun oggetto in hotbar');
-    }
-    if (variant === 'mouse_over') {
-      // Il client tiene aggiornato il bersaglio sotto il mirino con
-      // `interact {mouse_over_entity}`: se il server accetta l'apertura solo per
-      // l'entità che il client dichiara di guardare, questa variante la prepara.
-      this.client.write('interact', {
-        action_id: 'mouse_over_entity',
-        target_entity_id: BigInt(entity.runtimeId),
-        has_position: false,
-      });
-      sequence.push('interact mouse_over_entity');
-    }
-    if (variant === 'animate_first') {
-      this.client.write('animate', { action_id: 'swing_arm', runtime_entity_id: this.client.entityId, data: 0, has_swing_source: false });
-      sequence.push('animate swing_arm');
-    }
-    if (variant === 'flag_before') {
-      await this._queueAuthInput({ yaw: this._lastYaw ?? 0, pitch: look.pitch, itemInteract: true });
-      sequence.push('player_auth_input item_interact');
-    }
-    const entity2 = this.entities.get(String(entity.runtimeId)) || entity;
-    const { payload } = this._entityTransactionPayload(entity2, action, variant);
-    // `none` non spedisce nulla: è la misura di riferimento per capire se i
-    // `inventory_content` che seguono sono davvero una reazione alla transazione
-    // o un sincronismo periodico del server.
-    if (variant !== 'none') {
-      this.client.write('inventory_transaction', { transaction: payload });
-      sequence.push(`inventory_transaction ${variant}`);
-    } else {
-      sequence.push('niente (misura di riferimento)');
-    }
-    if (variant === 'flag_after') {
-      await this._queueAuthInput({ yaw: this._lastYaw ?? 0, pitch: look.pitch, itemInteract: true });
-      sequence.push('player_auth_input item_interact (dopo)');
-    }
-    await delay(observeMs);
-    const later = this.entities.get(String(entity.runtimeId));
-    const healthAfter = later?.health ?? null;
-    const rx = (this._rxLog || []).slice(before.rx);
+    const probeClient = this.client;
     const rxNames = {};
-    for (const packet of rx) rxNames[packet.name] = (rxNames[packet.name] || 0) + 1;
-    return {
-      ok: true,
-      type: entity.type,
-      runtimeId: entity.runtimeId,
-      look: { yaw: +look.yaw.toFixed(1), pitch: +look.pitch.toFixed(1) },
-      sightline,
-      action,      variant,
-      sequence,
-      observeMs,
-      distance: before.distance,
-      hand: this.inventorySlots[this.selectedHotbar]?.network_id ? 'item' : 'empty',
-      heldName: this.inventorySlots[this.selectedHotbar]?.network_id ? this._slotItemName(this.inventorySlots[this.selectedHotbar]) : null,
-      selectedHotbar: this.selectedHotbar,
-      healthBefore: before.health,
-      healthAfter,
-      damage: before.health != null && healthAfter != null ? before.health - healthAfter : null,
-      resyncs: this._invResyncCount - before.resyncs,
-      rxNames,
-      containerBefore: before.container,
-      containerAfter: this._openContainer ? `${this._openContainer.type}:${this._openContainer.id}` : null,
-      offersBefore: before.offers,
-      offersAfter: this.tradeOffers.length,
-      interactionModel: interactionModel || 'touch',
-      variantCount: BedrockAdapter.PROBE_VARIANTS.length,
+    const capturePacket = (des) => {
+      const name = des?.data?.name;
+      if (name) rxNames[name] = (rxNames[name] || 0) + 1;
     };
+    probeClient.on('packet', capturePacket);
+    try {
+      const sequence = [];
+      // `approach`: un bersaglio a più di 3 blocchi non è una prova valida (la
+      // portata dell'interazione è ~4-5 blocchi, e una linea di vista ostruita fa
+      // scartare l'interazione): la sonda cammina a 2 blocchi prima di provare.
+      if (approach && before.distance > 3) {
+        try {
+          await this._moveTo(entity.position, 2.0, 12000);
+          sequence.push(`approach (${before.distance} -> ${this._entityDistance(this.entities.get(String(entity.runtimeId)) || entity).toFixed(1)})`);
+        } catch (error) {
+          sequence.push(`approach_failed:${error.message}`);
+        }
+      }
+      // Il client vanilla guarda sempre il bersaglio prima di usarlo: senza questa
+      // rotazione il server può scartare l'interazione (l'ultima posizione nota
+      // della testa era un'altra). Si registra anche la linea di vista, campionata
+      // sui blocchi, per distinguere "il bersaglio non è visibile" da "la
+      // transazione è sbagliata".
+      const after = this.entities.get(String(entity.runtimeId)) || entity;
+      const look = this._lookAt({ x: after.position.x, y: after.position.y + entityHeight(after.type) * 0.5, z: after.position.z });
+      // `interactionModel`: il bot dichiara `touch` (il valore storico), ma un
+      // client PC manda `crosshair`/`classic`. Se è quel campo a decidere se un
+      // "uso" apre un contenitore o monta l'animale, questa opzione lo dimostra.
+      const frame = { yaw: look.yaw, pitch: look.pitch };
+      if (interactionModel) frame.interactionModel = interactionModel;
+      if (interactRotation) frame.interactRotation = interactRotation;
+      await this._queueAuthInput(frame);
+      await delay(120);
+      if (interactionModel) sequence.push(`interaction_model ${interactionModel}`);
+      sequence.push('player_auth_input (yaw/pitch sul bersaglio)');
+      const eye = this.position;
+      const aimPoint = { x: after.position.x, y: after.position.y + entityHeight(after.type) * 0.5, z: after.position.z };
+      const sightline = [];
+      for (let i = 1; i <= 3; i++) {
+        const t = i / 4;
+        const b = this.world.blockAt({
+          x: Math.floor(eye.x + (aimPoint.x - eye.x) * t),
+          y: Math.floor(eye.y + (aimPoint.y - eye.y) * t),
+          z: Math.floor(eye.z + (aimPoint.z - eye.z) * t),
+        });
+        sightline.push(b ? `${b.name}${this._passable(b) ? '' : '!'}` : 'null');
+      }
+      if (variant === 'hotbar') {
+        this._selectHotbarSlot(0, { allowEmpty: true });
+        sequence.push('mob_equipment slot 0');
+      }
+      if (variant === 'item_in_hand') {
+        // Il 03/10 l'unico interact riuscito live (`milk_cow`) era fatto **con un
+        // oggetto in mano** (il secchio). Questa variante mette in mano il primo
+        // oggetto della hotbar: se `held_item` vuoto è ciò che il server rifiuta,
+        // qui il resync deve sparire.
+        const slot = this.inventorySlots.findIndex((s, i) => i < 9 && s?.network_id);
+        if (slot >= 0 && this._selectHotbarSlot(slot)) sequence.push(`mob_equipment slot ${slot} (${this._slotItemName(this.inventorySlots[slot])})`);
+        else sequence.push('nessun oggetto in hotbar');
+      }
+      if (variant === 'mouse_over') {
+        // Il client tiene aggiornato il bersaglio sotto il mirino con
+        // `interact {mouse_over_entity}`: se il server accetta l'apertura solo per
+        // l'entità che il client dichiara di guardare, questa variante la prepara.
+        this.client.write('interact', {
+          action_id: 'mouse_over_entity',
+          target_entity_id: BigInt(entity.runtimeId),
+          has_position: false,
+        });
+        sequence.push('interact mouse_over_entity');
+      }
+      if (variant === 'animate_first') {
+        this.client.write('animate', { action_id: 'swing_arm', runtime_entity_id: this.client.entityId, data: 0, has_swing_source: false });
+        sequence.push('animate swing_arm');
+      }
+      if (variant === 'flag_before') {
+        await this._queueAuthInput({ yaw: this._lastYaw ?? 0, pitch: look.pitch, itemInteract: true });
+        sequence.push('player_auth_input item_interact');
+      }
+      const entity2 = this.entities.get(String(entity.runtimeId)) || entity;
+      const { payload } = this._entityTransactionPayload(entity2, action, variant);
+      // `none` non spedisce nulla: è la misura di riferimento per capire se i
+      // `inventory_content` che seguono sono davvero una reazione alla transazione
+      // o un sincronismo periodico del server.
+      if (variant !== 'none') {
+        this.client.write('inventory_transaction', { transaction: payload });
+        sequence.push(`inventory_transaction ${variant}`);
+      } else {
+        sequence.push('niente (misura di riferimento)');
+      }
+      if (variant === 'flag_after') {
+        await this._queueAuthInput({ yaw: this._lastYaw ?? 0, pitch: look.pitch, itemInteract: true });
+        sequence.push('player_auth_input item_interact (dopo)');
+      }
+      await delay(observeMs);
+      const later = this.entities.get(String(entity.runtimeId));
+      const healthAfter = later?.health ?? null;
+      return {
+        ok: true,
+        type: entity.type,
+        runtimeId: entity.runtimeId,
+        look: { yaw: +look.yaw.toFixed(1), pitch: +look.pitch.toFixed(1) },
+        sightline,
+        action,      variant,
+        sequence,
+        observeMs,
+        distance: before.distance,
+        hand: this.inventorySlots[this.selectedHotbar]?.network_id ? 'item' : 'empty',
+        heldName: this.inventorySlots[this.selectedHotbar]?.network_id ? this._slotItemName(this.inventorySlots[this.selectedHotbar]) : null,
+        selectedHotbar: this.selectedHotbar,
+        healthBefore: before.health,
+        healthAfter,
+        damage: before.health != null && healthAfter != null ? before.health - healthAfter : null,
+        resyncs: this._invResyncCount - before.resyncs,
+        rxNames,
+        containerBefore: before.container,
+        containerAfter: this._openContainer ? `${this._openContainer.type}:${this._openContainer.id}` : null,
+        offersBefore: before.offers,
+        offersAfter: this.tradeOffers.length,
+        interactionModel: interactionModel || 'touch',
+        variantCount: BedrockAdapter.PROBE_VARIANTS.length,
+      };
+    } finally {
+      probeClient.removeListener('packet', capturePacket);
+    }
   }
 
   // Si avvicina al trader più vicino e apre il commercio; attende le offerte.
@@ -7544,31 +7552,52 @@ export class BedrockAdapter {
     return { yaw, pitch };
   }
 
-  // Una linea di vista libera verso il centro dell'entità, campionata sui
-  // blocchi del modello locale: il server rifiuta in silenzio un'interazione con
-  // un bersaglio dietro un muro (evidenza live 04/10/2026: `open_trade` a 2,1
-  // blocchi con vista libera non apre nulla, e la sonda mostrava `wooden_door!`
-  // sul penultimo campione). Fail-open quando il mondo non è leggibile
-  // (`null`): non si rifiuta un'azione per un modello incompleto.
-  _entityVisible (entity, { ratio = 0.5, samples = 3 } = {}) {
+  // Traverse every cell on the eye-to-target segment and intersect its
+  // state-specific collision shapes. Unloaded cells remain fail-open.
+  _entityVisible (entity, { ratio = 0.5 } = {}) {
     if (!entity?.position || !this.position) return { visible: true, unknown: true, blockedBy: null };
     const eye = this.position;
     const aim = { x: entity.position.x, y: entity.position.y + entityHeight(entity.type) * ratio, z: entity.position.z };
+    const axes = ['x', 'y', 'z'];
+    const delta = Object.fromEntries(axes.map(axis => [axis, aim[axis] - eye[axis]]));
+    const cell = Object.fromEntries(axes.map(axis => [axis, Math.floor(eye[axis])]));
+    const next = Object.fromEntries(axes.map(axis => [axis, delta[axis] === 0 ? Infinity
+      : ((cell[axis] + (delta[axis] > 0 ? 1 : 0)) - eye[axis]) / delta[axis]]));
     let readable = 0;
-    for (let i = 1; i <= samples; i++) {
-      const t = i / (samples + 1);
-      const cell = {
-        x: Math.floor(eye.x + (aim.x - eye.x) * t),
-        y: Math.floor(eye.y + (aim.y - eye.y) * t),
-        z: Math.floor(eye.z + (aim.z - eye.z) * t),
-      };
+    let entry = 0;
+    while (entry < 1) {
       const block = this.world.blockAt(cell);
-      if (!block) continue;
-      readable++;
-      if (this._passable(block)) continue;
-      return { visible: false, blockedBy: block.name, blockedAt: cell, t: +t.toFixed(2), unknown: false };
+      if (block) {
+        readable++;
+        const shapes = Array.isArray(block.shapes) ? block.shapes
+          : this._passable(block) ? [] : [[0, 0, 0, 1, 1, 1]];
+        let hit = Infinity;
+        for (const shape of shapes) {
+          let low = 0, high = 1;
+          for (let i = 0; i < axes.length; i++) {
+            const axis = axes[i];
+            const min = cell[axis] + shape[i], max = cell[axis] + shape[i + 3];
+            if (delta[axis] === 0) {
+              if (eye[axis] < min || eye[axis] > max) { high = -1; break; }
+            } else {
+              const a = (min - eye[axis]) / delta[axis], b = (max - eye[axis]) / delta[axis];
+              low = Math.max(low, Math.min(a, b));
+              high = Math.min(high, Math.max(a, b));
+            }
+          }
+          if (low <= high && high > 0 && low < 1) hit = Math.min(hit, low);
+        }
+        if (hit !== Infinity) return { visible: false, blockedBy: block.name, blockedAt: { ...cell }, t: +hit.toFixed(2), unknown: false };
+      }
+      entry = Math.min(...Object.values(next));
+      if (entry >= 1) break;
+      for (const axis of axes) {
+        if (next[axis] === entry) {
+          cell[axis] += Math.sign(delta[axis]);
+          next[axis] += 1 / Math.abs(delta[axis]);
+        }
+      }
     }
-    // Nessun campione leggibile (chunk non caricati): non è una conferma.
     return { visible: true, blockedBy: null, unknown: readable === 0 };
   }
 

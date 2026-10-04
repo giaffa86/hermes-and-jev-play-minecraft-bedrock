@@ -97,8 +97,8 @@ test('every probe variant sends a serializable entity transaction', async () => 
 
   // Il client vanilla manda la posizione degli occhi, non i piedi.
   const eyes = adapter._entityTransactionPayload(entity, 'interact', 'eyes').payload;
-  assert.equal(eyes.transaction_data.player_pos.y, 64.62 + 1.62);
-  assert.equal(current.transaction_data.player_pos.y, 64.62);
+  assert.equal(eyes.transaction_data.player_pos.y, 64.62);
+  assert.equal(current.transaction_data.player_pos.y, 63);
 });
 
 test('the mouse_over variant declares the watched entity before the transaction', async () => {
@@ -158,4 +158,24 @@ test('flag_before and flag_after raise item_interact in the auth frame', async (
   assert.equal(packets[0].params.input_data.includes('item_interact'), false);
   adapter._sendAuthInput({ yaw: 0, pitch: 0, itemInteract: true });
   assert.equal(packets[1].params.input_data.includes('item_interact'), true);
+});
+
+
+test('probe captures all responses beyond ring saturation and removes its listener', async () => {
+  const adapter = spawnedAdapter();
+  adapter._rxLog = Array.from({ length: 200 }, () => ({ name: 'old' }));
+  adapter.client.write = name => {
+    if (name !== 'inventory_transaction') return;
+    for (let i = 0; i < 250; i++) {
+      adapter._rxLog.shift();
+      adapter._rxLog.push({ name: 'update_trade' });
+      adapter.client.emit('packet', { data: { name: 'update_trade' } });
+    }
+  };
+  const report = await adapter.probeInteract({ observeMs: 1 });
+  assert.deepEqual(report.rxNames, { update_trade: 250 });
+  assert.equal(adapter.client.listenerCount('packet'), 0);
+  adapter.client.write = () => { throw new Error('write failed'); };
+  await assert.rejects(adapter.probeInteract({ observeMs: 1 }), /write failed/);
+  assert.equal(adapter.client.listenerCount('packet'), 0);
 });
