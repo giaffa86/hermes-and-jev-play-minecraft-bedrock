@@ -864,10 +864,24 @@ Still missing (the rest of the original gap):
   [verification](verification.md) row 42.3 and the bullet below.
 - **Human chat command channel**: natural-language remote control via in-game
   chat (`@bot seguimi`, `@bot aiutami coi mob`). M1–M3 implemented (chat capture,
-  allowlist + trigger, NL → Hermes → `/plan`, `follow_player`); **M5 is now
+  allowlist + **multi-trigger** `CHAT_PREFIXES`, e.g. `@bot,@hermes`, so one bot
+  answers to both a generic word and its own name — required once several bots
+  share a server; NL → Hermes → `/plan`, `follow_player`); **M5 is now
   implemented and live-verified** (ack of the order + outcome line, see below);
-  the inbound path with a **human** sender is still pending (no human connects to
-  the BDS). Autonomous exploration remains open. Roadmap in
+  **M6 (chat questions) is implemented and unit-tested**: `@bot dove sei?` is
+  answered from `observe()` (regex fast path, then System One/Jev over a closed
+  intent list; the model picks an option and never writes the answer) and creates
+  no goal. **M6.1** closed the fail-open boundary: `looksLikeQuestion` (raw text:
+  explicit `?`/`¿` or an interrogative first word, bare `hai`/`sei`/`stai`
+  excluded) is a **pre-filter** — a message that is not question-shaped never
+  costs a model call before its ack — and a question-shaped message the router
+  cannot decide (off, no key, timeout, error, unparsable, below
+  `CHAT_INTENT_MIN_P`) is refused with the way back to the order syntax and
+  logged as `chat_unrouted`, **never** turned into `follow <sender>`. `q_none`
+  from a working model still means "it was an order". The inbound path with
+  a **human** sender is still pending (no human connects to the BDS), and the
+  question path has not had a live round on the BDS yet (a real chat message,
+  not `POST /say`). Autonomous exploration remains open. Roadmap in
   [human-command](human-command.md).
 - **Proactive greeting** (AI-player roadmap §6 *Attention System*, milestone 4
   first slice) — **implemented and unit-tested, live round pending**: perception

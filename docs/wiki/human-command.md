@@ -40,7 +40,7 @@ human chat message
 | Mine iron the bot can see | **Ready** | `mine_iron_ore` / `mine_deepslate_iron_ore` options and the "obtain iron" progression skill already exist. |
 | Autonomous exploration ("go find iron alone") | **Missing / hard** | No real exploration: see [headless-client](headless-client.md#8-render-distance-not-comparable) and [open-questions](open-questions.md). "Follow me and mine the iron you see" is realistic; "go find iron by yourself" is out of reach for now. |
 | Reply/ack in chat | **Implemented + live-verified (M5)** | `sendChat()` in `bedrock-adapter.mjs` queues a `text`/`chat` packet (rate-limited, sanitised); exposed as `POST /say`. The controller acks an accepted order (`@<name> ok: <obiettivo>`) and reports the outcome when the goal closes (`@<name> fatto: … (N azioni)` / `non ce l'ho fatta: …` / `mi fermo qui: …`). |
-| Proactive greeting / syntax hint | **Implemented** | `maybeGreetHumans()` in `controller.mjs`: a trusted human within `CHAT_GREET_RANGE` (default 24 blocks) gets one greeting naming the exact syntax `CHAT_PREFIX <ordine>`, with a per-gamertag cooldown. Suppressed when the allowlist is empty (never advertise a closed channel). |
+| Proactive greeting / syntax hint | **Implemented** | `maybeGreetHumans()` in `controller.mjs`: a trusted human within `CHAT_GREET_RANGE` (default 24 blocks) gets one greeting naming the exact syntax (`CHAT_PREFIXES`, rendered as `@bot o @hermes <ordine>` when several triggers are configured), with a per-gamertag cooldown. Suppressed when the allowlist is empty (never advertise a closed channel). |
 
 ## Target flow
 
@@ -83,6 +83,18 @@ human chat message
 - **M5 — stretch** ✅ the bot speaks (`sendChat()` + `POST /say`) and now uses it
   for the order lifecycle: proactive greeting, **ack of an accepted order**, and
   the **outcome** when the goal closes (`human-replies.mjs`).
+- **M6 — questions** ✅ a `@bot <domanda>` message that asks about the bot is
+  answered from `observe()` instead of being turned into a goal: regex fast path,
+  then System One (Jev) over a closed intent list (`human-questions.mjs`,
+  `chat-intent.mjs`, `system-one.mjs`).
+- **M6.1 — a router failure is not an order** ✅ the question guard
+  (`looksLikeQuestion`) and the Jev pre-filter: an order never pays a model call
+  before its ack, and a question-shaped message the router cannot decide is
+  refused instead of becoming `follow <sender>`.
+- **M6.2 — call the bot by name** ✅ the bot also answers to its own name:
+  `@<BEDROCK_USERNAME>` and the gamertag the server attributes to it
+  (`observe().self`, learned from the chat echo), composed per observation by
+  `chatPrefixes(obs)`; `CHAT_SELF_NAME=off` disables them.
 
 ## Live evidence (2026-10-03, BDS 1.26.52 via CT 108, VM 100 container)
 
@@ -138,13 +150,17 @@ in 25 s → now 1).
   `username` in `_trackEntity`/`_nearbyEntities`; `_playerByName`; `follow_player`
   option and `_followPlayer` action.
 - `controller.mjs`: `CHAT_ALLOWLIST` (gamertag/xuid, comma-separated),
-  `CHAT_PREFIX` (default `@bot`), `CHAT_CONTROL` (default `on` when allowlist is
+  `CHAT_PREFIXES` (comma/space-separated list of triggers, e.g.
+  `@bot,@hermes`) plus the legacy single `CHAT_PREFIX` (default `@bot`; the two
+  are summed), `CHAT_CONTROL` (default `on` when allowlist is
   set), `CHAT_REPLY` (default: on when the channel is open),
   `CHAT_REPLY_MAX_LENGTH` (180), `CHAT_MAX_AGE_MS` (300000) ;
   `maybeHumanCommand`/`humanCommandPlan`/`isAllowedSender`/`replyChat`; follow
   plans are open-ended (`goalMet` returns false when `plan.follow` is set).
 - `human-replies.mjs`: pure rendering of the ack/outcome lines (`orderAck`,
-  `orderOutcome`, `renderReply`, `clampMessage`, `isSelfTriggering`).
+  `orderOutcome`, `renderReply`, `clampMessage`, `isSelfTriggering`) plus the
+  trigger matching (`normalizePrefixes`, `matchChatPrefix`,
+  `DEFAULT_CHAT_PREFIX = '@bot'`).
 - `bedrock-adapter.mjs`: `sendChat`, `_isOwnChatEcho` / `isSelfName`
   (`CHAT_ECHO_WINDOW_MS`, default 15000).
 - `controller-decisions.mjs`: `follow_player` ranked at tier 2 (just below drop
@@ -154,6 +170,154 @@ in 25 s → now 1).
 - **Live verification pending**: the inbound path with a **human** sender is not
 yet run on the BDS (no human player connects during autonomous runs); the M5
 reply lifecycle *is* live-verified, see *Live evidence* above.
+
+## Several triggers per bot (multi-trigger)
+
+One bot may answer to more than one trigger: the generic `@bot` **plus** its own
+name (e.g. `@hermes`). This is the prerequisite for running several bots on the
+same server — each bot then needs its **own distinct** trigger, otherwise two
+bots accept the same order.
+
+- **Config**: `CHAT_PREFIXES` (comma or space separated, e.g.
+  `@bot,@hermes`); the legacy single `CHAT_PREFIX` is still read and summed
+  into the list, and `@bot` is the default when nothing is set.
+- **Matching (pure)**: `human-replies.mjs` — `normalizePrefixes(value,
+  {fallback})` (trim + lowercase + dedupe, order preserved) and
+  `matchChatPrefix(message, prefixes)` → `{prefix, rest}` or `null`. The
+  **longest** trigger wins, so `@bot1` is not `@bot`; a message starting with an
+  unconfigured prefix is not an order; the rest of the message is the order text
+  (an empty rest is not an order either).
+- **Safety**: the bot's own replies are checked against **all** configured
+  triggers (`isSelfTriggering(message, CHAT_PREFIXES)`), so a reply can never
+  trigger itself or another bot — as important with a list as it was with one
+  prefix.
+- **Telemetry**: the `chat_command` event carries `{from, xuid, prefix, message}`
+  (the matched trigger included) and `chat_greet` carries `prefixes`, so the run
+  log shows which trigger fired.
+- **Greeting**: the syntax hint lists every trigger: with
+  `CHAT_PREFIXES=@bot,@hermes` the message reads `@bot o @hermes <ordine>`
+  (`{prefixes}` in `CHAT_GREET_TEMPLATE`; `formatPrefixes` joins with ` o `).
+  Note: `renderGreeting` re-parses the value, so pass an array or a CSV list —
+  never a string already joined by `formatPrefixes`.
+- **Tests**: `tests/human-replies.test.mjs` (normalisation, longest-wins,
+  multi-trigger `isSelfTriggering`), `tests/human-greeting.test.mjs` (rendered
+  syntax list) and `tests/controller-chat-ack.test.mjs` (an order sent with the
+  second trigger is acked and the prefix is stripped; a message with an
+  unconfigured prefix is ignored, no reply and no `chat_command`).
+
+### Calling the bot by name (M6.2)
+
+`CHAT_PREFIXES` is **static** (it comes from the environment), but the most
+natural way to address a bot is its **name** — and with several bots on one
+server the name is the only trigger that cannot collide by configuration. The
+harness now says who the bot is: `observe().self` carries `username`
+(`BEDROCK_USERNAME`, known at startup) and `name` (the gamertag the server
+attributes to the bot, learned from the chat echo in `selfName` — live it
+differed from the username, 8 vs 10 characters, so both are kept).
+
+- **Composition**: `chatPrefixes(obs)` in `controller.mjs` = `CHAT_PREFIXES`
+  **plus** `selfPrefixes(observe().self)` (`human-replies.mjs`: `@` + lowercased
+  name, stripped of any leading `@`, deduped). Nothing to configure: the list is
+  rebuilt on every observation, so the learned gamertag starts working as soon as
+  the server reveals it.
+- **Everywhere the triggers are used**: order matching (`matchChatPrefix`), the
+  question path (`answerIntent`), the refusal (`renderUnrouted`), the reply
+  guard (`isSelfTriggering`) and the greeting syntax hint (`{prefixes}`) all take
+  the same composed list, so a reply can never trigger the bot through its own
+  name either.
+- **`CHAT_SELF_NAME=off`** disables the name triggers and leaves only
+  `CHAT_PREFIXES` (useful when a name is also a common word, or when a human
+  named like the bot is in the allowlist).
+- **Caveat with several bots**: matching is `startsWith` with the **longest**
+  trigger first, so triggers must not be prefixes of each other — a bot called
+  `@hermes` would also accept `@hermes2 ...`. Prefer clearly distinct names (or
+  distinct `CHAT_PREFIXES`).
+- **Tests**: `tests/human-replies.test.mjs` (`selfPrefixes`: username + learned
+  name, dedupe, doubled `@` not doubled, blank entries, `enabled: false`) and
+  `tests/controller-chat-ack.test.mjs` (an order with `@<BEDROCK_USERNAME>` or
+  with the learned gamertag is acked and `chat_command.prefix` is the name, not
+  `@bot`; `CHAT_SELF_NAME=off` leaves the message an ordinary chat line).
+
+## Chat questions (M6): a router picks the intent, the facts write the answer
+
+A human will ask *"dove sei?"*, not only give orders. Such a message is not an
+order, and answering it with `follow <sender>` (the old fallback) was worse than
+answering nothing. M6 inserts a question path **before** the order path:
+
+- **Fast path (free, offline)**: `human-questions.mjs` holds a catalogue of six
+  intents (`q_position`, `q_health`, `q_activity`, `q_inventory`, `q_time`,
+  `q_identity`), each with a regex. A message that matches is answered without
+  any model call.
+- **Router (System One = Jev)**: a message that matches nothing is classified by
+  the decisions endpoint over a **closed option list** — the six intents plus the
+  sentinel `q_none`. The model picks an option; it never writes the answer.
+  `chat-intent.mjs` asks, `system-one.mjs` is the transport shared with the
+  action decision (`jevDecide`).
+- **The answer is composed from `observe()`** by `answerIntent(...)`: position,
+  health/food, the current objective, the inventory, the clock
+  (`clockFromTicks`, Bedrock tick 0 = 06:00), the accepted triggers. A missing
+  fact is *admitted* ("non lo so: …"), never invented.
+- **`q_none` means "not a question"**: an order, a greeting or small talk keeps
+  today's behaviour (ack + goal). A router *failure*, though, is not a verdict:
+  M6.1 (below) made it a refusal, never a goal.
+- **No goal is created** by a question, and the reply is the same one-line
+  `POST /say` path (`context: 'question'`), rendered from
+  `DEFAULT_ANSWER_TEMPLATE = '@{name} {answer}'`.
+- **Config**: `CHAT_INTENT` (default `on` when `TYPESAFE_API_KEY` or
+  `OPENROUTER_API_KEY` is set, else `off`), `CHAT_INTENT_MODEL`,
+  `CHAT_INTENT_URL` (e.g. a local Jev-compatible endpoint),
+  `CHAT_INTENT_TIMEOUT_MS` (4000) and `CHAT_INTENT_MIN_P` (0.4; probabilities are
+  uncalibrated — they rank options, they do not measure confidence).
+- **Telemetry**: `chat_intent` (every Jev decision: `intent`, `chosen`,
+  `probability`, `model`, `ms`, `cost`, `reason`, `error`) and `chat_question`
+  (the answer actually served: `intent`, `via` = `regex`|`jev`, `probability`).
+- **Tests**: `tests/human-questions.test.mjs` (regex catalogue, answer bodies and
+  the missing-fact policy, `intentFromChoice`), `tests/chat-intent.test.mjs`
+  (routing over a stubbed endpoint: threshold, `q_none`, out-of-range choice,
+  transport errors) and `tests/controller-chat-ack.test.mjs` (a regex question is
+  answered and creates no goal; a free-form question is routed by System One and
+  still answered from the facts).
+
+### M6.1 — a router failure is not an order
+
+M6 failed **open**: with `@bot quanti cuori hai?` and an unreachable Jev the
+message fell through to the order path and became the static `follow <sender>`
+fallback — a failure moving the bot. M6.1 closes that boundary:
+
+- **Question guard (pure, on the raw text)**: `looksLikeQuestion` in
+  `human-questions.mjs` fires on an explicit `?`/`¿` or on an interrogative
+  **first** word (`chi`, `che`, `cosa`, `come`, `dove`, `quando`,
+  `quanto`/`quanta`/`quanti`/`quante`, `perché`, `quale`/`quali`, and the English
+  set). It is deliberately conservative — bare verbs are excluded, so `stai qui`
+  and `sei un cretino` stay orders — and evaluates the *raw* message, because
+  `normalizeForMatching` deletes the `?`.
+- **Pre-filter**: a message that is not question-shaped never reaches Jev. Before
+  M6.1 every order the regex did not catch paid one decisions call and up to
+  `CHAT_INTENT_TIMEOUT_MS` of latency **before its ack**; now it pays nothing.
+- **Three outcomes** from `resolveQuestionIntent` (`action`): `answer` (regex, or
+  Jev above threshold) → reply and no goal; `order` (not question-shaped, or
+  `q_none` from a working model) → the order path; `unrouted` (question-shaped
+  and the router is off/without key, times out, errors, answers unparsably, or
+  lands under `CHAT_INTENT_MIN_P`) → the bot says it did not understand and
+  **creates no goal**.
+- **Refusal with a way out** (`renderUnrouted`, `UNROUTED_TEMPLATE`):
+  `non ho capito la domanda. Se era un ordine, scrivi "@bot <ordine>".` — the
+  message may well have been an order phrased as a question
+  (`riesci a raggiungermi?`).
+- **Telemetry**: `chat_unrouted` records `from`, `xuid`, `message`, `reason`
+  (`no_key` | `disabled` | `timeout` | `error` | `unparsable` |
+  `low_probability` | `no_fact`), `probability`, `model`, `ms`, `cost`; the
+  refusal carries `context: 'unrouted'`.
+- **Tests**: `tests/human-questions.test.mjs` (the guard's true/false pairs, the
+  refusal line), `tests/chat-intent.test.mjs` (the pre-filter costs no call;
+  `q_none` → order; timeout/unparsable/low-p/disabled/no-key → `unrouted`) and
+  `tests/controller-chat-ack.test.mjs` (`quanti cuori hai?` with a dead router is
+  refused and never becomes `follow`; `sei un cretino` skips the model;
+  `riesci a raggiungermi?` with a model that answers `q_none` stays an order; a
+  hanging endpoint is logged as `timeout`).
+- **Not done on purpose**: a tie-break through Hermes (System Two) for
+  interrogative *orders* — `chat_intent.reason = 'not_a_question'` and
+  `chat_unrouted` are the data that will decide whether M7 needs it.
 
 ## Proactive greeting (§6 Attention System)
 
@@ -184,7 +348,7 @@ Ciao <nome>! Sono Hermes, il bot di casa. Assegnami un task scrivendo in chat:
 - **Env**: `CHAT_GREET` (default: on when `CHAT_CONTROL` is not `off` and the
   allowlist is set), `CHAT_GREET_RANGE` (24), `CHAT_GREET_COOLDOWN_MS`
   (600000; `0` = once per session), `CHAT_GREET_TEMPLATE` (placeholders `{name}`,
-  `{prefix}`).- Tests: `tests/human-greeting.test.mjs` — policy (`renderGreeting`,
+  `{prefix}`, `{prefixes}`).- Tests: `tests/human-greeting.test.mjs` — policy (`renderGreeting`,
   allowlist/range/cooldown filters, malformed humans) plus the adapter wire
   (`observe().humans`, the serialised `text` packet, the `sendChat` guards).
 
@@ -194,8 +358,13 @@ quieter hello is preferred (still an open question).
 
 ## Open questions
 
-- **Trigger**: settled to `CHAT_PREFIX` (default `@bot`), matched on both public
-  chat and whisper. Still open: require whisper only?
+- **Trigger**: settled to a **list** of triggers (`CHAT_PREFIXES`, default
+  `@bot`; the legacy `CHAT_PREFIX` still works and is summed into the list),
+  matched on both public chat and whisper. Several triggers let one bot answer
+  to both a generic word and its own name — needed once several bots share the
+  server, so each bot must use **distinct** triggers. The longest trigger wins
+  (`@bot1` is not `@bot`) and a message that starts with an unconfigured prefix
+  is not an order. Still open: require whisper only?
 - **Follow semantics**: settled to stop distance 3, 45 s window, ~64-block
   tracking range. Still open: long escort and behaviour on player disconnect.
 - **Priority vs autonomous plan**: settled to "human order overrides until

@@ -1,5 +1,109 @@
 # Log
 
+## [2026-10-04] feat | Chat M6.2: the bot answers to its own name (`CHAT_SELF_NAME`)
+
+`CHAT_PREFIXES` is static; the bot's **own name** is not, and it is the most
+natural way to address it. `observe().self` now exposes `username`
+(`BEDROCK_USERNAME`) and `name` (the gamertag the server attributes to the bot,
+learned from the chat echo — live it differed from the username). `chatPrefixes(obs)`
+composes `CHAT_PREFIXES` with `selfPrefixes(observe().self)`
+(`human-replies.mjs`: `@` + lowercased name, deduped, rebuilt on every
+observation so the learned gamertag works as soon as the server reveals it). The composed
+list is used everywhere the triggers are: order matching, the question path, the
+refusal, the reply guard (`isSelfTriggering`), the greeting syntax hint.
+`CHAT_SELF_NAME=off` leaves only `CHAT_PREFIXES`. With several bots each answers
+to its own name, but triggers must not be prefixes of each other (matching is
+`startsWith` with the longest first: `@hermes` would also accept `@hermes2 ...`).
+Docs: `wiki/human-command.md` §M6.2, `wiki/verification.md` row 18, `sources.md`,
+`index.md`, `.env.example`, `AGENTS.md`, `BEDROCK.md`. Tests 1195/1195
+(`human-replies`, `controller-chat-ack`).
+
+## [2026-10-04] ingest | Chat questions M6.1: a router failure is not an order
+
+The M6 question path failed **open**: with an unreachable Jev, `@bot quanti cuori
+hai?` fell through to the order path and became the static `follow <sender>`
+fallback — a failure that moved the bot. M6.1 closes that boundary with the pure
+question guard `looksLikeQuestion` (evaluated on the **raw** text: an explicit
+`?`/`¿` or an interrogative first word; bare `hai`/`sei`/`stai` are excluded so
+`stai qui` stays an order), used as a **Jev pre-filter**: a message that is not
+question-shaped never costs a decisions call (and up to
+`CHAT_INTENT_TIMEOUT_MS` of latency) before its ack. `resolveQuestionIntent` now
+always returns an `action`: `answer` (regex, or Jev above `CHAT_INTENT_MIN_P`),
+`order` (not question-shaped, or `q_none` from a working model — a verdict, not a
+failure) or `unrouted` (question-shaped and the router is off, without key, timed
+out, errored, unparsable or below the floor). An `unrouted` message is refused by
+`renderUnrouted` — `non ho capito la domanda. Se era un ordine, scrivi "@bot
+<ordine>".` — logged as `chat_unrouted` with
+`reason`/`probability`/`model`/`ms`/`cost`, and **creates no goal**. Transport
+errors now carry a code (`no_key`, `http`, `api`, `unparsable`). Docs:
+`wiki/human-command.md` §M6.1, `wiki/verification.md` row 18, `sources.md`,
+`.env.example`, `AGENTS.md`, `BEDROCK.md`, `index.md`. Tests 1190/1190
+(`human-questions`, `chat-intent`, `controller-chat-ack`).
+
+## [2026-10-04] ingest | Chat questions (`CHAT_INTENT`, System One = Jev)
+
+A `@bot <domanda>` message that asks about the bot is now **answered from
+`observe()`** instead of being turned into a goal: `@bot dove sei?` used to
+produce an ack plus `follow <sender>`, never an answer.
+
+- **Code**: `human-questions.mjs` (pure: six intents with a regex fast path
+  `q_position`/`q_health`/`q_activity`/`q_inventory`/`q_time`/`q_identity`, the
+  closed option list `intentCriteria` with the `q_none` sentinel,
+  `intentFromChoice`, and the answer bodies `answerIntent`/`clockFromTicks`/
+  `renderAnswer`); `chat-intent.mjs` (router: regex → System One → "not a
+  question", fails open); `system-one.mjs` (System One/Jev transport, now shared
+  with `jevDecide`); `controller.mjs` (`resolveQuestion` before the order path,
+  `CHAT_INTENT*` config, `chat_intent`/`chat_question` telemetry,
+  `chat_reply {context:'question'}`).
+- **Safety**: the model never writes the answer — it only picks an option from a
+  closed list; a missing fact is admitted ("non lo so: …"). Any router failure
+  (no key, timeout, error, low probability, `q_none`) leaves the message an
+  order, so the channel is never silenced. A question creates no goal.
+- **Config**: `CHAT_INTENT` (default `on` with a TypeSafe/OpenRouter key),
+  `CHAT_INTENT_URL`, `CHAT_INTENT_MODEL`, `CHAT_INTENT_TIMEOUT_MS` (4000),
+  `CHAT_INTENT_MIN_P` (0.4; probabilities rank options, they do not measure
+  confidence).
+- **Tests**: `tests/human-questions.test.mjs` (12), `tests/chat-intent.test.mjs`
+  (10, stubbed decisions endpoint) and three new cases in
+  `tests/controller-chat-ack.test.mjs` (a regex question is answered without a
+  goal; a free-form question is routed by System One and still answered from the
+  facts; with the router off the message stays an order). Complete suite
+  **1181/1181**.
+- **Docs**: [human-command](wiki/human-command.md) new *Chat questions (M6)*
+  section plus the milestone list, [sources](sources.md) (three new modules,
+  `controller.mjs` description) and [index](index.md) updated; env vars in
+  `.env.example`, `BEDROCK.md`, `AGENTS.md` and `README.md`.
+
+## [2026-10-04] ingest | Multi-trigger chat orders (`CHAT_PREFIXES`)
+
+Implemented several triggers per bot: `CHAT_PREFIXES` (comma/space separated,
+e.g. `@bot,@hermes`) alongside the legacy single `CHAT_PREFIX` (default
+`@bot`, summed into the list). Motivation: one bot must answer to both a generic
+word and its own name, and several bots on the same server need **distinct**
+triggers each.
+
+- **Code**: `human-replies.mjs` exports `DEFAULT_CHAT_PREFIX`,
+  `normalizePrefixes(value, {fallback})` and `matchChatPrefix(message, prefixes)`
+  → `{prefix, rest}` (longest trigger wins, so `@bot1` is not `@bot`);
+  `isSelfTriggering` now checks the whole list. `controller.mjs` builds
+  `CHAT_PREFIXES` from `CHAT_PREFIXES`+`CHAT_PREFIX`, strips the matched prefix
+  and logs it in `chat_command`; `human-greeting.mjs` gained `formatPrefixes`
+  and renders every trigger (`@bot o @hermes <ordine>`, `{prefixes}` in
+  `CHAT_GREET_TEMPLATE`) and `chat_greet` carries `prefixes`.
+- **Tests**: `tests/human-replies.test.mjs` (normalisation, longest-wins,
+  self-trigger), `tests/human-greeting.test.mjs` (rendered syntax list) and
+  `tests/controller-chat-ack.test.mjs` (an order with the second trigger is acked
+  and stripped; an unconfigured prefix is ignored with no reply and no
+  `chat_command`). Complete suite **1156/1156, zero failures**; the touched
+  integration file is green (5/5).
+- **Docs**: [human-command](wiki/human-command.md) new *Several triggers per
+  bot* section plus updated env/open questions, [sources](sources.md) and this
+  index refreshed; `README.md`, `BEDROCK.md`, `.env.example` and `AGENTS.md`
+  document `CHAT_PREFIXES`. Bug found and fixed while testing: `planGreetings`
+  passed the already-joined label to `renderGreeting`, which re-split it on
+  whitespace (`@bot o @hermes` → `['@bot','o','@hermes']`), so a joined
+  string must never be re-passed to `renderGreeting`.
+
 ## [2026-10-04] ingest | Apiculture merged into main with visibility/probe fixes
 
 Merged `feat/bees-honeycomb` (`b2cb688`) into clean `main` after the concurrent

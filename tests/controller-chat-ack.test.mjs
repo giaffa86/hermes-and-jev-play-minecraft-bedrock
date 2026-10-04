@@ -14,6 +14,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { QUESTION_INTENTS, intentCriteria } from '../human-questions.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -40,7 +41,7 @@ process.stdout.write(next);
 // Scripted harness. `chatFrom` is the sender of the order injected from the
 // second observation on; `calls` records every request so the test can inspect
 // the `/say` traffic.
-function startChatHarness ({ chatFrom = 'Ale', chatMessage = '@bot prendi la terra', chatAgeMs = 0 } = {}) {
+function startChatHarness ({ chatFrom = 'Ale', chatMessage = '@bot prendi la terra', chatAgeMs = 0, self = { username: 'hermes-bot', name: null } } = {}) {
   return new Promise(resolve => {
     const calls = [];
     let observes = 0;
@@ -51,6 +52,9 @@ function startChatHarness ({ chatFrom = 'Ale', chatMessage = '@bot prendi la ter
       position: { x: 0, y: 64, z: 0 },
       inventory: { dirt: 1 },
       health: 20, food: 20, dead: false, spawned: true,
+      // M6.2: come l'adapter, l'osservazione dichiara chi è il bot: `username`
+      // (BEDROCK_USERNAME) e `name` (gamertag imparato dall'eco).
+      self,
       time: { ticks: 1000, night: false, phase: 'day' },
       entities: [], humans: [], dropped: [], containers: [],
       chat: observes >= 2 && chatFrom
@@ -202,6 +206,400 @@ test('a chat order from an unknown sender is ignored (no reply, logged)', async 
     // sola, non a ogni poll (osservato live: 122 eventi identici in 25 s).
     assert.equal(events.filter(e => e.type === 'chat_ignored').length, 1, 'the rejection is logged once');
     assert.equal(events.some(e => e.type === 'chat_command'), false, 'the order never becomes a command');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+// Più trigger per lo stesso bot (`CHAT_PREFIXES`): il prefisso generico e il
+// nome del bot sono equivalenti, e la reply non deve somigliare a un ordine per
+// nessuno dei due (altrimenti il bot — o un altro bot sul canale — si riordina).
+test('an order is accepted with any configured trigger, and the prefix is stripped', async () => {
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@hermes prendi la terra' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-prefixes-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, harness.port, fake.dir),
+      CHAT_PREFIXES: '@bot,@hermes',
+    });
+    assert.equal(code, 0);
+    assert.match(stdout, /IDLE -> goal \S+ from Ale: prendi la terra/, 'il trigger viene rimosso dal testo dell\'ordine');
+
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.equal(says.length, 2, `ack + esito (got ${JSON.stringify(says)})`);
+    for (const msg of says) {
+      assert.equal(msg.startsWith('@bot'), false, 'la reply non è un ordine per il trigger generico');
+      assert.equal(msg.startsWith('@hermes'), false, 'la reply non è un ordine per il trigger personale');
+    }
+
+    const command = readEvents(runId).find(e => e.type === 'chat_command');
+    assert.equal(command?.prefix, '@hermes', 'il log dice quale trigger ha matchato');
+    assert.equal(command?.message, 'prendi la terra');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+test('a message that starts with an unconfigured prefix is not an order', async () => {
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@jev fermati' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-noprefix-${process.pid}-${Date.now()}`;
+  try {
+    const { code } = await runController({
+      ...baseEnv(runId, harness.port, fake.dir),
+      CHAT_PREFIXES: '@bot,@hermes',
+    });
+    assert.equal(code, 0);
+    assert.equal(harness.calls.filter(c => c.path === '/say').length, 0, 'nessuna reply');
+    const events = readEvents(runId);
+    assert.equal(events.some(e => e.type === 'chat_command'), false, 'non e un comando');
+    assert.equal(events.some(e => e.type === 'chat_ignored'), false, 'non e nemmeno un rifiuto: non era un ordine');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+// M6 (chat questions): il messaggio con trigger che chiede un fatto sul bot
+// riceve una risposta composta da `observe()` — mai scritta dal modello — e
+// **non** produce un goal. Il fast path regex risponde senza alcuna chiave.
+test('a chat question is answered from the observation and never becomes a goal', async () => {
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot dove sei?' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-question-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController(baseEnv(runId, harness.port, fake.dir));
+    assert.equal(code, 0, 'the controller exits cleanly');
+    assert.equal(stdout.includes('from Ale'), false, 'una domanda non diventa un goal');
+
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.equal(says.length, 1, `una sola risposta (got ${JSON.stringify(says)})`);
+    assert.match(says[0], /^@Ale /, 'la risposta è indirizzata a chi ha chiesto');
+    assert.match(says[0], /64/, 'la posizione viene dai fatti di observe(), non dal modello');
+
+    const events = readEvents(runId);
+    assert.equal(events.some(e => e.type === 'chat_command'), false, 'non è un ordine');
+    assert.equal(events.some(e => e.type === 'human_order'), false, 'nessun ordine umano registrato');
+    const question = events.find(e => e.type === 'chat_question');
+    assert.equal(question?.intent, 'q_position');
+    assert.equal(question?.via, 'regex');
+    const reply = events.find(e => e.type === 'chat_reply');
+    assert.equal(reply?.context, 'question', 'la reply è marcata come risposta');
+    assert.equal(events.filter(e => e.type === 'chat_reply').length, 1, 'si risponde una volta sola al messaggio');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+// Stub della decisions API: registra header e body, e sceglie l'opzione passata.
+function startDecisionStub ({ choice, probabilities = {} }) {
+  return new Promise(resolve => {
+    const calls = [];
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        calls.push({ headers: req.headers, body: JSON.parse(body || '{}') });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ model: 'jev-stub', usage: { cost: 0.0002 }, answers: { intent: { choice, probabilities } } }));
+      });
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, calls }));
+  });
+}
+
+// Un messaggio che la regex non copre va a System One (Jev) su lista chiusa: il
+// modello sceglie l'intento, la risposta resta composta dai fatti.
+test('a free-form question is routed by System One and still answered from the facts', async () => {
+  const criteria = intentCriteria();
+  const choice = Object.keys(criteria).find(key => criteria[key].startsWith('[q_activity]'));
+  assert.ok(choice, 'q_activity è offerto al modello');
+  const stub = await startDecisionStub({ choice, probabilities: { [choice]: 0.9 } });
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot che combini?' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-intent-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, harness.port, fake.dir),
+      TYPESAFE_API_KEY: 'test-key',
+      CHAT_INTENT: 'on',
+      CHAT_INTENT_URL: `http://127.0.0.1:${stub.port}/v1/systemone`,
+    });
+    assert.equal(code, 0);
+    assert.equal(stdout.includes('from Ale'), false, 'una domanda instradata dal modello non diventa un goal');
+
+    assert.equal(stub.calls.length, 1, 'una sola decisione chiesta');
+    assert.equal(stub.calls[0].headers.authorization, 'Bearer test-key');
+    const state = JSON.parse(stub.calls[0].body.state);
+    assert.equal(state.message, 'che combini?');
+    assert.equal(state.from, 'Ale');
+    const options = Object.keys(stub.calls[0].body.questions.intent.criteria);
+    assert.equal(options.length, QUESTION_INTENTS.length + 1, 'la lista chiusa offre ogni intento più q_none');
+
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.equal(says.length, 1, `una sola risposta (got ${JSON.stringify(says)})`);
+    assert.match(says[0], /^@Ale /);
+
+    const events = readEvents(runId);
+    assert.equal(events.some(e => e.type === 'chat_command'), false, 'non è un ordine');
+    const intent = events.find(e => e.type === 'chat_intent');
+    assert.equal(intent?.intent, 'q_activity', 'il log dice quale intento ha scelto il modello');
+    assert.equal(intent?.chosen, 'q_activity');
+    assert.equal(intent?.probability, 0.9);
+    assert.equal(intent?.model, 'jev-stub');
+    assert.equal(events.find(e => e.type === 'chat_question')?.via, 'jev');
+  } finally {
+    stub.server.close();
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+// Un endpoint di decisione che non risponde mai: il router deve andare in
+// timeout e rifiutare, non ricadere nell'order path.
+function startHangingDecisionStub () {
+  return new Promise(resolve => {
+    const calls = [];
+    const server = createServer((req, res) => {
+      calls.push({ method: req.method, path: req.url });
+      // Nessuna risposta: l'unico limite è l'AbortSignal.timeout del controller.
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, calls }));
+  });
+}
+
+function closeStub (stub) {
+  stub.server.closeAllConnections?.();
+  stub.server.close();
+}
+
+// M6.1: senza router una domanda non si trasforma in un ordine. Il bot dice che
+// non ha capito (con la sintassi per rimediare) e non crea nessun goal.
+test('without System One a question is refused, not turned into an order (M6.1)', async () => {
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot che combini?' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-unrouted-nokey-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({ ...baseEnv(runId, harness.port, fake.dir), CHAT_INTENT: 'off' });
+    assert.equal(code, 0);
+    assert.equal(stdout.includes('from Ale'), false, 'una domanda senza router non diventa un goal');
+
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.equal(says.length, 1, `un solo rifiuto (got ${JSON.stringify(says)})`);
+    assert.match(says[0], /^@Ale /);
+    assert.match(says[0], /non ho capito la domanda/);
+    assert.match(says[0], /@bot( o @[^ ]+)* <ordine>/, 'il rifiuto mostra la via d\'uscita verso gli ordini');
+
+    const events = readEvents(runId);
+    assert.equal(events.some(e => e.type === 'chat_command'), false, 'nessun ordine creato');
+    assert.equal(events.some(e => e.type === 'chat_question'), false, 'nessuna risposta data');
+    const unrouted = events.find(e => e.type === 'chat_unrouted');
+    assert.equal(unrouted?.reason, 'no_key', 'la telemetria distingue no_key da disabled');
+    assert.equal(events.find(e => e.type === 'chat_reply' && e.context === 'unrouted') != null, true);
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+// Il pre-filtro: un messaggio che non ha forma di domanda non chiede nulla a Jev
+// e resta un ordine, anche con il router configurato e funzionante.
+test('a message that is not question-shaped skips the router entirely (pre-filter)', async () => {
+  const stub = await startDecisionStub({ choice: 'a0', probabilities: { a0: 0.99 } });
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot sei un cretino' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-prefilter-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, harness.port, fake.dir),
+      TYPESAFE_API_KEY: 'test-key',
+      CHAT_INTENT: 'on',
+      CHAT_INTENT_URL: `http://127.0.0.1:${stub.port}/v1/systemone`,
+    });
+    assert.equal(code, 0);
+    assert.equal(stub.calls.length, 0, 'un ordine non paga una chiamata di rete');
+    assert.match(stdout, /IDLE -> goal \S+ from Ale: /, 'resta un ordine');
+    const events = readEvents(runId);
+    assert.ok(events.some(e => e.type === 'chat_command'));
+    assert.equal(events.some(e => e.type === 'chat_intent'), false, 'il modello non viene nemmeno interrogato');
+  } finally {
+    closeStub(stub);
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+// "riesci a raggiungermi?" è un ordine espresso come domanda: se il modello
+// funziona e dice `q_none`, il messaggio deve tornare all'order path.
+test('an order phrased as a question is decided by the model, not by the guard', async () => {
+  const criteria = intentCriteria();
+  const choice = Object.keys(criteria).find(key => criteria[key].startsWith('[q_none]'));
+  const stub = await startDecisionStub({ choice, probabilities: { [choice]: 0.95 } });
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot riesci a raggiungermi?' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-qnone-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, harness.port, fake.dir),
+      TYPESAFE_API_KEY: 'test-key',
+      CHAT_INTENT: 'on',
+      CHAT_INTENT_URL: `http://127.0.0.1:${stub.port}/v1/systemone`,
+    });
+    assert.equal(code, 0);
+    assert.equal(stub.calls.length, 1, 'una domanda in forma di domanda viene instradata');
+    assert.match(stdout, /IDLE -> goal \S+ from Ale: /, 'q_none significa ordine');
+    const events = readEvents(runId);
+    assert.ok(events.some(e => e.type === 'chat_command'));
+    assert.equal(events.some(e => e.type === 'chat_unrouted'), false, 'q_none è una decisione, non un guasto');
+    assert.equal(events.find(e => e.type === 'chat_intent')?.reason, 'not_a_question');
+  } finally {
+    closeStub(stub);
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+// Un router che non risponde in tempo: la domanda resta senza risposta, ma non
+// diventa un ordine.
+test('a router timeout is reported and the bot does not move', async () => {
+  const stub = await startHangingDecisionStub();
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot quanti cuori hai?' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-timeout-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, harness.port, fake.dir),
+      TYPESAFE_API_KEY: 'test-key',
+      CHAT_INTENT: 'on',
+      CHAT_INTENT_TIMEOUT_MS: '60',
+      CHAT_INTENT_URL: `http://127.0.0.1:${stub.port}/v1/systemone`,
+    });
+    assert.equal(code, 0);
+    assert.equal(stdout.includes('from Ale'), false, 'il timeout non muove il bot');
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.equal(says.length, 1, `un solo rifiuto (got ${JSON.stringify(says)})`);
+    assert.match(says[0], /non ho capito la domanda/);
+    const events = readEvents(runId);
+    assert.equal(events.some(e => e.type === 'chat_command'), false);
+    assert.equal(events.find(e => e.type === 'chat_unrouted')?.reason, 'timeout');
+    assert.equal(events.find(e => e.type === 'chat_reply' && e.context === 'unrouted') != null, true);
+  } finally {
+    closeStub(stub);
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+// Il caso che ha motivato M6.1: una domanda innocua con il router giù non deve
+// diventare `follow <sender>`.
+test('a question can no longer become a follow goal when the router is down (M6.1)', async () => {
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot quanti cuori hai?' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-nofollow-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({ ...baseEnv(runId, harness.port, fake.dir), CHAT_INTENT: 'off' });
+    assert.equal(code, 0);
+    assert.equal(stdout.includes('from Ale'), false, 'nessun goal: niente follow');
+    const events = readEvents(runId);
+    assert.equal(events.some(e => e.type === 'chat_command'), false);
+    assert.equal(events.some(e => e.type === 'plan' && e.source === 'human'), false, 'nessun piano umano creato');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+// Senza router un messaggio non in forma di domanda resta un ordine: il canale
+// non si zittisce mai, e il comportamento di M5 è intatto.
+test('without System One a plain order still works (no silent channel)', async () => {
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot prendi la terra' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-nointent-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({ ...baseEnv(runId, harness.port, fake.dir), CHAT_INTENT: 'off' });
+    assert.equal(code, 0);
+    assert.match(stdout, /IDLE -> goal \S+ from Ale: /, 'senza router il messaggio resta un ordine');
+    const events = readEvents(runId);
+    assert.ok(events.some(e => e.type === 'chat_command'), 'loggato come comando');
+    assert.equal(events.some(e => e.type === 'chat_question'), false, 'nessuna risposta: non è stato interpretato');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+test('the bot answers to its own auth name (BEDROCK_USERNAME)', async () => {
+  const harness = await startChatHarness({
+    chatFrom: 'Ale', chatMessage: '@hermes-bot prendi la terra',
+    self: { username: 'hermes-bot', name: null },
+  });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-selfname-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController(baseEnv(runId, harness.port, fake.dir));
+    assert.equal(code, 0);
+    assert.match(stdout, /IDLE -> goal \S+ from Ale: /, 'chiamato per nome, l\'ordine è accettato');
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say');
+    assert.ok(says.some(c => /^@Ale ok: /.test(String(c.payload?.message ?? ''))), 'ack al mittente');
+    const cmd = readEvents(runId).find(e => e.type === 'chat_command');
+    assert.equal(cmd?.prefix, '@hermes-bot', 'il trigger riconosciuto è il nome, non @bot');
+    assert.equal(cmd?.message, 'prendi la terra', 'il nome è stato rimosso dal messaggio');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+test('the bot answers to the gamertag the server gave it (learned at runtime)', async () => {
+  const harness = await startChatHarness({
+    chatFrom: 'Ale', chatMessage: '@Miner prendi la terra',
+    self: { username: 'hermes-bot', name: 'Miner' },
+  });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-ownname-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController(baseEnv(runId, harness.port, fake.dir));
+    assert.equal(code, 0);
+    assert.match(stdout, /IDLE -> goal \S+ from Ale: /, 'il gamertag appreso è un trigger');
+    const cmd = readEvents(runId).find(e => e.type === 'chat_command');
+    assert.equal(cmd?.prefix, '@miner', 'trigger normalizzato in minuscolo');
+    assert.equal(cmd?.message, 'prendi la terra');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+test('CHAT_SELF_NAME=off leaves only the configured triggers', async () => {
+  const harness = await startChatHarness({
+    chatFrom: 'Ale', chatMessage: '@hermes-bot prendi la terra',
+    self: { username: 'hermes-bot', name: 'Miner' },
+  });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-noselfname-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({ ...baseEnv(runId, harness.port, fake.dir), CHAT_SELF_NAME: 'off' });
+    assert.equal(code, 0);
+    assert.equal(stdout.includes('from Ale'), false, 'senza i nomi il messaggio non è un ordine');
+    assert.equal(harness.calls.filter(c => c.method === 'POST' && c.path === '/say').length, 0, 'nessun ack');
+    assert.equal(readEvents(runId).some(e => e.type === 'chat_command'), false);
   } finally {
     harness.server.close();
     rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });

@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   orderAck, orderOutcome, clampMessage, renderReply, isSelfTriggering,
+  normalizePrefixes, matchChatPrefix, selfPrefixes, DEFAULT_CHAT_PREFIX,
   DEFAULT_REPLY_MAX_LENGTH,
 } from '../human-replies.mjs';
 
@@ -26,6 +27,35 @@ test('the ack never starts with the order trigger (the bot cannot trigger itself
   assert.equal(isSelfTriggering('@BOT mina ferro', '@bot'), true);
   assert.equal(isSelfTriggering('@Botty mina ferro', '@bot'), true);
   assert.equal(isSelfTriggering('@Ale ok', '@bot'), false);
+});
+
+// Un bot può rispondere a più trigger (CHAT_PREFIXES): `@bot` generico più il
+// proprio nome, così utenti diversi possono usare quello che ricordano.
+test('several triggers are accepted, the longest one wins', () => {
+  assert.equal(DEFAULT_CHAT_PREFIX, '@bot');
+  assert.deepEqual(normalizePrefixes('@bot, @hermes'), ['@bot', '@hermes']);
+  assert.deepEqual(normalizePrefixes('@bot,@bot ,@BOT1'), ['@bot', '@bot1']); // dedup, minuscole
+  assert.deepEqual(normalizePrefixes(['@bot', '']), ['@bot']);
+  assert.deepEqual(normalizePrefixes(undefined), ['@bot'], 'nessuna configurazione -> default');
+  assert.deepEqual(normalizePrefixes('  ', { fallback: null }), [], 'fallback disattivabile');
+  assert.deepEqual(normalizePrefixes('@bot1', { fallback: '@bot' }), ['@bot1']);
+
+  // `@bot1` non è `@bot`: senza il match più lungo il resto sarebbe "1 vieni".
+  assert.deepEqual(matchChatPrefix('@bot1 vieni qui', ['@bot', '@bot1']), { prefix: '@bot1', rest: 'vieni qui' });
+  assert.deepEqual(matchChatPrefix('  @BOT   mina ferro ', '@bot'), { prefix: '@bot', rest: 'mina ferro' });
+  assert.deepEqual(matchChatPrefix('@hermes seguimi', '@bot,@hermes'), { prefix: '@hermes', rest: 'seguimi' });
+  // Trigger senza ordine: il resto è vuoto e il chiamante lo scarta.
+  assert.deepEqual(matchChatPrefix('@bot', '@bot'), { prefix: '@bot', rest: '' });
+  assert.equal(matchChatPrefix('ciao @bot', '@bot'), null, 'il trigger deve stare in testa');
+  assert.equal(matchChatPrefix('@jev seguimi', '@bot,@hermes'), null, 'prefisso non configurato');
+  assert.equal(matchChatPrefix('', '@bot'), null);
+
+  // Ogni trigger configurato è vietato in testa a una reply: la risposta non deve
+  // somigliare a un ordine per sé stesso né per un altro bot sullo stesso canale.
+  assert.equal(isSelfTriggering('@hermes ok: fatto', ['@bot', '@hermes']), true);
+  assert.equal(isSelfTriggering('@Ale ok: fatto', ['@bot', '@hermes']), false);
+  const bySender = orderAck({ from: 'Ale', plan: { objective: '@hermes mina ferro' } });
+  assert.equal(isSelfTriggering(bySender, ['@bot', '@hermes']), false);
 });
 
 test('a reply is one line and never longer than the limit', () => {
@@ -73,4 +103,20 @@ test('clampMessage collapses whitespace, trims and truncates', () => {
 test('renderReply leaves unknown placeholders empty and clamps the result', () => {
   assert.equal(renderReply('a {one} b {two}', { one: '1' }, 50), 'a 1 b');
   assert.equal(renderReply('{a}{b}{c}', {}, 50), '');
+});
+
+test('the bot can be called by its own name: auth name and learned gamertag', () => {
+  assert.deepEqual(selfPrefixes({ username: 'hermes-bot', name: null }), ['@hermes-bot']);
+  assert.deepEqual(selfPrefixes({ username: 'hermes-bot', name: 'Miner' }), ['@hermes-bot', '@miner']);
+  assert.deepEqual(selfPrefixes({ username: 'Miner', name: 'miner' }), ['@miner'], 'niente doppioni');
+  assert.deepEqual(selfPrefixes({ username: '@Miner' }), ['@miner'], 'la chiocciola non si raddoppia');
+  assert.deepEqual(selfPrefixes({ username: '  ' }), []);
+  assert.deepEqual(selfPrefixes(null), []);
+  assert.deepEqual(selfPrefixes({ username: 'Miner', name: 'Ale' }, { enabled: false }), [], 'CHAT_SELF_NAME=off');
+});
+
+test('a name trigger is matched like any other prefix, longest wins', () => {
+  const prefixes = normalizePrefixes([...normalizePrefixes('@bot'), ...selfPrefixes({ username: 'hermes-bot' })]);
+  assert.deepEqual(matchChatPrefix('@Hermes-Bot prendi la terra', prefixes), { prefix: '@hermes-bot', rest: 'prendi la terra' });
+  assert.deepEqual(matchChatPrefix('@bot prendi la terra', prefixes), { prefix: '@bot', rest: 'prendi la terra' });
 });

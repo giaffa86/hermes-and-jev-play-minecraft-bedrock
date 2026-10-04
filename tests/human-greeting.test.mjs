@@ -22,6 +22,30 @@ test('renderGreeting sostituisce nome e prefisso nel template', () => {
   assert.equal(renderGreeting(null, { username: 'Tester' }), '');
 });
 
+test('con più trigger il saluto elenca la sintassi completa', () => {
+  assert.equal(
+    renderGreeting('{name}: {prefix}', { username: 'Tester', prefixes: ['@bot', '@hermes'] }),
+    'Tester: @bot o @hermes');
+  // `{prefixes}` è un alias di `{prefix}`.
+  assert.equal(
+    renderGreeting('{name} -> {prefixes}', { username: 'Tester', prefix: ['@bot', '@hermes'] }),
+    'Tester -> @bot o @hermes');
+  // Un singolo trigger resta identico alla vecchia resa.
+  assert.equal(renderGreeting('{prefix} <ordine>', { prefixes: ['@bot'] }), '@bot <ordine>');
+  const out = planGreetings({
+    humans: [{ username: 'Tester', distance: 4 }],
+    allowlist: new Set(['tester']),
+    prefixes: ['@bot', '@hermes'],
+    now: 0,
+  });
+  assert.equal(out.length, 1);
+  assert.ok(out[0].message.includes('@bot o @hermes <ordine>'), 'il saluto deve elencare entrambi i trigger accettati');
+  // `prefixes` va passato come lista: una stringa già unita da `formatPrefixes`
+  // verrebbe riseplittata sugli spazi (vedi `normalizePrefixes`).
+  assert.equal(out[0].message,
+    renderGreeting(DEFAULT_GREETING_TEMPLATE, { username: 'Tester', prefixes: ['@bot', '@hermes'] }));
+});
+
 test('un umano fidato vicino riceve il saluto con la sintassi del prefisso', () => {
   const allowlist = new Set(['tester']);
   const out = planGreetings({

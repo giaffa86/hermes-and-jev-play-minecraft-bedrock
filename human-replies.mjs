@@ -9,8 +9,8 @@
 //
 // Safety rules encoded here:
 //   * a reply is addressed to the sender (`@{name} ...`) and never starts with
-//     the order trigger (`CHAT_PREFIX`, default `@bot`), so the bot can never
-//     trigger itself or another bot;
+//     any order trigger (`CHAT_PREFIXES`/`CHAT_PREFIX`, default `@bot`), so the
+//     bot can never trigger itself or another bot;
 //   * the text is clamped to a bounded length and stripped of newlines (the
 //     chat packet is one line and an over-long message is rejected by the
 //     adapter);
@@ -19,6 +19,59 @@
 //     reason the controller itself logged.
 
 export const DEFAULT_REPLY_MAX_LENGTH = 180;
+
+export const DEFAULT_CHAT_PREFIX = '@bot';
+
+// The triggers that start an order. One bot can answer to more than one (e.g.
+// `@bot` plus its own name): `CHAT_PREFIXES` is a comma/space separated list,
+// while the legacy single `CHAT_PREFIX` keeps working. Configuration order is
+// preserved (it is the display order in the greeting), duplicates and empty
+// entries are dropped, and `fallback` is used only when nothing is configured.
+// NOTE: two bots on the same server must use *distinct* prefixes, otherwise a
+// shared trigger makes both of them act on the same message.
+export function normalizePrefixes (value, { fallback = DEFAULT_CHAT_PREFIX } = {}) {
+  const raw = Array.isArray(value) ? value : [value];
+  const out = [];
+  for (const item of raw) {
+    for (const part of String(item ?? '').split(/[\s,]+/)) {
+      const prefix = part.trim().toLowerCase();
+      if (prefix && !out.includes(prefix)) out.push(prefix);
+    }
+  }
+  if (out.length) return out;
+  return fallback ? normalizePrefixes(fallback, { fallback: null }) : [];
+}
+
+// I trigger che identificano il bot stesso: il nome di autenticazione
+// (`BEDROCK_USERNAME`, esposto da `observe().self.username`) e, appena il server
+// lo attribuisce, il gamertag reale imparato dall'eco (`observe().self.name` —
+// può differire dal primo, osservato live). Serve a farsi chiamare per nome: con
+// più bot sullo stesso server ognuno risponde al proprio. `enabled: false`
+// (`CHAT_SELF_NAME=off`) li spegne e lascia solo `CHAT_PREFIXES`.
+export function selfPrefixes (self, { enabled = true } = {}) {
+  if (!enabled) return [];
+  const out = [];
+  for (const name of [self?.username, self?.name]) {
+    const clean = String(name ?? '').trim().replace(/^@+/, '');
+    if (!clean) continue;
+    const prefix = `@${clean.toLowerCase()}`;
+    if (!out.includes(prefix)) out.push(prefix);
+  }
+  return out;
+}
+
+// Which configured trigger (if any) starts this chat line, and what is left
+// after it. Longest prefix wins, so `@bot1` is not mistaken for `@bot`.
+// Returns `{ prefix, rest }` or null.
+export function matchChatPrefix (message, prefixes = DEFAULT_CHAT_PREFIX) {
+  const text = String(message ?? '').trim();
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  for (const prefix of [...normalizePrefixes(prefixes)].sort((a, b) => b.length - a.length)) {
+    if (lower.startsWith(prefix)) return { prefix, rest: text.slice(prefix.length).trim() };
+  }
+  return null;
+}
 
 // `{name}` is the sender, `{objective}` the plan objective, `{steps}` the action
 // count, `{reason}` the failure/cancel reason.
@@ -85,9 +138,8 @@ export function orderOutcome ({
 }
 
 // The reply must never look like an order to the bot itself (or to another bot
-// reading the same channel): `<trigger> ...` at the start is refused.
-export function isSelfTriggering (message, prefix = '@bot') {
-  const trig = String(prefix ?? '').toLowerCase();
-  if (!trig) return false;
-  return String(message ?? '').trim().toLowerCase().startsWith(trig);
+// reading the same channel): `<trigger> ...` at the start is refused, for every
+// configured trigger (`prefix` may be a string or a list).
+export function isSelfTriggering (message, prefixes = DEFAULT_CHAT_PREFIX) {
+  return matchChatPrefix(message, prefixes) != null;
 }
