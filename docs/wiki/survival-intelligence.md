@@ -383,3 +383,38 @@ step budget on instant `busy` replies; `controller.mjs` now retries with
 real steps, `GOAL MET after 2 actions`).
 
 See [open-questions](open-questions.md) and [verification](verification.md).
+
+## The executable survival ladder (M6.5, 04/10/2026)
+
+The governor already published *needs* (`survival/needs.mjs`, `deriveNeeds`);
+what was missing was an actuator that turns a need into an action **without
+asking the model**. `survival/resolver.mjs` now exports the ladder:
+
+- `NEED_INTENTS` maps each need onto intents (`survive → heal/eat/escape/shelter`,
+  `surface → surface/swim/ascend`, `obtain_food → eat/smelt/collect/craft`, …),
+  and `PREFIX_INTENTS` gained `/^harvest_/ → collect/mine`.
+- `INTENT_URGENCY` orders intents globally (`surface, swim, ascend, escape,
+  fight, heal, eat, sleep, shelter, build, smelt, craft`) and `PREFERRED_KEYS`
+  maps an intent onto its action keys (`escape: flee → move_to_safe → avoid_lava →
+  dodge_projectile → retreat → go_home`, `heal: eat → sleep → equip_armor`, …).
+- `chooseNeedAction({governor, options})` returns `{key, intent, need, source}`:
+  in `emergency` it follows the **rule's own intent order** (`allowedIntents` is
+  the policy: a critical-health rule heals first, a creeper rule escapes first)
+  and appends the intents derived from the needs; outside emergency it follows
+  the needs. It never picks `wait`: if no action exists the decision goes back
+  to the model. Progressive needs are deliberately not mapped.
+
+Action side: drowning now needs air below `DROWNING_AIR = 60` (was 8) and the
+adapter offers **`surface`** (`SURFACE_AIR_ALERT = 150`) when the head is in
+water and the air budget is running out — `_shoreCell()` picks the nearest
+standable cell at 3…16 blocks and moves to it, reporting
+`no_shore`/`still_underwater` honestly. The controller executes the ladder
+before the model and logs it as `SURVIVAL <INTENT> <key> -> azione
+deterministica (<rule>)`, with the `survival_need` event.
+
+Tests: `tests/survival-ladder.test.mjs` (7) and
+`tests/bedrock-surface-action.test.mjs` (6). Live evidence (04/10): the log
+shows `SURVIVAL ESCAPE go_home`, `SURVIVAL HEAL sleep`, `SURVIVAL SHELTER
+close_door` on their own; the drowning branch still waits for a live round
+underwater. See [crafting](crafting.md) for the stage that follows the
+survival need.

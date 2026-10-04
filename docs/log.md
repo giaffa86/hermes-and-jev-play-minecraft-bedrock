@@ -1,5 +1,23 @@
 # Log
 
+## [2026-10-04] ingest | Material sourcing: the inventory first, then the chests, never a building
+
+A human order to build something declares it in `plan.targets`; the harness now
+derives the recipe, what is missing and *where* each missing ingredient can be
+taken — a craftable intermediate already held (`craft_oak_planks`), a known
+chest (`take_oak_planks`), or a natural block only if that option is already
+offered. `observe().craft` exposes `{rule, targets, needs, next}` and the
+controller runs that step deterministically (`CRAFT SOURCE …`, `craft_source`
+event, anti-loop exonerated), so the model is not consulted again. Buildings are
+not a source structurally: the mining census is a whitelist of natural blocks
+and `DIG_PROTECTED` covers the dig paths. Same round: food corrections — eggs
+are not food (cake/pumpkin-pie ingredient) and a raw potato counts only below
+`STARVING_FOOD = 4`, so a hurt bot eats instead of going to gather. Tests:
+`tests/bedrock-craft-source.test.mjs` (11), `tests/controller-craft-source.test.mjs`
+(2), suite **1285 pass / 0 fail**. New page: [crafting](wiki/crafting.md); the
+survival ladder (need → intent → action, `surface` for drowning) is documented in
+[survival-intelligence](wiki/survival-intelligence.md). Not deployed yet.
+
 ## [2026-10-04] feat | Chat M6.2: the bot answers to its own name (`CHAT_SELF_NAME`)
 
 `CHAT_PREFIXES` is static; the bot's **own name** is not, and it is the most
