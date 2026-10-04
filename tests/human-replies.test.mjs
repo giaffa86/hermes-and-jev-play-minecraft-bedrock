@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   orderAck, orderOutcome, clampMessage, renderReply, isSelfTriggering,
-  normalizePrefixes, matchChatPrefix, DEFAULT_CHAT_PREFIX,
+  normalizePrefixes, matchChatPrefix, selfPrefixes, DEFAULT_CHAT_PREFIX,
   DEFAULT_REPLY_MAX_LENGTH,
 } from '../human-replies.mjs';
 
@@ -103,4 +103,20 @@ test('clampMessage collapses whitespace, trims and truncates', () => {
 test('renderReply leaves unknown placeholders empty and clamps the result', () => {
   assert.equal(renderReply('a {one} b {two}', { one: '1' }, 50), 'a 1 b');
   assert.equal(renderReply('{a}{b}{c}', {}, 50), '');
+});
+
+test('the bot can be called by its own name: auth name and learned gamertag', () => {
+  assert.deepEqual(selfPrefixes({ username: 'hermes-bot', name: null }), ['@hermes-bot']);
+  assert.deepEqual(selfPrefixes({ username: 'hermes-bot', name: 'Miner' }), ['@hermes-bot', '@miner']);
+  assert.deepEqual(selfPrefixes({ username: 'Miner', name: 'miner' }), ['@miner'], 'niente doppioni');
+  assert.deepEqual(selfPrefixes({ username: '@Miner' }), ['@miner'], 'la chiocciola non si raddoppia');
+  assert.deepEqual(selfPrefixes({ username: '  ' }), []);
+  assert.deepEqual(selfPrefixes(null), []);
+  assert.deepEqual(selfPrefixes({ username: 'Miner', name: 'Ale' }, { enabled: false }), [], 'CHAT_SELF_NAME=off');
+});
+
+test('a name trigger is matched like any other prefix, longest wins', () => {
+  const prefixes = normalizePrefixes([...normalizePrefixes('@bot'), ...selfPrefixes({ username: 'hermes-bot' })]);
+  assert.deepEqual(matchChatPrefix('@Hermes-Bot prendi la terra', prefixes), { prefix: '@hermes-bot', rest: 'prendi la terra' });
+  assert.deepEqual(matchChatPrefix('@bot prendi la terra', prefixes), { prefix: '@bot', rest: 'prendi la terra' });
 });

@@ -41,7 +41,7 @@ process.stdout.write(next);
 // Scripted harness. `chatFrom` is the sender of the order injected from the
 // second observation on; `calls` records every request so the test can inspect
 // the `/say` traffic.
-function startChatHarness ({ chatFrom = 'Ale', chatMessage = '@bot prendi la terra', chatAgeMs = 0 } = {}) {
+function startChatHarness ({ chatFrom = 'Ale', chatMessage = '@bot prendi la terra', chatAgeMs = 0, self = { username: 'hermes-bot', name: null } } = {}) {
   return new Promise(resolve => {
     const calls = [];
     let observes = 0;
@@ -52,6 +52,9 @@ function startChatHarness ({ chatFrom = 'Ale', chatMessage = '@bot prendi la ter
       position: { x: 0, y: 64, z: 0 },
       inventory: { dirt: 1 },
       health: 20, food: 20, dead: false, spawned: true,
+      // M6.2: come l'adapter, l'osservazione dichiara chi è il bot: `username`
+      // (BEDROCK_USERNAME) e `name` (gamertag imparato dall'eco).
+      self,
       time: { ticks: 1000, night: false, phase: 'day' },
       entities: [], humans: [], dropped: [], containers: [],
       chat: observes >= 2 && chatFrom
@@ -394,7 +397,7 @@ test('without System One a question is refused, not turned into an order (M6.1)'
     assert.equal(says.length, 1, `un solo rifiuto (got ${JSON.stringify(says)})`);
     assert.match(says[0], /^@Ale /);
     assert.match(says[0], /non ho capito la domanda/);
-    assert.match(says[0], /@bot <ordine>/, 'il rifiuto mostra la via d\'uscita verso gli ordini');
+    assert.match(says[0], /@bot( o @[^ ]+)* <ordine>/, 'il rifiuto mostra la via d\'uscita verso gli ordini');
 
     const events = readEvents(runId);
     assert.equal(events.some(e => e.type === 'chat_command'), false, 'nessun ordine creato');
@@ -533,6 +536,70 @@ test('without System One a plain order still works (no silent channel)', async (
     const events = readEvents(runId);
     assert.ok(events.some(e => e.type === 'chat_command'), 'loggato come comando');
     assert.equal(events.some(e => e.type === 'chat_question'), false, 'nessuna risposta: non è stato interpretato');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+test('the bot answers to its own auth name (BEDROCK_USERNAME)', async () => {
+  const harness = await startChatHarness({
+    chatFrom: 'Ale', chatMessage: '@hermes-bot prendi la terra',
+    self: { username: 'hermes-bot', name: null },
+  });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-selfname-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController(baseEnv(runId, harness.port, fake.dir));
+    assert.equal(code, 0);
+    assert.match(stdout, /IDLE -> goal \S+ from Ale: /, 'chiamato per nome, l\'ordine è accettato');
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say');
+    assert.ok(says.some(c => /^@Ale ok: /.test(String(c.payload?.message ?? ''))), 'ack al mittente');
+    const cmd = readEvents(runId).find(e => e.type === 'chat_command');
+    assert.equal(cmd?.prefix, '@hermes-bot', 'il trigger riconosciuto è il nome, non @bot');
+    assert.equal(cmd?.message, 'prendi la terra', 'il nome è stato rimosso dal messaggio');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+test('the bot answers to the gamertag the server gave it (learned at runtime)', async () => {
+  const harness = await startChatHarness({
+    chatFrom: 'Ale', chatMessage: '@Miner prendi la terra',
+    self: { username: 'hermes-bot', name: 'Miner' },
+  });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-ownname-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController(baseEnv(runId, harness.port, fake.dir));
+    assert.equal(code, 0);
+    assert.match(stdout, /IDLE -> goal \S+ from Ale: /, 'il gamertag appreso è un trigger');
+    const cmd = readEvents(runId).find(e => e.type === 'chat_command');
+    assert.equal(cmd?.prefix, '@miner', 'trigger normalizzato in minuscolo');
+    assert.equal(cmd?.message, 'prendi la terra');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+test('CHAT_SELF_NAME=off leaves only the configured triggers', async () => {
+  const harness = await startChatHarness({
+    chatFrom: 'Ale', chatMessage: '@hermes-bot prendi la terra',
+    self: { username: 'hermes-bot', name: 'Miner' },
+  });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-noselfname-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({ ...baseEnv(runId, harness.port, fake.dir), CHAT_SELF_NAME: 'off' });
+    assert.equal(code, 0);
+    assert.equal(stdout.includes('from Ale'), false, 'senza i nomi il messaggio non è un ordine');
+    assert.equal(harness.calls.filter(c => c.method === 'POST' && c.path === '/say').length, 0, 'nessun ack');
+    assert.equal(readEvents(runId).some(e => e.type === 'chat_command'), false);
   } finally {
     harness.server.close();
     rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });

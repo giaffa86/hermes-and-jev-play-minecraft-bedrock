@@ -29,7 +29,7 @@ import {
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
 import {planGreetings, DEFAULT_GREETING_TEMPLATE, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
-import {orderAck, orderOutcome, isSelfTriggering, normalizePrefixes, matchChatPrefix, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
+import {orderAck, orderOutcome, isSelfTriggering, normalizePrefixes, matchChatPrefix, selfPrefixes, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
 import {answerIntent, renderAnswer, renderUnrouted} from './human-questions.mjs';
 import {resolveQuestionIntent, DEFAULT_INTENT_TIMEOUT_MS, DEFAULT_INTENT_MIN_P} from './chat-intent.mjs';
 import {systemOneDecide} from './system-one.mjs';
@@ -77,6 +77,16 @@ const ANTI_LOOP_COOLDOWN = +(process.env.ANTI_LOOP_COOLDOWN || 3);
 const CHAT_CONTROL = process.env.CHAT_CONTROL || (process.env.CHAT_ALLOWLIST ? 'on' : 'off');
 const CHAT_ALLOWLIST = new Set((process.env.CHAT_ALLOWLIST || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
 const CHAT_PREFIXES = normalizePrefixes([process.env.CHAT_PREFIXES, process.env.CHAT_PREFIX].filter(Boolean));
+// M6.2: il bot risponde anche al proprio nome. `observe().self` espone
+// `username` (`BEDROCK_USERNAME`, noto all'avvio) e `name` (il gamertag che il
+// server attribuisce al bot, imparato dall'eco in `selfName`): il secondo arriva
+// solo a runtime, quindi i prefissi si compongono a ogni osservazione. Con più
+// bot sullo stesso server ognuno risponde al proprio nome; `CHAT_SELF_NAME=off`
+// spegne i nomi e lascia solo `CHAT_PREFIXES`.
+const CHAT_SELF_NAME = (process.env.CHAT_SELF_NAME ?? 'on').toLowerCase() !== 'off';
+function chatPrefixes (observation = null) {
+  return normalizePrefixes([...CHAT_PREFIXES, ...selfPrefixes(observation?.self, {enabled: CHAT_SELF_NAME})]);
+}
 const humanCommandSeen = new Set(); // dedup: un comando già eseguito non si ripete
 const ignoredChatSeen = new Set(); // dedup della telemetria: un messaggio rifiutato si logga una volta
 // Un ordine vecchio non va rieseguito: l'inbox dell'harness conserva gli ultimi
@@ -460,7 +470,7 @@ async function resolveQuestion (obs, entry) {
     });
     return decision;
   }
-  const answer = answerIntent(decision.id, obs, {prefixes: CHAT_PREFIXES, maxLength: CHAT_REPLY_MAX_LENGTH});
+  const answer = answerIntent(decision.id, obs, {prefixes: entry.prefixes ?? CHAT_PREFIXES, maxLength: CHAT_REPLY_MAX_LENGTH});
   if (!answer) {
     // Intento in catalogo ma fatto assente (es. inventario vuoto): stesso rifiuto.
     log('chat_unrouted', {
@@ -478,11 +488,12 @@ async function resolveQuestion (obs, entry) {
 async function maybeHumanCommand (obs) {
   if (CHAT_CONTROL === 'off' || !CHAT_ALLOWLIST.size) return null;
   const chat = obs.chat || [];
+  const prefixes = chatPrefixes(obs);
   for (let i = chat.length - 1; i >= 0; i--) {
     const entry = chat[i];
     const text = String(entry.message || '').trim();
     // `@bot1` non deve essere letto come `@bot`: vince il prefisso più lungo.
-    const match = matchChatPrefix(text, CHAT_PREFIXES);
+    const match = matchChatPrefix(text, prefixes);
     if (!match) continue;
     // Età del messaggio: se l'adapter ha timbrato `at`, un ordine più vecchio
     // della finestra è storia, non un comando (fail-open se `at` manca).
@@ -511,20 +522,20 @@ async function maybeHumanCommand (obs) {
     // domanda. Se lo è, si risponde e si passa al messaggio successivo: nessun
     // goal nasce. Se sembrava una domanda ma il router non ha deciso, si dice
     // che non si è capito — sempre senza creare goal.
-    const question = await resolveQuestion(obs, {...entry, message, prefix: match.prefix});
+    const question = await resolveQuestion(obs, {...entry, message, prefix: match.prefix, prefixes});
     if (question?.action === 'answer' && question.answer) {
-      await replyChat(renderAnswer({from: entry.from, answer: question.answer, maxLength: CHAT_REPLY_MAX_LENGTH}), {to: entry.from, context: 'question'});
+      await replyChat(renderAnswer({from: entry.from, answer: question.answer, maxLength: CHAT_REPLY_MAX_LENGTH}), {to: entry.from, context: 'question', prefixes});
       continue;
     }
     if (question?.action === 'unrouted') {
-      await replyChat(renderUnrouted({from: entry.from, prefixes: CHAT_PREFIXES, maxLength: CHAT_REPLY_MAX_LENGTH}), {to: entry.from, context: 'unrouted'});
+      await replyChat(renderUnrouted({from: entry.from, prefixes, maxLength: CHAT_REPLY_MAX_LENGTH}), {to: entry.from, context: 'unrouted', prefixes});
       continue;
     }
     log('chat_command', {from: entry.from, xuid: entry.xuid, prefix: match.prefix, message});
     const plan = await humanCommandPlan(obs, {...entry, message});
     // M5: conferma dell'ordine in chat. Best-effort (l'adapter applica rate
     // limit e lunghezza); l'esito arriva alla chiusura del goal.
-    await replyChat(orderAck({from: entry.from, plan, maxLength: CHAT_REPLY_MAX_LENGTH}), {to: entry.from, context: 'ack'});
+    await replyChat(orderAck({from: entry.from, plan, maxLength: CHAT_REPLY_MAX_LENGTH}), {to: entry.from, context: 'ack', prefixes});
     return {plan, entry: {...entry, message}};
   }
   return null;
@@ -533,9 +544,9 @@ async function maybeHumanCommand (obs) {
 // Risposta in chat (M5): una riga, indirizzata al mittente, mai scatenante
 // (`@<nome> ...`, non `@bot ...`). Ritorna l'esito del POST /say e non lancia
 // mai: il canale resta best-effort come il saluto.
-async function replyChat (message, {to = null, context = null} = {}) {
+async function replyChat (message, {to = null, context = null, prefixes = CHAT_PREFIXES} = {}) {
   if (!CHAT_REPLY || !message) return null;
-  if (isSelfTriggering(message, CHAT_PREFIXES)) {
+  if (isSelfTriggering(message, prefixes)) {
     log('chat_reply_refused', {to, context, message, reason: 'would_trigger_the_bot'});
     return {ok: false, error: 'would_trigger_the_bot'};
   }
@@ -550,10 +561,11 @@ async function replyChat (message, {to = null, context = null} = {}) {
 // log. Un saluto per umano: dedup per gamertag, non per passo.
 async function maybeGreetHumans (obs) {
   if (!CHAT_GREET || !obs?.spawned) return;
+  const prefixes = chatPrefixes(obs);
   const greetings = planGreetings({
     humans: obs.humans || [],
     allowlist: CHAT_ALLOWLIST,
-    prefixes: CHAT_PREFIXES,
+    prefixes,
     greeted: greetedHumans,
     now: Date.now(),
     cooldownMs: CHAT_GREET_COOLDOWN_MS,
@@ -565,7 +577,7 @@ async function maybeGreetHumans (obs) {
     // ogni passo (niente spam verso il server né nei log).
     greetedHumans.set(greet.username.toLowerCase(), Date.now());
     const result = await api('POST', '/say', {message: greet.message}).catch(error => ({ok: false, error: error.message}));
-    log('chat_greet', {to: greet.username, distance: greet.distance, prefixes: CHAT_PREFIXES, message: greet.message, ok: !!result?.ok, error: result?.error ?? null});
+    log('chat_greet', {to: greet.username, distance: greet.distance, prefixes, message: greet.message, ok: !!result?.ok, error: result?.error ?? null});
     console.log(`GREET ${greet.username}: ${greet.message}`);
   }
 }

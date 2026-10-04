@@ -79,6 +79,7 @@ ANTI_LOOP_COOLDOWN=3    # steps the blocked key stays excluded
 CHAT_ALLOWLIST=<gamertag-o-xuid>   # comma-separated; enables @bot control (default prefix)
 CHAT_PREFIXES=@bot                 # triggers accepted, comma/space separated (default @bot)
 CHAT_PREFIX=@bot                   # legacy single trigger; summed into CHAT_PREFIXES
+CHAT_SELF_NAME=on                  # also accept @BEDROCK_USERNAME and the gamertag the server gives the bot
 CHAT_CONTROL=on                    # on/off; default on when CHAT_ALLOWLIST is set
 # Proactive greeting: a trusted human nearby is told the order syntax via POST /say
 CHAT_GREET=on                      # default on when the channel is open

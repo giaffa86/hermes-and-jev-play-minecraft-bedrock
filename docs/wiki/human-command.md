@@ -91,6 +91,10 @@ human chat message
   (`looksLikeQuestion`) and the Jev pre-filter: an order never pays a model call
   before its ack, and a question-shaped message the router cannot decide is
   refused instead of becoming `follow <sender>`.
+- **M6.2 — call the bot by name** ✅ the bot also answers to its own name:
+  `@<BEDROCK_USERNAME>` and the gamertag the server attributes to it
+  (`observe().self`, learned from the chat echo), composed per observation by
+  `chatPrefixes(obs)`; `CHAT_SELF_NAME=off` disables them.
 
 ## Live evidence (2026-10-03, BDS 1.26.52 via CT 108, VM 100 container)
 
@@ -200,6 +204,39 @@ bots accept the same order.
   syntax list) and `tests/controller-chat-ack.test.mjs` (an order sent with the
   second trigger is acked and the prefix is stripped; a message with an
   unconfigured prefix is ignored, no reply and no `chat_command`).
+
+### Calling the bot by name (M6.2)
+
+`CHAT_PREFIXES` is **static** (it comes from the environment), but the most
+natural way to address a bot is its **name** — and with several bots on one
+server the name is the only trigger that cannot collide by configuration. The
+harness now says who the bot is: `observe().self` carries `username`
+(`BEDROCK_USERNAME`, known at startup) and `name` (the gamertag the server
+attributes to the bot, learned from the chat echo in `selfName` — live it
+differed from the username, 8 vs 10 characters, so both are kept).
+
+- **Composition**: `chatPrefixes(obs)` in `controller.mjs` = `CHAT_PREFIXES`
+  **plus** `selfPrefixes(observe().self)` (`human-replies.mjs`: `@` + lowercased
+  name, stripped of any leading `@`, deduped). Nothing to configure: the list is
+  rebuilt on every observation, so the learned gamertag starts working as soon as
+  the server reveals it.
+- **Everywhere the triggers are used**: order matching (`matchChatPrefix`), the
+  question path (`answerIntent`), the refusal (`renderUnrouted`), the reply
+  guard (`isSelfTriggering`) and the greeting syntax hint (`{prefixes}`) all take
+  the same composed list, so a reply can never trigger the bot through its own
+  name either.
+- **`CHAT_SELF_NAME=off`** disables the name triggers and leaves only
+  `CHAT_PREFIXES` (useful when a name is also a common word, or when a human
+  named like the bot is in the allowlist).
+- **Caveat with several bots**: matching is `startsWith` with the **longest**
+  trigger first, so triggers must not be prefixes of each other — a bot called
+  `@hermes` would also accept `@hermes2 ...`. Prefer clearly distinct names (or
+  distinct `CHAT_PREFIXES`).
+- **Tests**: `tests/human-replies.test.mjs` (`selfPrefixes`: username + learned
+  name, dedupe, doubled `@` not doubled, blank entries, `enabled: false`) and
+  `tests/controller-chat-ack.test.mjs` (an order with `@<BEDROCK_USERNAME>` or
+  with the learned gamertag is acked and `chat_command.prefix` is the name, not
+  `@bot`; `CHAT_SELF_NAME=off` leaves the message an ordinary chat line).
 
 ## Chat questions (M6): a router picks the intent, the facts write the answer
 

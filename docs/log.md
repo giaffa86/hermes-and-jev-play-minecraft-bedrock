@@ -1,5 +1,23 @@
 # Log
 
+## [2026-10-04] feat | Chat M6.2: the bot answers to its own name (`CHAT_SELF_NAME`)
+
+`CHAT_PREFIXES` is static; the bot's **own name** is not, and it is the most
+natural way to address it. `observe().self` now exposes `username`
+(`BEDROCK_USERNAME`) and `name` (the gamertag the server attributes to the bot,
+learned from the chat echo — live it differed from the username). `chatPrefixes(obs)`
+composes `CHAT_PREFIXES` with `selfPrefixes(observe().self)`
+(`human-replies.mjs`: `@` + lowercased name, deduped, rebuilt on every
+observation so the learned gamertag works as soon as the server reveals it). The composed
+list is used everywhere the triggers are: order matching, the question path, the
+refusal, the reply guard (`isSelfTriggering`), the greeting syntax hint.
+`CHAT_SELF_NAME=off` leaves only `CHAT_PREFIXES`. With several bots each answers
+to its own name, but triggers must not be prefixes of each other (matching is
+`startsWith` with the longest first: `@hermes` would also accept `@hermes2 ...`).
+Docs: `wiki/human-command.md` §M6.2, `wiki/verification.md` row 18, `sources.md`,
+`index.md`, `.env.example`, `AGENTS.md`, `BEDROCK.md`. Tests 1195/1195
+(`human-replies`, `controller-chat-ack`).
+
 ## [2026-10-04] ingest | Chat questions M6.1: a router failure is not an order
 
 The M6 question path failed **open**: with an unreachable Jev, `@bot quanti cuori

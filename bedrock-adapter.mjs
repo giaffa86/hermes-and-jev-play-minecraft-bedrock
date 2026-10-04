@@ -3491,6 +3491,11 @@ export class BedrockAdapter {
     const fluids = this._fluidsView();
     return {
       step: this.recent.length,
+      // M6.2: chi è il bot. `username` è il nome di autenticazione
+      // (`BEDROCK_USERNAME`); `name` è il gamertag che il server attribuisce al
+      // bot, imparato dall'eco (può differire dal primo). Il controller li usa
+      // come trigger chat: il bot risponde anche se lo si chiama per nome.
+      self: {username: USERNAME, name: this.selfName ?? null},
       position: this.pos(),
       health: this.health,
       food: this.food,

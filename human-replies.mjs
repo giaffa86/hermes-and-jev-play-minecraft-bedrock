@@ -42,6 +42,24 @@ export function normalizePrefixes (value, { fallback = DEFAULT_CHAT_PREFIX } = {
   return fallback ? normalizePrefixes(fallback, { fallback: null }) : [];
 }
 
+// I trigger che identificano il bot stesso: il nome di autenticazione
+// (`BEDROCK_USERNAME`, esposto da `observe().self.username`) e, appena il server
+// lo attribuisce, il gamertag reale imparato dall'eco (`observe().self.name` —
+// può differire dal primo, osservato live). Serve a farsi chiamare per nome: con
+// più bot sullo stesso server ognuno risponde al proprio. `enabled: false`
+// (`CHAT_SELF_NAME=off`) li spegne e lascia solo `CHAT_PREFIXES`.
+export function selfPrefixes (self, { enabled = true } = {}) {
+  if (!enabled) return [];
+  const out = [];
+  for (const name of [self?.username, self?.name]) {
+    const clean = String(name ?? '').trim().replace(/^@+/, '');
+    if (!clean) continue;
+    const prefix = `@${clean.toLowerCase()}`;
+    if (!out.includes(prefix)) out.push(prefix);
+  }
+  return out;
+}
+
 // Which configured trigger (if any) starts this chat line, and what is left
 // after it. Longest prefix wins, so `@bot1` is not mistaken for `@bot`.
 // Returns `{ prefix, rest }` or null.
