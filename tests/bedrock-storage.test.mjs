@@ -492,3 +492,193 @@ test('the read walks with a short timeout, an explicit take keeps the generous o
   await adapter._ensureStorageOpen(chest).catch(() => {});
   assert.equal(walks[1].timeoutMs, 30000, 'il take mantiene il default');
 });
+
+// Live 04/10/2026: le opzioni `take_*` derivano dalla memoria durevole dei
+// contenitori (sopravvivono al riavvio) mentre `_cachedContainers` è la cache
+// runtime nata da una lettura: senza fallback l'opzione esisteva e l'azione
+// rispondeva `item_not_in_container` in millisecondi (`take_cobblestone`).
+// La memoria diventa quindi un bersaglio: il bot ci cammina e lo apre.
+test('a take falls back to a remembered container when the runtime cache is empty', async () => {
+  const adapter = storageAdapter();
+  const opened = [];
+  adapter.memory = {
+    findContainers: ({ limit }) => {
+      assert.equal(limit, 64, 'la memoria si interroga con un limite');
+      return [
+        { id: 'container_12_64_0', type: 'chest', position: { x: 12, y: 64, z: 0 }, contents: { dirt: 4 }, lastSeenAt: 111 },
+        { id: 'container_9_64_0', type: 'barrel', position: { x: 9, y: 64, z: 0 }, contents: { iron_ingot: 2 }, lastSeenAt: 222 },
+      ];
+    },
+  };
+  adapter._ensureStorageOpen = async target => {
+    opened.push(target.position);
+    adapter._openContainer = { id: 3, type: 'container' };
+    adapter._openContainerBlock = { name: target.name, position: target.position };
+    adapter._openContainerSlots = [{ network_id: 458, name: 'iron_ingot', count: 2, stack_id: 11 }];
+  };
+  const requests = [];
+  adapter._sendStackRequest = async actions => {
+    requests.push(`${actions[0].type_id}:${actions[0].source.slot_type.container_id}@${actions[0].source.slot}`);
+    return {
+      status: 'ok',
+      containers: [{ slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 2, item_stack_id: 33 }] }],
+    };
+  };
+  const events = [];
+  adapter.log = (type, data) => events.push([type, data]);
+  adapter._returnCursorToInventory = async () => { adapter._cursor = null; return true; };
+  const result = await adapter._takeFromContainer('iron_ingot');
+  assert.equal(result.ok, true, `il take dalla memoria riesce: ${JSON.stringify(result)}`);
+  assert.equal(result.remembered, true, 'il risultato dichiara la provenienza dalla memoria');
+  assert.equal(result.from, 'barrel', 'il contenitore ricordato è il bersaglio');
+  assert.deepEqual(opened[0], { x: 9, y: 64, z: 0 }, 'il bot apre il contenitore ricordato');
+  assert.deepEqual(requests, ['take:barrel@0']);
+  assert.equal(events[0][0], 'container_take_remembered', `log diagnostico: ${events.map(e => e[0]).join(', ')}`);
+  assert.equal(events[0][1].distance, 9, 'la distanza è quella della posizione ricordata');
+});
+
+test('a remembered container that no longer holds the item re-aligns and refuses', async () => {
+  const adapter = storageAdapter();
+  adapter.memory = {
+    findContainers: () => [{ id: 'container_9_64_0', type: 'chest', position: { x: 9, y: 64, z: 0 }, contents: { iron_ingot: 2 }, lastSeenAt: 222 }],
+  };
+  adapter._ensureStorageOpen = async target => {
+    adapter._openContainer = { id: 3, type: 'container' };
+    adapter._openContainerBlock = { name: target.name, position: target.position };
+    adapter._openContainerSlots = [{ network_id: 425, name: 'gold_ingot', count: 1, stack_id: 12 }];
+  };
+  let sent = 0;
+  adapter._sendStackRequest = async () => { sent++; return { status: 'ok', containers: [] }; };
+  assert.deepEqual(await adapter._takeFromContainer('iron_ingot'), { ok: false, error: 'item_not_in_container' });
+  assert.equal(sent, 0, 'nessuna transazione su un contenitore che non ha più l’item');
+  assert.deepEqual(adapter.containers.get('9,64,0').contents, { gold_ingot: 1 }, 'la cache si riallinea sul contenuto reale');
+});
+
+test('a take prefers the runtime cache and only then the memory', async () => {
+  const adapter = storageAdapter();
+  seedContainer(adapter, { x: 2, contents: { iron_ingot: 3 } });
+  let memoryAsked = 0;
+  adapter.memory = { findContainers: () => { memoryAsked++; return [{ type: 'chest', position: { x: 40, y: 64, z: 0 }, contents: { iron_ingot: 9 } }]; } };
+  const opened = [];
+  adapter._ensureStorageOpen = async target => {
+    opened.push(target.position.x);
+    adapter._openContainer = { id: 1, type: 'container' };
+    adapter._openContainerBlock = { name: target.name, position: target.position };
+    adapter._openContainerSlots = [{ network_id: 458, name: 'iron_ingot', count: 3, stack_id: 5 }];
+  };
+  adapter._sendStackRequest = async () => ({ status: 'ok', containers: [{ slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 3, item_stack_id: 70 }] }] });
+  adapter._returnCursorToInventory = async () => { adapter._cursor = null; return true; };
+  const result = await adapter._takeFromContainer('iron_ingot');
+  assert.equal(result.ok, true);
+  assert.equal(result.remembered, undefined, 'la cache fresca non è una lettura dalla memoria');
+  assert.deepEqual(opened, [2], 'si usa il contenitore appena letto, non quello più lontano in memoria');
+  assert.equal(memoryAsked, 0, 'con una cache che basta la memoria non serve');
+});
+
+test('a remembered item in a container the bot cannot reach is reported as such', async () => {
+  const adapter = storageAdapter();
+  adapter.memory = {
+    findContainers: () => [
+      { id: 'container_90_73_160', type: 'chest', position: { x: 90, y: 73, z: 160 }, contents: { iron_ingot: 731, gold_ingot: 144 } },
+      { id: 'container_91_73_160', type: 'chest', position: { x: 91, y: 73, z: 160 }, contents: { iron_ingot: 731 } },
+    ],
+  };
+  adapter._reachabilityUsable = () => true;
+  adapter.approachReachable = () => false;
+  const result = await adapter._takeFromContainer('iron_ingot');
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'container_unreachable', `non «non esiste»: ${JSON.stringify(result)}`);
+  assert.match(result.hint, /2 remembered container\(s\) hold iron_ingot/);
+});
+
+test('with an unusable reachability model the remembered container is tried anyway', async () => {
+  const adapter = storageAdapter();
+  adapter.memory = { findContainers: () => [{ id: 'c', type: 'chest', position: { x: 9, y: 64, z: 0 }, contents: { iron_ingot: 2 } }] };
+  adapter._reachabilityUsable = () => false;
+  adapter.approachReachable = () => { throw new Error('non deve essere interrogato'); };
+  const opened = [];
+  adapter._ensureStorageOpen = async target => {
+    opened.push(target.position.x);
+    adapter._openContainer = { id: 3, type: 'container' };
+    adapter._openContainerBlock = { name: target.name, position: target.position };
+    adapter._openContainerSlots = [{ network_id: 458, name: 'iron_ingot', count: 2, stack_id: 11 }];
+  };
+  adapter._sendStackRequest = async () => ({ status: 'ok', containers: [{ slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 2, item_stack_id: 33 }] }] });
+  adapter._returnCursorToInventory = async () => { adapter._cursor = null; return true; };
+  const result = await adapter._takeFromContainer('iron_ingot');
+  assert.equal(result.ok, true, `fail-open come le altre primitive: ${JSON.stringify(result)}`);
+  assert.deepEqual(opened, [9]);
+});
+
+test('take options survive a restart thanks to the remembered containers', () => {
+  const adapter = storageAdapter();
+  // Dopo un riavvio la cache runtime è vuota: le opzioni vengono dalla memoria.
+  adapter.memory = {
+    findContainers: () => [
+      { type: 'chest', position: { x: 92, y: 73, z: 165 }, contents: { bucket: 1 }, lastSeenAt: 1 },
+      { type: 'barrel', position: { x: 111, y: 72, z: 160 }, contents: { coal: 64 }, lastSeenAt: 2 },
+    ],
+  };
+  adapter._reachabilityUsable = () => true;
+  adapter.approachReachable = () => true;
+  const takes = adapter.options().filter(o => o.key.startsWith('take_'));
+  assert.deepEqual(takes.map(o => o.key), ['take_bucket', 'take_coal']);
+  assert.match(takes[0].description, /remembered: re-read on arrival/, `deve dichiarare la provenienza: ${takes[0].description}`);
+  assert.match(takes[0].description, /92/);
+});
+
+test('a remembered container out of the walkable component is not offered', () => {
+  const adapter = storageAdapter();
+  adapter.memory = {
+    findContainers: () => [
+      { type: 'chest', position: { x: 90, y: 73, z: 160 }, contents: { iron_ingot: 731 } },
+      { type: 'chest', position: { x: 92, y: 73, z: 165 }, contents: { bucket: 1 } },
+    ],
+  };
+  adapter._reachabilityUsable = () => true;
+  adapter.approachReachable = position => position.x === 92;
+  const takes = adapter.options().filter(o => o.key.startsWith('take_'));
+  assert.deepEqual(takes.map(o => o.key), ['take_bucket'], `solo il baule raggiungibile: ${takes.map(o => o.key).join(', ')}`);
+});
+
+test('the runtime cache wins over the memory for the same container', () => {
+  const adapter = storageAdapter();
+  seedContainer(adapter, { x: 2, contents: { iron_ingot: 3 } });
+  adapter.memory = { findContainers: () => [{ type: 'chest', position: { x: 2, y: 64, z: 0 }, contents: { iron_ingot: 99 } }] };
+  adapter._reachabilityUsable = () => true;
+  adapter.approachReachable = () => true;
+  const takes = adapter.options().filter(o => o.key.startsWith('take_'));
+  assert.equal(takes.length, 1, `nessun doppione per lo stesso baule: ${takes.map(o => o.key).join(', ')}`);
+  assert.doesNotMatch(takes[0].description, /remembered/, `la cache fresca non è «remembered»: ${takes[0].description}`);
+});
+
+test('a remembered container gets a longer walk budget than a cached one', async () => {
+  const adapter = storageAdapter();
+  const budgets = [];
+  adapter.memory = {
+    findContainers: () => [
+      { type: 'chest', position: { x: 92, y: 73, z: 165 }, contents: { bucket: 1 }, lastSeenAt: 5 },
+    ],
+  };
+  adapter._ensureStorageOpen = async (target, options = {}) => {
+    budgets.push({ from: target.remembered ? 'memory' : 'cache', walkTimeoutMs: options.walkTimeoutMs });
+    adapter._openContainer = { id: 2, type: 'container' };
+    adapter._openContainerSlots = [{ network_id: 77, name: target.remembered ? 'bucket' : 'dirt', count: 1, stack_id: 3 }];
+  };
+  adapter._sendStackRequest = async () => ({
+    status: 'ok',
+    containers: [{ slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 1, item_stack_id: 9 }] }],
+  });
+  adapter._returnCursorToInventory = async () => { adapter._cursor = null; return true; };
+  const remembered = await adapter._takeFromContainer('bucket');
+  assert.equal(remembered.ok, true, JSON.stringify(remembered));
+  // La camminata verso un baule ricordato può superare i 30 s (live 04/10/2026: 31 s
+  // per 21 blocchi, arrivando a tre blocchi dal bersaglio).
+  assert.deepEqual(budgets, [{ from: 'memory', walkTimeoutMs: 75000 }]);
+  budgets.length = 0;
+  seedContainer(adapter, { x: 2, contents: { dirt: 4 } });
+  adapter._openContainerSlots = [{ network_id: 77, name: 'dirt', count: 1, stack_id: 3 }];
+  const cached = await adapter._takeFromContainer('dirt');
+  assert.equal(cached.ok, true, JSON.stringify(cached));
+  assert.deepEqual(budgets, [{ from: 'cache', walkTimeoutMs: undefined }], 'la cache fresca tiene il default');
+});

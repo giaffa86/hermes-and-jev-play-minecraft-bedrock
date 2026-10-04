@@ -144,6 +144,12 @@ const STORAGE_READ_BUDGET_MS = 90000;
 // il watchdog dei 180 s e il BDS ha chiuso la sessione), mentre un `take_*`
 // esplicito tiene il timeout generoso.
 const STORAGE_READ_WALK_MS = 8000;
+// Un `take_*` su un contenitore *ricordato* può essere a venti e più blocchi: il
+// cammino verso la cassa del raccolto a (92,73,165) è durato 31 s per 21 blocchi
+// (live 04/10/2026, il bot è arrivato a tre blocchi dal baule quando il default di
+// 30 s è scaduto) e il tentativo successivo è riuscito in 546 ms. Il budget resta
+// dentro l'`HARNESS_ACTION_TIMEOUT_MS`, che è la rete di sicurezza dell'azione.
+const STORAGE_TAKE_WALK_MS = 75000;
 // TTL della cache contenitori: altri giocatori possono cambiare le scorte.
 const CONTAINER_TTL_MS = 5 * 60 * 1000;
 const DISCOVERY_RESCAN_MS = 15000;   // ri-scansione scoperte nella stessa chunk (mondo appena caricato)
@@ -3853,17 +3859,37 @@ export class BedrockAdapter {
     // nominati in `plan.targets` passano comunque per primi.
     const wantedItems = new Set(Object.keys(this.plan?.targets || {}));
     const takeEntries = [];
+    const seenContainers = new Set();
     for (const c of cached) {
+      seenContainers.add(this._containerCacheKey(c.position));
       let index = 0;
       for (const [item, count] of Object.entries(c.contents)) {
         if (!count) continue;
         takeEntries.push({ c, item, count, index: index++ });
       }
     }
+    // La cache runtime nasce da una lettura e scade; la memoria durevole invece
+    // sopravvive ai riavvii (una ventina di bauli in questo mondo). Un contenitore
+    // ricordato *raggiungibile* è un bersaglio legittimo: `_takeFromContainer` ci
+    // cammina e lo apre. La descrizione lo dichiara, così l'esito non sorprende, e
+    // la raggiungibilità gates l'offerta (mai un cammino che il pathfinding non regge).
+    for (const c of this._rememberedStorage()) {
+      const key = this._containerCacheKey(c.position);
+      if (seenContainers.has(key)) continue;
+      seenContainers.add(key);
+      let index = 0;
+      for (const [item, count] of Object.entries(c.contents)) {
+        if (!count) continue;
+        takeEntries.push({ c, item, count, index: index++, remembered: true });
+      }
+    }
     takeEntries.sort((a, b) =>
       (Number(wantedItems.has(b.item)) - Number(wantedItems.has(a.item))) || (a.index - b.index));
     for (const e of takeEntries.slice(0, 8)) {
-      o.push({ key: `take_${e.item}`, description: `Take ${e.count} ${e.item} from the ${e.c.type} at ${JSON.stringify(e.c.position)} (container has ${e.count})` });
+      const from = e.remembered
+        ? `the ${e.c.type} at ${JSON.stringify(e.c.position)} (remembered: re-read on arrival)`
+        : `the ${e.c.type} at ${JSON.stringify(e.c.position)} (container has ${e.count})`;
+      o.push({ key: `take_${e.item}`, description: `Take ${e.count} ${e.item} from ${from}` });
     }
     // Deposito: oggetti di valore verso il contenitore noto (o vicino) più prossimo.
     const depositTarget = cached.find(c => !this._reachabilityUsable() || this.approachReachable(c.position)) || reachableStorage[0];
@@ -6015,13 +6041,69 @@ export class BedrockAdapter {
     return { ok: true, read: read.length, containers: read, considered, truncated: considered > batch.length, budgetExceeded, ms: Date.now() - started };
   }
 
+  // La cache runtime nasce da una lettura e scade con `CONTAINER_TTL_MS`; la memoria
+  // dei contenitori invece sopravvive ai riavvii (una ventina di bauli in questo
+  // mondo). `take_*` attinge a entrambe, e questo helper è il lato memoria: un
+  // contenitore ricordato è un bersaglio solo se è raggiungibile (quando il modello
+  // di raggiungibilità è utilizzabile), e l'azione poi lo rilegge sul posto.
+  _rememberedStorage ({ limit = 64, reachableOnly = true } = {}) {
+    let remembered = [];
+    try { remembered = this.memory?.findContainers?.({ limit }) || []; }
+    catch (error) { this.log('memory_error', { message: error.message }); return []; }
+    const containers = remembered
+      .filter(c => c?.position && Object.values(c.contents || {}).some(count => count > 0))
+      .map(c => ({
+        key: this._containerCacheKey(c.position),
+        name: c.type || 'chest',
+        type: c.type || 'chest',
+        position: c.position,
+        contents: { ...c.contents },
+        distance: this._pointDistance(c.position),
+        rememberedAt: c.lastSeenAt ?? null,
+        remembered: true,
+      }))
+      .sort((a, b) => a.distance - b.distance);
+    // Stessa regola di `_readContainers`: il filtro vale solo con un modello di
+    // raggiungibilità utilizzabile, altrimenti si è fail-open.
+    if (!reachableOnly || !this._reachabilityUsable()) return containers;
+    return containers.filter(c => this.approachReachable(c.position));
+  }
+
+  _rememberedContainerFor (itemName, options = {}) {
+    const known = this._rememberedStorage({ ...options, reachableOnly: false })
+      .filter(c => (c.contents[itemName] || 0) > 0);
+    if (!known.length) return null;
+    const usable = this._reachabilityUsable();
+    const entry = usable ? known.find(c => this.approachReachable(c.position)) || null : known[0];
+    return { entry, known: known.length };
+  }
+
   async _takeFromContainer (itemName) {
-    const entry = this._cachedContainers().find(c => (c.contents[itemName] || 0) > 0);
-    if (!entry) return { ok: false, error: 'item_not_in_container' };
+    // Live 04/10/2026: l'opzione può essere stata generata da un contenitore in
+    // memoria mentre la cache runtime non lo ha (riavvio, o TTL scaduto fra
+    // l'offerta e l'esecuzione) — e viceversa la cache può essere stantia. Qui si
+    // accetta entrambe le sorgenti e si rilegge sempre il contenitore sul posto.
+    let entry = this._cachedContainers().find(c => (c.contents[itemName] || 0) > 0);
+    let remembered = false;
+    if (!entry) {
+      const fromMemory = this._rememberedContainerFor(itemName);
+      if (!fromMemory) return { ok: false, error: 'item_not_in_container' };
+      // La memoria lo sa ma nessuno di quei bauli è raggiungibile ora: dirlo, invece
+      // di negare che l'oggetto esista (la distinzione conta per chi legge l'esito).
+      if (!fromMemory.entry) {
+        return { ok: false, error: 'container_unreachable', hint: `${fromMemory.known} remembered container(s) hold ${itemName}, none is reachable now` };
+      }
+      entry = fromMemory.entry;
+      remembered = true;
+      this.log('container_take_remembered', {
+        item: itemName, block: entry.type, position: entry.position,
+        distance: Math.round(entry.distance * 10) / 10, rememberedAt: entry.rememberedAt,
+      });
+    }
     const before = this.inventory[itemName] || 0;
     const started = Date.now();
     try {
-      await this._ensureStorageOpen(entry);
+      await this._ensureStorageOpen(entry, remembered ? { walkTimeoutMs: STORAGE_TAKE_WALK_MS } : {});
       const slots = this._openContainerSlots || [];
       const slotIndex = slots.findIndex(s => this._slotItemName(s) === itemName && (s.count || 0) > 0);
       if (slotIndex < 0) {
@@ -6053,7 +6135,7 @@ export class BedrockAdapter {
       this._setContainerContents(entry, contents);
       const after = this.inventory[itemName] || 0;
       this.log('container_take', { block: entry.type, position: entry.position, item: itemName, count, inventoryDelta: after - before });
-      return { ok: true, item: itemName, count, from: entry.type, position: entry.position, inventoryDelta: after - before, ms: Date.now() - started };
+      return { ok: true, item: itemName, count, from: entry.type, position: entry.position, inventoryDelta: after - before, ms: Date.now() - started, ...(remembered ? { remembered: true } : {}) };
     } catch (error) {
       return { ok: false, error: error.message };
     } finally {

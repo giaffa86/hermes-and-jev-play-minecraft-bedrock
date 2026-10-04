@@ -231,16 +231,28 @@ Last lint: 2026-10-03.
   `movement timeout` failures for containers genuinely beyond the walkable component
   remain — they cost 30 s each when asked for explicitly.
 
-## Taking from a container: the option knows, the action must read (2026-10-04)
+## Taking from a container: the cache expires, the memory remembers (2026-10-04)
 
-- `take_<item>` is offered from the **durable** container memory
-  (`world-memory` keeps 27 chests across restarts), while `_takeFromContainer` looks the
-  container up in the **runtime** cache (`this.containers`, filled by a read and expiring
-  with `CONTAINER_TTL_MS`). Without a fresh `read_container`, the option exists and the
-  action answers `item_not_in_container` in milliseconds (`take_cobblestone`, live
-  04/10). Not a lie (the bot can still walk there and read), but the two sources should
-  be reconciled — either refresh the runtime cache on demand or say so in the option.
-- A **dirty cursor** used to paralyse the whole take path: the server validates the
+- `take_<item>` options came only from the **runtime** cache (`_cachedContainers()`, filled
+  by a read and expiring with `CONTAINER_TTL_MS`), so after a restart — the durable
+  container memory keeps 27 chests, the runtime cache is empty — **no `take_*` was
+  offered at all**, and an explicit `/act` answered `item_not_in_container` in
+  milliseconds (`take_cobblestone`, live 04/10: that branch fires when the cached
+  contents no longer match the window that actually opened, and it re-aligns the cache
+  before refusing). *(An earlier version of this note claimed the options came from the
+  durable memory — wrong: `options()` read `const cached = this._cachedContainers()`.)*
+- **Fixed the same day**: the option list merges both sources and a remembered container
+  is offered only when the walkable model says it is reachable, labelled
+  `(remembered: re-read on arrival)`. `_takeFromContainer` accepts either source, walks
+  with a dedicated budget (`STORAGE_TAKE_WALK_MS = 75000`) when the target comes from
+  memory, opens the container and re-reads it on the spot; if the memory declares the
+  item but no remembered container is reachable it answers `container_unreachable` with
+  `"<n> remembered container(s) hold <item>, none is reachable now"` instead of denying
+  the item exists. Live 04/10: after a restart, 8 `take_*` options all labelled
+  `remembered`, and `take_bucket` succeeded with `{ok:true, item:'bucket', from:'chest',
+  position:{x:92,y:73,z:165}, remembered:true, ms:546}` — the first attempt had spent the
+  old 30 s budget on the 21-block walk and timed out three blocks short.
+
   cursor as the destination of every `take` and answers `50` (`FailedToValidateDstSlot`)
   whenever it already holds a stack — even the same item. The local model could lose
   track of that stack (an optimistic `_cursor = null` after a failed place-back in

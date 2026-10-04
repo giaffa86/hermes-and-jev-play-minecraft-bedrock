@@ -3799,6 +3799,37 @@ CT 108 — the harness reconnected **on its own** within ~30 s with the inventor
 the container does not need to be restarted when only NetherNet dies; and `mount_donkey`
 reports `no_rideable_nearby` while no donkey is in the census.
 
+## [2026-10-04] feat | Container targets come from the durable memory (with a walk budget)
+
+`take_*` options came only from the **runtime** container cache (`_cachedContainers()`,
+filled by a read and expiring with `CONTAINER_TTL_MS`), so after a restart — when the
+durable memory still lists 27 chests — the bot was offered **no** `take_*` at all, and an
+explicit `/act` answered `item_not_in_container` in milliseconds (`take_cobblestone`,
+live 04/10: that branch fires when the cached contents no longer match the window that
+actually opened, and it re-aligns the cache before refusing). The option and the action
+were reading two different sources: now they read the same two.
+
+`options ()` merges the runtime cache with `_rememberedStorage()` — the remembered
+containers that hold items *and* are reachable when the walkable model is usable — and
+labels the memory-sourced entries `(remembered: re-read on arrival)`.
+`_takeFromContainer` accepts either source, walks to a remembered target with
+`STORAGE_TAKE_WALK_MS` (75 s) instead of the 30 s default, opens the container and
+re-reads it on the spot; when the memory declares the item but no remembered container is
+reachable it answers `container_unreachable` with
+`"<n> remembered container(s) hold <item>, none is reachable now"` instead of denying the
+item exists.
+
+The walk budget comes from a measurement: the first live attempt walked 21 blocks in
+31 s and timed out three blocks short of the chest (`movement timeout`), and the second
+attempt succeeded in 546 ms. Live evidence, after a container restart (empty runtime
+cache): `POST /plan {"objective":"Milk a cow","targets":{"bucket":1}}` → 8 `take_*`
+options all labelled `remembered`; `POST /act {"key":"take_bucket"}` →
+`{"ok":true,"item":"bucket","count":1,"from":"chest","position":{"x":92,"y":73,"z":165},
+"inventoryDelta":1,"ms":546,"remembered":true}`.
+
+Nine new cases in `tests/bedrock-storage.test.mjs` (suite **1122/1122**), including the
+typed refusal, the fail-open path with an unusable reachability model and the walk budget.
+
 ## [2026-10-04] fix | A dirty cursor paralysed the container take path; the offhand is slot 1
 
 `take_<item>` from a chest ended in `{"ok":false,"error":"take_failed_50"}` while the

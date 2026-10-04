@@ -193,6 +193,18 @@ Item movement, crafting and smelting are `item_stack_request` transactions
   aside), `place` → `offhand`/0 = `55` (`CannotPlaceItem`); an offhand-illegal item (kelp) is
   refused with `50` on both slots. `_equipShield` targets slot 1 and keeps slot 0 only as a
   fallback (`OFFHAND_SLOT` / `OFFHAND_FALLBACK_SLOT`).
+- **A container target can come from the durable memory too.** `options()` merges the
+  runtime cache (`_cachedContainers()`, expiring with `CONTAINER_TTL_MS`) with the
+  remembered containers that hold items *and* are reachable (`_rememberedStorage()`),
+  labelling the latter `(remembered: re-read on arrival)`. `_takeFromContainer` accepts
+  either source, walks to a remembered target with `STORAGE_TAKE_WALK_MS` (75 s) instead of
+  the 30 s default — a remembered chest can be twenty blocks away, and the live round of
+  04/10 spent the whole default on a 21-block walk, timing out three blocks short — then
+  opens the container and re-reads it. When the memory declares the item but no remembered
+  container is reachable it answers `container_unreachable` with
+  `"<n> remembered container(s) hold <item>, none is reachable now"` rather than denying
+  the item exists. Live 04/10: after a restart, 8 `take_*` options all `remembered`, and
+  `take_bucket` returned `{ok:true, item:'bucket', from:'chest', remembered:true, ms:546}`.
 - `POST /debug/isr` (BEDROCK_DEBUG) drives one stack request by hand
   (`type_id`/`count`/`source`/`destination`/…), can open a container first (`container`) and,
   with `apply`, records the answer in the local model — the same bookkeeping a real action
