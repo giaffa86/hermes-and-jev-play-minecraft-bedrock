@@ -4428,7 +4428,18 @@ export class BedrockAdapter {
     return o;
   }
 
-  async executeAction (key) {
+  async executeAction (key, parameters = {}) {
+    // A caller can bind a withdrawal to one known chest instead of letting an
+    // item-only key choose another chest holding the same item.
+    if (key?.startsWith('take_')) {
+      if (parameters.position !== undefined && (!parameters.position ||
+          !['x', 'y', 'z'].every(axis => Number.isSafeInteger(parameters.position[axis])))) {
+        return { ok: false, error: 'invalid_container_position' };
+      }
+      if (parameters.maxCount !== undefined && (!Number.isInteger(parameters.maxCount) || parameters.maxCount < 1 || parameters.maxCount > 64)) {
+        return { ok: false, error: 'invalid_take_count' };
+      }
+    }
     if (this.busy) return { ok: false, error: 'busy' };
     // 'wait' resta eseguibile durante una riconnessione; le altre azioni no.
     if (key !== 'wait' && (!this.client || !this.spawned || this.status !== 'spawned')) {
@@ -4439,7 +4450,7 @@ export class BedrockAdapter {
     this.busy = true;
     const started = Date.now();
     const actionController = new AbortController();
-    const actionContext = { signal: actionController.signal, construction: key.startsWith('construction_') };
+    const actionContext = { signal: actionController.signal, construction: key.startsWith('construction_'), take: parameters };
     let result;
     let watchdog = null;
     // Un'azione che non ritorna — la morte del bot a metà di una lettura di
@@ -4592,7 +4603,7 @@ export class BedrockAdapter {
       } else if (key === 'read_container') {
         result = await this._readContainers();
       } else if (key.startsWith('take_')) {
-        result = await this._takeFromContainer(key.slice('take_'.length));
+        result = await this._takeFromContainer(key.slice('take_'.length), context.take);
       } else if (key.startsWith('deposit_')) {
         result = await this._depositItem(key.slice('deposit_'.length));
       } else if (key.startsWith('place_')) {

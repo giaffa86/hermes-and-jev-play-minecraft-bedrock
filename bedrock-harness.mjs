@@ -706,8 +706,8 @@ server = createServer(async (req, res) => {
       response = [200, adapter.sendChat(payload.message, { type: payload.type })];
     }
     else if (req.method === 'POST' && req.url === '/act') {
-      const { key } = JSON.parse(body);
-      const result = await adapter.executeAction(key);
+      const { key, position, maxCount } = JSON.parse(body);
+      const result = await adapter.executeAction(key, { position, maxCount });
       if (key?.startsWith('construction_')) appendFileSync(`runs/${RUN}/construction.jsonl`, JSON.stringify({ at: Date.now(), action: key, result, construction: adapter.construction.view() }) + '\n');
       // Ogni tentativo finisce nel registro: anche i rifiuti prima del cantiere
       // (materiali mancanti, sito occupato) servono a leggere la run dopo.

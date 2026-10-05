@@ -77,6 +77,14 @@ Container access requires an explicit `authorizedContainers` list of integer
 storage are restricted to those containers. Tools, food and reserved construction
 materials are retained. Procurement choices remain subject to survival policy.
 
+For separate food or tool preparation, `POST /act` accepts a targeted withdrawal:
+`{"key":"take_bread","position":{"x":10,"y":64,"z":10},"maxCount":12}`.
+Coordinates must be integers and the quantity must be between 1 and 64. The
+specified container must be known to hold the item; an unavailable target fails
+without falling back to another chest. Item-only actions retain their existing
+nearest-container behavior, so use the explicit position when permission is
+limited to particular chests.
+
 A site must be loaded, empty and accessible, with known natural terrain where
 support is required. Existing matching buildings are not adopted as new work.
 Unknown blocks, occupied cells, obstructed routes and changed owned cells prevent

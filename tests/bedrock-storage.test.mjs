@@ -311,6 +311,52 @@ test('executeAction routes read_container, take_ and deposit_', async () => {
   assert.deepEqual(calls, ['read', 'take:iron_ingot', 'deposit:gold_ingot']);
 });
 
+test('a targeted take uses the requested chest and quantity even when a nearer chest holds the item', async () => {
+  const adapter = storageAdapter();
+  const nearer = seedContainer(adapter, { x: 2, contents: { iron_ingot: 20 } });
+  const authorized = seedContainer(adapter, { x: 8, contents: { iron_ingot: 20 } });
+  const opened = [];
+  adapter._ensureStorageOpen = async entry => {
+    opened.push(entry.position);
+    adapter._openContainerSlots = [{ network_id: 458, name: 'iron_ingot', count: 20, stack_id: 5 }];
+  };
+  let requestedCount;
+  adapter._sendStackRequest = async ([action]) => {
+    requestedCount = action.count;
+    return { status: 'ok', containers: [] };
+  };
+  adapter._returnCursorToInventory = async () => {
+    adapter.inventory.iron_ingot = requestedCount;
+    return true;
+  };
+  const result = await adapter.executeAction('take_iron_ingot', { position: authorized.position, maxCount: 2 });
+  assert.equal(result.ok, true);
+  assert.deepEqual(opened, [authorized.position]);
+  assert.deepEqual(result.position, authorized.position);
+  assert.equal(result.count, 2);
+  assert.equal(result.inventoryDelta, 2);
+  assert.equal(adapter.containers.get('2,64,0').contents.iron_ingot, nearer.contents.iron_ingot);
+});
+
+test('a targeted take never falls back to another chest if its target is unknown', async () => {
+  const adapter = storageAdapter();
+  seedContainer(adapter);
+  adapter._ensureStorageOpen = async () => assert.fail('no other chest may be opened');
+  assert.equal((await adapter.executeAction('take_iron_ingot', { position: { x: 99, y: 64, z: 0 } })).error, 'item_not_in_container');
+});
+
+test('targeted take rejects malformed coordinates and unbounded quantities before opening a chest', async () => {
+  const adapter = storageAdapter();
+  adapter._ensureStorageOpen = async () => assert.fail('invalid withdrawal must not open a chest');
+  for (const position of [null, {}, { x: 2.5, y: 64, z: 0 }, { x: 2, y: '64', z: 0 }]) {
+    assert.equal((await adapter.executeAction('take_iron_ingot', { position })).error, 'invalid_container_position');
+  }
+  for (const maxCount of [0, -1, 65, 1.5, '2']) {
+    assert.equal((await adapter.executeAction('take_iron_ingot', { maxCount })).error, 'invalid_take_count');
+  }
+  assert.equal(adapter.busy, false);
+});
+
 // Live 03/10: il contenuto di un container arriva in un pacchetto separato,
 // spesso qualche centinaio di ms dopo `container_open`. Con il vecchio
 // `delay(200)` fisso il take leggeva le slot della finestra **precedente** e
