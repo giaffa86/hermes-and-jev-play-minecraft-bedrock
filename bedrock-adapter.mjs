@@ -270,6 +270,23 @@ const HUMAN_RANGE = +(process.env.HUMAN_RANGE || 32);
 // event_id di level_event che parlano di sonno (players_sleeping/sleeping_players):
 // l'annuncio del server "qualcuno dorme", usato come conferma del sonno.
 const SLEEP_LEVEL_EVENTS = new Set([9800, 9801]);
+// Meteo: il server annuncia inizio/fine della pioggia e del temporale con i
+// level_event 3001..3004 (`event` arriva già come nome dal mapper di
+// bedrock-protocol, `event_id` come numero nei pacchetti generici). In vanilla
+// un temporale implica la pioggia e la fine della pioggia chiude anche il
+// temporale: i due flag si aggiornano insieme, così un evento perso non lascia
+// il temporale acceso per sempre. La finestra di sonno diventa "notte oppure
+// temporale, a qualunque ora" (https://minecraft.wiki/w/Bed).
+const WEATHER_LEVEL_EVENTS = new Map([
+  [3001, { rain: true }],
+  ['start_rain', { rain: true }],
+  [3002, { rain: true, thunder: true }],
+  ['start_thunder', { rain: true, thunder: true }],
+  [3003, { rain: false, thunder: false }],
+  ['stop_rain', { rain: false, thunder: false }],
+  [3004, { thunder: false }],
+  ['stop_thunder', { thunder: false }],
+]);
 // Recupero dell'umano perso ("wolf recovery"): oltre questa distanza l'ultima
 // posizione nota non e' piu' una traccia utile, e oltre questa eta' non lo e'
 // nemmeno un ricordo vecchio (il mondo cambia: il giocatore quasi certamente
@@ -428,6 +445,7 @@ export class BedrockAdapter {
     this.selfName = null;            // gamertag che il server attribuisce al bot (imparato dall'eco)
     this._playersByName = new Map(); // gamertag minuscolo -> runtimeId (chat -> entità da seguire)
     this._sleepLevelEventAt = 0;     // ultimo level_event di sonno ricevuto
+    this._weather = { rain: false, thunder: false, at: 0 }; // meteo dal level_event (3001..3004)
     this._playerBedPosition = null;  // player_bed_position dei metadata (letto di respawn)
     this._playerLastSeen = new Map(); // gamertag minuscolo -> { position, at } (ultima posizione nota)
     this.busy = false;
@@ -3978,11 +3996,16 @@ export class BedrockAdapter {
     if (food && (this.food < 18 || (this.health < 20 && this.food < 20))) {
       o.push({ key: 'eat', description: `Eat ${food} to restore hunger (hunger ${this.food}/20, health ${this.health}/20)` });
     }
-    if (this._isNight()) {
+    // Sonno: offerto di notte e durante un temporale (anche di giorno, come il
+    // vanilla: https://minecraft.wiki/w/Bed).
+    if (this._isSleepTime()) {
       const bed = this._findBed();
       // Nel Nether e nell'End il letto esplode: l'opzione non va offerta affatto,
       // altrimenti il planner sceglie un'azione che si autodistrugge.
-      if (bed && !bedsExplode(this.dimension)) o.push({ key: 'sleep', description: `Sleep in the bed at ${JSON.stringify(bed.position)} (${bed.distance} blocks away) before the night is dangerous` });
+      if (bed && !bedsExplode(this.dimension)) {
+        const why = this._isNight() ? 'before the night is dangerous' : 'to wait out the thunderstorm';
+        o.push({ key: 'sleep', description: `Sleep in the bed at ${JSON.stringify(bed.position)} (${bed.distance} blocks away) ${why}` });
+      }
     }
     // N1: portale. Camminare verso un portale ha senso solo se il censimento ne
     // ha visto uno (e la raggiungibilità lo conferma); costruire e accendere
@@ -10488,6 +10511,11 @@ export class BedrockAdapter {
     const raw = packet?.event_id ?? packet?.event;
     const id = Number(raw);
     const name = typeof packet?.event === 'string' ? packet.event : null;
+    const weather = WEATHER_LEVEL_EVENTS.get(id) || (name ? WEATHER_LEVEL_EVENTS.get(name) : null);
+    if (weather) {
+      this._setWeather(weather, { id: Number.isFinite(id) ? id : null, event: name });
+      return;
+    }
     if (!SLEEP_LEVEL_EVENTS.has(id) && name !== 'players_sleeping' && name !== 'sleeping_players') return;
     this._sleepLevelEventAt = Date.now();
     this.log('sleep_level_event', { id: Number.isFinite(id) ? id : null, event: name, sleeping: this.sleeping });
@@ -10876,11 +10904,32 @@ export class BedrockAdapter {
   _timeInfo () {
     if (!this._timeBase) return null;
     const ticks = Math.round(estimatedTimeOfDay(this._timeBase.ticks, this._timeBase.at));
-    return { ticks, phase: timePhase(ticks), night: isNightTime(ticks) };
+    return { ticks, phase: timePhase(ticks), night: isNightTime(ticks), rain: this._weather.rain, thunder: this._weather.thunder };
   }
 
   _isNight () {
     return !!this._timeInfo()?.night;
+  }
+
+  _isThundering () {
+    return this._weather?.thunder === true;
+  }
+
+  // Finestra di sonno vanilla: notte oppure temporale, a qualunque ora del
+  // giorno. La sola pioggia allarga la finestra notturna, non la apre di giorno.
+  _isSleepTime () {
+    return this._isNight() || this._isThundering();
+  }
+
+  // Meteo dal level_event: pioggia e temporale sono due flag indipendenti ma
+  // coerenti (un temporale asciutto non esiste), quindi start_thunder accende
+  // anche la pioggia e stop_rain chiude anche il temporale.
+  _setWeather (patch, { id = null, event = null } = {}) {
+    const rain = patch.rain ?? this._weather.rain;
+    const thunder = patch.thunder ?? this._weather.thunder;
+    if (rain === this._weather.rain && thunder === this._weather.thunder) return;
+    this._weather = { rain, thunder, at: Date.now() };
+    this.log('weather_change', { id, event, rain, thunder });
   }
 
   _setSleeping (sleeping) {
@@ -12680,13 +12729,14 @@ export class BedrockAdapter {
   }
 
   // Si avvicina al letto e ci clicca sopra finché il server non conferma il
-  // sonno (flag resting nei metadata). Fallisce se è giorno o se ci sono mostri.
+  // sonno (flag resting nei metadata). Fallisce se non è né notte né temporale,
+  // o se ci sono mostri.
   async _sleepInBed ({ approachTimeoutMs = 30000, retryTimeoutMs = 18000, confirmMs = 3000, maxBeds = 3 } = {}) {
     if (this.sleeping) return { ok: true, alreadySleeping: true };
     // Nel Nether e nell'End un letto esplode: non è un'azione vietata per
     // prudenza, è un'esplosione garantita. Il rifiuto è tipizzato e immediato.
     if (bedsExplode(this.dimension)) return { ok: false, error: 'beds_explode_here', dimension: this.dimension };
-    if (!this._isNight()) return { ok: false, error: 'not_night' };
+    if (!this._isSleepTime()) return { ok: false, error: 'not_night' };
     const beds = this._findBeds();
     // Prima i letti liberi, poi quelli occupati come ultima risorsa: un villager
     // può essersi alzato nel frattempo e un click costa poco.
@@ -12715,7 +12765,7 @@ export class BedrockAdapter {
       error: lastError,
       distance: lastDistance,
       tried,
-      hint: 'every nearby bed failed: unreachable, occupied, monsters nearby or the server clock says it is not night',
+      hint: 'every nearby bed failed: unreachable, occupied, monsters nearby or the server says it is neither night nor a thunderstorm',
     };
   }
 
@@ -12783,7 +12833,7 @@ export class BedrockAdapter {
       error: 'sleep_rejected',
       bed: bed.position,
       distance: +distance.toFixed(2),
-      hint: 'bed occupied, monsters nearby or the server clock says it is not night',
+      hint: 'bed occupied, monsters nearby or the server says it is neither night nor a thunderstorm',
     };
   }
 

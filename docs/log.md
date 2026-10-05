@@ -3063,3 +3063,37 @@ clearance they refuse before changing inventory. A regained item returns
 `drop_recollected` rather than a successful action. Regression coverage includes
 one cooked potato, names observed in the world, horizontal tossing, unavailable
 clearance, and immediate re-collection.
+
+## [2026-10-05] feat | Sleep during a thunderstorm, not only at night
+
+The owner asked whether a daytime thunderstorm lets a player sleep. It does:
+vanilla gates sleep on the internal sky light ≤ 11, so clear weather allows
+sleep only on ticks 12523–23477, rain widens the window to 12002–23998 but stays
+night, and **a thunderstorm lifts the restriction at any hour** (message "You
+can only sleep at night or during thunderstorms"). The adapter knew only night,
+and tracked no weather at all.
+
+- **Weather tracking**: `WEATHER_LEVEL_EVENTS` maps the Bedrock `level_event`
+  ids by number *and* name — `start_rain` 3001, `start_thunder` 3002,
+  `stop_rain` 3003, `stop_thunder` 3004 — to a `_weather` patch; `_setWeather()`
+  stores `{rain, thunder, at}` and logs `weather_change` only on an actual
+  change. A thunderstorm implies rain, and `stop_rain` clears both flags, so a
+  missing `stop_thunder` cannot leave the bot sleeping in the sun.
+- **Perception**: `_timeInfo()` (and therefore `observe().time`) now carries
+  `rain` and `thunder` next to the clock; `_isThundering()` and
+  `_isSleepTime()` (`_isNight() || _isThundering()`) are the new primitives.
+- **Gating**: both the offered `sleep` option (its description switches to "to
+  wait out the thunderstorm") and `_sleepInBed()` use `_isSleepTime()`; the
+  refusal code stays `not_night` and now means "neither night nor a
+  thunderstorm". The Nether/End keep answering `beds_explode_here` first. The
+  in-bed wake loop is deliberately left night-only — a Bedrock daytime
+  thunderstorm may not clear time, so the bot must not stay stuck in the bed.
+- **Verified offline**: `node --test tests/bedrock-weather-sleep.test.mjs` →
+  6/6 (name and numeric ids, no stray flag on an unrelated `level_event`,
+  `_timeInfo` exposure, the daytime storm offering the bed, plain daylight
+  refused with `not_night`, Nether refusal), and the sleep/survival/nether/
+  construction regression set → 167/167. Live verification of a real
+  thunderstorm round is still pending.
+- **Wiki**: the weather window and the new behaviour are recorded in
+  [survival intelligence](wiki/survival-intelligence.md) and in row 10 of
+  [verification](wiki/verification.md).

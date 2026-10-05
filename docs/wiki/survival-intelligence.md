@@ -343,6 +343,24 @@ and seven rules: `on_fire` (98), `projectile_incoming` (96), `magma_contact`
 to sleep in a dimension where beds explode (`beds_explode_here`). What is
 *missing* is the acting half: no dodge, no portal action, no barter.
 
+- **Weather-aware sleep (2026-10-05)**: the bot used to know only *night*, but
+  vanilla lets a player sleep during a **thunderstorm at any hour** — the rule is
+  the internal sky light ≤ 11, so rain alone only widens the night window
+  (12523–23477 clear, 12002–23998 rainy) while a thunderstorm lifts the
+  restriction entirely (message: "You can only sleep at night or during
+  thunderstorms"; see [Bed](https://minecraft.wiki/w/Bed)). The adapter now
+  understands the Bedrock weather `level_event`s — `start_rain` 3001,
+  `start_thunder` 3002, `stop_rain` 3003, `stop_thunder` 3004, matched by name
+  *and* numeric id — into `_weather` (`_setWeather`, `weather_change` log; a
+  thunderstorm implies rain, and `stop_rain` also clears the thunder, so a lost
+  packet cannot leave a flag stuck). `_timeInfo()` exposes `rain`/`thunder` in
+  `observe().time`, and `_isSleepTime()` = `_isNight() || _isThundering()` gates
+  both the `sleep` option (the description switches from "before the night is
+  dangerous" to "to wait out the thunderstorm") and `_sleepInBed()`, whose
+  refusal code stays `not_night` because it only fires when it is neither night
+  nor a thunderstorm. The Nether/End still answer `beds_explode_here` first.
+  Tests: [weather sleep](../../tests/bedrock-weather-sleep.test.mjs).
+
 - **Offline (deterministic, no model)**: `tests/controller-curriculum.test.mjs`
 drives `CURRICULUM=first_night` against a staged fake harness (one valid action
 per stage) plus a stub `hermes` binary, and asserts the whole chain
