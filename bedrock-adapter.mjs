@@ -124,6 +124,15 @@ const SMELT_RECIPES = {
   mutton: 'cooked_mutton',
   cod: 'cooked_cod',
   salmon: 'cooked_salmon',
+  oak_log: 'charcoal',
+  spruce_log: 'charcoal',
+  birch_log: 'charcoal',
+  jungle_log: 'charcoal',
+  acacia_log: 'charcoal',
+  dark_oak_log: 'charcoal',
+  mangrove_log: 'charcoal',
+  cherry_log: 'charcoal',
+  pale_oak_log: 'charcoal',
 };
 // Contenitori di stoccaggio: bauli, bauli-trappola, botti e shulker (opzionale).
 // La window_type Bedrock per baule/botte è 'container'; lo slot nelle richieste
@@ -3716,7 +3725,9 @@ export class BedrockAdapter {
     }
     const o = [];
     const p = this.pos();
-    const waypointUnmet = this.plan?.waypoint && p && Math.hypot(this.plan.waypoint.x - p.x, this.plan.waypoint.z - p.z) > 2;
+    const waypointUnmet = this.plan?.waypoint && p && (
+      Math.hypot(this.plan.waypoint.x - p.x, this.plan.waypoint.z - p.z) > 2 ||
+      (Number.isFinite(this.plan.waypoint.y) && Math.abs(this.plan.waypoint.y - (this._feet?.y ?? p.y - 1.62)) > 1));
     // Solo drop raggiungibili: un item finito in una tasca sotto il pavimento
     // brucerebbe il budget di movimento senza poter essere raccolto.
     const drop = this._nearestDrop({ reachableOnly: true });

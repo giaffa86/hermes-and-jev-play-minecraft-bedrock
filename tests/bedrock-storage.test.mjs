@@ -101,6 +101,16 @@ test('valuable items are ingots, ores and gems — not dirt or planks', () => {
   assert.equal(adapter._isValuable('oak_planks'), false);
 });
 
+test('an explicit waypoint stays offered when the horizontal position matches but elevation does not', () => {
+  const adapter = storageAdapter();
+  adapter.plan = { waypoint: { x: 0, y: 80, z: 0 } };
+  assert.ok(adapter.options().some(o => o.key === 'goto_waypoint'));
+  adapter.plan = { waypoint: { x: 0, y: 64, z: 0 } };
+  assert.ok(!adapter.options().some(o => o.key === 'goto_waypoint'));
+  adapter.plan = { waypoint: { x: 0, z: 0 } };
+  assert.ok(!adapter.options().some(o => o.key === 'goto_waypoint'));
+});
+
 test('container contents aggregate slot counts by item name', () => {
   const adapter = storageAdapter();
   const slots = [

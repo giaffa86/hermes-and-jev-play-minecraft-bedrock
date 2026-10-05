@@ -50,6 +50,20 @@ test('fuel picking prefers coal over planks and ignores sticks', () => {
   assert.equal(adapter._pickFuel(), null);
 });
 
+test('charcoal from a log is available without furnace recipes from the server, using a regular furnace', () => {
+  const adapter = smeltAdapter();
+  adapter.furnaceRecipes = [];
+  adapter.world.registry.items[17] = { name: 'spruce_log' };
+  adapter.inventorySlots = [{ network_id: 17, name: 'spruce_log', count: 1 }, { network_id: 5, name: 'oak_planks', count: 2 }];
+  adapter.inventory = { spruce_log: 1, oak_planks: 2 };
+  adapter.world.findBlocks = name => name === 'furnace' ? [{ position: { x: 1, y: 0, z: 0 }, distance: 1 }] : [];
+  assert.deepEqual(adapter._smeltTargets().find(t => t.input === 'spruce_log'), { input: 'spruce_log', output: 'charcoal', count: 1 });
+  assert.equal(adapter._smeltStationFor('spruce_log'), 'furnace');
+  assert.ok(adapter.options().some(o => o.key === 'smelt_spruce_log'));
+  adapter.world.findBlocks = name => name === 'smoker' ? [{ position: { x: 1, y: 0, z: 0 }, distance: 1 }] : [];
+  assert.ok(!adapter.options().some(o => o.key === 'smelt_spruce_log'));
+});
+
 test('options offer smelt only with a nearby furnace, input and fuel', () => {
   const adapter = smeltAdapter();
   adapter.drops = [];

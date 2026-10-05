@@ -189,3 +189,8 @@ were withdrawn from authorized storage, and the bot was shut down with evidence.
 Missing finished supply targets outrank recipe ingredients in the eight-item
 withdrawal list. A chest already holding the required planks or tools must remain
 selectable even when several ingredient sources would otherwise fill that list.
+
+The furnace recipe fallback includes Overworld logs to charcoal, so torches can
+be prepared from available wood when stored coal or torches cannot be accessed.
+Charcoal requires a regular furnace. Elevation-only waypoint progress also keeps
+`goto_waypoint` available until the requested height is reached.
