@@ -32,9 +32,10 @@ import {
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
 import {planGreetings, DEFAULT_GREETING_TEMPLATE, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
-import {orderAck, orderOutcome, lostNotice, isSelfTriggering, normalizePrefixes, matchChatPrefix, selfPrefixes, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
-import {answerIntent, renderAnswer, renderNoArmor, renderUnrouted} from './human-questions.mjs';
+import {orderAck, orderOutcome, lostNotice, isSelfTriggering, normalizePrefixes, matchChatPrefix, selfPrefixes, renderReply, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
+import {answerIntent, renderAnswer, renderNoArmor, renderUnrouted, looksLikeSmallTalk} from './human-questions.mjs';
 import {resolveQuestionIntent, DEFAULT_INTENT_TIMEOUT_MS, DEFAULT_INTENT_MIN_P} from './chat-intent.mjs';
+import {composeChatReply, chatLlmConfig, compactChatFacts, createChatMemory} from './chat-llm.mjs';
 import {systemOneDecide} from './system-one.mjs';
 import {
   evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
@@ -165,6 +166,17 @@ const CHAT_INTENT_MODEL = process.env.CHAT_INTENT_MODEL || null;
 const CHAT_INTENT_URL = process.env.CHAT_INTENT_URL || null;
 const CHAT_INTENT_TIMEOUT_MS = +(process.env.CHAT_INTENT_TIMEOUT_MS || DEFAULT_INTENT_TIMEOUT_MS);
 const CHAT_INTENT_MIN_P = process.env.CHAT_INTENT_MIN_P == null ? DEFAULT_INTENT_MIN_P : +(process.env.CHAT_INTENT_MIN_P);
+// M7: chat naturale. L'LLM (DeepSeek per default) riformula le risposte che il
+// controller ha già composto; senza chiave (`DEEPSEEK_API_KEY` /
+// `CHAT_LLM_API_KEY`) o con `CHAT_LLM=off` tutto resta deterministico.
+const CHAT_LLM = chatLlmConfig();
+const CHAT_LLM_ON = CHAT_LLM.enabled;
+// Memoria conversazionale per mittente: solo in RAM, bounded. Serve a non
+// ripetere la stessa frase e a capire i seguiti ("e ora?", "grazie").
+const chatMemory = createChatMemory();
+// Fallback deterministico dello small talk (usato senza LLM): una riga, mai
+// scatenante. Con l'LLM è solo il testo di appoggio (`grounding`).
+const CHAT_SMALLTALK_TEMPLATE = process.env.CHAT_SMALLTALK_TEMPLATE || '@{name} ciao! dimmi pure.';
 // Session mode (AI-player roadmap M0->1): con SESSION=on il controller non
 // esce a fine goal ma resta in IDLE e accetta nuovi goal (ordini in chat)
 // senza riconnettersi. Default off = comportamento one-shot storico.
@@ -605,21 +617,69 @@ async function maybeHumanCommand (obs) {
     // che non si è capito — sempre senza creare goal.
     const question = await resolveQuestion(obs, {...entry, message, prefix: match.prefix, prefixes});
     if (question?.action === 'answer' && question.answer) {
-      await replyChat(renderAnswer({from: entry.from, answer: question.answer, maxLength: CHAT_REPLY_MAX_LENGTH}), {to: entry.from, context: 'question', prefixes});
+      const fallback = renderAnswer({from: entry.from, answer: question.answer, maxLength: CHAT_REPLY_MAX_LENGTH});
+      await saySmart('question', {from: entry.from, message, obs, grounding: fallback, fallback, prefixes});
       continue;
     }
     if (question?.action === 'unrouted') {
-      await replyChat(renderUnrouted({from: entry.from, prefixes, maxLength: CHAT_REPLY_MAX_LENGTH}), {to: entry.from, context: 'unrouted', prefixes});
+      const fallback = renderUnrouted({from: entry.from, prefixes, maxLength: CHAT_REPLY_MAX_LENGTH});
+      await saySmart('unrouted', {from: entry.from, message, obs, grounding: fallback, fallback, prefixes});
+      continue;
+    }
+    // M7: un saluto o un ringraziamento non è un ordine e non deve diventare un
+    // goal. Solo un match esatto (lista chiusa di frasi) arriva qui: un ordine
+    // vero non viene mai inghiottito.
+    if (looksLikeSmallTalk(message)) {
+      const fallback = renderReply(CHAT_SMALLTALK_TEMPLATE, {name: entry.from ?? '?'}, CHAT_REPLY_MAX_LENGTH);
+      log('chat_smalltalk', {from: entry.from, xuid: entry.xuid, message});
+      await saySmart('smalltalk', {from: entry.from, message, obs, grounding: null, fallback, prefixes});
       continue;
     }
     log('chat_command', {from: entry.from, xuid: entry.xuid, prefix: match.prefix, message});
     const plan = await humanCommandPlan(obs, {...entry, message});
     // M5: conferma dell'ordine in chat. Best-effort (l'adapter applica rate
     // limit e lunghezza); l'esito arriva alla chiusura del goal.
-    await replyChat(orderAck({from: entry.from, plan, maxLength: CHAT_REPLY_MAX_LENGTH}), {to: entry.from, context: 'ack', prefixes});
+    const ack = orderAck({from: entry.from, plan, maxLength: CHAT_REPLY_MAX_LENGTH});
+    await saySmart('ack', {from: entry.from, message, obs, plan, grounding: ack, fallback: ack, prefixes});
     return {plan, entry: {...entry, message}};
   }
   return null;
+}
+
+// M7: risposta chat con l'LLM quando c'è una chiave, altrimenti il testo
+// deterministico. L'LLM riformula, non decide: `grounding` porta i fatti veri
+// (o la frase già composta) e `fallback` è la rete di sicurezza. Qualsiasi
+// guasto — chiave assente, timeout, HTTP, risposta vuota o scatenante — produce
+// il fallback, quindi il canale non resta mai muto. Il testo inviato entra nella
+// memoria conversazionale del mittente.
+async function saySmart (context, {from, message = null, obs = null, plan = null, grounding = null, fallback, prefixes = CHAT_PREFIXES}) {
+  let text = fallback;
+  if (CHAT_LLM_ON) {
+    try {
+      const reply = await composeChatReply({
+        message: message ?? grounding ?? '',
+        from,
+        facts: compactChatFacts(obs, plan),
+        grounding,
+        history: chatMemory.history(from),
+        persona: CHAT_LLM.persona,
+        prefixes,
+        model: CHAT_LLM.model,
+        url: CHAT_LLM.url,
+        key: CHAT_LLM.key,
+        timeoutMs: CHAT_LLM.timeoutMs,
+        maxLength: CHAT_REPLY_MAX_LENGTH,
+      });
+      text = reply.text;
+      log('chat_llm', {to: from, context, ok: true, via: 'llm', model: reply.model, ms: reply.ms, cost: reply.cost});
+    } catch (error) {
+      log('chat_llm', {to: from, context, ok: false, via: 'fallback', error: error.message, code: error.code ?? null});
+      text = fallback;
+    }
+  }
+  await replyChat(text, {to: from, context, prefixes});
+  chatMemory.remember(from, message, text);
+  return text;
 }
 
 // Risposta in chat (M5): una riga, indirizzata al mittente, mai scatenante
@@ -1384,14 +1444,22 @@ async function main () {
     // goal autonomo riorientato da un ordine). Best-effort, mai bloccante.
     const humanFrom = goal.source === GOAL_SOURCE.CHAT ? (goal.parameters?.from ?? null) : (goal.humanOrder?.from ?? null);
     if (humanFrom) {
-      await replyChat(orderOutcome({
+      const outcomeText = orderOutcome({
         from: humanFrom,
         status: outcome.status,
         objective: goal.humanOrder?.objective ?? goal.objective,
         steps: outcome.steps ?? null,
         reason: final.reason ?? outcome.reason ?? null,
         maxLength: CHAT_REPLY_MAX_LENGTH,
-      }), {to: humanFrom, context: 'outcome'});
+      });
+      // Qui `obs` non è in scope: l'LLM riceve almeno l'obiettivo e i passi veri
+      // dal `grounding`, così può riformulare senza inventare.
+      await saySmart('outcome', {
+        from: humanFrom,
+        plan: {objective: goal.humanOrder?.objective ?? goal.objective, follow: goal.humanOrder?.follow ?? null},
+        grounding: outcomeText,
+        fallback: outcomeText,
+      });
     }
     // Chiusura della missione episodica con esito e successo (best-effort).
     if (goal.missionId) {

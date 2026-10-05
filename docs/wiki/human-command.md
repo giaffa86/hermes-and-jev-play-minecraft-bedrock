@@ -107,6 +107,12 @@ human chat message
   **copper** — so `bronzo`/`bronze` are read as copper, a question that names a
   material ("una spada di rame?") is answered about *that* material, and the bot
   offers to craft the copper gear it can carry (`craft_copper_<tool|armor>`).
+- **M7 — the reply sounds like a player** ✅ an LLM (`chat-llm.mjs`, DeepSeek by
+  default) rephrases the deterministic ack/outcome/answer in the sender's
+  language and in the first person, so the bot stops echoing the English planner
+  objective; a greeting/small talk is answered conversationally instead of
+  becoming a goal. The model never decides anything and every failure falls back
+  to the template.
 
 ## Live evidence (2026-10-03, BDS 1.26.52 via CT 108, VM 100 container)
 
@@ -453,6 +459,74 @@ phrase:
   carried, and nothing of the tier offered without ingots).
 - **Not verified live**: the containers still run the pre-M6 chat build, so this
   is a unit-level claim about `options()` and the answer functions.
+
+## Natural chat (M7): the model rephrases, it never decides
+
+The M1–M6 replies were deterministic **and quoted the plan verbatim**. The
+planner prompt is English and writes the objective as a third-person infinitive
+(`Follow Ale and stay close`), so a live ack read
+`@<name> ok: Follow <name> and stay close — arrivo da <name>` and an outcome read
+`@<name> fatto: Stay put and wait for the next order (6 azioni)`: the scaffold was
+Italian, but the bot still sounded like a status line.
+
+M7 inserts an LLM between the composed reply and `POST /say`. `chat-llm.mjs` is
+an OpenAI-compatible `/chat/completions` client (DeepSeek default) whose only job
+is to rephrase:
+
+- **Two inputs, one rule.** The model gets a compact `facts` object built from
+  `observe()` (`compactChatFacts`: self, position, health/food, dimension, top
+  inventory, time, goals, nearby players/animals/hostiles) plus, whenever a
+  deterministic reply exists, a `grounding` string carrying the **real** numbers.
+  The system prompt says the facts are the only allowed source; if a fact is
+  missing, the bot says it does not know. Inventing a number is a bug, not a
+  feature.
+- **Never decides, never creates a goal.** The order path
+  (`humanCommandPlan` + `/options`) is untouched: no order key, no allowlist
+  check and no question router moves into the model.
+- **Same-language, first-person, one line.** The system prompt asks for the
+  sender's language, first person, a single short line, no markdown; the result is
+  flattened and clamped with the same `clampMessage` used by the templates.
+- **Failure is always the template.** No key, `CHAT_LLM=off`, timeout, HTTP
+  error, empty reply or a reply that would start with a trigger
+  (`isSelfTriggering`) all fall back to the deterministic text. `replyChat` is
+  the only caller of `POST /say`, so the channel is never silent and still never
+  self-triggers.
+- **Small talk is not an order.** `looksLikeSmallTalk` matches an **exact**
+  closed list (`ciao`, `come stai`, `grazie mille`, `hello`, …) on the
+  prefix-stripped message, so `grazie prendi la legna` stays an order. A
+  greeting is answered and creates no goal (`chat_smalltalk`); its fallback is
+  `CHAT_SMALLTALK_TEMPLATE`.
+- **Conversational memory.** `createChatMemory` keeps the last ~6 turns (12
+  messages) per sender for up to 8 senders, in RAM only (a restart forgets: no
+  chat log is persisted).
+
+Wiring in `controller.mjs`: one helper, `saySmart(context, {...})`, is the new
+entry point for every conversational reply — `question`, `unrouted`,
+`smalltalk`, `ack` and `outcome` — and logs one `chat_llm` line per attempt
+(`{ok, via:'llm'|'fallback', model, ms, cost, code}`). The proactive greeting
+stays deterministic on purpose: it exists to teach the order syntax, and the
+model could garble `{prefixes}`.
+
+| Env | Default | Meaning |
+|---|---|---|
+| `DEEPSEEK_API_KEY` / `CHAT_LLM_API_KEY` | unset | the gate: without a key M7 is off and the deterministic path runs |
+| `CHAT_LLM` | on with a key | `off` disables the engine even with a key |
+| `CHAT_LLM_MODEL` | `deepseek-chat` | model id sent to the endpoint |
+| `CHAT_LLM_URL` | `https://api.deepseek.com/chat/completions` | any OpenAI-compatible endpoint |
+| `CHAT_LLM_TIMEOUT_MS` | `8000` | per-reply ceiling; on expiry the template is sent |
+| `CHAT_PERSONA` | village bot | persona sentence spliced into the system prompt |
+| `CHAT_SMALLTALK_TEMPLATE` | `@{name} ciao! dimmi pure.` | deterministic fallback for a greeting |
+
+Tests: `tests/chat-llm.test.mjs` — config gating, `compactChatFacts`, bounded
+memory, prompt contents and every failure mode (stubbed `fetchImpl`, no
+network); `looksLikeSmallTalk` is covered there too. The existing
+`tests/human-questions.test.mjs` and `tests/human-replies.test.mjs` still assert
+the deterministic text, which is now the fallback.
+
+**Open**: the reply is the persona's language by default, so an English order
+is answered in English only if the model follows the instruction (not asserted
+live); the memory is per-process; and the M7 path has not been exercised against
+the deployed BDS (unit tests only).
 
 ## Proactive greeting (§6 Attention System)
 

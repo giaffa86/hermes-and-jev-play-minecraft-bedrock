@@ -1,5 +1,50 @@
 # Log
 
+## [2026-10-05] feat | Chat M7: the reply sounds like a player, not a status line
+
+The family noticed the bot answering **in the third person** and sometimes **in
+English**: *"ho notato che in chat il bot risponde come se fosse in terza persona
+e non sempre nella lingua della domanda, ma a volte in inglese"*. The scaffold was
+Italian, but the ack/outcome/answer interpolated `plan.objective` verbatim — and
+the planner prompt is English and writes the objective as an infinitive/third
+person. Live logs showed `@<name> ok: Follow <name> and stay close — arrivo da
+<name>` and `@<name> fatto: Stay put and wait for the next order (6 azioni)`.
+
+M7 puts an LLM between the composed reply and `POST /say`. The user's decision:
+*"se la chiave deepseek flash è su env usi il motore, altrimenti deterministico"*
+and, on the persona: *"mi sta bene che si dichiari bot ma voglio che non sia
+inutile [...] che contribuisca alle missioni e al lavoro nel villagio,
+coltivazioni, pastorizia, legname, minerali, pesca"*.
+
+- **`chat-llm.mjs`** (new): OpenAI-compatible `/chat/completions` client, DeepSeek
+  default. `chatLlmConfig`/`chatLlmKey` gate it on `DEEPSEEK_API_KEY` /
+  `CHAT_LLM_API_KEY` (`CHAT_LLM=off` disables even with a key); `compactChatFacts`
+  builds the only facts the model may use from `observe()`; `buildChatMessages`
+  writes the prompt (same language, first person, one line, facts only, never
+  start with a trigger); `composeChatReply` returns `{text, model, ms, cost}` or
+  throws with a `code` (`no_key`/`timeout`/`transport`/`http_*`/`empty`/
+  `self_trigger`); `createChatMemory` is a bounded per-sender history (6 turns, 8
+  senders, RAM only).
+- **`controller.mjs`**: one helper `saySmart(context, …)` is now the entry point
+  for `question`, `unrouted`, `smalltalk`, `ack` and `outcome`; it tries the LLM
+  and falls back to the deterministic text, logging one `chat_llm` line
+  (`{ok, via:'llm'|'fallback', model, ms, cost, code}`). The order path
+  (`humanCommandPlan` + `/options`) is untouched: the model never decides an
+  action and never creates a goal. The proactive greeting stays deterministic
+  (it teaches the order syntax, and the model could garble `{prefixes}`).
+- **`human-questions.mjs`**: `SMALL_TALK` + `looksLikeSmallTalk` — an **exact**
+  closed match on the normalised message, so `ciao`/`grazie` get a conversational
+  reply and create no goal (`chat_smalltalk`) while `grazie prendi la legna`
+  stays an order.
+- **Tests**: `tests/chat-llm.test.mjs` (11 tests, stubbed `fetchImpl`, no
+  network): config gating, `compactChatFacts`, bounded memory, prompt contents,
+  every failure mode, `looksLikeSmallTalk`. Full suite: 1396 pass.
+- **Docs**: `.env.example` (CHAT_LLM\*), `docs/wiki/human-command.md` (M7
+  milestone + section + env table), `docs/index.md`, `docs/sources.md`.
+- **Open**: the M7 path is unit-tested only (never exercised against the
+  deployed BDS); the memory is per-process; the same-language rule is a prompt
+  instruction, not an assertion.
+
 ## [2026-10-05] feat | Chat M6.4: the copper tier, not bronze
 
 The family ordered *"equipaggiati con armatura in bronzo"* and objected when the

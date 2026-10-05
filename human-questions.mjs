@@ -292,6 +292,24 @@ export function looksLikeQuestion (message) {
   return QUESTION_OPENERS.includes(first);
 }
 
+// M7: saluto o convenevole puro. Lista chiusa e match *esatto* sul messaggio
+// normalizzato: un ordine reale non viene mai scambiato per small talk (a
+// differenza di un prefisso, `"grazie"` da solo non cattura `"grazie prendi la
+// legna"`). Chi decide è il controller: qui si risponde solo alla domanda "è un
+// convenevole?", mai a "cosa vuole?".
+export const SMALL_TALK = [
+  'ciao', 'hey', 'ehi', 'ei', 'salve', 'buongiorno', 'buonasera', 'buon pomeriggio', 'buondì',
+  'come stai', 'come va', 'tutto bene', 'tutto ok', 'come te la passi', 'che si dice',
+  'grazie', 'grazie mille', 'ti ringrazio', 'bravo', 'bella', 'bello', 'grande', 'sei forte', 'forte',
+  'a dopo', 'ci vediamo', 'ci sono', 'presente', 'perfetto', 'ottimo', 'va bene', 'bene grazie',
+  'hi', 'hello', 'how are you', 'thanks', 'thank you', 'nice', 'good job', 'well done', 'goodbye', 'bye',
+];
+
+export function looksLikeSmallTalk (message) {
+  const text = normalizeForMatching(message);
+  return text.length > 0 && SMALL_TALK.includes(text);
+}
+
 // The closed option list handed to Jev, in the `criteria` shape the decisions
 // API uses (`{a0: '[id] description', ...}`). The `q_none` sentinel is always
 // last, so abstaining costs nothing and an order is never swallowed silently.
