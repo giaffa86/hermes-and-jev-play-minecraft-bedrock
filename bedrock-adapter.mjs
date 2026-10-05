@@ -11,7 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { BedrockWorld } from './bedrock-world.mjs';
 import { HIVE_BLOCKS, BEE_CRAFT_ITEMS, BEE_SCAN_RADIUS, BEE_SCAN_LIMIT, isBeeProtected, hiveVerdict, honeyLevel, beeFlower, beeFlowerCount } from './bedrock-bees.mjs';
 import { trackNethernetClient, closeBedrockClient } from './bedrock-lifecycle.mjs';
-import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isMilkableType, isTameableType, isRideTameableType, isCompanionType, isRideableType, animalFeed, tameFeed, cropForSeed, cropMaturity, seedForCrop, isCropBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS, BUCKET_INGREDIENTS, SHIELD_INGREDIENTS, STARVING_FOOD } from './bedrock-survival.mjs';
+import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isMilkableType, isTameableType, isRideTameableType, isCompanionType, isRideableType, animalFeed, tameFeed, cropForSeed, cropMaturity, seedForCrop, isCropBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS, FOODS, LAST_RESORT_FOODS, BUCKET_INGREDIENTS, SHIELD_INGREDIENTS, STARVING_FOOD } from './bedrock-survival.mjs';
 import { professionName, normalizeProfession, professionMatches, pickBestTrade } from './bedrock-trading.mjs';
 import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, bobberVerdict, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
 import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
@@ -166,6 +166,25 @@ const STORAGE_READ_WALK_MS = 8000;
 const STORAGE_TAKE_WALK_MS = 75000;
 // TTL della cache contenitori: altri giocatori possono cambiare le scorte.
 const CONTAINER_TTL_MS = 5 * 60 * 1000;
+// M3c — cosa non finisce mai nello scrigno: gli strumenti e l'equipaggiamento con
+// cui il bot lavora, torce e stazioni portatili, le sementi, e una riserva di
+// cibo. `_depositableItems()` è la politica unica, letta sia da `dump_inventory`
+// sia da `observe().deposit`, così il controller non duplica l'elenco.
+const DEPOSIT_KEEP_PATTERNS = [
+  /(_pickaxe|_axe|_shovel|_hoe|_sword|_helmet|_chestplate|_leggings|_boots)$/,
+  /^(shield|bow|crossbow|trident|arrow|spectral_arrow|fishing_rod|shears|flint_and_steel|fire_charge|lead|name_tag|spyglass|clock|compass)$/,
+  /_bucket$/,
+  /_seeds$|^(torchflower_seeds|pitcher_pod)$/,
+  /^(torch|soul_torch|lantern|soul_lantern|campfire|crafting_table|furnace|blast_furnace|smoker|anvil|stonecutter|grindstone|loom|composter)$/,
+  /_bed$/,
+];
+// Quanto resta in zaino di un item «da tenere» (cibo, torce, sementi): il
+// surplus è raccolto e va in baule lo stesso.
+const DEPOSIT_KEEP_RESERVE = 16;
+// Quanti stack una singola `dump_inventory` sposta: il tetto tiene l'azione
+// dentro il timeout e lascia al controller la possibilità di ripeterla.
+const DEPOSIT_MAX_STACKS = 8;
+const DEPOSIT_FOOD_ITEMS = new Set([...FOODS, ...LAST_RESORT_FOODS]);
 // TTL del «non si è aperto adesso»: un contenitore che non si apre costa fino a ~18 s
 // di tentativi (live 04/10/2026: la cassa ricordata a (93,72,160) non esiste più — in
 // quel punto il mondo ha il baule un blocco più in alto — e `take_egg` finiva in
@@ -3667,6 +3686,9 @@ export class BedrockAdapter {
         readAt: c.readAt,
         contents: c.contents,
       })),
+      // M3c: cosa il bot è disposto a mettere via e dove andrebbe. È la stessa
+      // politica di `dump_inventory`, così controller e chore non la duplicano.
+      deposit: this._depositState(),
       plan: this.plan,
       follow: this._followView(),
       craft: this._craftNeeds({ liveGather: true }),
@@ -4339,8 +4361,18 @@ export class BedrockAdapter {
       if (existing) existing.description = `${existing.description} — ${note}`;
       else o.push({ key: step.key, description: note });
     }
-    // Deposito: oggetti di valore verso il contenitore noto (o vicino) più prossimo.
+    // Deposito: gli oggetti di valore verso lo scrigno noto (o vicino) più
+    // prossimo, e — da M3c — una sola azione che scarica tutto il raccolto
+    // (`dump_inventory`) nello scrigno giusto per quell'item.
+    const depositable = this._depositableItems();
     const depositTarget = cached.find(c => !this._reachabilityUsable() || this.approachReachable(c.position)) || reachableStorage[0];
+    if (depositTarget && depositable.length) {
+      const names = depositable.slice(0, 3).map(entry => entry.item).join(', ');
+      o.push({
+        key: 'dump_inventory',
+        description: `Store the village work: ${depositable.length} item type(s) (${names}${depositable.length > 3 ? ', …' : ''}) into nearby storage, preferring a container that already holds the same item`,
+      });
+    }
     if (depositTarget) {
       let depositOffered = 0;
       for (const item of Object.keys(this.inventory)) {
@@ -4644,6 +4676,8 @@ export class BedrockAdapter {
         result = await this._readContainers();
       } else if (key.startsWith('take_')) {
         result = await this._takeFromContainer(key.slice('take_'.length), context.take);
+      } else if (key === 'dump_inventory') {
+        result = await this._dumpInventory();
       } else if (key.startsWith('deposit_')) {
         result = await this._depositItem(key.slice('deposit_'.length));
       } else if (key.startsWith('place_')) {
@@ -6468,6 +6502,63 @@ export class BedrockAdapter {
     return /(_ingot$|diamond$|emerald$|_ore$|^raw_|netherite|golden_|ender_pearl$|^experience)/.test(itemName);
   }
 
+  // Un item che il bot tiene con sé mentre lavora: strumenti, equipaggiamento,
+  // torce, sementi, stazioni portatili e cibo (fino alla riserva).
+  _isKeptItem (itemName) {
+    const name = String(itemName || '');
+    if (!name) return false;
+    if (DEPOSIT_KEEP_PATTERNS.some(pattern => pattern.test(name))) return true;
+    return DEPOSIT_FOOD_ITEMS.has(name);
+  }
+
+  // Cosa è disposto a mettere via adesso: tutto ciò che non è nell'elenco di
+  // rispetto, o che ne supera la riserva. Nessun I/O e nessun pathfinding: la
+  // raggiungibilità dello scrigno la decide chi offre l'azione.
+  _depositableItems ({ reserve = DEPOSIT_KEEP_RESERVE } = {}) {
+    const out = [];
+    for (const [item, count] of Object.entries(this.inventory || {})) {
+      const held = Number(count) || 0;
+      if (held <= 0) continue;
+      const kept = this._isKeptItem(item);
+      if (kept && held <= reserve) continue;
+      out.push({ item, count: kept ? held - reserve : held });
+    }
+    out.sort((a, b) => b.count - a.count);
+    return out;
+  }
+
+  // Il baule giusto per un item: prima quello che lo contiene già — accorpare
+  // una risorsa dove vive è ciò che farebbe una persona — poi il più vicino fra
+  // i raggiungibili.
+  _depositTargetFor (itemName = null, { position = null, cachedOnly = false } = {}) {
+    const wanted = c => !position || (c.position.x === position.x && c.position.y === position.y && c.position.z === position.z);
+    const reachable = c => !this._reachabilityUsable() || this.approachReachable(c.position);
+    const cached = this._cachedContainers().filter(c => wanted(c) && reachable(c));
+    if (cached.length) {
+      const score = c => ((itemName && (c.contents?.[itemName] || 0) > 0) ? 100000 : 0) - (c.distance ?? 0);
+      return [...cached].sort((a, b) => score(b) - score(a))[0];
+    }
+    if (cachedOnly) return null;
+    const block = this._findNearbyStorageBlocks().filter(b => wanted(b) && reachable(b))[0];
+    return block ? { key: this._containerCacheKey(block.position), type: block.name, position: block.position, contents: {} } : null;
+  }
+
+  // Stato del deposito per observe(): quali item sono pronti e dove andrebbero.
+  // Solo cache (nessuna scansione del mondo): la raggiungibilità la verifica
+  // l'opzione, non l'osservazione.
+  _depositState () {
+    const items = this._depositableItems();
+    const target = items.length ? this._depositTargetFor(items[0].item, { cachedOnly: true }) : null;
+    return {
+      items,
+      total: items.reduce((sum, entry) => sum + entry.count, 0),
+      target: target
+        ? { type: target.type, position: target.position, distance: target.distance ?? this._pointDistance(target.position) }
+        : null,
+      at: Date.now(),
+    };
+  }
+
   _findNearbyStorageBlocks (radius = 32) {
     if (!this.position || !this.world?.findBlocks) return [];
     const found = [];
@@ -6734,14 +6825,57 @@ export class BedrockAdapter {
   }
 
   async _depositItem (itemName, { position = null } = {}) {
-    const cached = this._cachedContainers();
-    const allowed = c => !position || (c.position.x === position.x && c.position.y === position.y && c.position.z === position.z);
-    let target = cached.find(allowed);
-    if (!target) {
-      const block = this._findNearbyStorageBlocks().find(allowed);
-      if (!block) return { ok: false, error: 'container_not_found' };
-      target = { key: this._containerCacheKey(block.position), type: block.name, position: block.position, contents: {} };
+    const target = this._depositTargetFor(itemName, { position });
+    if (!target) return { ok: false, error: 'container_not_found' };
+    const result = await this._depositStackInto(target, itemName);
+    delete result.contents; // stato interno del baule: non serve all'azione
+    return result;
+  }
+
+  // Una sola azione per svuotare lo zaino dei prodotti del lavoro (M3c): lo
+  // scrigno si sceglie una volta (il più adatto all'item più grosso), poi si
+  // scaricano gli stack a gruppi, ognuno verificato sul delta reale.
+  async _dumpInventory ({ maxStacks = DEPOSIT_MAX_STACKS } = {}) {
+    const planned = this._depositableItems();
+    if (!planned.length) return { ok: false, error: 'nothing_to_deposit' };
+    const target = this._depositTargetFor(planned[0].item);
+    if (!target) return { ok: false, error: 'container_not_found' };
+    const moved = [];
+    let stacks = 0;
+    // Il mirror della finestra è una fotografia di quando il baule si è aperto:
+    // ricomporre il contenuto da lì a ogni stack perderebbe i precedenti. Il
+    // contenuto accumulato viaggia quindi fra gli stack, e la cache lo riceve
+    // coerente alla fine.
+    let contents = null;
+    for (const entry of planned) {
+      while (stacks < maxStacks) {
+        const held = this.inventory[entry.item] || 0;
+        const keep = this._isKeptItem(entry.item) ? DEPOSIT_KEEP_RESERVE : 0;
+        if (held <= keep) break;
+        const result = await this._depositStackInto(target, entry.item, {maxCount: held - keep, base: contents});
+        if (!result.ok) {
+          if (!moved.length) return result;
+          this.log('container_dump_partial', { item: entry.item, error: result.error, moved: moved.length });
+          break;
+        }
+        contents = result.contents;
+        moved.push({ item: result.item, count: result.count });
+        stacks += 1;
+        // Nessun progresso sull'inventario: fermarsi invece di girare a vuoto.
+        if ((this.inventory[entry.item] || 0) >= held) break;
+      }
+      if (stacks >= maxStacks) break;
     }
+    if (!moved.length) return { ok: false, error: 'nothing_to_deposit' };
+    const count = moved.reduce((sum, entry) => sum + entry.count, 0);
+    this.log('container_dump', { block: target.type, position: target.position, stacks, items: moved, count });
+    return { ok: true, into: target.type, position: target.position, items: moved, stacks, count };
+  }
+
+  // Uno stack: il cuore del deposito, condiviso da `deposit_<item>` e dal dump.
+  // `maxCount` limita quanto sposta un singolo stack (la riserva personale),
+  // `base` è il contenuto del baule già accertato (il dump accumula fra stack).
+  async _depositStackInto (target, itemName, {maxCount = null, base = null} = {}) {
     const index = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && (s.count || 0) > 0);
     if (index < 0) return { ok: false, error: 'missing_item' };
     const before = this.inventory[itemName] || 0;
@@ -6756,7 +6890,7 @@ export class BedrockAdapter {
       if (destSlot < 0) destSlot = slots.findIndex(s => !s?.network_id);
       if (destSlot < 0) throw new Error('container_full');
       const source = this.inventorySlots[index];
-      const count = Math.min(source.count || 0, stackSize);
+      const count = Math.min(source.count || 0, stackSize, maxCount ?? Infinity);
       const info = this._invSlotAsSource(index);
       const take = await this._sendStackRequest([{
         type_id: 'take', legacy_type_id: 0, count,
@@ -6776,12 +6910,12 @@ export class BedrockAdapter {
       this._applyStackResponse(place, { networkId: source.network_id });
       this._cursor = null;
       // Base sul contenuto reale letto dal server (non sulla cache, che può essere stantia).
-      const contents = this._storageContentsFromSlots(this._openContainerSlots);
+      const contents = base ? {...base} : this._storageContentsFromSlots(this._openContainerSlots);
       contents[itemName] = (contents[itemName] || 0) + count;
       this._setContainerContents(target, contents);
       const after = this.inventory[itemName] || 0;
       this.log('container_deposit', { block: target.type, position: target.position, item: itemName, count, inventoryDelta: after - before });
-      return { ok: true, item: itemName, count, into: target.type, position: target.position, inventoryDelta: after - before, ms: Date.now() - started };
+      return { ok: true, item: itemName, count, into: target.type, position: target.position, inventoryDelta: after - before, ms: Date.now() - started, contents };
     } catch (error) {
       return { ok: false, error: error.message };
     } finally {

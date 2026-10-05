@@ -59,6 +59,21 @@ const ORE_DROPS = Object.freeze({
 const ORE_DROP_ITEMS = [...new Set(Object.values(ORE_DROPS))];
 const CROP_DROP_ITEMS = [...new Set(Object.values(CROP_DROPS))];
 
+// What a chore is working on, in a form the chat layer can name: the item when
+// the catalogue knows it, otherwise the family word. Never an empty sentence —
+// an unknown item still reports "the stuff I gathered".
+const FAMILY_TARGETS = [
+  ['wool', 'wool'], ['log', 'log'], ['stone', 'stone'], ['ore', 'ore'], ['fish', 'fish'],
+];
+export function targetOf (itemName) {
+  if (!itemName) return null;
+  if (CROP_DROP_ITEMS.includes(itemName)) return { kind: 'crop', item: itemName };
+  for (const [family, kind] of FAMILY_TARGETS) if (FAMILY[family].test(itemName)) return { kind };
+  if (itemName === 'milk_bucket') return { kind: 'milk' };
+  if (itemName === 'honeycomb' || itemName === 'honey_bottle') return { kind: 'honey' };
+  return { kind: 'goods' };
+}
+
 // Item families: the backpack does not say which colour a wool is, and a chore
 // should not care either.
 const FAMILY = Object.freeze({
@@ -85,15 +100,18 @@ export const VILLAGE_CHORES = Object.freeze([
     // The drop list is fixed, not read from the current census: once the crop is
     // harvested it is no longer visible, and the delta must still be measurable.
     gain: () => CROP_DROP_ITEMS.map(item => ({ item })),
+    // The concrete crop the census saw, so the bot can say "the potatoes".
+    target: obs => targetOf(CROP_DROPS[readyCrops(obs)[0]]),
     reason: obs => `${readyCrops(obs).length} ripe crop(s)`,
   },
   {
     id: 'store_harvest',
     objective: 'Put the gathered village produce into the nearby chest so it is not lost on death.',
-    intents: [/^deposit_/],
+    intents: [/^deposit_/, /^dump_inventory$/],
     utility: 65,
     detect: (obs, ctx) => (storableStack(obs, ctx.storeThreshold, ctx.offered) ? 1 : 0),
     spend: (obs, ctx) => storableStack(obs, ctx.storeThreshold, ctx.offered),
+    target: (obs, ctx) => targetOf(storableStack(obs, ctx.storeThreshold, ctx.offered)?.item),
     reason: (obs, ctx) => `holding ${storableStack(obs, ctx.storeThreshold, ctx.offered)?.count ?? 0} to store`,
   },
   {
@@ -149,6 +167,7 @@ export const VILLAGE_CHORES = Object.freeze([
       const seed = plantableSeeds(obs)[0];
       return seed ? { item: seed, count: 1 } : null;
     },
+    target: obs => targetOf(CROP_DROPS[cropForSeed(plantableSeeds(obs)[0])]),
     reason: obs => `sowing ${plantableSeeds(obs)[0] ?? 'nothing'}`,
   },
   {
@@ -173,6 +192,7 @@ export const VILLAGE_CHORES = Object.freeze([
     goal: 4,
     detect: obs => nearbyMatching(obs, FAMILY.log),
     gain: () => [{ family: 'log' }],
+    target: () => ({ kind: 'log' }),
     reason: obs => `${nearbyMatching(obs, FAMILY.log)} log(s) nearby`,
   },
   {
@@ -183,6 +203,7 @@ export const VILLAGE_CHORES = Object.freeze([
     goal: 4,
     detect: obs => nearbyMatching(obs, FAMILY.stone),
     gain: () => [{ family: 'stone' }],
+    target: () => ({ kind: 'stone' }),
     reason: obs => `${nearbyMatching(obs, FAMILY.stone)} stone block(s) nearby`,
   },
   {
@@ -193,6 +214,7 @@ export const VILLAGE_CHORES = Object.freeze([
     goal: 2,
     detect: obs => nearbyOre(obs).length,
     gain: () => ORE_DROP_ITEMS.map(item => ({ item })),
+    target: () => ({ kind: 'ore' }),
     reason: obs => `${nearbyOre(obs).length} ore block(s) nearby`,
   },
 ]);
@@ -260,18 +282,26 @@ function breedingPairs (observation) {
   return pairs;
 }
 
-// The biggest village resource in the backpack, when it is worth a trip. When
-// the harness option list is known, only an item it currently offers to deposit
-// counts: storing is work only if the chest is reachable.
+// The biggest village resource in the backpack, when it is worth a trip. The
+// harness is the arbiter of *what* is worth storing: `observe().deposit.items`
+// (M3c) is already the list it is willing to take, with tools, armor, food,
+// torches and seeds exempt and a reserve on consumables — so a chore never
+// proposes work the harness cannot do. When the census is missing (older
+// harness, unit test) the local family filter is the fallback.
 function storableStack (observation, threshold = DEFAULT_STORE_THRESHOLD, offered = null) {
   const inventory = inv(observation);
-  const names = Object.keys(inventory)
-    .filter(name => FAMILY.crop.test(name) || FAMILY.wool.test(name) || FAMILY.log.test(name) ||
-      FAMILY.ore.test(name) || FAMILY.fish.test(name) || name === 'milk_bucket' || name === 'honeycomb' || name === 'honey_bottle')
-    .filter(name => !offered || offeredHas(offered, `deposit_${name}`))
-    .sort((a, b) => (inventory[b] || 0) - (inventory[a] || 0));
-  const top = names[0];
-  return top && inventory[top] >= threshold ? { item: top, count: threshold } : null;
+  const censused = Array.isArray(observation?.deposit?.items) ? observation.deposit.items : null;
+  const candidates = censused
+    ? censused.map(entry => ({ item: entry?.item, count: Number(entry?.count) || 0 }))
+    : Object.keys(inventory)
+      .filter(name => FAMILY.crop.test(name) || FAMILY.wool.test(name) || FAMILY.log.test(name) ||
+        FAMILY.ore.test(name) || FAMILY.fish.test(name) || name === 'milk_bucket' || name === 'honeycomb' || name === 'honey_bottle')
+      .map(name => ({ item: name, count: inventory[name] || 0 }));
+  const top = candidates.filter(entry => entry.item && entry.count > 0).sort((a, b) => b.count - a.count)[0];
+  if (!top) return null;
+  // Either the generalised dump (M3c) or the per-item deposit is enough.
+  if (offered && !offeredHas(offered, 'dump_inventory') && !offeredHas(offered, `deposit_${top.item}`)) return null;
+  return top.count >= threshold ? { item: top.item, count: threshold } : null;
 }
 
 // Did the harness offer this exact option key?
@@ -293,14 +323,13 @@ export function offeredMatches (offered, patterns) {
 export function choreGain (chore, observation, before = null) {
   const inventory = inv(observation);
   const start = before?.inventory || {};
-  return (chore.gain ? chore.gain(observation) : []).reduce((sum, drop) => {
-    if (drop.family) {
-      const family = FAMILY[drop.family];
-      const names = new Set([...Object.keys(inventory), ...Object.keys(start)]);
-      for (const name of names) if (family.test(name)) sum += (inventory[name] || 0) - (start[name] || 0);
-      return sum;
-    }
-    return sum + (inventory[drop.item] || 0) - (start[drop.item] || 0);
+  return (chore.gain ? chore.gain(observation) : []).reduce((total, drop) => {
+    if (!drop.family) return total + (inventory[drop.item] || 0) - (start[drop.item] || 0);
+    const family = FAMILY[drop.family];
+    const names = new Set([...Object.keys(inventory), ...Object.keys(start)]);
+    let gained = total;
+    for (const name of names) if (family.test(name)) gained += (inventory[name] || 0) - (start[name] || 0);
+    return gained;
   }, 0);
 }
 
@@ -337,6 +366,7 @@ export function deriveVillageChores (observation = {}, {
       count,
       gain: chore.gain ? chore.gain(observation) : null,
       spend: chore.spend ? chore.spend(observation, ctx) : null,
+      target: chore.target ? chore.target(observation, ctx) : null,
       babies: !!chore.babies,
       reason: chore.reason ? chore.reason(observation, ctx) : `${count}`,
     });

@@ -17,12 +17,13 @@ only the network protocol, see
 | Path | Role |
 |---|---|
 | `bedrock-harness.mjs` | Container entry point: connects the Bedrock bot to the BDS and exposes the HTTP API (`/observe`, `/options`, `/act`, `/plan`, `/survival`). Also applies the Survival Governor's emergency filter to the options. |
-| `bedrock-adapter.mjs` | Adapter that translates Bedrock state into the format expected by `controller.mjs`. |
+| `bedrock-adapter.mjs` | Adapter that translates Bedrock state into the format expected by `controller.mjs`. It also owns the **deposit policy** (M3c): `_depositableItems` (what stays in the pack: tools, armour, buckets, seeds, torches/stations, `DEPOSIT_KEEP_RESERVE = 16` of every food stack), `_depositTargetFor` (a chest that already holds the item scores `+100000`, then the distance) and the bounded `dump_inventory` action (`DEPOSIT_MAX_STACKS = 8`), with the census exposed as `observe().deposit`. |
 | `human-replies.mjs` | The deterministic chat composer: trigger match (`normalizePrefixes`, `selfPrefixes`, `matchChatPrefix`), ack/outcome/failed/stopped/lost templates (read from the i18n catalogue), `clampMessage`, `isSelfTriggering`. |
 | `human-questions.mjs` | Chat answers: `matchQuestionIntent`/`answerIntent`/`renderAnswer` over a closed intent list, the vocabulary of the structured goals (`CHORE_LABELS`, `NEED_LABELS`, `choreLabel`, `needLabel`, `planPhrase`, M7.1) and the `renderUnrouted`/`renderNoArmor` fallbacks. Question patterns and small talk cover it/en/fr/es/de. |
 | `chat-i18n.mjs` | The message catalogue: `MESSAGES` (it/en/fr/es/de, one entry per key), `t(lang, key, vars)`, `chatLangConfig`/`normalizeLang` for `CHAT_LANG`, `languageName`/`LANG_NATIVE_NAMES` for the prompts, `listAnd`. No I/O: it is the only place a user-facing sentence is written (M7.2). |
 | `chat-intent.mjs` / `chat-llm.mjs` | The optional models on the chat path: `chat-intent.mjs` routes a question to an intent (M6), `chat-llm.mjs` rephrases an already-composed reply (M7). Both are typed clients with a timeout and a deterministic fallback. |
-| `idle-goals.mjs` / `village-labor.mjs` | The `IDLE` producers: survival needs (M3) and village chores (M3b). Pure and deterministic, with a success predicate evaluated on harness state (`isNeedResolved`, `isChoreResolved`). |
+| `chat-narration.mjs` | The autonomy narration (M8): `narrateGoal(plan)`/`narrateChore`/`narrateNeed`/`targetWord` compose the sentence "In autonomia: sto raccogliendo le patate" from the catalogue, naming the concrete item the chore saw (never a raw id). Pure, no I/O. |
+| `idle-goals.mjs` / `village-labor.mjs` | The `IDLE` producers: survival needs (M3) and village chores (M3b). Pure and deterministic, with a success predicate evaluated on harness state (`isNeedResolved`, `isChoreResolved`). `storableStack` reads the harness census (`observe().deposit`) rather than keeping a second list of what is storable. |
 | `controller-decisions.mjs` | Pure controller functions (no I/O): option ranking/cap (including the active skill's intents), anti-loop, progress fingerprint, diagnostics and decision instructions. Unit tests in `tests/controller-decisions.test.mjs`. |
 | `survival/` | Deterministic Survival Intelligence Layer: perception, risk/needs, governor, rules, intents, item tags, declarative skills, resolver, verifier, progression, experience. Dedicated unit tests. |
 | `knowledge/` | `survival-rules.json` (when to interrupt progression) and `progression.json` (milestone graph with dependencies). |
@@ -108,13 +109,25 @@ CHAT_ECHO_WINDOW_MS=15000          # how long the bot recognises its own chat co
 # replies in the sender's language); CHAT_LANG covers the ambiguous ones.
 CHAT_LANG=it                       # it | en | fr | es | de; default it, unknown value falls back with a warning
 
+# Autonomy narration (M8, optional): when a goal nobody asked for starts (a
+# village chore, a governor need) the bot says what it is about to do, once per
+# goal, in the configured language, and only if a human is within
+# CHAT_GREET_RANGE. Informazione, non diario: the sentence is composed
+# deterministically and handed to saySmart as grounding.
+CHAT_NARRATE=on                    # default: follows CHAT_REPLY (channel open)
+CHAT_NARRATE_COOLDOWN_MS=300000    # minimum silence between two announcements (0 = no limit)
+
 # Natural chat (M7, optional): an LLM rephrases the deterministic reply;
 # without a key (or with CHAT_LLM=off) the reply is still sent, in the
 # deterministic text (M7.1 keeps that text in the sender's language).
 DEEPSEEK_API_KEY=                  # the gate; CHAT_LLM_API_KEY wins over it
 CHAT_LLM_API_KEY=                  # alternative to DEEPSEEK_API_KEY
 CHAT_LLM=on                        # on with a key; off disables the engine even with a key
-CHAT_LLM_MODEL=deepseek-chat       # model id sent to the endpoint
+CHAT_LLM_MODEL=deepseek-chat       CHAT_LLM_MODEL=deepseek-flash      # DeepSeek-V4.1-Flash (deepseek-chat/reasoner exist too).
+                                   # Note: V4.1-Flash thinks by default (effort high); in that mode
+                                   # temperature is ignored and max_tokens is shared with the
+                                   # reasoning, so for one chat line disable it in the body
+                                   # ({"thinking":{"type":"disabled"}}): the client does not send it yet.
 CHAT_LLM_URL=https://api.deepseek.com/chat/completions   # any OpenAI-compatible endpoint
 CHAT_LLM_TIMEOUT_MS=8000           # past this the template is sent
 CHAT_PERSONA='...'                  # persona sentence spliced into the system prompt
@@ -135,6 +148,8 @@ VILLAGE_WORK=on                    # M3b: village chores while IDLE; default: fo
 VILLAGE_COOLDOWN_MS=120000         # don't retry the same chore within this window
 VILLAGE_MAX_CHORES=12              # cap on village chores generated per session
 VILLAGE_STORE_THRESHOLD=8          # stack size from which store_harvest is worth offering
+VILLAGE_STORE_EPILOGUE=on          # M3c: after a successful village goal, queue the "put the pack away" goal
+                                   # (default: follows VILLAGE_WORK; the child is store_harvest with threshold 1)
 ```
 
 > Never commit `.env` or the `nmp-cache`.
@@ -208,6 +223,18 @@ IDLE` (AI-player roadmap milestone 0→1).
   side that describes them is M7.1 (`planPhrase`). Unit tests in
   `tests/village-labor.test.mjs` plus the integration case in
   `tests/controller-session.test.mjs`.
+- **The work comes home (M3c).** With `VILLAGE_STORE_EPILOGUE=on` a *successful*
+  `village`/`autonomous` goal queues one last child goal — `store_harvest` with
+  `storeThreshold: 1` — so the cycle is **produce → store → verify**: the parent
+  closes as `completed` and a failed chest never rewrites its outcome. The child
+  is a normal `autonomous` goal (a chat order arriving first is served first),
+  does not count against `VILLAGE_MAX_CHORES`, and closes only on the state
+  delta (`isChoreResolved` against the snapshot taken at creation). `dump_inventory`
+  moves up to 8 stacks in one bounded action keeping the reserve; the container
+  cache is updated from the observed contents *plus* the moved count accumulated
+  across stacks (the open-window slot mirror is a photograph from the moment the
+  chest was opened, so recomposing from it after every stack erased the previous
+  deposits from the cache).
 - Default `SESSION=off` preserves the historical one-shot behaviour and exit
   codes (`2` on a `failed` Goal Contract).
 - **`IDLE_TIMEOUT_MS` closes the controller, not the bot.** The bot lives in the

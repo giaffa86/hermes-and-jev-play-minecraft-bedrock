@@ -15,7 +15,7 @@ The split is the one [rmalde/minecraft-agent](https://github.com/rmalde/minecraf
 | `bedrock-harness.mjs` | The Bedrock target: the bot (NetherNet transport) plus the same bounded-action API against a Bedrock server. Boot it instead of `harness.mjs` for everything the village runs on; see [`BEDROCK.md`](BEDROCK.md). |
 | `bedrock-adapter.mjs` | The Bedrock adapter behind that API: `observe()` (nearby blocks with crop growth, farm animals, bees, fishing, fluids, redstone, portals, containers, drops), `options()` (which intents are valid *right now*) and every action implementation. |
 | `idle-goals.mjs` + `village-labor.mjs` | The two deterministic `IDLE` producers: survival **needs** (M3) and village **chores** (M3b). No model decides them; see [Player-facing properties](#player-facing-properties-bedrock). |
-| `human-replies.mjs` + `human-questions.mjs` + `chat-llm.mjs` + `chat-i18n.mjs` | The chat layer: the message catalogue (it/en/fr/es/de, `CHAT_LANG`), the deterministic replies and answers (`planPhrase`, `CHORE_LABELS`/`NEED_LABELS`) and the optional LLM rephrasing (M6/M7/M7.1/M7.2). |
+| `human-replies.mjs` + `human-questions.mjs` + `chat-llm.mjs` + `chat-i18n.mjs` + `chat-narration.mjs` | The chat layer: the message catalogue (it/en/fr/es/de, `CHAT_LANG`), the deterministic replies and answers (`planPhrase`, `CHORE_LABELS`/`NEED_LABELS`), the optional LLM rephrasing (M6/M7/M7.1/M7.2) and the autonomy narration (M8). |
 | `controller.mjs` | The loop. Planner = Hermes via `hermes chat -Q --oneshot` at milestones. Controller = Jev via OpenRouter `POST /api/alpha/decisions` (a `choice` question over the harness's options), or Hermes with `CONTROLLER=hermes`. Logs every plan and decision (choice, candidate keys, per-key probabilities, confidence, cost, latency) to `runs/<id>/controller.jsonl`. Anti-loop: repeated actions with no progress (position, inventory, objective) force a replan and are temporarily excluded. |
 | `controller-decisions.mjs` | Pure decision helpers for the controller: option ranking/cap, anti-loop detection, progress fingerprint, wait diagnostics, decision instructions. Unit tests in `tests/controller-decisions.test.mjs`. |
 | `survival/` | Deterministic Survival Intelligence Layer: perception, risk/needs scoring, Survival Governor, declarative gameplay-skill loader, skill resolver, deterministic verification, progression resolver, JSONL experience. Pure logic with unit tests; no model, no code generation. |
@@ -50,7 +50,7 @@ RUN_ID=demo WAYPOINT='{"x":380,"z":16}' TARGETS='{"dirt":4}' MAX_STEPS=14 node c
 
 Expected output ends with `GOAL MET after N actions {...}`; the full trail is in `runs/demo/controller.jsonl` (plans + every Jev decision with probabilities, confidence, latency, cost) and `runs/demo/events.jsonl` (harness-side actions and results).
 
-Knobs (all env vars): `GOAL` (free text for the planner), `TARGETS` (`{item: minCount}`), `WAYPOINT` (`{x, z}` or unset), `MAX_STEPS`, `REPLAN_EVERY` (default 8), `CONTROLLER=jev|hermes`, `JEV_MODEL` (default `typesafe/jev-1.13`), `MAX_OPTIONS` (cap on the options passed to the controller, default 12, 0 disables), `ANTI_LOOP_THRESHOLD`/`ANTI_LOOP_COOLDOWN` (default 3), `CURRICULUM=<milestone>` (e.g. `first_night`, `enter_nether`: the progression engine picks the next missing prerequisite itself), `MC_PORT`/`API_PORT` if 25599/3077 are taken, and the human chat command channel: `CHAT_ALLOWLIST` (gamertag/xuid, comma-separated; enables `@bot` control), `CHAT_PREFIXES` (triggers accepted, comma or space separated, e.g. `@bot,@hermes`; default `@bot`, the legacy `CHAT_PREFIX` still works and is summed in), `CHAT_CONTROL` (default `on` when allowlist set), `CHAT_GREET`/`CHAT_GREET_RANGE`/`CHAT_GREET_COOLDOWN_MS`/`CHAT_GREET_TEMPLATE` (proactive greeting: the bot tells a nearby trusted human the order syntax via `POST /say`; default on when the channel is open), `CHAT_INTENT`/`CHAT_INTENT_URL`/`CHAT_INTENT_MODEL`/`CHAT_INTENT_TIMEOUT_MS`/`CHAT_INTENT_MIN_P` (chat **questions**: `@bot dove sei?` is answered from `observe()` — regex fast path, then System One/Jev over a closed intent list — and creates no goal; default on with a TypeSafe/OpenRouter key), `CHAT_SELF_NAME`, `CHAT_REPLY`/`CHAT_REPLY_MAX_LENGTH`, `CHAT_MAX_AGE_MS`, `CHAT_ECHO_WINDOW_MS` (chat lifecycle: answer to its own name, reply length, stale-order window, own-echo recognition), `CHAT_LANG` (language of every sentence the bot composes: `it`/`en`/`fr`/`es`/`de`, default `it`), `DEEPSEEK_API_KEY`/`CHAT_LLM_API_KEY` + `CHAT_LLM`/`CHAT_LLM_URL`/`CHAT_LLM_MODEL`/`CHAT_LLM_TIMEOUT_MS`/`CHAT_PERSONA` (natural chat: an LLM rephrases the deterministic reply, see below) and `SESSION`/`AUTONOMY`/`VILLAGE_WORK` (persistent session, needs-driven goals, village chores; the full table with every default is in [Player-facing properties](#player-facing-properties-bedrock)). The complete list with defaults is in [`BEDROCK.md`](BEDROCK.md#environment-variables) — see `docs/wiki/human-command.md` for the chat design.
+Knobs (all env vars): `GOAL` (free text for the planner), `TARGETS` (`{item: minCount}`), `WAYPOINT` (`{x, z}` or unset), `MAX_STEPS`, `REPLAN_EVERY` (default 8), `CONTROLLER=jev|hermes`, `JEV_MODEL` (default `typesafe/jev-1.13`), `MAX_OPTIONS` (cap on the options passed to the controller, default 12, 0 disables), `ANTI_LOOP_THRESHOLD`/`ANTI_LOOP_COOLDOWN` (default 3), `CURRICULUM=<milestone>` (e.g. `first_night`, `enter_nether`: the progression engine picks the next missing prerequisite itself), `MC_PORT`/`API_PORT` if 25599/3077 are taken, and the human chat command channel: `CHAT_ALLOWLIST` (gamertag/xuid, comma-separated; enables `@bot` control), `CHAT_PREFIXES` (triggers accepted, comma or space separated, e.g. `@bot,@hermes`; default `@bot`, the legacy `CHAT_PREFIX` still works and is summed in), `CHAT_CONTROL` (default `on` when allowlist set), `CHAT_GREET`/`CHAT_GREET_RANGE`/`CHAT_GREET_COOLDOWN_MS`/`CHAT_GREET_TEMPLATE` (proactive greeting: the bot tells a nearby trusted human the order syntax via `POST /say`; default on when the channel is open), `CHAT_INTENT`/`CHAT_INTENT_URL`/`CHAT_INTENT_MODEL`/`CHAT_INTENT_TIMEOUT_MS`/`CHAT_INTENT_MIN_P` (chat **questions**: `@bot dove sei?` is answered from `observe()` — regex fast path, then System One/Jev over a closed intent list — and creates no goal; default on with a TypeSafe/OpenRouter key), `CHAT_SELF_NAME`, `CHAT_REPLY`/`CHAT_REPLY_MAX_LENGTH`, `CHAT_MAX_AGE_MS`, `CHAT_ECHO_WINDOW_MS` (chat lifecycle: answer to its own name, reply length, stale-order window, own-echo recognition), `CHAT_LANG` (language of every sentence the bot composes: `it`/`en`/`fr`/`es`/`de`, default `it`), `DEEPSEEK_API_KEY`/`CHAT_LLM_API_KEY` + `CHAT_LLM`/`CHAT_LLM_URL`/`CHAT_LLM_MODEL`/`CHAT_LLM_TIMEOUT_MS`/`CHAT_PERSONA` (natural chat: an LLM rephrases the deterministic reply, see below), `CHAT_NARRATE`/`CHAT_NARRATE_COOLDOWN_MS` (M8: the bot says out loud what it is about to do on its own) and `SESSION`/`AUTONOMY`/`VILLAGE_WORK` (persistent session, needs-driven goals, village chores; the full table with every default is in [Player-facing properties](#player-facing-properties-bedrock)). The complete list with defaults is in [`BEDROCK.md`](BEDROCK.md#environment-variables) — see `docs/wiki/human-command.md` for the chat design.
 
 ### Survival Intelligence Layer
 
@@ -170,6 +170,32 @@ writes for an order (M7.1 requires it in the sender's language). A question
 written in a language the intent patterns do not cover is still answered: the
 `chat_unrouted` reply is in `CHAT_LANG` and teaches the order syntax.
 
+### Saying what it is doing (M8)
+
+- **The bot does not go silent when it works alone.** A goal nobody asked for —
+  a village chore, or a survival need the governor decided — is announced once
+  in chat: *"In autonomia: sto raccogliendo le patate"* (same sentence in all
+  five languages, from the `autonomy_narration`/`narrate.*`/`item.*` keys).
+- **The concrete thing, not a category.** The chore carries the crop, the log,
+  the ore or the stack it saw (`plan.choreTarget`), and `chat-narration.mjs`
+  turns it into words: the item name when the catalogue knows it, otherwise the
+  family word (`kind.crop`, `kind.log`, `kind.ore`, …). A raw id never reaches
+  the chat.
+- **One line, once, and only if someone is listening.** Gate: the goal type is
+  `village`/`autonomous`, `CHAT_NARRATE` is on (it defaults to `CHAT_REPLY`),
+  `CHAT_NARRATE_COOLDOWN_MS` has elapsed (default 300000), and at least one
+  human is within `CHAT_GREET_RANGE`. A goal started in solitude keeps its
+  chance to speak later.
+- **The model does not decide it.** The sentence is composed deterministically
+  and handed to `saySmart` as grounding, so an LLM with a key can rephrase it
+  but cannot invent a fact, pick the language or announce a goal of its own.
+  With no key, the same sentence is sent verbatim.
+- **Evidence in the log.** `autonomy_narration` records the goal, the chore or
+  need, the humans in range and the exact message; `NARRATE [gN] …` goes to
+  stdout. `tests/chat-narration.test.mjs` covers the composition in every
+  language and the integration case asserts the message actually reaches
+  `POST /say`.
+
 ### The bot is not furniture: idle autonomy and village labor (M3/M3b)
 
 `SESSION=on` gives the bot an `IDLE` state; `AUTONOMY=on` fills it with
@@ -201,6 +227,7 @@ A chore that cannot be verified is never claimed as done — the goal closes
 | `VILLAGE_COOLDOWN_MS` | `120000` | anti-loop per chore |
 | `VILLAGE_MAX_CHORES` | `12` | cap on chores per session |
 | `VILLAGE_STORE_THRESHOLD` | `8` | stack size from which storing the harvest is worth it |
+| `VILLAGE_STORE_EPILOGUE` | `= VILLAGE_WORK` | after a successful village goal, queue the "put the pack away" goal |
 | `VILLAGE_WORK` | `= AUTONOMY` | village chores while `IDLE` |
 | `RESUME` | `= SESSION` | re-queue the goals a previous run left suspended |
 | `EMERGENCY` | `= SESSION` | a world event (death) preempts the running goal |
@@ -221,6 +248,30 @@ decision per action.
 - **Parsing**: an unset or empty value falls back to the default (the `||`
 idiom), `0` really disables a cooldown (it is the string `"0"`), and a
 non-numeric value disables it silently (`now - last < NaN` is always false).
+
+### The work comes home (M3c)
+
+A productive goal does not end when the last block is mined: it ends when what
+was gathered is *usable*. With `VILLAGE_STORE_EPILOGUE=on` (default: it follows
+`VILLAGE_WORK`) a **successful** `village`/`autonomous` goal queues one last
+goal — `store_harvest` with threshold `1` — so the cycle is **produce → store →
+verify**, not a collection of independent chores.
+
+- **The harness decides what is depositable**, through `observe().deposit`
+(`_depositableItems`): tools, armour, buckets, seeds, torches and portable
+stations, and a food reserve (`DEPOSIT_KEEP_RESERVE = 16` per food stack) stay
+in the pack. Note that wheat is *not* food for this purpose.
+- **The chest is chosen, not found**: `_depositTargetFor` scores a container
+that already holds that item (`+100000`) above a nearer empty one, then the
+closest reachable; remembered chests survive restarts.
+- **It is one bounded action, not twelve**: `dump_inventory` moves up to
+`DEPOSIT_MAX_STACKS = 8` stacks, keeping the reserve, and reports what it moved.
+- **It closes on the delta**: the child goal is verified by `isChoreResolved`
+against the snapshot taken when it was created, so it is `completed` only if the
+items really left the pack (`container_dump` in the run log).
+- **The humans still win**: the epilogue is a normal `autonomous` goal, so a
+chat order arriving first is served first; the epilogue never counts against
+`VILLAGE_MAX_CHORES`.
 
 ### Evidence, not memory
 

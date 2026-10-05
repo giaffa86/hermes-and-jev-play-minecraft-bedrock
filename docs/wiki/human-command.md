@@ -650,6 +650,57 @@ talk and a health question — the question-shape pre-filter wins, which is
 deliberate (the bot answers with its hearts) but it is the kind of overlap that
 a new language can reintroduce.
 
+## The bot says what it is doing (M8)
+
+The authorised plan was *"annuncio una volta a inizio goal, solo
+autonomous/village, saySmart, range 24, throttle 5 min. Nessun annuncio
+finale"* — and, at its core, one rule: the sentence is composed
+**deterministically** first, and only then handed to the optional LLM. The point
+is not decoration: a human standing next to a bot that suddenly walks away has
+no way to know whether it is working or leaving, and a bot that narrates its own
+goals is also easier to audit.
+
+- **`chat-narration.mjs`** (new, pure) holds the whole composition:
+  `narrateGoal(plan, {lang})` picks the frame (a `plan.chore` first, then a
+  `plan.need`; `null` when there is nothing to say), `narrateChore`/
+  `narrateNeed` build the sentence from the catalogue, and `targetWord(target)`
+  turns the chore's `target` into words. A need carries its own frame
+  (`narrate_need` + `need.<id>`), so it is *not* wrapped a second time in
+  `autonomy_narration` — the first version produced *"In autonomia: In autonomia
+  devo …"*.
+- **The concrete thing, not the category.** M8 gave every chore in
+  `village-labor.mjs` a `target` (`targetOf`: `{kind:'crop', item:'potato'}`,
+  `{kind:'log'}`, `{kind:'ore'}`, …), the controller copies it into
+  `plan.choreTarget`, and `targetWord` prefers the item key (`item.potato` →
+  *le patate*, *the potatoes*, *les pommes de terre*…) over the family
+  (`kind.crop`). An id like `harvest_crops` never reaches the chat.
+- **One line, once, and only if someone is listening.** `maybeNarrateGoal(goal)`
+  runs in `main()` right before `runGoal(goal)` and gates on: `CHAT_NARRATE`
+  (default: follow `CHAT_REPLY`), `goal.type` in `village`/`autonomous` (a human
+  order is never narrated back), something to say, the
+  `CHAT_NARRATE_COOLDOWN_MS` throttle (default 300000) and at least one human
+  within `CHAT_GREET_RANGE` (`nearbyHumans`). The goal is marked in
+  `narratedGoals` **only when the message is actually sent**, so a goal started
+  in solitude keeps its chance to speak later. There is no end-of-goal
+  announcement on purpose.
+- **The model never decides the fact.** The composed sentence goes to `saySmart`
+  as both the text and the `grounding`, exactly like a question answer: with a
+  DeepSeek key an LLM may rephrase it in the sender's language, without a key the
+  same sentence is sent verbatim. It cannot invent a fact, pick the language or
+  announce a goal of its own. The log carries `autonomy_narration`
+  (`goalId`/`type`/`chore`/`need`/`humans`/message) and stdout gets
+  `NARRATE [gN] …`.
+- **Evidence.** `tests/chat-narration.test.mjs` walks every `VILLAGE_CHORES` id
+  and every `NEED_PRIORITY` need in the five languages, checks the concrete crop
+  name, the family fallbacks, the one-line clamp and the `null` cases; the
+  integration case in `tests/controller-session.test.mjs` asserts that *"In
+  autonomia: sto raccogliendo il grano"* actually reaches `POST /say` with an
+  allowlisted human at distance 5.
+
+*Numbering*: the label follows the wording of the request that authorised it
+(M8); it is a slice of milestone 3/4 — autonomy plus social behaviour — not the
+`M8 Character` row of `ai-player-roadmap.md`.
+
 ## Proactive greeting (§6 Attention System)
 
 A human should not have to guess how to command the bot. When the bot perceives a
@@ -728,6 +779,10 @@ quieter hello is preferred (still an open question).
   refusals.
 - `chat-i18n.mjs` — the message catalogue (`MESSAGES`, `t`, `chatLangConfig`): the
   only place a chat sentence is written (M7.2, `CHAT_LANG`).
+- `chat-narration.mjs` — the autonomy narration (M8): `narrateGoal`/
+  `narrateChore`/`narrateNeed`/`targetWord` compose "In autonomia: sto
+  raccogliendo le patate" from the catalogue; `village-labor.mjs` reports the
+  chore's `target` and `maybeNarrateGoal` in `controller.mjs` sends it once.
 - `controller.mjs` — Hermes natural-language planning (`runHermes`);
   `maybeGreetHumans` (proactive greeting).
 - `minecraft-data` `bedrock/1.26.51/protocol.json` — `packet_text` fields

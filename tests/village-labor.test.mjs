@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   VILLAGE_CHORES, deriveVillageChores, nextVillageChore, isChoreResolved,
-  choreGain, babyCount, villageSnapshot, offeredHas, offeredMatches,
+  choreGain, babyCount, villageSnapshot, offeredHas, offeredMatches, targetOf,
   DEFAULT_VILLAGE_COOLDOWN_MS,
 } from '../village-labor.mjs';
 
@@ -107,6 +107,32 @@ test('storing needs a full stack and a reachable chest', () => {
   assert.equal(deriveVillageChores(base({ inventory: { wheat: 2 } }), { offered: new Set(['deposit_wheat']) }).length, 0);
 });
 
+// M3c: la politica di cosa si ripone la detta il harness (`observe.deposit`), non
+// una seconda lista nel controller; la chore la segue, e la soglia può scendere
+// a 1 quando lo scarico è l'epilogo di un goal produttivo.
+test('storing follows the harness deposit census', () => {
+  const deposit = { items: [{ item: 'cobblestone', count: 64 }], total: 64, target: { type: 'chest', position: { x: 1, y: 64, z: 0 }, distance: 1 } };
+  const obs = base({ inventory: { cobblestone: 64 }, containers: [{ type: 'chest', position: { x: 1, y: 64, z: 0 } }], deposit });
+  const chore = deriveVillageChores(obs, { offered: new Set(['dump_inventory']) }).find(c => c.id === 'store_harvest');
+  assert.ok(chore, 'i ciottoli non sono una famiglia del villaggio, ma il harness li dichiara da riporre');
+  assert.deepEqual(chore.spend, { item: 'cobblestone', count: 8 });
+  const epilogue = deriveVillageChores(obs, { offered: new Set(['dump_inventory']), storeThreshold: 1 }).find(c => c.id === 'store_harvest');
+  assert.deepEqual(epilogue.spend, { item: 'cobblestone', count: 1 }, 'a fine lavoro basta quel che c\u2019è');
+  // Il censimento del harness è l'arbitro: se dice che non c'è niente da
+  // riporre, un aggregato pieno non basta. Senza censimento si ricade sulle famiglie.
+  const empty = base({ inventory: { wheat: 8 }, deposit: { items: [], total: 0, target: null } });
+  assert.equal(deriveVillageChores(empty, { offered: new Set(['dump_inventory']) }).length, 0);
+  assert.equal(deriveVillageChores(base({ inventory: { wheat: 8 } }), { offered: new Set(['dump_inventory']) }).length, 1);
+  assert.equal(deriveVillageChores(obs, { offered: new Set(['harvest_wheat']) }).length, 0, 'senza un deposito offerto non si ripone');
+});
+
+test('the store resolves when the items really left the pack', () => {
+  const before = villageSnapshot(base({ inventory: { cobblestone: 64 } }), { spend: { item: 'cobblestone', count: 8 } });
+  assert.equal(isChoreResolved('store_harvest', base({ inventory: { cobblestone: 60 } }), { before }), false);
+  assert.equal(isChoreResolved('store_harvest', base({ inventory: { cobblestone: 56 } }), { before }), true);
+  assert.equal(isChoreResolved('store_harvest', base({ inventory: { cobblestone: 64 } }), {}), false, 'senza snapshot nessuna chiusura');
+});
+
 test('the best chore wins and the cooldown skips an attempt', () => {
   const obs = base({ nearby: { wheat: crop(true) }, inventory: { shears: 1 }, farmAnimals: [{ type: 'sheep', baby: false, sheared: false }] });
   const best = nextVillageChore(obs);
@@ -166,4 +192,33 @@ test('option matching accepts a Set or an array', () => {
   assert.equal(offeredMatches(new Set(['harvest_wheat']), [/^harvest_/]), true);
   assert.equal(offeredMatches(['plant_carrot'], [/^plant_/]), true);
   assert.equal(offeredMatches(['mine_stone'], [/^plant_/]), false);
+});
+
+// M8: the chore carries the concrete thing it is about, so the chat layer can
+// say "the potatoes" instead of "the crops".
+test('a chore reports what it is working on', () => {
+  const potato = [{ name: 'potatoes', position: { x: 2, y: 64, z: 0 }, distance: 2, mature: true }];
+  const harvest = deriveVillageChores(base({ nearby: { potatoes: potato } }))[0];
+  assert.equal(harvest.id, 'harvest_crops');
+  assert.deepEqual(harvest.target, { kind: 'crop', item: 'potato' });
+  assert.deepEqual(deriveVillageChores(base({ nearby: { oak_log: [{ name: 'oak_log', position: { x: 3, y: 64, z: 0 }, distance: 3 }] } })).find(c => c.id === 'chop_wood').target, { kind: 'log' });
+  assert.deepEqual(deriveVillageChores(base({ nearby: { coal_ore: [{ name: 'coal_ore', position: { x: 4, y: 60, z: 0 }, distance: 5 }] } })).find(c => c.id === 'mine_ore').target, { kind: 'ore' });
+  // a chore with nothing concrete to name carries no target (the narration has
+  // no placeholder for it)
+  const fish = deriveVillageChores(base({ inventory: { fishing_rod: 1 }, fishing: { available: true, rod: true, bobberOut: false, fish: 0 } }))[0];
+  assert.equal(fish.id, 'go_fishing');
+  assert.equal(fish.target, null);
+});
+
+test('targetOf names the item or the family, never an empty string', () => {
+  assert.deepEqual(targetOf('potato'), { kind: 'crop', item: 'potato' });
+  assert.deepEqual(targetOf('white_wool'), { kind: 'wool' });
+  assert.deepEqual(targetOf('spruce_log'), { kind: 'log' });
+  assert.deepEqual(targetOf('cobblestone'), { kind: 'stone' });
+  assert.deepEqual(targetOf('raw_iron'), { kind: 'ore' });
+  assert.deepEqual(targetOf('salmon'), { kind: 'fish' });
+  assert.deepEqual(targetOf('milk_bucket'), { kind: 'milk' });
+  assert.deepEqual(targetOf('honeycomb'), { kind: 'honey' });
+  assert.deepEqual(targetOf('dirt'), { kind: 'goods' });
+  assert.equal(targetOf(null), null);
 });

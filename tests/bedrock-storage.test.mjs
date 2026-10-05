@@ -868,3 +868,141 @@ test('a container read skips a container that just failed to open', async () => 
   assert.deepEqual(opened, [{ x: 9, y: 64, z: 0 }], 'il contenitore in cooldown è saltato');
   assert.ok(events.some(e => e[0] === 'container_read_skipped'), `log: ${events.map(e => e[0]).join(', ')}`);
 });
+
+// ---- M3c: lo scarico di fine lavoro ----------------------------------------------------------
+// Un baule finto che si comporta davvero: `take`/`place` spostano i conteggi
+// slot per slot, così il dump multi-stack è verificabile sul delta reale di
+// inventario e contenuto (l'invariante di M3c: mai un successo dichiarato).
+function workingChest (adapter, entry) {
+  const requests = [];
+  // Il mirror di una finestra di baule singolo (27 slot), come lo vede il client.
+  const slots = new Array(27);
+  for (const [item, count] of Object.entries(entry.contents || {})) {
+    slots[slots.findIndex(s => !s)] = { network_id: 1, name: item, count, stack_id: 5 };
+  }
+  adapter._ensureStorageOpen = async () => {
+    adapter._openContainer = { id: 1, type: 'container' };
+    adapter._openContainerBlock = { name: entry.type, position: entry.position };
+    adapter._openContainerSlots = slots;
+  };
+  adapter._sendStackRequest = async actions => {
+    const a = actions[0];
+    requests.push({ type: a.type_id, fromSlot: a.source.slot, toSlot: a.destination.slot });
+    if (a.type_id === 'take') {
+      const source = adapter.inventorySlots[a.source.slot];
+      const remaining = source ? Math.max(0, (source.count || 0) - a.count) : 0;
+      if (source) source.count = remaining;
+      if (source && remaining <= 0) adapter.inventorySlots[a.source.slot] = undefined;
+      return {
+        status: 'ok',
+        containers: [
+          { slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: a.count, item_stack_id: 70 }] },
+          { slot_type: { container_id: 'hotbar_and_inventory' }, slots: [{ slot: a.source.slot, count: remaining, item_stack_id: source?.stack_id || 0 }] },
+        ],
+      };
+    }
+    // Il mirror degli slot non si aggiorna dalla risposta `place` (il client lo
+    // fa per conto suo): la verifica resta quella dell'adapter, sul suo registro.
+    return { status: 'ok', containers: [{ slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 0 }] }] };
+  };
+  return requests;
+}
+
+test('the keep list leaves tools, gear, seeds and a food reserve in the pack', () => {
+  const adapter = storageAdapter();
+  adapter.inventory = {
+    iron_pickaxe: 1, cooked_beef: 3, wheat_seeds: 12, torch: 20,
+    wheat: 30, cobblestone: 64, raw_iron: 5, milk_bucket: 1,
+  };
+  const items = adapter._depositableItems();
+  const byName = Object.fromEntries(items.map(e => [e.item, e.count]));
+  assert.equal(byName.iron_pickaxe, undefined, 'gli attrezzi restano');
+  assert.equal(byName.cooked_beef, undefined, 'il cibo sotto la riserva resta');
+  assert.equal(byName.wheat_seeds, undefined, 'le sementi restano');
+  assert.equal(byName.torch, 4, 'le torce sono una riserva: l\'eccesso va in baule');
+  assert.equal(byName.milk_bucket, undefined, 'i secchi non si depositano');
+  assert.equal(byName.wheat, 30, 'il grano non è cibo: è tutto roba da baule');
+  assert.equal(byName.cobblestone, 64, 'i ciottoli sono tutti depositabili');
+  assert.equal(byName.raw_iron, 5, 'il minerale grezzo è valore');
+  assert.equal(items[0].item, 'cobblestone', 'il più abbondante per primo');
+  const noReserve = Object.fromEntries(adapter._depositableItems({reserve: 0}).map(e => [e.item, e.count]));
+  assert.equal(noReserve.wheat, 30, 'riserva 0 = tutto depositabile');
+  assert.equal(noReserve.cooked_beef, 3);
+});
+
+test('a chest that already holds the item beats a nearer empty one', () => {
+  const adapter = storageAdapter();
+  seedContainer(adapter, { x: 2, y: 64, z: 0, contents: {} });
+  seedContainer(adapter, { x: 40, y: 64, z: 0, contents: { cobblestone: 12 } });
+  assert.equal(adapter._depositTargetFor('cobblestone').position.x, 40, 'si accorpa dove l\'item vive già');
+  assert.equal(adapter._depositTargetFor('wheat').position.x, 2, 'senza l\'item vince la distanza');
+  assert.equal(adapter._depositTargetFor(null, {cachedOnly: true}).position.x, 2);
+});
+
+test('observe exposes what is depositable and where it would go', () => {
+  const adapter = storageAdapter();
+  seedContainer(adapter, { x: 2, y: 64, z: 0, contents: {} });
+  adapter.inventory = { cobblestone: 64, iron_pickaxe: 1, cooked_beef: 2 };
+  const state = adapter.observe().deposit;
+  assert.deepEqual(state.items, [{ item: 'cobblestone', count: 64 }]);
+  assert.equal(state.total, 64);
+  assert.equal(state.target.type, 'chest');
+  assert.ok(state.target.distance > 1 && state.target.distance < 3, `distanza ${state.target.distance}`);
+  assert.deepEqual(state.target.position, { x: 2, y: 64, z: 0 });
+});
+
+test('dump_inventory empties the pack into the right chest and keeps the reserve', async () => {
+  const logs = [];
+  const adapter = storageAdapter();
+  adapter.log = (event, payload) => logs.push({ event, ...payload });
+  adapter._reachabilityUsable = () => false;
+  seedContainer(adapter, { x: 2, y: 64, z: 0, type: 'chest', contents: {} });
+  const far = seedContainer(adapter, { x: 30, y: 64, z: 0, type: 'chest', contents: { cobblestone: 4 } });
+  adapter.inventorySlots[10] = { network_id: 1, name: 'cobblestone', count: 64, stack_id: 11 };
+  adapter.inventorySlots[11] = { network_id: 2, name: 'wheat', count: 30, stack_id: 12 };
+  adapter.inventorySlots[12] = { network_id: 3, name: 'iron_pickaxe', count: 1, stack_id: 13 };
+  adapter.inventorySlots[13] = { network_id: 4, name: 'cooked_beef', count: 20, stack_id: 14 };
+  for (const [id, name] of [[1, 'cobblestone'], [2, 'wheat'], [3, 'iron_pickaxe'], [4, 'cooked_beef']]) adapter.world.registry.items[id] = { name };
+  adapter._refreshInventory();
+  const requests = workingChest(adapter, far);
+  adapter._returnCursorToInventory = async () => true;
+  const result = await adapter._dumpInventory();
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.into, 'chest');
+  assert.equal(result.position.x, 30, 'il baule che già contiene i ciottoli');
+  const items = Object.fromEntries(result.items.map(e => [e.item, e.count]));
+  assert.equal(items.cobblestone, 64);
+  assert.equal(items.wheat, 30, 'il grano non è cibo: va tutto in baule');
+  assert.equal(items.cooked_beef, 4, 'del cibo si riporta solo il surplus oltre la riserva');
+  assert.equal(items.iron_pickaxe, undefined);
+  assert.equal(result.stacks, 3, 'tre stack, uno per item');
+  assert.equal(adapter.inventory.cobblestone, undefined, 'i ciottoli sono tutti nel baule');
+  assert.equal(adapter.inventory.wheat, undefined);
+  assert.equal(adapter.inventory.cooked_beef, 16, 'la riserva di cibo resta in zaino');
+  assert.equal(adapter.inventory.iron_pickaxe, 1);
+  assert.equal(adapter.containers.get('30,64,0').contents.cobblestone, 68);
+  assert.equal(adapter.containers.get('30,64,0').contents.wheat, 30);
+  assert.equal(adapter.containers.get('30,64,0').contents.cooked_beef, 4);
+  assert.equal(adapter.containers.get('2,64,0').contents.cobblestone, undefined, 'il baule vicino non si tocca');
+  assert.equal(requests.length, 6, 'tre stack = tre take + tre place');
+  assert.ok(logs.some(l => l.event === 'container_dump'), `log: ${logs.map(l => l.event).join(', ')}`);
+});
+
+test('dump_inventory fails cleanly with nothing to store', async () => {
+  const adapter = storageAdapter();
+  adapter.inventory = { iron_pickaxe: 1 };
+  assert.deepEqual(await adapter._dumpInventory(), { ok: false, error: 'nothing_to_deposit' });
+  adapter.inventory = { cobblestone: 64 };
+  assert.deepEqual(await adapter._dumpInventory(), { ok: false, error: 'container_not_found' });
+});
+
+test('options offer the single dump when there is something to store', () => {
+  const adapter = storageAdapter();
+  adapter._reachabilityUsable = () => false;
+  adapter.inventory = { cobblestone: 64, iron_pickaxe: 1 };
+  assert.equal(adapter.options().some(o => o.key === 'dump_inventory'), false, 'senza baule non si scarica');
+  seedContainer(adapter, { contents: {} });
+  const option = adapter.options().find(o => o.key === 'dump_inventory');
+  assert.ok(option, 'con un baule noto e roba da riporre il dump è offerto');
+  assert.match(option.description, /1 item type\(s\) \(cobblestone\)/);
+});

@@ -162,6 +162,118 @@ so `goalMet` closes it on the same deterministic predicate the needs use. Tests:
 in `tests/controller-session.test.mjs` (integration: an offered `harvest_*`
 becomes a completed `village` goal).
 
+## Milestone 8 — Autonomy narration (implemented)
+
+*Numbering note: the label follows the wording of the request that authorised
+it (M8). It is a slice of milestone 3/4 — autonomy plus social behaviour — not
+the `M8 Character` row of the table below.*
+
+Before this slice the bot worked in silence when nobody had asked it anything: a
+village chore started, the human in front of it saw it walk away, and had no idea
+why. Now the goal announces itself, once, at the moment it starts: *"In
+autonomia: sto raccogliendo le patate"*.
+
+The composition lives in `chat-narration.mjs` (pure, no I/O):
+
+| function | role |
+|---|---|
+| `narrateGoal(plan, {lang})` | picks the frame: a `plan.chore` first, then a `plan.need`; `null` when there is nothing to say |
+| `narrateChore(choreId, target, {lang})` | `narrate.<choreId>` from the catalogue, with `{target}` filled by `targetWord`; `null` for an unknown chore |
+| `narrateNeed(need, {lang})` | the whole sentence from `narrate_need` + `need.<id>` (a need has its own frame, so it is not wrapped a second time in `autonomy_narration`) |
+| `targetWord(target, {lang})` | the concrete item (`item.potato`) when the catalogue knows it, otherwise the family word (`kind.log`, `kind.ore`, `kind.crop`, …), otherwise `kind.goods` |
+
+The concrete name comes from the chore itself: M8 gave every `VILLAGE_CHORES`
+entry a `target` (`targetOf` in `village-labor.mjs`, e.g.
+`{kind: 'crop', item: 'potato'}` for `harvest_crops`) and the controller copies
+it into `plan.choreTarget`. `tests/chat-narration.test.mjs` walks every chore and
+every `NEED_PRIORITY` entry to prove each one is announceable in all five
+languages, and that a raw id never reaches the chat;
+`tests/village-labor.test.mjs` proves a chore reports what it is working on.
+
+In `controller.mjs` the announcement is `maybeNarrateGoal(goal)`, called from
+`main()` just before `runGoal(goal)`. Its gates are the whole policy:
+
+1. `CHAT_NARRATE` is on (default: follow `CHAT_REPLY`) and the goal type is
+   `village`/`autonomous` — a human order is never narrated back to the human;
+2. the goal has something to say (`narrateGoal` returns a sentence);
+3. `CHAT_NARRATE_COOLDOWN_MS` (default 300000) has elapsed since the last one;
+4. `observe().spawned` and at least one human within `CHAT_GREET_RANGE`
+   (`nearbyHumans`);
+5. the goal is remembered in `narratedGoals` **only when the message is actually
+   sent**, so a goal that starts in solitude keeps its chance to speak later.
+
+The message goes through `saySmart` as both text and `grounding`, so the M7 LLM
+can rephrase it but cannot invent a fact, pick another language or announce a
+goal of its own; with no key the same sentence is sent verbatim. The log carries
+`autonomy_narration` (`goalId`, `type`, `chore`/`need`, `humans`, message) and
+`NARRATE [gN] …` on stdout. There is deliberately **no** end-of-goal
+announcement: the chat is for the humans, not a journal.
+
+Integration proof: the village case in `tests/controller-session.test.mjs`
+asserts that, with a human at distance 5 and the channel open, the sentence
+*"In autonomia: sto raccogliendo il grano"* actually reaches `POST /say`.
+
+## Milestone 3c — The work comes home (implemented)
+
+M3b gave the bot chores; M3c gives it an **economic cycle**: a productive goal
+ends when what it gathered is *usable*, not when the last block is mined. On a
+successful `village`/`autonomous` goal, and with `VILLAGE_STORE_EPILOGUE=on`
+(default: it follows `VILLAGE_WORK`), `maybeStoreEpilogue` queues one last child
+goal — `store_harvest` with `storeThreshold: 1` — before the loop returns to
+`IDLE`. The sequence is **produce → store → verify**.
+
+Why a child goal and not a step inside the parent: the store closes on
+`isChoreResolved`, the same state-delta verifier the chores use, and it keeps
+the parent's outcome untouched — a harvest that succeeded is not turned into a
+failure because the chest was full. The child is enqueued only when
+
+1. the parent finished `success` (a failed goal has nothing to store),
+2. its type is `village`/`autonomous` (a chat order ends where the human
+   asked it to end; the M8 narration is not a reason to walk to a chest),
+3. it is not itself a `store_harvest` (no epilogue of an epilogue),
+4. `GET /options` still offers a deposit and `observe().deposit` still lists
+   something worth storing,
+5. it has not already been served (`storeEpilogues`).
+
+It is a normal `autonomous` goal (`priority` 20), so a chat order that arrives
+in the meantime is served first, and it does **not** count against
+`VILLAGE_MAX_CHORES`: it is the tail of a goal already counted.
+
+### Where the policy lives: the harness
+
+| Piece | Guarantee |
+|---|---|
+| `_depositableItems({reserve})` | decides *what* is depositable: tools and armour, a bucket, seeds, torches and portable stations, and `DEPOSIT_KEEP_RESERVE = 16` of every food stack stay in the pack. Wheat is **not** food for this purpose |
+| `_depositTargetFor(item, {position, cachedOnly})` | decides *where*: a container that already holds that item scores `+100000`, then the distance, then the first reachable storage block. Only cached containers are used when the moment must stay cheap |
+| `dump_inventory` | one bounded action (`DEPOSIT_MAX_STACKS = 8`) instead of a chore per item; it keeps the reserve and returns what it moved |
+| `observe().deposit` | the same census, exposed to the controller: `{items, total, target, at}` — `storableStack` in `village-labor.mjs` reads *this* first and only falls back to its own family filter |
+
+The container cache is updated from the **observed** contents plus the moved
+count, accumulated across the stacks of one dump: the open-window slot mirror is
+a photograph taken when the chest was opened, so recomposing the contents from
+it after every stack used to erase the previous deposits from the cache (and
+with them the "this chest already holds that item" score).
+
+### Proof and limits
+
+`tests/bedrock-storage.test.mjs` (51 tests) covers the keep list with its
+reserve, the chest that already holds the item beating a nearer empty one, the
+census exposed by `observe()`, a full dump (inventory, cache, request count and
+`container_dump`) and the two clean failures (`nothing_to_deposit`,
+`container_not_found`). `tests/village-labor.test.mjs` proves that the chore
+follows the harness census (and that an empty census beats a full stack: the
+harness is the arbiter). The integration case *"village labor: a finished
+harvest walks what it gathered to the chest"* in `tests/controller-session.test.mjs`
+asserts the whole chain: `harvest_crops` runs, then
+`STORE EPILOGUE after gN -> village chore gN+1 [store_harvest]`, and the child is
+persisted `completed` with `parameters.epilogueOf = gN`.
+
+**Open.** The epilogue consolidates nothing: it walks to the best chest it knows
+rather than spreading one item per chest. It stores raw produce only — smelting
+first (ore, meat, charcoal) is M9. In one-shot mode the child stays queued and is
+resumed with `RESUME=on`, and the M8 narration may (correctly) announce the
+epilogue as its own goal.
+
 ## Roadmap milestones
 
 The roadmap orders the work in nine milestones. Milestone 0 is the audit above
@@ -174,7 +286,7 @@ partial slices where noted (milestone 2 emergency, 3 autonomy, 4 greeting,
 | 0 | Lifecycle persistence | separate goal/connection lifecycle, idle state, new goal without reconnect, reconnect without losing agent state. ✅ session loop + `IDLE` (opt-in `SESSION=on`) + cross-session resume (`RESUME`, default on) |
 | 1 | Agent Core | a **Goal Manager**: every activity is a `goal {id, type, source, priority, status, parameters, parentGoal, createdAt}` with status `PENDING/RUNNING/SUSPENDED/COMPLETED/FAILED` and sources `CHAT/AUTONOMOUS/WORLD_EVENT/PLAYER_BEHAVIOR/EMERGENCY/OPPORTUNITY`. Chat commands become goals, never raw primitives. ✅ `goal-manager.mjs` (persistence + preempt/suspend/resume + cross-session resume; producers: chat/curriculum/autonomy/opportunity — the last one not yet wired into the loop) |
 | 2 | Emergency system | world events auto-create preempting goals — `PLAYER_DIED → RECOVER_PLAYER_LOOT (CRITICAL)` with loot priorities (netherite/diamond → enchanted → elytra → …) and risk awareness (lava/warden/nether). ◑ `PLAYER_DIED → recover_loot` implemented and **live-verified** (2026-10-02) (`world-events.mjs` + `emergency-goals.mjs`, opt-in default in session); see [emergency](emergency.md). Loot-priority executor, fluid/fire events and nested preemption still open |
-| 3 | Autonomy | needs-driven idle behaviour (food low → find food; tool missing → craft; inventory full → store; night → shelter; else explore) via state + rules + utility score, **not** an LLM per decision. ◑ survival needs implemented (`idle-goals.mjs`, opt-in `AUTONOMY=on`); storage/explore still open |
+| 3 | Autonomy | needs-driven idle behaviour (food low → find food; tool missing → craft; inventory full → store; night → shelter; else explore) via state + rules + utility score, **not** an LLM per decision. ◑ survival needs implemented (`idle-goals.mjs`, opt-in `AUTONOMY=on`); the inventory-full branch is implemented as the **store epilogue** (M3c, below); explore still open; the autonomous goal now announces itself in chat (M8, below) |
 | 4 | Social behaviour | attention system (crouch/jump/stare/light hit → `PLAYER_REQUESTS_ATTENTION`) and contextual assistance (mining/fighting/building/fleeing/exploring → assist/observe/ignore). ◑ deterministic slice implemented: **proactive greeting** — a human perceived nearby is told the exact order syntax (`human-greeting.mjs` + `observe().humans` + `POST /say`, see [human-command](human-command.md)); the attention *events* (crouch/jump/stare/hit) are still open |
 | 5 | World awareness | home system (bed/chest/furnace/table/storage/safe area) and world memory (resource spots, caves, villages, danger zones, structures, death locations). ◑ world memory implemented (`world-memory.mjs` + the mission/episode layer, see [memory](memory.md)); the **opportunity slice** — a valuable vein in sight suspends the goal and the bot takes the detour — is the deterministic curiosity step of this milestone (`ore-value.mjs` + [opportunity-goals.mjs](../../opportunity-goals.mjs), see [opportunity](opportunity.md)): detection + decision + option done, controller wiring pending |
 | 6 | Advanced navigation | world-modifying pathfinding: bridge, pillar, dig tunnel, safe descent, break obstacle. |

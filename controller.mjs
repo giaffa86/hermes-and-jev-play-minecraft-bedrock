@@ -38,6 +38,7 @@ import {answerIntent, renderAnswer, renderNoArmor, renderUnrouted, looksLikeSmal
 import {resolveQuestionIntent, DEFAULT_INTENT_TIMEOUT_MS, DEFAULT_INTENT_MIN_P} from './chat-intent.mjs';
 import {composeChatReply, chatLlmConfig, compactChatFacts, createChatMemory} from './chat-llm.mjs';
 import {chatLangConfig, t, languageName, LANGS} from './chat-i18n.mjs';
+import {narrateGoal, DEFAULT_NARRATE_COOLDOWN_MS} from './chat-narration.mjs';
 import {systemOneDecide} from './system-one.mjs';
 import {
   evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
@@ -161,6 +162,20 @@ const CHAT_REPLY = process.env.CHAT_REPLY == null
   ? (CHAT_CONTROL !== 'off' && CHAT_ALLOWLIST.size > 0)
   : /^(1|on|true|yes)$/i.test(process.env.CHAT_REPLY);
 const CHAT_REPLY_MAX_LENGTH = +(process.env.CHAT_REPLY_MAX_LENGTH || DEFAULT_REPLY_MAX_LENGTH);
+// Annuncio in autonomia (M8): quando parte un goal che nessuno ha chiesto, il bot
+// dice cosa sta per fare ("In autonomia: sto raccogliendo le patate") invece di
+// sparire nel silenzio. Una volta per goal, con cooldown, e solo se un umano è
+// davvero a portata d'orecchio: e' informazione, non un diario. La frase nasce
+// dal catalogo (5 lingue) e passa da `saySmart`, quindi il modello può
+// riformularla ma non aggiunge fatti né sceglie la lingua.
+const CHAT_NARRATE = process.env.CHAT_NARRATE == null
+  ? CHAT_REPLY
+  : /^(1|on|true|yes)$/i.test(process.env.CHAT_NARRATE);
+const CHAT_NARRATE_COOLDOWN_MS = process.env.CHAT_NARRATE_COOLDOWN_MS == null
+  ? DEFAULT_NARRATE_COOLDOWN_MS
+  : +(process.env.CHAT_NARRATE_COOLDOWN_MS);
+const narratedGoals = new Set(); // goalId già annunciati (limitato da rememberSeen)
+let lastNarrationAt = 0;
 // Domande in chat (M6/M6.1): un messaggio che chiede un fatto sul bot ("dove sei",
 // "che fai", "quanti dirt hai") riceve una risposta deterministica dai dati
 // dell'harness — nessun goal creato, quindi un goal in corso continua a girare.
@@ -215,6 +230,9 @@ const VILLAGE_WORK = process.env.VILLAGE_WORK == null ? AUTONOMY : /^(1|on|true|
 const VILLAGE_COOLDOWN_MS = +(process.env.VILLAGE_COOLDOWN_MS || DEFAULT_VILLAGE_COOLDOWN_MS);
 const VILLAGE_MAX_CHORES = +(process.env.VILLAGE_MAX_CHORES || DEFAULT_VILLAGE_MAX_CHORES);
 const VILLAGE_STORE_THRESHOLD = +(process.env.VILLAGE_STORE_THRESHOLD || 8);
+// M3c — l'epilogo del goal produttivo: chi ha raccolto, riporta. Default: segue
+// il lavoro di villaggio (un bot che non lavora non ha niente da riporre).
+const VILLAGE_STORE_EPILOGUE = process.env.VILLAGE_STORE_EPILOGUE == null ? VILLAGE_WORK : /^(1|on|true|yes)$/i.test(process.env.VILLAGE_STORE_EPILOGUE);
 // Bisogni di sopravvivenza: in IDLE un bisogno che il governor dichiara
 // *adesso* genera un goal anche con AUTONOMY off — l'autonomia e' inventarsi
 // obiettivi, dormire di notte con un letto a due passi e' la policy di
@@ -269,6 +287,7 @@ let autonomousGoalCount = 0;             // goal autonomi generati in questa ses
 const autonomousAttempts = new Map();    // need -> ultimo tentativo (anti-loop in IDLE)
 let villageGoalCount = 0;                // lavori di villaggio generati in questa sessione (cap)
 const villageAttempts = new Map();       // chore -> ultimo tentativo (anti-loop in IDLE)
+const storeEpilogues = new Set();        // goal produttivi già serviti dallo scarico di fine task (M3c)
 const emergencyAttempts = new Map();     // dedupKey evento -> ultima emergenza creata
 
 function milestoneForSkill (skillId) {
@@ -751,6 +770,92 @@ async function maybeGreetHumans (obs) {
     log('chat_greet', {to: greet.username, distance: greet.distance, prefixes, message: greet.message, ok: !!result?.ok, error: result?.error ?? null});
     console.log(`GREET ${greet.username}: ${greet.message}`);
   }
+}
+
+// Umani a portata d'orecchio, dedup per gamertag: un annuncio non si ripete se
+// il server lista lo stesso giocatore due volte.
+function nearbyHumans (obs, range = CHAT_GREET_RANGE) {
+  const seen = new Set();
+  const out = [];
+  for (const human of obs?.humans || []) {
+    const username = human?.username ? String(human.username) : null;
+    if (!username) continue;
+    const key = username.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const distance = human.distance;
+    if (distance != null && Number.isFinite(distance) && distance > range) continue;
+    out.push({username, distance: distance ?? null});
+  }
+  return out;
+}
+
+// M8: il bot racconta il lavoro che sta iniziando da solo. Deterministico, in
+// una lingua sola (quella configurata), una volta per goal e con cooldown;
+// nessun umano vicino = nessun messaggio. Best-effort: se `/observe` fallisce
+// l'annuncio si salta, il goal parte lo stesso.
+async function maybeNarrateGoal (goal) {
+  if (!CHAT_NARRATE || !goal?.plan) return null;
+  if (goal.type !== 'village' && goal.type !== 'autonomous') return null;
+  const narration = narrateGoal(goal.plan, {lang: CHAT_LANG});
+  if (!narration) return null;
+  const now = Date.now();
+  if (lastNarrationAt && now - lastNarrationAt < CHAT_NARRATE_COOLDOWN_MS) return null;
+  const obs = await api('GET', '/observe').catch(() => null);
+  if (!obs?.spawned) return null;
+  const humans = nearbyHumans(obs);
+  if (!humans.length) return null;
+  // Segnato solo quando l'annuncio parte davvero: un goal partito in solitudine
+  // non consuma la sua unica occasione di parlare.
+  if (!rememberSeen(narratedGoals, goal.id)) return null;
+  lastNarrationAt = now;
+  await saySmart('autonomy', {
+    from: null, message: narration, obs, plan: goal.plan,
+    grounding: narration, fallback: narration, prefixes: chatPrefixes(obs),
+  });
+  log('autonomy_narration', {
+    goalId: goal.id, type: goal.type, chore: goal.plan.chore ?? null, need: goal.plan.need ?? null,
+    humans: humans.map(h => h.username), message: narration,
+  });
+  console.log(`NARRATE [${goal.id}] ${narration}`);
+  return narration;
+}
+
+// M3c: il goal che ha raccolto riporta. Un `village`/`autonomous` completato che
+// lascia ancora roba in zaino accoda una sola `store_harvest` (soglia 1: qualunque
+// cosa, non uno stack intero) prima che il loop torni in IDLE. Il successo resta
+// un delta di stato: la chore si chiude quando l'inventario cala davvero (e il
+// baule cresce), mai perché il modello dice «fatto».
+async function maybeStoreEpilogue (goal, outcome) {
+  if (!VILLAGE_STORE_EPILOGUE || outcome?.status !== 'success') return null;
+  if (goal?.type !== 'village' && goal?.type !== 'autonomous') return null;
+  // Solo chi ha prodotto: l'epilogo non ha epilogo, e un bisogno non raccoglie.
+  if (!goal.plan?.chore || goal.plan.chore === 'store_harvest') return null;
+  const obs = await api('GET', '/observe').catch(() => null);
+  if (!obs) return null;
+  const availability = await api('GET', '/options').catch(() => null);
+  const offered = new Set((availability?.options || []).map(o => o.key));
+  const chore = nextVillageChore(obs, {
+    offered, storeThreshold: 1, attempts: villageAttempts,
+    cooldownMs: 0, allow: candidate => candidate.id === 'store_harvest',
+  });
+  if (!chore) return null;
+  // Segnato solo quando il figlio viene davvero accodato: senza baule
+  // raggiungibile o senza niente da riporre il goal non consuma la sua occasione.
+  if (!rememberSeen(storeEpilogues, goal.id)) return null;
+  villageAttempts.set(chore.id, Date.now());
+  const child = goalManager.enqueue({
+    type: 'village', source: GOAL_SOURCE.AUTONOMOUS, priority: chore.priority, objective: chore.objective,
+    plan: {
+      objective: chore.objective, targets: {}, waypoint: null, priority: 'village',
+      chore: chore.id, choreTarget: chore.target ?? null,
+      choreBefore: villageSnapshot(obs, {spend: chore.spend}), notes: `village:${chore.id}`,
+    },
+    parameters: {chore: chore.id, reason: chore.reason, epilogueOf: goal.id},
+  });
+  console.log(`STORE EPILOGUE after ${goal.id} -> village chore ${child.id} [${chore.id}] ${chore.objective}`);
+  log('village_store_epilogue', {goalId: goal.id, choreGoalId: child.id, chore: chore.id, reason: chore.reason, count: chore.count});
+  return child;
 }
 
 // ---- controller: Jev via TypeSafe or OpenRouter ---------------------------------------------
@@ -1422,7 +1527,8 @@ async function waitForGoal () {
             type: 'village', source: GOAL_SOURCE.AUTONOMOUS, priority: chore.priority, objective: chore.objective,
             plan: {
               objective: chore.objective, targets: {}, waypoint: null, priority: 'village',
-              chore: chore.id, choreBefore: villageSnapshot(obs, {spend: chore.spend}), notes: `village:${chore.id}`,
+              chore: chore.id, choreTarget: chore.target ?? null,
+              choreBefore: villageSnapshot(obs, {spend: chore.spend}), notes: `village:${chore.id}`,
             },
             parameters: {chore: chore.id, reason: chore.reason},
           });
@@ -1478,6 +1584,7 @@ async function main () {
     } catch (error) {
       log('mission_create_failed', {goalId: goal.id, error: error.message});
     }
+    await maybeNarrateGoal(goal);
     let outcome;
     try {
       outcome = await runGoal(goal);
@@ -1540,6 +1647,8 @@ async function main () {
         log('mission_finish_failed', {goalId: goal.id, missionId: goal.missionId, error: error.message});
       }
     }
+    // M3c: chi ha raccolto adesso riporta, prima di tornare in IDLE.
+    await maybeStoreEpilogue(goal, outcome);
     enterState('GOAL_COMPLETED', {goalId: goal.id, status: final.status});
     // Un errore fatale chiude il run (dopo aver chiuso la missione): niente
     // cicli di retry silenziosi in session mode.

@@ -204,14 +204,17 @@ test('idle autonomy: a survival need becomes an autonomous goal and completes', 
   }
 });
 
-function startVillageHarness () {
+function startVillageHarness ({ humans = [] } = {}) {
   return new Promise(resolve => {
     let worked = false;
+    const said = [];
     const server = createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       if (req.method === 'GET' && req.url === '/observe') {
         res.end(JSON.stringify({
           ...OBSERVATION,
+          humans,
+          spawned: true,
           inventory: worked ? { wheat: 2 } : {},
           food: 20, health: 20,
           time: { ticks: 1000, night: false },
@@ -222,13 +225,56 @@ function startVillageHarness () {
       } else if (req.method === 'POST' && req.url === '/act') {
         worked = true;
         res.end(JSON.stringify({ ok: true, ms: 1 }));
+      } else if (req.method === 'POST' && req.url === '/say') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+          try { said.push(JSON.parse(body).message); } catch { said.push(null); }
+          res.end(JSON.stringify({ ok: true }));
+        });
       } else {
         res.end('{}');
       }
     });
-    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, said }));
   });
 }
+
+test('autonomy narration: the idle bot tells a nearby human what it is about to do', async () => {
+  const { server, port, said } = await startVillageHarness({ humans: [{ username: '<gamertag1>', distance: 5 }] });
+  const runId = `test-narrate-${process.pid}-${Date.now()}`;
+  const dir = join(ROOT, 'runs', runId);
+  const hermes = fakeHermesBin({ objective: 'initial plan', targets: {}, waypoint: null });
+  try {
+    const { code, stdout } = await runController({
+      HARNESS: `http://127.0.0.1:${port}`,
+      RUN_ID: runId,
+      CONTROLLER: 'hermes',
+      MAX_STEPS: '5',
+      TARGETS: '{}',
+      SESSION: 'on',
+      AUTONOMY: 'off',
+      VILLAGE_WORK: 'on',
+      VILLAGE_COOLDOWN_MS: '50',
+      IDLE_POLL_MS: '50',
+      IDLE_TIMEOUT_MS: '1500',
+      CHAT_ALLOWLIST: '<gamertag1>',
+      CHAT_REPLY: 'on',
+      OPENROUTER_API_KEY: '',
+      TYPESAFE_API_KEY: '',
+      PATH: `${hermes.path}:${process.env.PATH}`,
+    });
+    assert.equal(code, 0, `unexpected exit code; stdout:\n${stdout}`);
+    assert.match(stdout, /IDLE -> village chore g\d+ \[harvest_crops\]/);
+    // The concrete crop the census saw, in the configured language, one line.
+    assert.match(stdout, /NARRATE \[g\d+\] In autonomia: sto raccogliendo il grano/);
+    assert.ok(said.includes('In autonomia: sto raccogliendo il grano'), `narration never reached /say: ${JSON.stringify(said)}`);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(hermes.dir, { recursive: true, force: true });
+  }
+});
 
 test('village labor: the idle bot picks an offered chore and closes it on a state delta', async () => {
   const { server, port } = await startVillageHarness();
@@ -261,6 +307,95 @@ test('village labor: the idle bot picks an offered chore and closes it on a stat
     assert.ok(chore, 'village chore goal was not persisted');
     assert.equal(chore.status, 'completed');
     assert.equal(chore.goal.source, 'autonomous');
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(hermes.dir, { recursive: true, force: true });
+  }
+});
+
+// M3c: a productive goal closes by carrying its harvest to the chest. The
+// epilogue is a child goal, so it closes on the same state delta (the wheat
+// really left the pack), never on the model's word.
+function startEpilogueHarness () {
+  return new Promise(resolve => {
+    let harvested = false;
+    let stored = false;
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (req.method === 'GET' && req.url === '/observe') {
+        const depositable = harvested && !stored;
+        res.end(JSON.stringify({
+          ...OBSERVATION,
+          humans: [],
+          spawned: true,
+          inventory: stored ? { wheat: 2 } : harvested ? { wheat: 3 } : {},
+          health: 20,
+          food: 20,
+          nearby: harvested ? {} : { wheat: [{ name: 'wheat', position: { x: 1, y: 64, z: 0 }, distance: 1, mature: true }] },
+          deposit: depositable
+            ? { items: [{ item: 'wheat', count: 3 }], total: 3, target: { type: 'chest', position: { x: 2, y: 64, z: 0 }, distance: 2 }, at: Date.now() }
+            : { items: [], total: 0, target: null, at: Date.now() },
+        }));
+      } else if (req.method === 'GET' && req.url === '/options') {
+        // The census changed: once the crop is in the pack, harvesting is no
+        // longer offered and only the chest is worth an action.
+        const options = harvested
+          ? [{ key: 'deposit_wheat', description: 'store the wheat' }]
+          : [{ key: 'harvest_wheat', description: 'harvest the wheat' }];
+        res.end(JSON.stringify({ options }));
+      } else if (req.method === 'POST' && req.url === '/act') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+          let key = null;
+          try { key = JSON.parse(body).key; } catch { key = null; }
+          if (key === 'harvest_wheat') harvested = true;
+          if (key === 'deposit_wheat') stored = true;
+          res.end(JSON.stringify({ ok: true, ms: 1 }));
+        });
+      } else {
+        res.end('{}');
+      }
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
+  });
+}
+
+test('village labor: a finished harvest walks what it gathered to the chest', async () => {
+  const { server, port } = await startEpilogueHarness();
+  const runId = `test-epilogue-${process.pid}-${Date.now()}`;
+  const dir = join(ROOT, 'runs', runId);
+  const hermes = fakeHermesBin({ objective: 'initial plan', targets: {}, waypoint: null });
+  try {
+    const { code, stdout } = await runController({
+      HARNESS: `http://127.0.0.1:${port}`,
+      RUN_ID: runId,
+      CONTROLLER: 'hermes',
+      MAX_STEPS: '5',
+      TARGETS: '{}',
+      SESSION: 'on',
+      AUTONOMY: 'off',
+      VILLAGE_WORK: 'on',
+      VILLAGE_COOLDOWN_MS: '50',
+      IDLE_POLL_MS: '50',
+      IDLE_TIMEOUT_MS: '1500',
+      OPENROUTER_API_KEY: '',
+      TYPESAFE_API_KEY: '',
+      CHAT_ALLOWLIST: '',
+      PATH: `${hermes.path}:${process.env.PATH}`,
+    });
+    assert.equal(code, 0, `unexpected exit code; stdout:\n${stdout}`);
+    const harvest = stdout.match(/IDLE -> village chore (g\d+) \[harvest_crops\]/);
+    assert.ok(harvest, `the harvest chore never started:\n${stdout}`);
+    const epilogue = stdout.match(/STORE EPILOGUE after g\d+ -> village chore (g\d+) \[store_harvest\]/);
+    assert.ok(epilogue, `the harvest was never carried to the chest:\n${stdout}`);
+    const saved = JSON.parse(readFileSync(join(dir, 'goals', 'world.json'), 'utf8'));
+    const store = saved.records.find(r => r.kind === 'goal' && r.goal.parameters?.chore === 'store_harvest');
+    assert.ok(store, 'the epilogue goal was not persisted');
+    assert.equal(store.status, 'completed', 'the epilogue did not close on the state delta');
+    assert.equal(store.goal.parameters.epilogueOf, harvest[1]);
+    assert.equal(store.goal.plan.chore, 'store_harvest');
   } finally {
     server.close();
     rmSync(dir, { recursive: true, force: true });

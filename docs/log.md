@@ -1,5 +1,89 @@
 # Log
 
+## [2026-10-05] feat | The work comes home (M3c)
+
+The last piece of the economic cycle the user asked for (*"a fine task scarica"*):
+a productive goal ended when the last block was mined, and the harvest stayed in
+the pack until a threshold (8) made a chore worth it. Now a successful
+`village`/`autonomous` goal queues one last child goal, `store_harvest` with
+threshold 1, so the sequence is **produce → store → verify**.
+
+- **Where the policy lives, the harness.** `bedrock-adapter.mjs` gained
+  `_isKeptItem`/`_depositableItems` (tools, armour, buckets, seeds, torches and
+  portable stations, and `DEPOSIT_KEEP_RESERVE = 16` of every food stack stay in
+  the pack; wheat is *not* food), `_depositTargetFor` (a chest that already holds
+  the item scores `+100000`, then the distance; `cachedOnly` keeps the moment
+  cheap) and `observe().deposit` (`{items, total, target, at}`). `deposit_<item>`
+  was generalised into the bounded `dump_inventory` (`DEPOSIT_MAX_STACKS = 8`,
+  keeps the reserve), which shares `_depositStackInto` with the single-item
+  action. `storableStack` now reads that census instead of keeping a second list
+  of what is storable; the harness is the arbiter.
+- **A child goal, not a step.** `maybeStoreEpilogue(goal, outcome)` runs in
+  `main()` before `enterState('GOAL_COMPLETED')` and only on `success`, only for
+  `village`/`autonomous`, never for a `store_harvest` itself. The child reuses
+  `isChoreResolved`, so a full chest cannot rewrite the parent's outcome into a
+  failure, and it does not count against `VILLAGE_MAX_CHORES`. It is
+  `source: autonomous`, so a chat order that arrives first is served first.
+- **A real cache bug found by the tests.** The open-window slot mirror is a
+  photograph taken when the chest was opened and `_applyStackResponse` does not
+  update other containers, so recomposing the contents from it after every stack
+  *erased the previous deposits from the cache* (a three-item dump left only the
+  last one) — and with them the "this chest already holds that item" score. The
+  contents now accumulate across the stacks of one dump.
+- **Tests**: 6 new cases in `tests/bedrock-storage.test.mjs` (51/51: keep list
+  with reserve, the right chest chosen over the nearest, the census, a full dump
+  checking inventory/cache/request count, the two clean failures, the option),
+  2 in `tests/village-labor.test.mjs` (the chore follows the census; an empty
+  census beats a full stack), 1 integration case in
+  `tests/controller-session.test.mjs` asserting
+  `STORE EPILOGUE after gN -> village chore gN+1 [store_harvest]` and the child
+  persisted `completed` with `parameters.epilogueOf = gN` (10/10).
+- **Open**: the epilogue consolidates nothing (it walks to the best chest it
+  knows); smelting first is M9; in one-shot mode the child stays queued until
+  `RESUME=on`.
+
+## [2026-10-05] feat | The bot says what it is doing (M8)
+
+Until now the bot worked in silence whenever nobody had asked it anything: a
+village chore started, the human standing next to it saw it walk away and had no
+idea why. The authorised plan was *"annuncio una volta a inizio goal, solo
+autonomous/village, saySmart, range 24, throttle 5 min. Nessun annuncio finale"*,
+with one hard rule: a fact is never decided by the model.
+
+- **`chat-narration.mjs`** (new, pure): `narrateGoal(plan, {lang})` picks the
+  frame (a chore first, then a need) and returns `null` when there is nothing to
+  say; `narrateChore`/`narrateNeed` compose it from the catalogue;
+  `targetWord(target)` names the concrete item (`item.potato`) or falls back to
+  the family word (`kind.log`, `kind.ore`, …), never a raw id. A need carries its
+  own frame (`narrate_need`), so it is not wrapped twice in
+  `autonomy_narration`.
+- **`chat-i18n.mjs`**: 32 new keys in all five languages — `autonomy_narration`,
+  `narrate_need`, one `narrate.<choreId>` for each of the 11 chores, `item.<id>`
+  for the 8 crop products, `kind.<x>` for the families. The placeholder-parity
+  test keeps them honest.
+- **`village-labor.mjs`**: every chore now declares a `target` (`targetOf`), and
+  the controller copies it into `plan.choreTarget` — so the announcement names
+  the crop the census actually saw.
+- **`controller.mjs`**: `maybeNarrateGoal(goal)` runs in `main()` just before
+  `runGoal(goal)`. It fires only when `CHAT_NARRATE` is on (default: follow
+  `CHAT_REPLY`), the goal is `village`/`autonomous`, the cooldown elapsed, the
+  bot is spawned and a human is within `CHAT_GREET_RANGE`; the goal is marked as
+  narrated **only if the message is actually sent**, so a goal started in
+  solitude can still speak later. The text goes to `saySmart` as both message and
+  grounding: the M7 LLM may rephrase it, never invent it.
+- **Tests**: `tests/chat-narration.test.mjs` (9 unit) proves every chore and
+  every need is announceable in five languages; `tests/village-labor.test.mjs`
+  covers `targetOf`; the integration case in `tests/controller-session.test.mjs`
+  asserts that *"In autonomia: sto raccogliendo il grano"* reaches `POST /say`
+  with an allowlisted human at distance 5 (9/9). Unit suites: 47 pass / 0 fail;
+  full suite: **1458 pass / 0 fail**.
+- **Also fixed here**: `.env.example` and `BEDROCK.md` still claimed DeepSeek has
+  no "flash" model; the chat engine now documents `CHAT_LLM_MODEL=deepseek-flash`
+  (V4.1-Flash) with its thinking-on-by-default caveat.
+- Numbering: the label follows the request's wording (M8); it is a slice of
+  milestone 3/4 (autonomy + social behaviour), not the `M8 Character` row of the
+  roadmap table. Documented in `docs/wiki/ai-player-roadmap.md`.
+
 ## [2026-10-05] feat | One chat catalogue, five languages (M7.2)
 
 The ask: *"facciamo una bella cosa, i18n per i messaggi con una proprietà env con
