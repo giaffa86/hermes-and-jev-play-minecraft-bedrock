@@ -9369,7 +9369,7 @@ export class BedrockAdapter {
     const doorNode = node => node && [node.y, node.y + 1].some(y => this._isDoorBlock(this.world.blockAt({ x: node.x, y, z: node.z })));
     // Centre the approach before entering a one-block doorway. A 0.4-block
     // shortcut can leave the player's body touching the open door panel.
-    const waypointTolerance = doorNode(waypoint) || doorNode(next) ? 0.08 : 0.4;
+    const waypointTolerance = Math.min(next ? 0.4 : motion.stopDistance, doorNode(waypoint) || doorNode(next) ? 0.08 : 0.4);
     if (wpHoriz < waypointTolerance && Math.abs(feet.y - waypoint.y) < (next ? 1.05 : Math.min(1.05, motion.arrivalVerticalTolerance ?? 3))) {
       motion.index++;
       motion.bestWaypointDist = Infinity;
@@ -9795,14 +9795,14 @@ export class BedrockAdapter {
     }
   }
 
-  async _moveTo (target, stopDistance = 1.5, timeoutMs = 30000, { signal = null, verticalTolerance = null, arrivalVerticalTolerance = 3 } = {}) {
+  async _moveTo (target, stopDistance = 1.5, timeoutMs = 30000, { signal = null, verticalTolerance = null, arrivalVerticalTolerance = 3, preciseArrival = false } = {}) {
     this._constructionSneaking = false;
     signal ??= this._actionScope?.getStore()?.signal;
     if (signal?.aborted) throw new Error('action_cancelled');
     if (!this.position || !this._feet) throw new Error('no position');
     if (!this._authTickInterval) throw new Error('movement unavailable before spawn');
     const deadline = Date.now() + timeoutMs;
-    const stop = Math.max(0.35, stopDistance);
+    const stop = Math.max(preciseArrival ? 0.025 : 0.35, stopDistance);
     let attempts = 0;
     let lastFeet = null;
     while (Date.now() < deadline) {
@@ -9816,7 +9816,8 @@ export class BedrockAdapter {
       // quando sta più in basso: la penalità verticale del punteggio la spinge
       // fuori dai primi otto posti (live 03/10, il fondo del pozzo).
       const candidates = this._findGoalNodes(target, { limit: 16 })
-        .filter(goal => verticalTolerance == null || Math.abs(goal.y - target.y) <= verticalTolerance);
+        .filter(goal => (verticalTolerance == null || Math.abs(goal.y - target.y) <= verticalTolerance) &&
+          (!preciseArrival || (goal.x === Math.floor(target.x) && goal.z === Math.floor(target.z))));
       if (!candidates.length) throw new Error('target_not_found');
       // Fra i percorsi completi vince la cella che finisce più vicino alla
       // destinazione chiesta: il primo candidato per punteggio può stare appena

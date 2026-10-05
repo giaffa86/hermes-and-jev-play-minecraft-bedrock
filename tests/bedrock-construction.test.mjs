@@ -312,3 +312,65 @@ test('offered actions gather wood, pick up drops, craft from a server recipe and
   assert.equal(events.placed.length, 9);
   assert.equal(adapter.inventory.oak_planks, 3);
 });
+
+test('a near but off-center work position is recentered when a placed floor blocks its click ray', () => {
+  const { adapter, put } = constructionAdapter();
+  put({ x: 1, y: 64, z: 0 }, 'oak_planks');
+  put({ x: 1, y: 64, z: 1 }, 'oak_planks');
+  const cell = { position: { x: 1, y: 64, z: 2 } };
+  const support = { position: { x: 1, y: 63, z: 2 }, face: 1 };
+  assert.equal(adapter.construction.lineClear({ x: 0, y: 64, z: 1 }, support, cell), true);
+  assert.equal(adapter.construction.lineClear({ x: 0.32, y: 64, z: 1.16, actual: true }, support, cell), false);
+});
+
+for (const condition of ['night', 'wounded', 'creeper']) {
+  test(`construction pauses before placing for the declarative ${condition} survival rule`, async () => {
+    const { adapter, events } = constructionAdapter({ inventory: budgetFor('platform') });
+    adapter.setPlan({ construction: { type: 'platform', origin } });
+    if (condition === 'night') adapter._timeInfo = () => ({ ticks: 15000, phase: 'night', night: true });
+    if (condition === 'wounded') adapter.health = 10;
+    if (condition === 'creeper') adapter._hostiles = () => [{ type: 'creeper', position: { x: 3, y: 64, z: -2 }, distance: 3 }];
+    const result = await adapter.executeAction('construction_step');
+    assert.equal(result.error, 'construction_survival_needed');
+    assert.equal(adapter.construction.project.state, 'paused');
+    assert.equal(events.placed.length, 0);
+    assert.ok(result.details.rule);
+  });
+}
+
+test('survival monitor cancels a pending work movement when a hostile approaches', async () => {
+  const { adapter, events } = constructionAdapter({ inventory: budgetFor('platform') });
+  adapter.setPlan({ construction: { type: 'platform', origin } });
+  adapter._feet = { x: -10.5, y: 64, z: -10.5 }; adapter._syncPositionFromFeet();
+  let entered;
+  const moving = new Promise(resolve => { entered = resolve; });
+  adapter._moveTo = async (_target, _stop, _timeout, { signal }) => {
+    entered();
+    await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+    throw new Error('action_cancelled');
+  };
+  const running = adapter.executeAction('construction_step');
+  await moving;
+  adapter._hostiles = () => [{ type: 'zombie', position: { x: -9, y: 64, z: -10 }, distance: 2 }];
+  const result = await running;
+  assert.equal(result.error, 'construction_survival_needed');
+  assert.equal(adapter.construction.project.state, 'paused');
+  assert.equal(events.placed.length, 0);
+  assert.equal(adapter.busy, false);
+});
+
+test('a work movement ending inside the next placement cell is rejected before the server click', async () => {
+  const { adapter, events } = constructionAdapter({ inventory: budgetFor('platform') });
+  adapter.setPlan({ construction: { type: 'platform', origin } });
+  adapter._feet = { x: -10.5, y: 64, z: -10.5 }; adapter._syncPositionFromFeet();
+  adapter._moveTo = async () => {
+    const cell = adapter.construction.project.plan.cells[0];
+    adapter._feet = { x: cell.position.x + 0.5, y: cell.position.y, z: cell.position.z + 0.5 };
+    adapter._syncPositionFromFeet();
+    return { ok: true };
+  };
+  const result = await adapter.executeAction('construction_step');
+  assert.equal(result.error, 'construction_work_position_changed');
+  assert.equal(result.details.occupiedByBot, true);
+  assert.equal(events.placed.length, 0);
+});

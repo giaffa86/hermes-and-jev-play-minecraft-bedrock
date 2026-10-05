@@ -343,3 +343,28 @@ test('being horizontally near a lower work position does not finish while above 
   assert.equal(finished, false);
   assert.equal(adapter._motion.index, 0, 'final waypoint remains pending until the descent finishes');
 });
+
+test('precise arrival centers the player instead of consuming the last waypoint at the normal tolerance', async () => {
+  const world = fakeWorld(); world.fillFloor(-2, 2, -2, 3);
+  const adapter = physicsAdapter(world);
+  place(adapter, 0.32, 64, 1.16);
+  adapter._maybeRememberDiscoveries = () => {};
+  const completion = adapter._startMotion([{ x: 0, y: 64, z: 1 }], { x: 0, y: 64, z: 1 },
+    { x: 0.5, y: 64, z: 1.5 }, 0.08, Date.now() + 5000, { arrivalVerticalTolerance: 0.15 });
+  for (let i = 0; i < 20 && adapter._motion.active; i++) {
+    adapter._updateMotionState();
+    if (adapter._motion.active) adapter._physicsStep();
+  }
+  assert.equal(await completion, 'goal');
+  assert.ok(Math.hypot(adapter._feet.x - 0.5, adapter._feet.z - 1.5) <= 0.08);
+});
+
+test('precise work arrival refuses a neighboring standable cell when the requested cell is unavailable', async () => {
+  const adapter = physicsAdapter(fakeWorld());
+  place(adapter, 0.5, 64, 0.5);
+  adapter.client = { write () {} }; adapter._authTickInterval = true;
+  adapter._findGoalNodes = () => [{ x: 1, y: 64, z: 0 }];
+  adapter._startMotion = async () => assert.fail('must not substitute a neighboring placement cell');
+  await assert.rejects(adapter._moveTo({ x: 2.5, y: 64, z: 0.5 }, 0.08, 1000,
+    { preciseArrival: true, verticalTolerance: 0, arrivalVerticalTolerance: 0.15 }), /target_not_found/);
+});

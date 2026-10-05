@@ -183,8 +183,8 @@ waypoints retain their previous height inference.
 Explicit waypoint elevations also restrict eligible destination nodes to within
 one block of that height. A partial path frontier is progress only: movement
 replans there and cannot report it as reaching the final destination. A subsequent daylight approach reached the requested surface site with full
-health. The live project has two server-confirmed floor blocks and is paused
-after its work-position guard stopped the next placement. It is not complete.
+health. The live project has 18 server-confirmed floor blocks and is paused
+after unconfirmed placements and a failed night-time attempt. It is not complete.
 
 Missing finished supply targets outrank recipe ingredients in the eight-item
 withdrawal list. A chest already holding the required planks or tools must remain
@@ -199,3 +199,15 @@ Construction movement requires the exact standable elevation and arrival within
 0.15 blocks vertically. The final motion waypoint cannot advance while the bot
 is still jumping or descending to that floor. A failed work-position guard
 records the planned and actual feet, support, target and line-of-sight result.
+
+Precise construction arrival also requires the selected horizontal work cell;
+a neighboring reachable cell cannot substitute for it. The executor verifies
+that the player body occupies none of the target block cells before clicking.
+Placement failure diagnostics retain the planned and actual work positions.
+
+While a construction action is pending, a 100 ms monitor re-evaluates the same
+rules in `knowledge/survival-rules.json` against live health, hunger, time,
+hostiles, fluids and Nether hazards. A caution or emergency verdict interrupts
+movement and pauses the project with `construction_survival_needed`. The
+controller can then choose survival actions before explicitly resuming work.
+This includes the existing night-preparation rules and uses no prompt policy.

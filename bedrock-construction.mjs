@@ -2,6 +2,8 @@
 // there is no protocol client, secondary controller or secondary memory store.
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { evaluateSurvival, summarizeSurvival } from './survival/governor.mjs';
+import { loadSurvivalRules } from './survival/rules.mjs';
 import {
   loadStructures, createBlueprint, planStructure, inspectSite, missingMaterials,
   keyOf, isAir, known, usableSupport, safeSolid, placementSupports, matchesCell,
@@ -12,6 +14,7 @@ import {
 export const CONSTRUCTION_BLOCK_BUDGET = 4;
 export const CONSTRUCTION_TIME_MS = 20000;
 const catalogue = loadStructures();
+const survivalRules = await loadSurvivalRules(new URL('./knowledge/survival-rules.json', import.meta.url));
 const clock = () => Date.now();
 const parseKey = s => Object.fromEntries(['x', 'y', 'z'].map((k, i) => [k, Number(s.split(',')[i])]));
 const CLICK_POS = { 1: { x: 0.5, y: 1, z: 0.5 }, 2: { x: 0.5, y: 0.5, z: 0 }, 3: { x: 0.5, y: 0.5, z: 1 }, 4: { x: 0, y: 0.5, z: 0.5 }, 5: { x: 1, y: 0.5, z: 0.5 } };
@@ -349,6 +352,15 @@ export class ConstructionEngine {
     return [];
   }
 
+  survivalVerdict () {
+    const a = this.a;
+    // Read live state without running observe(), memory searches or crafting.
+    return evaluateSurvival({ position: a.position, spawned: a.spawned, status: a.status,
+      health: a.health, food: a.food, inventory: a.inventory, dead: a.dead,
+      sleeping: a.sleeping, dimension: a.dimension, time: a._timeInfo(),
+      entities: a._hostiles(), fluids: a._fluidsView(), nether: a._netherView() }, { rules: survivalRules });
+  }
+
   checkSession (session, signal, deadline) {
     if (session.signal.aborted || signal?.aborted || clock() >= deadline) throw new Error('construction_interrupted');
     if (!this.a.spawned || this.a.dead || this.a.status !== 'spawned') throw new Error('construction_connection_lost');
@@ -369,7 +381,18 @@ export class ConstructionEngine {
     if (scope) scope.signal = session.signal;
     const deadline = clock() + Math.min(CONSTRUCTION_TIME_MS, Math.max(1, timeoutMs));
     const timer = setTimeout(abort, Math.max(1, deadline - clock()));
-    const guard = () => this.checkSession(session, signal, deadline);
+    let survivalStop = null;
+    const checkSurvival = () => {
+      const verdict = this.survivalVerdict();
+      if (verdict.mode !== 'normal') survivalStop = summarizeSurvival(verdict);
+      if (survivalStop) throw new Error('construction_survival_needed');
+    };
+    const guard = () => { this.checkSession(session, signal, deadline); checkSurvival(); };
+    // Movement and protocol waits may not call the placement guard themselves.
+    // Re-evaluate the same declarative governor while those promises are pending.
+    const survivalMonitor = setInterval(() => {
+      try { checkSurvival(); } catch { abort(); }
+    }, 100);
     try {
       guard();
       const p = this.project;
@@ -425,15 +448,16 @@ export class ConstructionEngine {
         const { cell, support, stand } = next;
         const a = this.a;
         guard();
-        if (Math.hypot(a._feet.x - stand.x - 0.5, a._feet.y - stand.y, a._feet.z - stand.z - 0.5) > (stand.edge ? 0.2 : 0.6)) {
-          const moved = await a._moveTo({ x: stand.x + 0.5, y: stand.y, z: stand.z + 0.5 }, 0.4, Math.min(8000, deadline - clock()), { signal: session.signal, verticalTolerance: 0, arrivalVerticalTolerance: 0.15 });
+        if (Math.hypot(a._feet.x - stand.x - 0.5, a._feet.y - stand.y, a._feet.z - stand.z - 0.5) > (stand.edge ? 0.2 : 0.08) || !this.lineClear({ ...a._feet, actual: true }, support, cell)) {
+          const moved = await a._moveTo({ x: stand.x + 0.5, y: stand.y, z: stand.z + 0.5 }, 0.08, Math.min(8000, deadline - clock()), { signal: session.signal, verticalTolerance: 0, arrivalVerticalTolerance: 0.15, preciseArrival: true });
           guard();
           if (moved?.ok === false) return this.fail('construction_move_failed', moved);
         }
         if (stand.edge) { await a._constructionEdge(stand, { signal: session.signal, timeoutMs: Math.min(2500, deadline - clock()) }); guard(); }
         const exact = { ...a._feet, actual: true };
-        if (!this.lineClear(exact, support, cell) || !isAir(this.read(cell.position)) ||
-            !usableSupport(this.read(support.position))) return this.fail('construction_work_position_changed', { actual: exact, planned: stand, cell: cell.position, support, lineClear: this.lineClear(exact, support, cell), target: this.read(cell.position)?.name, supportBlock: this.read(support.position)?.name });
+        const occupiedByBot = [cell, ...cell.secondary].some(row => a._selfCells()?.has(keyOf(row.position)));
+        if (occupiedByBot || !this.lineClear(exact, support, cell) || !isAir(this.read(cell.position)) ||
+            !usableSupport(this.read(support.position))) return this.fail('construction_work_position_changed', { actual: exact, planned: stand, cell: cell.position, support, lineClear: this.lineClear(exact, support, cell), target: this.read(cell.position)?.name, supportBlock: this.read(support.position)?.name, occupiedByBot });
         // Tag the actual placement ledger inside the primitive, before its
         // promise resolves. This closes the placement/project persistence gap.
         let result;
@@ -447,7 +471,7 @@ export class ConstructionEngine {
           return this.fail('construction_place_failed', { cell: cell.position, error: error.message });
         }
         guard();
-        if (!result.ok) return this.fail('construction_place_failed', { cell: cell.position, result });
+        if (!result.ok) return this.fail('construction_place_failed', { cell: cell.position, planned: stand, actual: { ...a._feet }, support, placement: a._lastPlacement ?? null, result });
         const confirmationDeadline = Math.min(deadline, clock() + 2500);
         while (![cell, ...cell.secondary].every(row => matchesCell(this.read(row.position), row))) {
           guard();
@@ -467,6 +491,12 @@ export class ConstructionEngine {
       }
       return { ok: true, projectId: p.id, placed, state: p.state, phase: p.phase };
     } catch (error) {
+      if (survivalStop) {
+        if (!['paused', 'cancelled'].includes(this.project.state)) this.project.state = 'paused';
+        this.project.lastError = { error: 'construction_survival_needed', details: survivalStop, at: clock() };
+        this.save();
+        return { ok: false, error: 'construction_survival_needed', details: survivalStop, projectId: this.project.id };
+      }
       if (session.signal.aborted || signal?.aborted) {
         if (!['paused', 'cancelled'].includes(this.project.state)) this.project.state = 'paused';
         this.project.lastError = { error: 'construction_interrupted', at: clock() };
@@ -477,6 +507,7 @@ export class ConstructionEngine {
     } finally {
       this.a._constructionSneaking = false;
       clearTimeout(timer);
+      clearInterval(survivalMonitor);
       signal?.removeEventListener('abort', abort);
       if (this.session === session) this.session = null;
     }
