@@ -313,3 +313,33 @@ test('movement centres the room-floor approach before advancing into a doorway',
   adapter._updateMotionState();
   assert.equal(adapter._motion.index, 1);
 });
+
+test('precise work movement waits for the requested floor height before completing', async () => {
+  const world = fakeWorld([[0, 64, 1]]); world.fillFloor(-2, 2, -2, 3);
+  const adapter = physicsAdapter(world);
+  place(adapter, 0.5, 64, 0.5);
+  adapter._maybeRememberDiscoveries = () => {};
+  const completion = adapter._startMotion([{ x: 0, y: 64, z: 0 }, { x: 0, y: 65, z: 1 }],
+    { x: 0, y: 65, z: 1 }, { x: 0.5, y: 65, z: 1.5 }, 0.4, Date.now() + 5000, { arrivalVerticalTolerance: 0.15 });
+  for (let i = 0; i < 200 && adapter._motion.active; i++) {
+    adapter._updateMotionState();
+    if (adapter._motion.active) adapter._physicsStep();
+  }
+  assert.equal(adapter._motion.active, false, 'physics reaches the raised work position');
+  assert.equal(await completion, 'goal');
+  assert.ok(Math.abs(adapter._feet.y - 65) < 0.15);
+  assert.ok(Math.hypot(adapter._feet.x - 0.5, adapter._feet.z - 1.5) <= 0.4);
+});
+
+test('being horizontally near a lower work position does not finish while above its floor', () => {
+  const adapter = physicsAdapter(fakeWorld());
+  place(adapter, 0.5, 65, 0.5);
+  let finished = false;
+  adapter._finishMotion = () => { finished = true; };
+  adapter._motion = motion({ target: { x: 0.5, y: 64, z: 0.5 }, stopDistance: 0.4,
+    arrivalVerticalTolerance: 0.15, deadline: Date.now() + 5000,
+    path: [{ x: 0, y: 64, z: 0 }], index: 0, bestWaypointDist: Infinity, lastProgressAt: Date.now() });
+  adapter._updateMotionState();
+  assert.equal(finished, false);
+  assert.equal(adapter._motion.index, 0, 'final waypoint remains pending until the descent finishes');
+});

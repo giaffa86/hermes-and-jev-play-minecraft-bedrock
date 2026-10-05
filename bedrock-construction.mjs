@@ -426,14 +426,14 @@ export class ConstructionEngine {
         const a = this.a;
         guard();
         if (Math.hypot(a._feet.x - stand.x - 0.5, a._feet.y - stand.y, a._feet.z - stand.z - 0.5) > (stand.edge ? 0.2 : 0.6)) {
-          const moved = await a._moveTo({ x: stand.x + 0.5, y: stand.y, z: stand.z + 0.5 }, 0.4, Math.min(8000, deadline - clock()), { signal: session.signal });
+          const moved = await a._moveTo({ x: stand.x + 0.5, y: stand.y, z: stand.z + 0.5 }, 0.4, Math.min(8000, deadline - clock()), { signal: session.signal, verticalTolerance: 0, arrivalVerticalTolerance: 0.15 });
           guard();
           if (moved?.ok === false) return this.fail('construction_move_failed', moved);
         }
         if (stand.edge) { await a._constructionEdge(stand, { signal: session.signal, timeoutMs: Math.min(2500, deadline - clock()) }); guard(); }
         const exact = { ...a._feet, actual: true };
         if (!this.lineClear(exact, support, cell) || !isAir(this.read(cell.position)) ||
-            !usableSupport(this.read(support.position))) return this.fail('construction_work_position_changed');
+            !usableSupport(this.read(support.position))) return this.fail('construction_work_position_changed', { actual: exact, planned: stand, cell: cell.position, support, lineClear: this.lineClear(exact, support, cell), target: this.read(cell.position)?.name, supportBlock: this.read(support.position)?.name });
         // Tag the actual placement ledger inside the primitive, before its
         // promise resolves. This closes the placement/project persistence gap.
         let result;

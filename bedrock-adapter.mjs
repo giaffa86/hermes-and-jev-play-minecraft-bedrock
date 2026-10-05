@@ -9257,14 +9257,14 @@ export class BedrockAdapter {
 
   // ---- percorso e stato del movimento ------------------------------------------------
 
-  _startMotion (path, goalNode, target, stopDistance, deadline) {
+  _startMotion (path, goalNode, target, stopDistance, deadline, { arrivalVerticalTolerance = 3 } = {}) {
     return new Promise(resolve => {
       // Un movimento ancora pendente verrebbe sovrascritto e la sua promise non
       // sarebbe piu' risolvibile (nessuno la risolve): la si chiude esplicitamente.
       if (this._motion?.active) this._finishMotion('superseded');
       this._motion = {
         active: true, path, index: Math.min(1, path.length - 1), goalNode,
-        target, stopDistance, deadline, resolve,
+        target, stopDistance, deadline, resolve, arrivalVerticalTolerance,
         yaw: this._yawTo(this._feet, { x: goalNode.x + 0.5, z: goalNode.z + 0.5 }),
         forward: true, jumpQueued: false, jumpHeldTicks: 0, jumpStart: false,
         bestWaypointDist: Infinity, lastProgressAt: Date.now(), stuckTries: 0,
@@ -9316,7 +9316,7 @@ export class BedrockAdapter {
 
     // Bersaglio richiesto raggiunto (in orizzontale, con tolleranza verticale).
     if (Math.hypot(feet.x - motion.target.x, feet.z - motion.target.z) <= motion.stopDistance &&
-        Math.abs(feet.y - motion.target.y) < 3) {
+        Math.abs(feet.y - motion.target.y) < (motion.arrivalVerticalTolerance ?? 3)) {
       return this._finishMotion('goal');
     }
 
@@ -9328,7 +9328,7 @@ export class BedrockAdapter {
     // Centre the approach before entering a one-block doorway. A 0.4-block
     // shortcut can leave the player's body touching the open door panel.
     const waypointTolerance = doorNode(waypoint) || doorNode(next) ? 0.08 : 0.4;
-    if (wpHoriz < waypointTolerance && Math.abs(feet.y - waypoint.y) < 1.05) {
+    if (wpHoriz < waypointTolerance && Math.abs(feet.y - waypoint.y) < (next ? 1.05 : Math.min(1.05, motion.arrivalVerticalTolerance ?? 3))) {
       motion.index++;
       motion.bestWaypointDist = Infinity;
       motion.lastProgressAt = Date.now();
@@ -9753,7 +9753,7 @@ export class BedrockAdapter {
     }
   }
 
-  async _moveTo (target, stopDistance = 1.5, timeoutMs = 30000, { signal = null, verticalTolerance = null } = {}) {
+  async _moveTo (target, stopDistance = 1.5, timeoutMs = 30000, { signal = null, verticalTolerance = null, arrivalVerticalTolerance = 3 } = {}) {
     this._constructionSneaking = false;
     signal ??= this._actionScope?.getStore()?.signal;
     if (signal?.aborted) throw new Error('action_cancelled');
@@ -9806,7 +9806,7 @@ export class BedrockAdapter {
       // villaggio — rendeva il controllo verticale insoddisfacibile (live 03/10:
       // il bot è arrivato a destinazione e l'azione ha finito `path_failed` in 28,5 s).
       const endNode = path.at(-1);
-      const outcome = await this._startMotion(path, goal, { x: endNode.x + 0.5, y: endNode.y, z: endNode.z + 0.5 }, stop, deadline);
+      const outcome = await this._startMotion(path, goal, { x: endNode.x + 0.5, y: endNode.y, z: endNode.z + 0.5 }, stop, deadline, { arrivalVerticalTolerance });
       if (signal?.aborted) throw new Error('action_cancelled');
       this._stopMotion();
       if (outcome === 'goal' && chosen !== bestPartial) {

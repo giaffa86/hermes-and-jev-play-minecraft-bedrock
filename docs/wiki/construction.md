@@ -182,9 +182,9 @@ waypoints retain their previous height inference.
 
 Explicit waypoint elevations also restrict eligible destination nodes to within
 one block of that height. A partial path frontier is progress only: movement
-replans there and cannot report it as reaching the final destination. The live
-house remains unbuilt after a night-time death during its approach; materials
-were withdrawn from authorized storage, and the bot was shut down with evidence.
+replans there and cannot report it as reaching the final destination. A subsequent daylight approach reached the requested surface site with full
+health. The live project has two server-confirmed floor blocks and is paused
+after its work-position guard stopped the next placement. It is not complete.
 
 Missing finished supply targets outrank recipe ingredients in the eight-item
 withdrawal list. A chest already holding the required planks or tools must remain
@@ -194,3 +194,8 @@ The furnace recipe fallback includes Overworld logs to charcoal, so torches can
 be prepared from available wood when stored coal or torches cannot be accessed.
 Charcoal requires a regular furnace. Elevation-only waypoint progress also keeps
 `goto_waypoint` available until the requested height is reached.
+
+Construction movement requires the exact standable elevation and arrival within
+0.15 blocks vertically. The final motion waypoint cannot advance while the bot
+is still jumping or descending to that floor. A failed work-position guard
+records the planned and actual feet, support, target and line-of-sight result.
