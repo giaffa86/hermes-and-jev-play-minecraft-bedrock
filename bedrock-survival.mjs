@@ -56,9 +56,18 @@ const FOOD_PRIORITY = [
 ];
 
 // Cibi di ultima istanza: commestibili in vanilla ma con un effetto collaterale
-// (la patata cruda sfama per 1 e puo' avvelenare). Si usano solo quando la fame
-// e' critica e non c'e' niente di meglio: una fame a zero fa morire.
-export const LAST_RESORT_FOODS = ['potato'];
+// (fame o veleno). Si usano solo quando la fame e' critica e non c'e' niente di
+// meglio: una fame a zero fa morire, quindi quasi tutto e' meglio del nulla.
+// Ordine: prima cio' che sfama di piu' con l'effetto minore, poi i veleni brevi.
+// Restano fuori il pesce palla (il suo veleno puo' uccidere da solo) e le golden
+// apple (troppo preziose per un momento di fame).
+export const LAST_RESORT_FOODS = [
+  'rotten_flesh',      // fame 4, 80% Fame I 30 s
+  'chicken',           // fame 2, 30% Fame I 30 s (cruda)
+  'poisonous_potato',  // fame 2, 60% Veleno I 5 s
+  'spider_eye',        // fame 2, Veleno I 4 s
+  'potato',            // fame 1, 60% Veleno I 4 s
+];
 
 // Fame sotto la quale anche i cibi di ultima istanza contano come cibo.
 export const STARVING_FOOD = 4;

@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { BedrockAdapter } from '../bedrock-adapter.mjs';
 import {
   bestFood, isHostileType, entityHeight, normalizeEntityType,
+  LAST_RESORT_FOODS,
   estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection,
   isFarmAnimalType, animalFeed, cropForSeed, isCropBlock, isFarmlandBlock,
   isTameableType, isRideTameableType, isCompanionType, tameFeed,
@@ -87,6 +88,7 @@ test('every item and crop-block name in the gameplay tables exists in the Bedroc
     ...Object.values(TAME_FEED_MAP).flat(),
     ...Object.values(ANIMAL_FEED_MAP),
     ...FOODS,
+    ...LAST_RESORT_FOODS,   // commestibili di ultima istanza: stessi nomi, stessa autorità (il registry)
     ...PLANTABLE_ITEMS,
     ...Object.keys(BUCKET_INGREDIENTS),
     ...Object.keys(SHIELD_INGREDIENTS),
@@ -106,6 +108,17 @@ test('bestFood prefers cooked food and skips unsafe or precious items', () => {
   assert.equal(bestFood({ carrot: 1, cookie: 2 }), 'carrot');
   assert.equal(bestFood({ rotten_flesh: 5, spider_eye: 1, golden_apple: 1 }), null);
   assert.equal(bestFood({}), null);
+  // Con la fame critica (`allowLastResort`) i commestibili con un effetto
+  // collaterale contano, in ordine di «sfama di più, fa meno male»: una fame a
+  // zero fa morire, quindi quasi tutto è meglio del nulla.
+  assert.equal(bestFood({ potato: 1 }, { allowLastResort: true }), 'potato');
+  assert.equal(bestFood({ potato: 1, rotten_flesh: 1 }, { allowLastResort: true }), 'rotten_flesh');
+  assert.equal(bestFood({ chicken: 1, spider_eye: 1 }, { allowLastResort: true }), 'chicken');
+  assert.equal(bestFood({ poisonous_potato: 1, spider_eye: 1 }, { allowLastResort: true }), 'poisonous_potato');
+  // Il pesce palla resta fuori: il suo veleno può uccidere da solo.
+  assert.equal(bestFood({ pufferfish: 3 }, { allowLastResort: true }), null);
+  // E il cibo normale batte comunque l'ultima istanza.
+  assert.equal(bestFood({ rotten_flesh: 5, bread: 1 }, { allowLastResort: true }), 'bread');
 });
 
 test('time of day estimation advances with real time and detects night', () => {
