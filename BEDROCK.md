@@ -18,6 +18,10 @@ only the network protocol, see
 |---|---|
 | `bedrock-harness.mjs` | Container entry point: connects the Bedrock bot to the BDS and exposes the HTTP API (`/observe`, `/options`, `/act`, `/plan`, `/survival`). Also applies the Survival Governor's emergency filter to the options. |
 | `bedrock-adapter.mjs` | Adapter that translates Bedrock state into the format expected by `controller.mjs`. |
+| `human-replies.mjs` | The deterministic chat composer: trigger match (`normalizePrefixes`, `selfPrefixes`, `matchChatPrefix`), ack/outcome/failed/stopped/lost templates, `clampMessage`, `isSelfTriggering`. |
+| `human-questions.mjs` | Chat answers: `matchQuestionIntent`/`answerIntent`/`renderAnswer` over a closed intent list, the Italian vocabulary of the structured goals (`CHORE_LABELS`, `NEED_LABELS`, `planPhrase`, M7.1) and the `renderUnrouted`/`renderNoArmor` fallbacks. |
+| `chat-intent.mjs` / `chat-llm.mjs` | The optional models on the chat path: `chat-intent.mjs` routes a question to an intent (M6), `chat-llm.mjs` rephrases an already-composed reply (M7). Both are typed clients with a timeout and a deterministic fallback. |
+| `idle-goals.mjs` / `village-labor.mjs` | The `IDLE` producers: survival needs (M3) and village chores (M3b). Pure and deterministic, with a success predicate evaluated on harness state (`isNeedResolved`, `isChoreResolved`). |
 | `controller-decisions.mjs` | Pure controller functions (no I/O): option ranking/cap (including the active skill's intents), anti-loop, progress fingerprint, diagnostics and decision instructions. Unit tests in `tests/controller-decisions.test.mjs`. |
 | `survival/` | Deterministic Survival Intelligence Layer: perception, risk/needs, governor, rules, intents, item tags, declarative skills, resolver, verifier, progression, experience. Dedicated unit tests. |
 | `knowledge/` | `survival-rules.json` (when to interrupt progression) and `progression.json` (milestone graph with dependencies). |
@@ -91,6 +95,22 @@ CHAT_INTENT_URL=                   # alternative decisions endpoint (e.g. a loca
 CHAT_INTENT_MODEL=                 # routing model (default JEV_MODEL)
 CHAT_INTENT_TIMEOUT_MS=4000        # past this a question is refused (M6.1), never turned into a goal
 CHAT_INTENT_MIN_P=0.4              # minimum probability for an intent (0 = argmax)
+CHAT_REPLY=on                      # on/off for the order lifecycle replies (ack + outcome)
+CHAT_REPLY_MAX_LENGTH=180          # clamp on every outgoing reply
+CHAT_MAX_AGE_MS=300000             # an order older than this is dropped (chat_stale) after a restart
+CHAT_ECHO_WINDOW_MS=15000          # how long the bot recognises its own chat coming back from the server
+
+# Natural chat (M7, optional): an LLM rephrases the deterministic reply;
+# without a key (or with CHAT_LLM=off) the reply is still sent, in the
+# deterministic text (M7.1 keeps that text in the sender's language).
+DEEPSEEK_API_KEY=                  # the gate; CHAT_LLM_API_KEY wins over it
+CHAT_LLM_API_KEY=                  # alternative to DEEPSEEK_API_KEY
+CHAT_LLM=on                        # on with a key; off disables the engine even with a key
+CHAT_LLM_MODEL=deepseek-chat       # model id sent to the endpoint
+CHAT_LLM_URL=https://api.deepseek.com/chat/completions   # any OpenAI-compatible endpoint
+CHAT_LLM_TIMEOUT_MS=8000           # past this the template is sent
+CHAT_PERSONA='...'                  # persona sentence spliced into the system prompt
+CHAT_SMALLTALK_TEMPLATE='@{name} ciao! dimmi pure.'       # greeting fallback
 
 # Persistent agent session (optional)
 SESSION=off                        # on = persistent session loop with an IDLE state; off = one-shot (default)
@@ -102,6 +122,10 @@ EMERGENCY_COOLDOWN_MS=60000        # don't re-create the same emergency within t
 AUTONOMY=off                       # on = needs-driven autonomous goals while IDLE (requires SESSION=on)
 AUTONOMY_COOLDOWN_MS=120000        # don't retry the same need within this window
 AUTONOMY_MAX_GOALS=25              # cap on autonomous goals generated per session
+VILLAGE_WORK=on                    # M3b: village chores while IDLE; default: follows AUTONOMY (needs SESSION=on)
+VILLAGE_COOLDOWN_MS=120000         # don't retry the same chore within this window
+VILLAGE_MAX_CHORES=12              # cap on village chores generated per session
+VILLAGE_STORE_THRESHOLD=8          # stack size from which store_harvest is worth offering
 ```
 
 > Never commit `.env` or the `nmp-cache`.
@@ -162,6 +186,19 @@ IDLE` (AI-player roadmap milestone 0→1).
   succeeds deterministically when the triggering need disappears from harness
   state (`isNeedResolved`); a per-need cooldown stops retry loops and
   `AUTONOMY_MAX_GOALS` bounds the session.
+- With `VILLAGE_WORK=on` (default: it follows `AUTONOMY`, and needs `SESSION=on`)
+  `IDLE` also draws on the **village chores** (`village-labor.mjs`, M3b): harvest
+  ripe crops, store the harvest, shear sheep, milk cows, collect honey, breed
+  animals, plant crops, fish, chop wood, gather stone, mine ore. Two invariants:
+  a chore is proposed only when `GET /options` already offers one of its intents
+  (the harness is the arbiter) and it succeeds on a **state delta**
+  (`isChoreResolved` against the `villageSnapshot` taken at creation), never on an
+  absolute count and never on the model's opinion. Chores are `source:
+  autonomous` (a chat order or an emergency always wins), bounded by
+  `VILLAGE_COOLDOWN_MS` per chore and `VILLAGE_MAX_CHORES` per session; the chat
+  side that describes them is M7.1 (`planPhrase`). Unit tests in
+  `tests/village-labor.test.mjs` plus the integration case in
+  `tests/controller-session.test.mjs`.
 - Default `SESSION=off` preserves the historical one-shot behaviour and exit
   codes (`2` on a `failed` Goal Contract).
 - **Live-verified on the BDS (2026-10-02)**: a completed goal → `IDLE` with the
