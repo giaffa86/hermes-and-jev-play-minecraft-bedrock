@@ -49,6 +49,37 @@ test('goto_waypoint preserves an explicit elevation instead of targeting a cave 
   assert.deepEqual(targets[1], { x: 155, y: 63.62, z: 261 });
 });
 
+test('an explicit waypoint height refuses a cave destination outside the requested elevation', async () => {
+  const world = fakeWorld(); world.fillFloor(-2, 12, -2, 12);
+  const adapter = physicsAdapter(world);
+  place(adapter, 0.5, GROUND_Y + 1, 0.5);
+  adapter.client = { write () {} };
+  adapter._authTickInterval = true;
+  adapter._startMotion = async () => assert.fail('must not enter a cave when the surface was requested');
+  await assert.rejects(adapter._moveTo({ x: 6, y: GROUND_Y + 12, z: 6 }, 2, 1000, { verticalTolerance: 1 }), /target_not_found/);
+});
+
+test('arrival at a partial path frontier replans instead of reporting destination reached', async () => {
+  const adapter = physicsAdapter(fakeWorld());
+  place(adapter, 0.5, 64, 0.5);
+  adapter.client = { write () {} };
+  adapter._authTickInterval = true;
+  const goal = { x: 6, y: 64, z: 0 };
+  adapter._findGoalNodes = () => [goal];
+  let paths = 0;
+  adapter._findPath = start => [start, ++paths === 1 ? { x: 3, y: 64, z: 0 } : goal];
+  adapter._startMotion = async path => {
+    const end = path.at(-1);
+    place(adapter, end.x + 0.5, end.y, end.z + 0.5);
+    return 'goal';
+  };
+  const result = await adapter._moveTo({ x: 6.5, y: 64, z: 0.5 }, 0.4, 1000);
+  assert.equal(result.ok, true);
+  assert.equal(paths, 2);
+  assert.equal(result.distance, 1.62);
+  assert.deepEqual(adapter._startNode(), goal);
+});
+
 test('walking on flat ground advances at walk speed and stays grounded', () => {
   const world = fakeWorld(); world.fillFloor(-5, 5, -5, 5);
   const adapter = physicsAdapter(world);

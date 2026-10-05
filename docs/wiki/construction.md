@@ -179,3 +179,9 @@ A waypoint may include an explicit `y` coordinate. The Bedrock action preserves
 that elevation when selecting its approach, avoiding a nearby cave destination
 when the requested construction site is on the surface. Existing `{x,z}`
 waypoints retain their previous height inference.
+
+Explicit waypoint elevations also restrict eligible destination nodes to within
+one block of that height. A partial path frontier is progress only: movement
+replans there and cannot report it as reaching the final destination. The live
+house remains unbuilt after a night-time death during its approach; materials
+were withdrawn from authorized storage, and the bot was shut down with evidence.

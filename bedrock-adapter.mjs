@@ -4515,7 +4515,7 @@ export class BedrockAdapter {
         if (this.riding) {
           result = await this._rideToward(target, 3, 45000);
         } else {
-          const moveResult = await this._moveTo(target, 2, 45000);
+          const moveResult = await this._moveTo(target, 2, 45000, { verticalTolerance: Number.isFinite(w.y) ? 1 : null });
           result = { ok: true, ...moveResult };
         }
       } else if (key === 'follow_player' && this.plan?.follow) {
@@ -9739,7 +9739,7 @@ export class BedrockAdapter {
     }
   }
 
-  async _moveTo (target, stopDistance = 1.5, timeoutMs = 30000, { signal = null } = {}) {
+  async _moveTo (target, stopDistance = 1.5, timeoutMs = 30000, { signal = null, verticalTolerance = null } = {}) {
     this._constructionSneaking = false;
     signal ??= this._actionScope?.getStore()?.signal;
     if (signal?.aborted) throw new Error('action_cancelled');
@@ -9759,7 +9759,8 @@ export class BedrockAdapter {
       // Il limite più alto del default (8) serve a non perdere la cella esatta
       // quando sta più in basso: la penalità verticale del punteggio la spinge
       // fuori dai primi otto posti (live 03/10, il fondo del pozzo).
-      const candidates = this._findGoalNodes(target, { limit: 16 });
+      const candidates = this._findGoalNodes(target, { limit: 16 })
+        .filter(goal => verticalTolerance == null || Math.abs(goal.y - target.y) <= verticalTolerance);
       if (!candidates.length) throw new Error('target_not_found');
       // Fra i percorsi completi vince la cella che finisce più vicino alla
       // destinazione chiesta: il primo candidato per punteggio può stare appena
@@ -9794,7 +9795,7 @@ export class BedrockAdapter {
       const outcome = await this._startMotion(path, goal, { x: endNode.x + 0.5, y: endNode.y, z: endNode.z + 0.5 }, stop, deadline);
       if (signal?.aborted) throw new Error('action_cancelled');
       this._stopMotion();
-      if (outcome === 'goal') {
+      if (outcome === 'goal' && chosen !== bestPartial) {
         const distance = Math.hypot(this.position.x - target.x, this.position.y - target.y, this.position.z - target.z);
         return { ok: true, distance: +distance.toFixed(2), pathNodes: path.length, goal: { x: goal.x, y: goal.y, z: goal.z } };
       }
