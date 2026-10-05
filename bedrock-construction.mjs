@@ -453,7 +453,12 @@ export class ConstructionEngine {
         if (!next) {
           const missing = missingMaterials(p.plan, p.claims, this.a.inventory);
           if (placed) break;
-          return this.fail(missing.length ? 'construction_missing_materials' : 'construction_unreachable', missing);
+          if (missing.length) return this.fail('construction_missing_materials', missing);
+          const stage = Math.min(...live.pending.map(c => c.stage ?? 0));
+          return this.fail('construction_unreachable', { stage: { index: stage, id: p.plan.blueprint.stages?.[stage]?.id ?? null },
+            feet: { ...this.a._feet }, cells: live.pending.filter(c => (c.stage ?? 0) === stage).slice(0, 12).map(c => ({
+              part: c.part ?? null, offset: c.offset, position: c.position, item: c.item,
+              supports: placementSupports(c, this.read) })) });
         }
         const { cell, support, stand } = next;
         const a = this.a;

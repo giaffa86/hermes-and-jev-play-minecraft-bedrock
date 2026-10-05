@@ -220,6 +220,23 @@ read-only preview accepted its own geometry and the real executor completed the
 12-block platform in the simulated world. This proves real model generation and
 repair on that small project, not live BDS construction or autonomous house completion.
 
+A later real Hermes CLI probe generated and repaired the two-storey 7 × 7
+taiga-style spruce house itself. Validation and placement feedback caused the
+model to add an early temporary-access stage and a workstation check through
+bounded data edits. The executor completed **426 permanent placements**, verified
+**five functional checks** and removed **161 temporary placements** in the
+simulated world. The footprint, two storeys, upstairs bed, downstairs crafting
+table and decorative brick chimney remained in the final design. This establishes
+real model ownership of both architecture and construction access in an offline
+run; it does not establish live BDS completion or a working fireplace.
+
+The integrated offline suite passed **1422/1422** tests, including actionable
+feedback for a model stage whose upper cells have supports but no reachable
+working position. The live existing house still has **18 confirmed placements**.
+Its latest daytime controller round stopped after a movement timeout; the
+project was paused and the harness shut down. Runtime navigation remains to be
+resolved before claiming live house completion.
+
 ## Sources
 
 - [Geometry and validation](../../construction.mjs)

@@ -2707,3 +2707,13 @@ with validation feedback and storage/site authorization retained. A real
 house; the preview passed. Placement simulation then exposed missing early access
 for the lower walls, so functional completion remains unproven. Clearance errors
 now report local coordinates. See [construction](wiki/construction.md).
+
+## [2026-10-05] ingest | Real model house and work-access repair completed offline
+
+Hermes generated and repaired a custom two-storey spruce house with a bed,
+crafting table and decorative brick chimney. The model added early temporary
+work access after actual executor feedback; the simulated run verified 426
+permanent placements, five functional checks and removal of 161 temporary
+placements. The integrated suite passed 1422/1422 tests. Live BDS completion
+remains pending: the existing house is paused at 18 placements after a daytime
+movement timeout, with the harness off. See [construction](wiki/construction.md).

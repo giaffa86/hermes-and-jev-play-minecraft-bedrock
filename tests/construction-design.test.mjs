@@ -187,3 +187,17 @@ test('a malformed model design is returned to the architect instead of crashing 
   });
   assert.equal(calls,1);assert.equal(plan.construction.design.kind,'house');
 });
+
+test('unreachable stage feedback reports the remaining local geometry and real supports', async () => {
+  const d={version:1,id:'wall_access_check',kind:'house',intent:{request:'Build a tall wall',requirements:['tall wall'],storeys:1,footprint:{width:3,length:3}},
+    stages:[{id:'floor',objective:'Build foundation'},{id:'wall',objective:'Build tall wall'}],
+    cuboids:[{id:'floor',stage:'floor',role:'floor',phase:'floor',item:'cobblestone',from:[0,0,0],to:[2,0,2]},
+      {id:'wall',stage:'wall',role:'wall',phase:'walls',item:'cobblestone',from:[0,1,0],to:[0,3,0]}],cells:[],
+    terrain:[{from:[0,-1,0],to:[2,-1,2]},[1,-1,-1]],clearance:[[1,0,-1],[1,1,-1],[1,2,-1],[1,1,1],[1,2,1]],
+    routes:[{type:'walk',points:[[1,0,-1],[1,1,1]]}],coverage:[{requirement:'tall wall',parts:['wall']}]};
+  const {adapter:a}=constructionAdapter({inventory:{cobblestone:12}});a.setPlan({construction:{type:'house',origin,facing:'south',design:d}});
+  let result;for(let i=0;i<10;i++){result=await a.executeAction('construction_step');if(!result.ok)break;}
+  assert.equal(result.error,'construction_unreachable');assert.equal(result.details.stage.id,'wall');
+  assert.deepEqual(result.details.cells[0].offset,[0,3,0]);assert.deepEqual(result.details.cells[0].supports[0],{position:{x:0,y:66,z:0},face:1});
+  assert.equal(a.construction.project.placed,11);
+});
