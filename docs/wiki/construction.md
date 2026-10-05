@@ -125,9 +125,22 @@ planks using server recipe eligibility, placed nine confirmed floor blocks and
 completed traversal. Mining, pickup and craft responses were simulated; their
 real BDS combination still needs the live round.
 
-No live construction session has been run. Follow the
-[bounded live-session policy](final-report.md): the production bot stays off
-until a scoped round is authorized. The first round needs a disposable test area,
+A bounded live session on 2026-10-05 confirmed the construction catalogue and
+preview/start APIs against the real BDS. The requested 7 × 7 house site passed
+the terrain and access survey after rotating the footprint west; a project was
+persisted with **zero placed blocks**. The bot approached the site through normal
+player movement. Food and building materials were still missing at shutdown,
+so neither live placement nor functional completion is proven. The persisted
+project was paused after the watchdog stopped the harness. Evidence is retained
+in the gitignored `runs/construction-live-house/` directory.
+
+The approach exposed movement defects around beds and doors: a lower-half door
+update must apply its open bit to both halves, beds need their registry collision
+height, and doorway approaches need precise centring. Regression coverage includes
+construction edge movement and scaffold cleanup.
+
+Follow the [bounded live-session policy](final-report.md): the production bot stays
+off until a scoped round is authorized. Each round needs an approved site,
 materials or approved supply containers, a time/action budget, evidence capture
 and shutdown. See [verification](verification.md) and [open questions](open-questions.md).
 
@@ -145,3 +158,7 @@ and shutdown. See [verification](verification.md) and [open questions](open-ques
 The 2026-10-05 integration with current crafting and remembered resource-site
 supply passed the full offline suite (**1333/1333**) and a final focused check
 (**31/31**). This does not upgrade the live-verification status.
+
+The movement fixes from the 2026-10-05 live approach passed the complete offline
+suite (**1337/1337**) and strict wiki lint. This still does not prove live house
+placement or completion.

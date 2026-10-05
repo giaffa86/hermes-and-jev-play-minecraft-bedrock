@@ -194,3 +194,78 @@ test('_moveTo drives the tick loop to a distant target on open ground', async ()
     adapter._motion = null;
   }
 });
+
+test('a lower-door update opens both halves even when the upper runtime id is unchanged', () => {
+  const blocks = new Map();
+  const door = properties => ({ name: 'wooden_door', boundingBox: 'block', getProperties: () => properties });
+  blocks.set('1,64,0', door({ upper_block_bit: false, open_bit: true }));
+  blocks.set('1,65,0', door({ upper_block_bit: true, open_bit: false }));
+  const adapter = physicsAdapter({ blockAt: p => blocks.get(`${p.x},${p.y},${p.z}`) ?? AIR });
+  adapter._noteRedstoneUpdate = () => {};
+  adapter._doorWatchers.set('1,64,0', 10);
+  adapter._doorWatchers.set('1,65,0', 20);
+  adapter._onBlockUpdate({ x: 1, y: 64, z: 0 }, 11);
+  assert.equal(adapter._solidAt(1, 64, 0), false);
+  assert.equal(adapter._solidAt(1, 65, 0), false);
+  assert.equal(adapter._doorWatchers.size, 0);
+  adapter._feet = { x: 0.5, y: 64, z: 0.5 };
+  adapter._motion = motion({ yaw: -90 });
+  assert.equal(adapter._doorAhead(), null, 'do not click the unchanged upper half and close the door');
+  blocks.set('1,64,0', door({ upper_block_bit: false, open_bit: false }));
+  adapter._onBlockUpdate({ x: 1, y: 65, z: 0 }, 20);
+  assert.equal(adapter._solidAt(1, 64, 0), true);
+  assert.equal(adapter._solidAt(1, 65, 0), true);
+  assert.deepEqual(adapter._doorAhead(), { x: 1, y: 64, z: 0 }, 'an external closure must be opened again');
+});
+
+test('a bed uses its registry collision height for spawn, support, falling and walking off', () => {
+  const bed = { name: 'bed', boundingBox: 'block', shapes: [[0, 0, 0, 1, 0.5625, 1]] };
+  const adapter = physicsAdapter({ blockAt: ({x,y,z}) => y === 63 ? SOLID : x === 0 && y === 64 && z === 0 ? bed : AIR });
+  assert.equal(adapter._feetFromServerY({ x: 0.5, y: 64.3 + 1.62, z: 0.5 }), 64.5625);
+  assert.equal(adapter._feetFromServerY({ x: 0.5, y: 64.75 + 1.62, z: 0.5 }), 64.75);
+  place(adapter, 0.5, 64.75, 0.5);
+  adapter._motion = null;
+  for (let i = 0; i < 10; i++) adapter._physicsStep();
+  assert.equal(adapter._feet.y, 64.5625);
+  assert.equal(adapter._supportedAt(0.5, 64.5625, 0.5), true);
+  assert.equal(adapter._collides(0.5, 64.5625, 0.5), false);
+  adapter._lastSimTick = null;
+  adapter._driveMotion(1n);
+  assert.equal(adapter._feet.y, 64.5625, 'unstick must not lift a supported player to a full cube');
+  adapter._motion = motion();
+  for (let i = 0; i < 15; i++) adapter._physicsStep();
+  assert.ok(adapter._feet.z > 2);
+  assert.equal(adapter._feet.y, 64, 'walk off onto the lower room floor');
+});
+
+test('a bed beside a low doorway plans a step onto the room floor before crossing the lintel', () => {
+  const bed = { name: 'bed', boundingBox: 'block', shapes: [[0,0,0,1,0.5625,1]] };
+  const door = { name: 'wooden_door', boundingBox: 'block' };
+  const adapter = physicsAdapter({ blockAt: ({x,y,z}) => {
+    if (y === 63 || (x === -1 && y === 66 && z === 0)) return SOLID;
+    if (x === 0 && y === 64 && z === 0) return bed;
+    if (x === -1 && (y === 64 || y === 65) && z === 0) return door;
+    return AIR;
+  }});
+  place(adapter, 0.5, 64.5625, 0.5);
+  const start = adapter._startNode();
+  assert.deepEqual(start, { x: 0, y: 65, z: 0 });
+  const path = adapter._findPath(start, { x: -2, y: 64, z: 0 });
+  assert.ok(path.length > 3);
+  assert.ok(path[1].z !== 0 || path[1].x > 0, 'leave the bed through the room, away from the doorway header');
+  assert.ok(![...adapter._neighbors(start)].some(p => p.x === -1 && p.y === 64 && p.z === 0));
+});
+
+test('movement centres the room-floor approach before advancing into a doorway', () => {
+  const door = { name: 'wooden_door', boundingBox: 'block' };
+  const adapter = physicsAdapter({ blockAt: ({x,y,z}) => y === 63 ? SOLID : x === 2 && z === 0 && (y === 64 || y === 65) ? door : AIR });
+  adapter._openDoors.add('2,64,0'); adapter._openDoors.add('2,65,0');
+  place(adapter, 1.5, 64, 0.7);
+  adapter._motion = motion({ index: 0, path: [{x:1,y:64,z:0},{x:2,y:64,z:0},{x:3,y:64,z:0}], target:{x:3.5,y:64,z:0.5}, stopDistance:0.35, deadline:Date.now()+10000, bestWaypointDist:Infinity,lastProgressAt:Date.now(),stuckTries:0 });
+  adapter._updateMotionState();
+  assert.equal(adapter._motion.index, 0, '0.2 off centre is too far for a doorway approach');
+  adapter._physicsStep();
+  assert.ok(Math.abs(adapter._feet.z - 0.5) < 1e-9, 'limit the last step to the waypoint instead of overshooting');
+  adapter._updateMotionState();
+  assert.equal(adapter._motion.index, 1);
+});

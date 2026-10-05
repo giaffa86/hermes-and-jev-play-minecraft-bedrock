@@ -8653,7 +8653,8 @@ export class BedrockAdapter {
       const bx = Math.floor(position.x), bz = Math.floor(position.z);
       const cell = Math.floor(raw + 1e-9);
       const block = this.world.blockAt({ x: bx, y: cell, z: bz });
-      if (block && block.name && block.name !== 'unknown' && this._solidAt(bx, cell, bz) && raw < cell + 0.999) return cell + 1;
+      const top = cell + this._collisionHeight(block);
+      if (block && block.name && block.name !== 'unknown' && this._solidAt(bx, cell, bz) && raw < top - 0.001) return top;
     } catch { /* mondo non caricato: si tiene la quota del server */ }
     return raw;
   }
@@ -8713,7 +8714,25 @@ export class BedrockAdapter {
     if (runtimeId == null) return;
     const key = this._doorKey(position);
     const closed = this._doorWatchers.get(key);
-    if (closed != null && runtimeId !== closed) {
+    const door = this.world.blockAt(position);
+    const properties = door?.getProperties?.() ?? {};
+    const base = properties.upper_block_bit === true || properties.upper_block_bit === 1
+      ? { ...position, y: position.y - 1 } : position;
+    const lower = this._isDoorBlock(door) ? this.world.blockAt(base) : null;
+    const open = lower?.getProperties?.()?.open_bit;
+    if (this._isDoorBlock(lower) && (typeof open === 'boolean' || open === 0 || open === 1)) {
+      // Only the lower half carries the open bit. BDS can leave the upper
+      // runtime id unchanged, and a villager can close either half again.
+      for (const y of [base.y, base.y + 1]) {
+        const part = { ...base, y };
+        if (!this._isDoorBlock(this.world.blockAt(part))) continue;
+        const partKey = this._doorKey(part);
+        if (open) this._openDoors.add(partKey);
+        else this._openDoors.delete(partKey);
+        this._doorWatchers.delete(partKey);
+      }
+      this.log('door_state', { position: base, open: Boolean(open) });
+    } else if (closed != null && runtimeId !== closed) {
       this._openDoors.add(key);
       this._doorWatchers.delete(key);
       this.log('door_opened', { key });
@@ -9029,11 +9048,21 @@ export class BedrockAdapter {
       for (let by = minY; by <= maxY; by++) {
         for (let bz = minZ; bz <= maxZ; bz++) {
           if (self?.has(`${bx},${by},${bz}`)) continue;
-          if (this._solidAt(bx, by, bz)) return true;
+          if (this._solidAt(bx, by, bz) && y < by + this._collisionHeight(this.world.blockAt({ x: bx, y: by, z: bz })) - eps) return true;
         }
       }
     }
     return false;
+  }
+
+  _collisionHeight (block) {
+    // Sleeping spawn/corrections can leave the player on a bed. Using a full
+    // cube lifts the prediction into the doorway lintel and causes rewinds.
+    if (block?.name === 'bed' && block.shapes?.length) {
+      const top = Math.max(...block.shapes.map(shape => shape[4]));
+      if (Number.isFinite(top) && top > 0 && top <= 1) return top;
+    }
+    return 1;
   }
 
   // Diagnostica movimento: quale cella solida blocca il passo?
@@ -9120,7 +9149,14 @@ export class BedrockAdapter {
     const ny = feet.y + vy;
     if (vy <= 0) {
       if (this._collides(feet.x, ny, feet.z)) {
-        const floorTop = Math.floor(ny) + 1;
+        const by = Math.floor(ny);
+        const tops = [];
+        for (let bx = Math.floor(feet.x - PLAYER_HALF_WIDTH + 1e-9); bx <= Math.floor(feet.x + PLAYER_HALF_WIDTH - 1e-9); bx++) {
+          for (let bz = Math.floor(feet.z - PLAYER_HALF_WIDTH + 1e-9); bz <= Math.floor(feet.z + PLAYER_HALF_WIDTH - 1e-9); bz++) {
+            if (this._solidAt(bx, by, bz)) tops.push(by + this._collisionHeight(this.world.blockAt({ x: bx, y: by, z: bz })));
+          }
+        }
+        const floorTop = tops.length ? Math.max(...tops) : by + 1;
         feet.y = Math.min(floorTop, feet.y);
         this._onGround = true;
         this._velocity.y = 0;
@@ -9155,6 +9191,8 @@ export class BedrockAdapter {
       const yawRad = motion.yaw * Math.PI / 180;
       let speed = this._wading() ? WALK_SPEED * WADE_SPEED_FACTOR : WALK_SPEED;
       if (motion.preciseEdge) speed = Math.min(speed * 0.3, Math.hypot(motion.target.x - this._feet.x, motion.target.z - this._feet.z));
+      const waypoint = motion.path?.[motion.index];
+      if (waypoint && !motion.preciseEdge) speed = Math.min(speed, Math.hypot(waypoint.x + 0.5 - this._feet.x, waypoint.z + 0.5 - this._feet.z));
       this._moveHorizontal(-Math.sin(yawRad) * speed, Math.cos(yawRad) * speed);
     }
     this._velocity.x = this._feet.x - beforeX;
@@ -9178,9 +9216,10 @@ export class BedrockAdapter {
     if (this._feet && this._onGround) {
       const fx = Math.floor(this._feet.x), fy = Math.floor(this._feet.y + 1e-9), fz = Math.floor(this._feet.z);
       const here = this.world.blockAt({ x: fx, y: fy, z: fz });
-      if (here && here.name && here.name !== 'unknown' && this._solidAt(fx, fy, fz) && this._feet.y < fy + 0.999) {
-        this.log('phys_unstick', { from: +this._feet.y.toFixed(2), to: fy + 1, block: here.name, cell: { x: fx, y: fy, z: fz } });
-        this._feet.y = fy + 1;
+      const top = fy + this._collisionHeight(here);
+      if (here && here.name && here.name !== 'unknown' && this._solidAt(fx, fy, fz) && this._feet.y < top - 0.001) {
+        this.log('phys_unstick', { from: +this._feet.y.toFixed(2), to: top, block: here.name, cell: { x: fx, y: fy, z: fz } });
+        this._feet.y = top;
         this._velocity.y = 0;
         this._syncPositionFromFeet();
       }
@@ -9256,7 +9295,12 @@ export class BedrockAdapter {
     let waypoint = motion.path[motion.index];
     if (!waypoint) return this._finishMotion('path_end');
     let wpHoriz = Math.hypot(feet.x - (waypoint.x + 0.5), feet.z - (waypoint.z + 0.5));
-    if (wpHoriz < 0.4 && Math.abs(feet.y - waypoint.y) < 1.05) {
+    const next = motion.path[motion.index + 1];
+    const doorNode = node => node && [node.y, node.y + 1].some(y => this._isDoorBlock(this.world.blockAt({ x: node.x, y, z: node.z })));
+    // Centre the approach before entering a one-block doorway. A 0.4-block
+    // shortcut can leave the player's body touching the open door panel.
+    const waypointTolerance = doorNode(waypoint) || doorNode(next) ? 0.08 : 0.4;
+    if (wpHoriz < waypointTolerance && Math.abs(feet.y - waypoint.y) < 1.05) {
       motion.index++;
       motion.bestWaypointDist = Infinity;
       motion.lastProgressAt = Date.now();
@@ -9340,6 +9384,9 @@ export class BedrockAdapter {
     const x = Math.floor(this._feet.x), z = Math.floor(this._feet.z);
     const y = Math.floor(this._feet.y + 1e-3);
     if (this._standable(x, y, z)) return { x, y, z };
+    // A fractional bed top occupies the feet voxel. Anchor the graph in the
+    // same column before considering a neighbouring cell through a doorway.
+    if (this._feet.y > y + 0.001 && this._supportedAt(this._feet.x, this._feet.y, this._feet.z) && this._standable(x, y + 1, z)) return { x, y: y + 1, z };
     for (let r = 1; r <= 2; r++) {
       for (let dx = -r; dx <= r; dx++) {
         for (let dz = -r; dz <= r; dz++) {
@@ -9556,7 +9603,8 @@ export class BedrockAdapter {
       const nx = x + dx, nz = z + dz;
       if (this._standable(nx, y, nz)) yield { x: nx, y, z: nz, cost: 1 };
       if (this._standable(nx, y + 1, nz)) yield { x: nx, y: y + 1, z: nz, cost: 1.4 };
-      if (this._standable(nx, y - 1, nz)) yield { x: nx, y: y - 1, z: nz, cost: 1.2 };
+      const bedDeparture = this._blockForPath(x, y - 1, z)?.name === 'bed';
+      if (this._standable(nx, y - 1, nz) && (!bedDeparture || this._passableForPath(this._blockForPath(nx, y + 1, nz)))) yield { x: nx, y: y - 1, z: nz, cost: 1.2 };
       // Caduta oltre un gradino: quattro blocchi in Overworld, due nel
       // Nether/End (`maxFallDepth`) perché là non c'è acqua per attutire la
       // caduta — e l'atterraggio su magma o fuoco non è mai un atterraggio.
