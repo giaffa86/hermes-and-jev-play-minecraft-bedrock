@@ -50,7 +50,7 @@ RUN_ID=demo WAYPOINT='{"x":380,"z":16}' TARGETS='{"dirt":4}' MAX_STEPS=14 node c
 
 Expected output ends with `GOAL MET after N actions {...}`; the full trail is in `runs/demo/controller.jsonl` (plans + every Jev decision with probabilities, confidence, latency, cost) and `runs/demo/events.jsonl` (harness-side actions and results).
 
-Knobs (all env vars): `GOAL` (free text for the planner), `TARGETS` (`{item: minCount}`), `WAYPOINT` (`{x, z}` or unset), `MAX_STEPS`, `REPLAN_EVERY` (default 8), `CONTROLLER=jev|hermes`, `JEV_MODEL` (default `typesafe/jev-1.13`), `MAX_OPTIONS` (cap on the options passed to the controller, default 12, 0 disables), `ANTI_LOOP_THRESHOLD`/`ANTI_LOOP_COOLDOWN` (default 3), `CURRICULUM=<milestone>` (e.g. `first_night`, `enter_nether`: the progression engine picks the next missing prerequisite itself), `MC_PORT`/`API_PORT` if 25599/3077 are taken, and the human chat command channel: `CHAT_ALLOWLIST` (gamertag/xuid, comma-separated; enables `@bot` control), `CHAT_PREFIXES` (triggers accepted, comma or space separated, e.g. `@bot,@hermes`; default `@bot`, the legacy `CHAT_PREFIX` still works and is summed in), `CHAT_CONTROL` (default `on` when allowlist set), `CHAT_GREET`/`CHAT_GREET_RANGE`/`CHAT_GREET_COOLDOWN_MS`/`CHAT_GREET_TEMPLATE` (proactive greeting: the bot tells a nearby trusted human the order syntax via `POST /say`; default on when the channel is open), `CHAT_INTENT`/`CHAT_INTENT_URL`/`CHAT_INTENT_MODEL`/`CHAT_INTENT_TIMEOUT_MS`/`CHAT_INTENT_MIN_P` (chat **questions**: `@bot dove sei?` is answered from `observe()` — regex fast path, then System One/Jev over a closed intent list — and creates no goal; default on with a TypeSafe/OpenRouter key), `CHAT_SELF_NAME`, `CHAT_REPLY`/`CHAT_REPLY_MAX_LENGTH`, `CHAT_MAX_AGE_MS`, `CHAT_ECHO_WINDOW_MS` (chat lifecycle: answer to its own name, reply length, stale-order window, own-echo recognition), `CHAT_LANG` (language of every sentence the bot composes: `it`/`en`/`fr`/`es`/`de`, default `it`), `DEEPSEEK_API_KEY`/`CHAT_LLM_API_KEY` + `CHAT_LLM`/`CHAT_LLM_URL`/`CHAT_LLM_MODEL`/`CHAT_LLM_TIMEOUT_MS`/`CHAT_PERSONA` (natural chat: an LLM rephrases the deterministic reply, see below) and `SESSION`/`AUTONOMY`/`VILLAGE_WORK` (persistent session, needs-driven goals, village chores; each with its cooldown and cap). The complete list with defaults is in [`BEDROCK.md`](BEDROCK.md#environment-variables) — see `docs/wiki/human-command.md` for the chat design.
+Knobs (all env vars): `GOAL` (free text for the planner), `TARGETS` (`{item: minCount}`), `WAYPOINT` (`{x, z}` or unset), `MAX_STEPS`, `REPLAN_EVERY` (default 8), `CONTROLLER=jev|hermes`, `JEV_MODEL` (default `typesafe/jev-1.13`), `MAX_OPTIONS` (cap on the options passed to the controller, default 12, 0 disables), `ANTI_LOOP_THRESHOLD`/`ANTI_LOOP_COOLDOWN` (default 3), `CURRICULUM=<milestone>` (e.g. `first_night`, `enter_nether`: the progression engine picks the next missing prerequisite itself), `MC_PORT`/`API_PORT` if 25599/3077 are taken, and the human chat command channel: `CHAT_ALLOWLIST` (gamertag/xuid, comma-separated; enables `@bot` control), `CHAT_PREFIXES` (triggers accepted, comma or space separated, e.g. `@bot,@hermes`; default `@bot`, the legacy `CHAT_PREFIX` still works and is summed in), `CHAT_CONTROL` (default `on` when allowlist set), `CHAT_GREET`/`CHAT_GREET_RANGE`/`CHAT_GREET_COOLDOWN_MS`/`CHAT_GREET_TEMPLATE` (proactive greeting: the bot tells a nearby trusted human the order syntax via `POST /say`; default on when the channel is open), `CHAT_INTENT`/`CHAT_INTENT_URL`/`CHAT_INTENT_MODEL`/`CHAT_INTENT_TIMEOUT_MS`/`CHAT_INTENT_MIN_P` (chat **questions**: `@bot dove sei?` is answered from `observe()` — regex fast path, then System One/Jev over a closed intent list — and creates no goal; default on with a TypeSafe/OpenRouter key), `CHAT_SELF_NAME`, `CHAT_REPLY`/`CHAT_REPLY_MAX_LENGTH`, `CHAT_MAX_AGE_MS`, `CHAT_ECHO_WINDOW_MS` (chat lifecycle: answer to its own name, reply length, stale-order window, own-echo recognition), `CHAT_LANG` (language of every sentence the bot composes: `it`/`en`/`fr`/`es`/`de`, default `it`), `DEEPSEEK_API_KEY`/`CHAT_LLM_API_KEY` + `CHAT_LLM`/`CHAT_LLM_URL`/`CHAT_LLM_MODEL`/`CHAT_LLM_TIMEOUT_MS`/`CHAT_PERSONA` (natural chat: an LLM rephrases the deterministic reply, see below) and `SESSION`/`AUTONOMY`/`VILLAGE_WORK` (persistent session, needs-driven goals, village chores; the full table with every default is in [Player-facing properties](#player-facing-properties-bedrock)). The complete list with defaults is in [`BEDROCK.md`](BEDROCK.md#environment-variables) — see `docs/wiki/human-command.md` for the chat design.
 
 ### Survival Intelligence Layer
 
@@ -187,6 +187,40 @@ Chores: harvest ripe crops, store the harvest, shear sheep, milk cows, collect
 honey, breed animals, plant crops, go fishing, chop wood, gather stone, mine ore.
 A chore that cannot be verified is never claimed as done — the goal closes
 `failed`/`abandoned`, not `completed`.
+
+#### The knobs, and what they actually do
+
+| Variable | Default | Effect |
+|---|---|---|
+| `SESSION` | `off` | off = one-shot (one goal, then the process exits); on = the loop with the `IDLE` state |
+| `IDLE_POLL_MS` | `2000` | how often `IDLE` re-reads chat, needs and chores |
+| `IDLE_TIMEOUT_MS` | `0` | `0` = wait forever; `>0` = the controller exits `0` after that long with no goal produced |
+| `AUTONOMY_COOLDOWN_MS` | `120000` | anti-loop per need (and, with `AUTONOMY=on`, also the urgent-needs cooldown) |
+| `AUTONOMY_MAX_GOALS` | `25` | cap on autonomy goals per session (counter in memory) |
+| `SURVIVAL_IDLE_COOLDOWN_MS` | `30000` | urgent-needs anti-loop when `AUTONOMY=off` — the night does not wait |
+| `VILLAGE_COOLDOWN_MS` | `120000` | anti-loop per chore |
+| `VILLAGE_MAX_CHORES` | `12` | cap on chores per session |
+| `VILLAGE_STORE_THRESHOLD` | `8` | stack size from which storing the harvest is worth it |
+| `VILLAGE_WORK` | `= AUTONOMY` | village chores while `IDLE` |
+| `RESUME` | `= SESSION` | re-queue the goals a previous run left suspended |
+| `EMERGENCY` | `= SESSION` | a world event (death) preempts the running goal |
+
+- **`IDLE_TIMEOUT_MS` stops the controller, not the bot.** The bot lives in the
+harness (`bedrock-harness.mjs`): when the controller exits, the bot stays
+connected, still and deaf — no orders, no needs, no chores — until you restart
+it. `RESUME=on` puts the suspended queue back.
+- **Nothing in chat switches autonomy off.** "stop"/"fermati" only makes *that*
+order mean "stay put" (`fallback.stop`: no follow, no targets); when the goal
+ends the bot is back in `IDLE`.
+- **The caps cover the invented work only, and they are per process.**
+`AUTONOMY_MAX_GOALS` and `VILLAGE_MAX_CHORES` reset on restart, while governor
+needs and chat orders have no cap: the bot keeps reacting after both.
+- **`IDLE` costs nothing.** It only polls `GET /observe` and the chat inbox — no
+planner, no decision model. The cost is per goal: one Hermes plan and one
+decision per action.
+- **Parsing**: an unset or empty value falls back to the default (the `||`
+idiom), `0` really disables a cooldown (it is the string `"0"`), and a
+non-numeric value disables it silently (`now - last < NaN` is always false).
 
 ### Evidence, not memory
 

@@ -130,6 +130,7 @@ EMERGENCY_COOLDOWN_MS=60000        # don't re-create the same emergency within t
 AUTONOMY=off                       # on = needs-driven autonomous goals while IDLE (requires SESSION=on)
 AUTONOMY_COOLDOWN_MS=120000        # don't retry the same need within this window
 AUTONOMY_MAX_GOALS=25              # cap on autonomous goals generated per session
+SURVIVAL_IDLE_COOLDOWN_MS=30000    # urgent-needs anti-loop when AUTONOMY=off (0 = no cooldown)
 VILLAGE_WORK=on                    # M3b: village chores while IDLE; default: follows AUTONOMY (needs SESSION=on)
 VILLAGE_COOLDOWN_MS=120000         # don't retry the same chore within this window
 VILLAGE_MAX_CHORES=12              # cap on village chores generated per session
@@ -209,6 +210,28 @@ IDLE` (AI-player roadmap milestone 0→1).
   `tests/controller-session.test.mjs`.
 - Default `SESSION=off` preserves the historical one-shot behaviour and exit
   codes (`2` on a `failed` Goal Contract).
+- **`IDLE_TIMEOUT_MS` closes the controller, not the bot.** The bot lives in the
+  harness (`bedrock-harness.mjs`) and stays connected when the controller exits:
+  it is simply still and deaf (no in-game orders, no needs, no chores) until the
+  controller is started again, and `RESUME=on` puts the suspended queue back. The
+  timer starts when the queue empties and is reset by every goal, so with
+  `AUTONOMY=on` it only fires once there is genuinely nothing left to do (the
+  autonomy/chore caps reached, no governor need, nobody writing).
+- **Nothing in chat disables autonomy.** `isStopOrder` makes *that* order mean
+  "stay put" (`fallback.stop`: no `follow`, no `targets`); when the goal ends the
+  `IDLE` producers resume. To actually stop the bot, use `SESSION=off`, an
+  `IDLE_TIMEOUT_MS` bound, or a signal (SIGTERM/SIGINT flush the queue first).
+- **The caps are per process and cover the invented work only.**
+  `AUTONOMY_MAX_GOALS` counts the general-autonomy branch (`controller.mjs:1401`)
+  and `VILLAGE_MAX_CHORES` is a separate counter — both reset on restart, while
+  governor needs and chat orders are never capped.
+- **`IDLE` is free.** It only polls `GET /observe` every `IDLE_POLL_MS` and reads
+  the chat inbox: no planner, no decision model. Cost accrues per goal (one
+  Hermes plan, one Jev decision per action).
+- **Urgent needs change cooldown with `AUTONOMY`**: `cooldownMs: AUTONOMY ?
+  AUTONOMY_COOLDOWN_MS : SURVIVAL_IDLE_COOLDOWN_MS` (`controller.mjs:1391`) —
+  long when autonomy is on (one anti-loop for every branch), short when it is off
+  ("the night does not wait").
 - **Live-verified on the BDS (2026-10-02)**: a completed goal → `IDLE` with the
   queue persisted, and (with `AUTONOMY=on`) idle goals generated and closed for
   real needs (`escape` via `flee`, `sleep` via the bed).
