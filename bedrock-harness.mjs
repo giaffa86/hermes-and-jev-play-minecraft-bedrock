@@ -18,6 +18,7 @@
 import { createServer } from 'node:http';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { BedrockAdapter } from './bedrock-adapter.mjs';
+import { constructionResponse } from './construction-api.mjs';
 import { createWorldMemory } from './world-memory.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
@@ -188,7 +189,9 @@ server = createServer(async (req, res) => {
   const safeJson = (obj) => JSON.stringify(obj, (_k, v) => typeof v === 'bigint' ? v.toString() : v);
   let response;
   try {
-    if (req.method === 'GET' && req.url === '/observe') {
+    const constructionRoute = await constructionResponse(adapter, req.method, req.url, body ? JSON.parse(body) : {});
+    if (constructionRoute) response = constructionRoute;
+    else if (req.method === 'GET' && req.url === '/observe') {
       // La survival compatta viaggia con l'osservazione: chi legge vede subito
       // se la progressione è stata interrotta (mode != normal).
       const obs = adapter.observe();
@@ -705,6 +708,7 @@ server = createServer(async (req, res) => {
     else if (req.method === 'POST' && req.url === '/act') {
       const { key } = JSON.parse(body);
       const result = await adapter.executeAction(key);
+      if (key?.startsWith('construction_')) appendFileSync(`runs/${RUN}/construction.jsonl`, JSON.stringify({ at: Date.now(), action: key, result, construction: adapter.construction.view() }) + '\n');
       // Ogni tentativo finisce nel registro: anche i rifiuti prima del cantiere
       // (materiali mancanti, sito occupato) servono a leggere la run dopo.
       if (result?.circuit) circuitLog(key, result.circuit);

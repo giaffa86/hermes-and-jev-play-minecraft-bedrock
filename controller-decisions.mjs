@@ -35,6 +35,7 @@ export function optionPriority (option, { targets = {}, preferredIntents = [] } 
   if (SURVIVAL_KEYS.has(key) || key.startsWith('attack_')) return 0;
   if (key === 'collect_drop') return 1;
   if (key === 'follow_player') return 2; // ordine umano "seguimi"
+  if (key === 'construction_step' || key === 'construction_supply') return 3;
   if (preferredIntents.length && keyMatchesIntents(key, preferredIntents)) return 3;
   for (const target of Object.keys(targets)) {
     const normalized = target.replace(/_/g, '');
@@ -95,6 +96,7 @@ export function progressFingerprint (obs, plan) {
   return JSON.stringify({
     position: [Math.round(p.x ?? 0), Math.round(p.y ?? 0), Math.round(p.z ?? 0)],
     inventory,
+    construction: obs?.construction ? [obs.construction.projectId, obs.construction.placed, obs.construction.phase, obs.construction.state, obs.construction.functionalIndex, obs.construction.walkIndex, obs.construction.temporaryRemoved, obs.construction.verification] : null,
     objective: plan?.objective ?? null,
   });
 }

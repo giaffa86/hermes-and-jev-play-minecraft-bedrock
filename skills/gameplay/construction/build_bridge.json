@@ -1,0 +1,1 @@
+{"id":"build_bridge","description":"Build and cross a new level bridge with side rails","category":"construction","success":{"structureBuilt":{"type":"bridge"}},"intents":["build","collect","craft","mine"]}

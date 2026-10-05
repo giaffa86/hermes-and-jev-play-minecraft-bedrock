@@ -1,0 +1,1 @@
+{"id":"build_warehouse","description":"Build a new storehouse and verify every planned chest can open","category":"construction","success":{"structureBuilt":{"type":"warehouse"}},"intents":["build","collect","craft","mine"]}

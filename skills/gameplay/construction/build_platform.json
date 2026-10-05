@@ -1,0 +1,1 @@
+{"id":"build_platform","description":"Build and traverse a new platform from a persistent construction project","category":"construction","success":{"structureBuilt":{"type":"platform"}},"intents":["build","collect","craft","mine"]}

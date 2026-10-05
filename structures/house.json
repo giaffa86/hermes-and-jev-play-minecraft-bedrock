@@ -1,0 +1,1 @@
+{"id":"house","version":1,"kind":"house","description":"A small house with a complete roof, door and floor torches","defaults":{"width":7,"length":7,"height":3},"limits":{"width":[5,11],"length":[5,15],"height":[3,3]},"palette":{"floor":"oak_planks","wall":"oak_planks","roof":"oak_planks","access":"oak_planks","door":"wooden_door","light":"torch"}}

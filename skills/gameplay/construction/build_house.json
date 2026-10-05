@@ -1,0 +1,1 @@
+{"id":"build_house","description":"Build a new roofed house with a usable door and verified interior passage","category":"construction","success":{"structureBuilt":{"type":"house"}},"intents":["build","collect","craft","mine"]}

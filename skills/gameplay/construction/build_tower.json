@@ -1,0 +1,1 @@
+{"id":"build_tower","description":"Build an observation tower, verify its staircase and remove temporary access safely","category":"construction","success":{"structureBuilt":{"type":"tower"}},"intents":["build","collect","craft","mine"]}

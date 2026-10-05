@@ -25,6 +25,7 @@ never committed.
 
 | Path | What it defines |
 |---|---|
+| `construction.mjs`, `bedrock-construction.mjs`, `construction-api.mjs`, `structures/` | Validated construction blueprints, bounded persistent executor and HTTP routes. |
 | `bedrock-adapter.mjs` | The Bedrock protocol client: perception (`_refreshNearby`), actions (`player_auth_input`, `block_action`, `item_stack_request`, `click_block`), tool selection, mining, digging, containers, trading and trader levelling, chat capture (`text` id 9 → `chatInbox`) and chat **output** (`sendChat` → `text`/`chat` packet), `follow_player`, human players in range (`observe().humans`, `_nearbyHumanPlayers`), who the bot itself is (`observe().self`: the auth `username` and the gamertag learned from the chat echo) and the valuable-ore opportunity scan (`observe().ores`, the `mine_<ore>` options outside the fixed mining list). |
 | `remembered-resource-sites.mjs` | Historical resource-site ranking and navigation-only sourcing shared by crafting and construction; live gather keys required. |
 | `bedrock-trading.mjs` | Pure trading economy rules: profession mapping, item value classification, cheapest-trade picker for levelling. |

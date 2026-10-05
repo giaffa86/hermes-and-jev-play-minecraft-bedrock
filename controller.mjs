@@ -21,6 +21,8 @@ import {appendFileSync, mkdirSync} from 'node:fs';
 import {setTimeout as delay} from 'node:timers/promises';
 import {createGoalManager, GOAL_SOURCE, GOAL_STATUS} from './goal-manager.mjs';
 import {JsonMemoryRepository} from './memory-store.mjs';
+import {constructionPlannerInstructions, constructionFromText} from './bedrock-construction.mjs';
+import {constructionGoalMet} from './construction.mjs';
 import {nextIdleGoal, isNeedResolved, DEFAULT_AUTONOMY_COOLDOWN_MS, DEFAULT_MAX_AUTONOMOUS_GOALS} from './idle-goals.mjs';
 import {detectEvents} from './world-events.mjs';
 import {emergencyGoalFor, DEFAULT_EMERGENCY_COOLDOWN_MS} from './emergency-goals.mjs';
@@ -56,6 +58,7 @@ function envJson (name, fallback) {
 }
 const WAYPOINT = envJson('WAYPOINT', null);   // e.g. {"x":380,"z":16}
 const TARGETS = envJson('TARGETS', {dirt: 4}); // item -> min count
+const CONSTRUCTION = envJson('CONSTRUCTION', null);
 const MAX_STEPS = +(process.env.MAX_STEPS || 20);
 // Un ordine "seguimi" aperto non deve girare a vuoto: se `follow_player` riesce
 // all'istante (l'umano e' gia' li') il passo successivo attende questo intervallo
@@ -192,6 +195,11 @@ const log = (type, data) => appendFileSync(`runs/${RUN}/controller.jsonl`, JSON.
 const api = async (method, path, body) => {
   const r = await fetch(HARNESS + path, {method, body: body ? JSON.stringify(body) : undefined, headers: {'Content-Type': 'application/json', Connection: 'close'}});
   return r.json();
+};
+const publishPlan = async plan => {
+  const response = await api('POST', '/plan', plan);
+  if (response.ok === false || response.error) throw new Error(`plan_rejected: ${response.error ?? 'invalid plan'}`);
+  return response.plan ?? plan;
 };
 
 // ---- Goal Manager (Agent Core, milestone 1) --------------------------------------------------
@@ -362,6 +370,7 @@ async function hermesPlan(observation, { recall = '' } = {}) {
   const prompt = [
     'You are the PLANNER for a Minecraft bot. Return ONLY a JSON object {"objective": string, "targets": {item: minCount}, "waypoint": {"x":int,"z":int} | null, "skill": string | null, "notes": string}.',
     `Overall goal: ${GOAL}`,
+    constructionPlannerInstructions(),
     CURRICULUM ? `Overall progression milestone: ${CURRICULUM} (the progression engine verifies it deterministically)` : '',
     curriculumHint?.status === 'next' ? `Suggested next milestone from the progression engine: ${curriculumHint.milestone} (skill "${curriculumHint.skill}"). Use it unless the observation clearly calls for something else.` : '',
     WAYPOINT ? `Required waypoint (keep it unless reached): ${JSON.stringify(WAYPOINT)}` : '',
@@ -375,7 +384,8 @@ async function hermesPlan(observation, { recall = '' } = {}) {
   const started = Date.now();
   const out = await runHermes(prompt);
   if (out == null) {
-    const plan = {objective: GOAL, targets: TARGETS, waypoint: WAYPOINT, notes: 'hermes unavailable; static fallback plan'};
+    const construction = CONSTRUCTION ?? constructionFromText(GOAL, observation);
+    const plan = {objective: GOAL, targets: construction ? {} : TARGETS, waypoint: WAYPOINT, ...(construction ? {construction} : {}), notes: 'hermes unavailable; static fallback plan'};
     log('plan_fallback', {plan, ms: Date.now() - started});
     return plan;
   }
@@ -386,6 +396,8 @@ async function hermesPlan(observation, { recall = '' } = {}) {
     catch (error) { log('plan_parse_failed', {raw: m[0].slice(0, 500), error: error.message}); }
   }
   if (WAYPOINT && !plan.waypoint) plan.waypoint = WAYPOINT;
+  plan.construction = CONSTRUCTION ?? plan.construction ?? constructionFromText(GOAL, observation);
+  if (plan.construction) plan.targets = {};
   log('plan', {plan, ms: Date.now() - started});
   return plan;
 }
@@ -393,6 +405,7 @@ async function hermesPlan(observation, { recall = '' } = {}) {
 // In modalità curriculum il piano è deterministico; Hermes resta il fallback
 // per gli errori del motore e per le situazioni ambigue.
 async function planForStep (observation, reason, goal = null) {
+  if (CONSTRUCTION) return {objective: GOAL, targets: {}, construction: CONSTRUCTION};
   if (CURRICULUM) {
     const milestone = nextMilestone(observation);
     if (milestone.status === 'met') return {met: true};
@@ -425,6 +438,7 @@ async function humanCommandPlan (obs, entry) {
   const prompt = [
     'You are the PLANNER for a Minecraft bot. A TRUSTED human player sent you a command in chat. Return ONLY a JSON object {"objective": string, "targets": {item: minCount}, "waypoint": {"x":int,"z":int} | null, "follow": string | null, "notes": string}.',
     `The human (gamertag "${entry.from}") said: "${entry.message}".`,
+    constructionPlannerInstructions(),
     senderPos
       ? `The human is currently at ${JSON.stringify(senderPos)}. If they ask you to follow, stay near, or escort them, set "follow" to "${entry.from}" (exact gamertag) and set "waypoint" to their current XZ position.`
       : 'The human position is not visible right now; if they ask you to follow, still set "follow" to their gamertag.',
@@ -454,11 +468,14 @@ async function humanCommandPlan (obs, entry) {
         follow: entry.from,
         notes: `human:${entry.from} ${note}`,
       });
+  const construction = constructionFromText(entry.message, obs);
+  if (out == null && construction) return {objective: entry.message, targets: {}, construction, notes: 'deterministic construction command'};
   if (out == null) { log('plan_fallback', {plan: fallback('hermes unavailable'), ms: Date.now() - started, source: 'human'}); return fallback('hermes unavailable'); }
   const m = out.match(/\{[\s\S]*\}/);
   let plan = null;
   try { plan = m ? JSON.parse(m[0]) : null; } catch { plan = null; }
   if (!plan || typeof plan !== 'object' || typeof plan.objective !== 'string') {
+    if (construction) return {objective: entry.message, targets: {}, construction, notes: 'deterministic construction command'};
     log('plan_fallback', {plan: fallback('parse'), ms: Date.now() - started, source: 'human'});
     return fallback('parse');
   }
@@ -468,6 +485,7 @@ async function humanCommandPlan (obs, entry) {
     plan.waypoint = null;
   } else if (plan.follow == null && /follow|stay near|come with|escort|seguimi|accompagn/i.test(entry.message)) plan.follow = entry.from;
   plan.notes = `human:${entry.from} ${plan.notes || ''}`.trim();
+  if (construction || plan.construction) { plan.construction ??= construction; plan.targets = {}; plan.follow = null; }
   log('plan', {plan, ms: Date.now() - started, source: 'human'});
   return plan;
 }
@@ -660,6 +678,10 @@ async function hermesDecide(observation, options, plan) {
 
 // ---- loop -----------------------------------------------------------------------------------
 const goalMet = (obs, plan, skillStatus) => {
+  if (plan.construction) {
+    if (plan.construction.command === 'pause') return obs.construction?.projectId === plan.construction.projectId && obs.construction.state === 'paused';
+    return constructionGoalMet(obs, plan.construction);
+  }
   // I piani "seguimi" sono aperti: terminano solo con un nuovo ordine o a fine
   // budget, mai da soli (non hanno target/waypoint terminali).
   if (plan.follow) return false;
@@ -708,9 +730,13 @@ let lastContractStatus = null;
 let runExitCode = 0; // non-zero quando un contratto termina FAILED/BLOCKED/EXHAUSTED
 // `stepsUsed` = azioni già eseguite; a fine budget il contratto ancora RUNNING
 // viene tradotto in `exhausted` (vedi survival/goal-contract.mjs).
+let plan = goal.plan ?? { construction: CONSTRUCTION ?? constructionFromText(goal.objective ?? GOAL, obs) };
 function evaluateGoalContract (observation, stepsUsed) {
   if (!goalContract) return null;
-  const status = contractStop(goalContract, observation, { before: contractBaseline, stepsUsed, maxSteps: MAX_STEPS });
+  const effectiveContract = plan.construction ? { ...goalContract, success: {
+    structureBuilt: { type: observation.construction?.type, projectId: plan.construction.projectId },
+  } } : goalContract;
+  const status = contractStop(effectiveContract, observation, { before: contractBaseline, stepsUsed, maxSteps: MAX_STEPS });
   if (status.status !== lastContractStatus) {
     lastContractStatus = status.status;
     log('goal_contract', {
@@ -721,7 +747,8 @@ function evaluateGoalContract (observation, stepsUsed) {
   }
   return status;
 }
-if (goalContract) {
+
+if (goalContract && !plan.construction) {
   const initialContract = evaluateGoalContract(obs, 0);
   if (initialContract.status !== 'running') {
     if (initialContract.status !== 'success') runExitCode = 2;
@@ -737,13 +764,15 @@ if (initialPlan?.met) {
   log('goal_met', {steps: 0, curriculum: CURRICULUM});
   return {status: 'success', exitCode: 0, steps: 0, reason: 'curriculum_already_met'};
 }
-let plan = initialPlan;
+plan = initialPlan;
 // Un ordine "seguimi" e' un impegno aperto (M3): il goal se lo ricorda e resta un
 // inseguimento finche' non arriva un altro ordine, anche se un replan riscrive il
 // piano senza `follow` (live 04/10: il replan anti-loop cancellava l'ordine, il
 // waypoint statico chiudeva il goal e il bot si fermava da solo).
 if (initialPlan?.follow) goal.follow = initialPlan.follow;
-await api('POST', '/plan', plan);
+if (CONSTRUCTION && !plan.construction) plan = {...plan, targets: {}, construction: CONSTRUCTION};
+plan = await publishPlan(plan);
+goal.plan = plan; goalManager.persist();
 // Archi di goal: ogni target dell'obiettivo diventa una risorsa cercata
 // (mission --seeks--> resource:<item>). Best-effort, non blocca il loop.
 if (goal.missionId && plan?.targets) {
@@ -819,7 +848,8 @@ for (let step = 1; step <= maxSteps; step++) {
     // Un nuovo ordine riorienta l'impegno: "seguimi" apre il follow, qualsiasi
     // altro ordine lo chiude (altrimenti resterebbe appeso per sempre).
     if (plan.follow) goal.follow = plan.follow; else delete goal.follow;
-    await api('POST', '/plan', plan);
+    plan = await publishPlan(plan);
+    goal.plan = plan; goalManager.persist();
     skillRun = null; // il piano umano sostituisce la skill attiva
     // Un ordine può riorientare un goal nato autonomo: l'esito di *quel* goal
     // deve tornare a chi ha ordinato (non al planner autonomo).
@@ -912,7 +942,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // Un goal autonomo/emergenza è ancorato al suo predicato di successo
   // (bisogno o recupero loot): non va sostituito da un nuovo piano, o si perde
   // l'ancoraggio e il goal non si chiude. Si salta il replan.
-  if (replanReason && (plan.need || plan.recover)) {
+  if (replanReason && (plan.need || plan.recover || plan.construction)) {
     log('replan_skipped', {step, reason: replanReason, need: plan.need ?? null, recover: plan.recover === true});
     replanReason = null;
   }
@@ -921,7 +951,8 @@ for (let step = 1; step <= maxSteps; step++) {
     if (candidatePlan?.met) { log('curriculum_goal_met', {step, reason: replanReason}); goalReached = true; break; }
     const sameSkill = candidatePlan?.skill && candidatePlan.skill === plan.skill;
     plan = withStickyFollow(candidatePlan, goal.follow);
-    await api('POST', '/plan', plan);
+    plan = await publishPlan(plan);
+    goal.plan = plan; goalManager.persist();
     if (!sameSkill || !skillRun) skillRun = startSkillRun(plan, obs);
     log('replan', {step, reason: replanReason, objective: plan.objective, skill: plan.skill ?? null, milestone: plan.milestone ?? null});
     console.log('REPLAN', replanReason, plan.objective, plan.skill ? `[skill ${plan.skill}]` : '');

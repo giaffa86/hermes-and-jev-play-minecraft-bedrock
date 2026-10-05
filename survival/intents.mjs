@@ -35,6 +35,8 @@ const KEY_INTENTS = {
   sleep: ['sleep', 'heal'],
   recover_loot: ['recover'],
   collect_drop: ['collect'],
+  construction_step: ['build'],
+  construction_supply: ['collect', 'craft', 'mine'],
   harvest_honeycomb: ['collect'],
   harvest_honey: ['collect'],
   feed_bee: ['collect'],

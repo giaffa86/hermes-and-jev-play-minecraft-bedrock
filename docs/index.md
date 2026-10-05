@@ -34,6 +34,8 @@ question about the project.
 | [final-report.md](wiki/final-report.md) | P0 → P7 close-out through 04/10: completed work, test/live evidence, six declared validation gaps, bot OFF policy, and three reusable follow-up tasks. | `docs/wiki/verification.md`, `docs/wiki/open-questions.md`, `git log` |
 | [nether.md](wiki/nether.md) | Nether/End roadmap: locate/build a portal, survive the Nether, ghast fireball dodge, piglin gold bartering, enderman gaze discipline, blaze rods/pearls, stronghold and End. **N0 (awareness + hazards), N1 (portal reach/build/light/enter), N2 (nether survival: non-flammable hub, dimension-aware fall, hazardous landings), N3 (dodge an incoming projectile sideways, never into lava), N4 (barter with a piglin, never hit one) and N5 (gaze discipline, pumpkin mask, torso aim, pearls) and N6 (fortress detection, blaze hunt with cover, blaze rods) and N7 (eyes of ender, stronghold triangulation, frame filling, End portal, real boss verdict) implemented and unit-tested 03/10; N0 live-checked, N1–N7 live only for the typed refusals (the base has no obsidian, no ghast, no piglin, no enderman, no blaze and no end_portal_frame); the dragon fight is still missing** (`beat_the_dragon` keeps `success: null`). | `bedrock-nether.mjs`, `bedrock-end.mjs`, `docs/raw/NETHER_ROADMAP.md`, `knowledge/progression.json`, `bedrock-survival.mjs` |
 
+| [construction.md](wiki/construction.md) | Persistent house, platform, bridge, tower and warehouse construction; bounded actions, material supply and functional verification. | `construction.mjs`, `bedrock-construction.mjs`, `structures/` |
+
 ## Raw sources (`raw/`)
 
 | Source | What it is |

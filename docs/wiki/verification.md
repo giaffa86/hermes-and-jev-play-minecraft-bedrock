@@ -13,6 +13,14 @@ Legend:
 - ⚠️ **Regressed / broken live** — previously verified, now failing on the live BDS.
 - ❌ **Not implemented**.
 
+## Construction extension (04/10)
+
+🧪 [Construction](construction.md): platform, house, bridge, tower and warehouse
+are implemented with offline protocol-boundary acceptance tests, persistence,
+material selection and controller integration. ⏳ Real BDS placement, edge movement,
+procurement and cleanup require a scoped round in an approved test area.
+No live construction success is claimed.
+
 ## How to run
 
 **Close-out policy (04/10): bot OFF by default.** Restart only for a precise,

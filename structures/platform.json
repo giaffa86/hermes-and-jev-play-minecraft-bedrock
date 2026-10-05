@@ -1,0 +1,1 @@
+{"id":"platform","version":1,"kind":"platform","description":"A flat platform with a traversable center route","defaults":{"width":5,"length":5},"limits":{"width":[3,15],"length":[3,24]},"palette":{"floor":"cobblestone"}}

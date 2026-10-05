@@ -242,13 +242,14 @@ export class WorldMemory {
   // non deve far perdere la titolarità dei propri blocchi: senza registro il
   // teardown non tocca nulla.
 
-  placementId (position) {
-    return this._spatialId('placement', position);
+  placementId (position, dimension = 'overworld') {
+    const base = this._spatialId('placement', position);
+    return dimension === 'overworld' ? base : `${base}_${dimension}`;
   }
 
-  rememberPlacement ({ position, block, item = null, circuitId = null, dimension = 'overworld', source = 'place', placedAt = null }) {
+  rememberPlacement ({ position, block, item = null, circuitId = null, projectId = null, signature = null, dimension = 'overworld', source = 'place', placedAt = null }) {
     if (!position || !block) throw new Error('rememberPlacement: position and block required');
-    const key = this.placementId(position);
+    const key = this.placementId(position, dimension);
     const existing = this.repo.get(key);
     const now = placedAt ?? Date.now();
     const record = {
@@ -261,6 +262,8 @@ export class WorldMemory {
       placedAt: now,
       item,
       circuitId,
+      projectId,
+      signature,
       source,
       discoveredAt: existing?.discoveredAt ?? now,
       lastSeenAt: now,
@@ -280,21 +283,40 @@ export class WorldMemory {
     return this.repo.get(record.id);
   }
 
-  placements ({ circuitId = null, near = null, radius = null, limit = null } = {}) {
-    const rows = this.repo.find({ kind: 'placement', near, radius, limit });
+  placements ({ circuitId = null, dimension = null, near = null, radius = null, limit = null } = {}) {
+    const rows = this.repo.find({ kind: 'placement', dimension, near, radius, limit });
     const filtered = circuitId == null ? rows : rows.filter((r) => r.circuitId === circuitId);
     if (near) filtered.sort((a, b) => distance3d(a.position, near) - distance3d(b.position, near));
     return filtered;
   }
 
-  placementAt (position) {
+  placementAt (position, dimension = 'overworld') {
     if (!position) return null;
-    return this.repo.get(this.placementId(position));
+    return this.repo.get(this.placementId(position, dimension));
   }
 
-  forgetPlacement (position) {
+  forgetPlacement (position, dimension = 'overworld') {
     if (!position) return false;
-    return this.repo.remove(this.placementId(position));
+    return this.repo.remove(this.placementId(position, dimension));
+  }
+
+  // Construction snapshots use the same repository as world facts. The expanded
+  // blueprint is immutable per instance; callbacks and executable code never
+  // enter storage. Flush on each confirmed step for crash-safe resumption.
+  saveConstruction (project) {
+    if (!project?.id || project.kind !== 'construction') throw new Error('invalid_construction_record');
+    this.repo.upsert(structuredClone(project));
+    this.repo.flush();
+    return this.getConstruction(project.id);
+  }
+
+  getConstruction (id) {
+    const row = this.repo.get(id);
+    return row?.kind === 'construction' ? structuredClone(row) : null;
+  }
+
+  constructions ({ dimension = null, limit = null } = {}) {
+    return this.repo.find({ kind: 'construction', dimension, limit }).map(r => structuredClone(r));
   }
 
   // ---- resource sites / portals / entities -----------------------------------------

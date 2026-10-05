@@ -3,7 +3,10 @@
 //   observe(), getAvailableActions(), executeAction(), connect(), disconnect()
 // Il controller Hermes/Jev non deve sapere che siamo su Bedrock.
 import { createRequire } from 'node:module';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { RememberedResourceSites, naturalGatherCandidates } from './remembered-resource-sites.mjs';
+import { ConstructionEngine } from './bedrock-construction.mjs';
+import { stateSignature } from './construction.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BedrockWorld } from './bedrock-world.mjs';
 import { HIVE_BLOCKS, BEE_CRAFT_ITEMS, BEE_SCAN_RADIUS, BEE_SCAN_LIMIT, isBeeProtected, hiveVerdict, honeyLevel, beeFlower, beeFlowerCount } from './bedrock-bees.mjs';
@@ -273,7 +276,9 @@ export class BedrockAdapter {
     this.onLog = onLog;
     this.onDisconnect = onDisconnect;
     this.memory = memory;
+    this.construction = new ConstructionEngine(this);
     this.resourceSites = new RememberedResourceSites(this);
+    this._actionScope = new AsyncLocalStorage();
     this.missionId = null;             // missione di esplorazione attiva (checkpoint)
     this._lastDiscoveryChunk = null;   // dedup: scoperte scansionate una volta per chunk
     this._lastDiscoveryAt = 0;
@@ -3666,6 +3671,7 @@ export class BedrockAdapter {
       nether: this._netherView(),
       redstone: this._redstoneView(),
       circuits: this._circuitsView(),
+      construction: this.construction.view(),
       ores: (this.valuableOres ?? []).slice(0, 8),
       recent: this.recent.slice(-8),
       status: this.status,
@@ -4409,6 +4415,14 @@ export class BedrockAdapter {
       }
     }
     o.push(...this._beeOptions());
+    // Construction owns its procurement choices: unrelated takes, deposits,
+    // mining and teardown must not consume materials or edit another build.
+    if (this.plan?.construction) {
+      const survival = new Set(['eat', 'flee', 'sleep', 'go_home', 'retreat', 'recover_loot', 'equip_armor', 'equip_shield', 'raise_shield', 'lower_shield', 'avoid_lava', 'move_to_safe', 'dodge_projectile']);
+      const kept = o.filter(option => survival.has(option.key) || option.key.startsWith('attack_') || option.key === 'collect_drop');
+      kept.push(...this.construction.options());
+      return kept.length ? kept : [{ key: 'wait', description: 'Construction paused or blocked; inspect construction.lastError and resume after resolving it' }];
+    }
     // Fallback
     if (!o.length) o.push({ key: 'wait', description: 'Wait 2 seconds for fresh observations' });
     return o;
@@ -4424,6 +4438,8 @@ export class BedrockAdapter {
     if (this.sleeping && key !== 'wait') return { ok: false, error: 'sleeping' };
     this.busy = true;
     const started = Date.now();
+    const actionController = new AbortController();
+    const actionContext = { signal: actionController.signal, construction: key.startsWith('construction_') };
     let result;
     let watchdog = null;
     // Un'azione che non ritorna — la morte del bot a metà di una lettura di
@@ -4433,14 +4449,18 @@ export class BedrockAdapter {
     // rimasto in volo resta un zombie dichiarato, non un blocco dell'API.
     try {
       result = await Promise.race([
-        this._runAction(key),
+        this._actionScope.run(actionContext, () => this._runAction(key, actionContext)),
         new Promise(resolve => {
-          watchdog = setTimeout(() => resolve({
+          watchdog = setTimeout(() => {
+            actionController.abort();
+            if (actionContext.construction) { this._finishMotion('timeout'); this._stopMotion(); }
+            resolve({
             ok: false,
             error: 'action_timeout',
             action: key,
             timeoutMs: +(process.env.HARNESS_ACTION_TIMEOUT_MS || 180000),
-          }), +(process.env.HARNESS_ACTION_TIMEOUT_MS || 180000));
+            });
+          }, +(process.env.HARNESS_ACTION_TIMEOUT_MS || 180000));
         }),
       ]);
       if (result?.error === 'action_timeout') this.log('action_timeout', { action: key, ms: Date.now() - started });
@@ -4450,6 +4470,7 @@ export class BedrockAdapter {
       result = { ok: false, error: error?.message ?? String(error) };
     } finally {
       if (watchdog) clearTimeout(watchdog);
+      actionController.abort();
       this.busy = false;
     }
     const entry = { action: key, result, position: this.pos(), ms: Date.now() - started };
@@ -4470,7 +4491,9 @@ export class BedrockAdapter {
           return { ok: false, error: 'gather_not_offered', action: key };
         }
       }
-      if (key === 'wait') {
+      if (key === 'construction_step' || key === 'construction_supply') {
+        result = await this.construction.run(key === 'construction_supply' ? 'supply' : 'step', context);
+      } else if (key === 'wait') {
         await new Promise(r => setTimeout(r, 2000));
         result = { ok: true };
       } else if (key === 'goto_waypoint' && this.resourceSites.pending) {
@@ -4706,7 +4729,16 @@ export class BedrockAdapter {
   }
 
   setPlan (plan) {
+    if (plan?.construction) {
+      const configured = this.construction.configure(plan.construction);
+      if (configured.ok === false) throw new Error(`${configured.error}: ${JSON.stringify(configured.issues ?? [])}`);
+      plan = { ...plan, construction: { ...configured } };
+    } else if (this.plan?.construction && this.construction.project && !['complete', 'cancelled'].includes(this.construction.project.state)) {
+      this.construction.control('pause');
+    }
     this.plan = plan;
+    this.resourceSites.pending = null;
+    this.resourceSites.gatherKey = null;
     this.log('plan', { plan });
   }
 
@@ -4947,6 +4979,8 @@ export class BedrockAdapter {
   }
 
   _sendStackRequest (actions, { outputs = false, timeoutMs = 4000 } = {}) {
+    const signal = this._actionScope?.getStore()?.signal;
+    if (signal?.aborted) return Promise.reject(new Error('action_cancelled'));
     if (!this.client) return Promise.reject(new Error('connection_lost'));
     const requestId = this._nextStackRequest();
     const prepared = actions.map(action => {
@@ -4958,6 +4992,7 @@ export class BedrockAdapter {
     return new Promise((resolve, reject) => {
       const finish = (error, response) => {
         clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
         this.client?.off('item_stack_response', onResponse);
         if (error) reject(error); else resolve(response);
       };
@@ -4965,7 +5000,9 @@ export class BedrockAdapter {
         const response = packet.responses?.find(r => r.request_id === requestId);
         if (response) finish(null, response);
       };
+      const onAbort = () => finish(new Error('action_cancelled'));
       const timer = setTimeout(() => finish(new Error('stack_request_timeout')), timeoutMs);
+      signal?.addEventListener('abort', onAbort, { once: true });
       this.client.on('item_stack_response', onResponse);
       this.client.write('item_stack_request', { requests: [{ request_id: requestId, actions: prepared, custom_names: [], cause: 'chat_public' }] });
     });
@@ -5058,6 +5095,7 @@ export class BedrockAdapter {
   async _ensureInventoryOpen () {
     if (this._openContainer?.type === 'inventory') return;
     if (this._openContainer) await this._closeContainer();
+    if (this._actionScope?.getStore()?.signal.aborted) throw new Error('action_cancelled');
     const wait = this._waitForContainerOpen(p => p.window_type === 'inventory', 3000);
     this.client.write('interact', { action_id: 'open_inventory', target_entity_id: this.client.entityId, has_position: false });
     await wait;
@@ -5065,6 +5103,7 @@ export class BedrockAdapter {
   }
 
   async _closeContainer () {
+    if (this._actionScope?.getStore()?.signal.aborted) return;
     const open = this._openContainer;
     if (!open || !this.client) return;
     const wasTrading = open.type === 'trading' || open.type === 15;
@@ -6725,9 +6764,12 @@ export class BedrockAdapter {
   }
 
   async _resyncByReconnect () {
+    const signal = this._actionScope?.getStore()?.signal;
+    if (signal?.aborted) throw new Error('action_cancelled');
     if (!this.client || !this.spawned) throw new Error('not_connected');
     this.log('inventory_resync', { reason: 'slot ids stale after pickups; reconnecting for fresh inventory_content' });
     await this.disconnect('inventory resync');
+    if (signal?.aborted) throw new Error('action_cancelled');
     await this.connect();
     this.log('inventory_resync_done', { trackedSlots: this.inventorySlots.filter(s => s?.network_id).length });
   }
@@ -6773,6 +6815,7 @@ export class BedrockAdapter {
   // l'opzione una slot vuota non è selezionabile (`return false`) e il bot resta
   // con l'oggetto precedente in mano.
   _selectHotbarSlot (index, { allowEmpty = false } = {}) {
+    if (this._actionScope?.getStore()?.signal.aborted) throw new Error('action_cancelled');
     const item = this.inventorySlots[index];
     if (!item?.network_id && !allowEmpty) return false;
     this.client.write('mob_equipment', {
@@ -6880,6 +6923,11 @@ export class BedrockAdapter {
   // `face` del blocco `support`. Generalizzazione di `_placeBlock` per barricade.
   // `opts.yaw`/`opts.pitch` forzano l'orientamento (piazzamento orientato di R1).
   async _placeAtCell (itemName, blockName, target, support, face, clickPos = { x: 0.5, y: 1, z: 0.5 }, opts = {}) {
+    const guard = () => {
+      if (opts.signal?.aborted) throw new Error('construction_interrupted');
+      opts.guard?.();
+    };
+    guard();
     // R6: alcuni blocchi non si piazzano mai, qualunque sia il chiamante — TNT e
     // trappole trasformano un cantiere in un incidente, i blocchi di comando non
     // sono nemmeno parte del gioco sulla base (`allow-cheats=false`).
@@ -6890,6 +6938,7 @@ export class BedrockAdapter {
     }
     let slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && s.count > 0);
     if (slotIndex < 0) {
+      if (opts.projectId) return { ok: false, error: 'construction_inventory_stale' };
       try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
       slotIndex = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && s.count > 0);
       if (slotIndex < 0) return { ok: false, error: 'missing_item' };
@@ -6898,7 +6947,9 @@ export class BedrockAdapter {
       try { slotIndex = await this._moveSlotToHotbar(slotIndex); }
       catch (error) { return { ok: false, error: error.message }; }
     }
+    guard();
     if (this._openContainer) await this._closeContainer();
+    guard();
     this._selectHotbarSlot(slotIndex);
     const held = this.inventorySlots[slotIndex];
     const runtimeId = this.world.runtimeIdAt(support);
@@ -6912,6 +6963,7 @@ export class BedrockAdapter {
       slot: slotIndex, hotbar: this.selectedHotbar, held: this._slotItemName(held) || null, yaw, pitch,
       before, at: Date.now(), error: null,
     };
+    guard();
     await this._queueAuthInput({
       yaw,
       pitch,
@@ -6943,9 +6995,14 @@ export class BedrockAdapter {
         // R4: il bot ricorda cosa ha piazzato lui, per poterlo rimuovere senza
         // toccare il resto del mondo. Il registro è anche *persistente*
         // (`memory.rememberPlacement`): un restart non deve far perdere il titolo.
-        this._rememberPlacement({ position: target, block: blockName, item: itemName, source: 'place' });
+        this._rememberPlacement({ position: target, block: blockName, item: itemName, source: opts.source ?? 'place', projectId: opts.projectId ?? null, signature: stateSignature(placed) });
+        for (const secondary of opts.secondary ?? []) {
+          const actual = this.world.blockAt(secondary.position);
+          if (actual?.name === secondary.block) this._rememberPlacement({ position: secondary.position, block: secondary.block, item: itemName, source: opts.source ?? 'place', projectId: opts.projectId ?? null, signature: stateSignature(actual) });
+        }
         return { ok: true, block: blockName, position: target };
       }
+      guard();
       if (placed && placed.name !== 'air' && placed.name !== 'unknown') {
         this._lastPlacement.after = placed.name;
         return { ok: false, error: `unexpected_block_${placed.name}` };
@@ -7368,13 +7425,14 @@ export class BedrockAdapter {
   // R4: la `Map` in memoria è una cache del registro persistente (`kind:
   // placement` nella memoria del mondo). Si scrive passando da qui, così le due
   // copie non divergono mai e un restart le ricompone (`_hydratePlacements`).
-  _rememberPlacement ({ position, block, item = null, circuitId = null, source = 'place', placedAt = null }) {
+  _rememberPlacement ({ position, block, item = null, circuitId = null, projectId = null, signature = null, source = 'place', placedAt = null }) {
     const key = `${position.x},${position.y},${position.z}`;
     const name = String(block).replace(/^minecraft:/i, '').toLowerCase();
     const at = placedAt ?? Date.now();
-    this._placedBlocks.set(key, { block: name, item: item ?? null, at, source, circuit: circuitId ?? null });
+    this._placedBlocks.set(key, { block: name, item: item ?? null, at, source, circuit: circuitId ?? null, projectId, signature });
     try {
-      this.memory?.rememberPlacement({ position, block: name, item: item ?? null, circuitId, source, placedAt: at });
+      this.memory?.rememberPlacement({ position, block: name, item: item ?? null, circuitId, projectId, signature, dimension: this.dimension, source, placedAt: at });
+      if (projectId) this.memory?.repo.flush();
     } catch (error) {
       this.log('placement_persist_failed', { position, block: name, error: String(error?.message ?? error) });
     }
@@ -7387,7 +7445,7 @@ export class BedrockAdapter {
     const key = `${position.x},${position.y},${position.z}`;
     const had = this._placedBlocks.delete(key);
     try {
-      this.memory?.forgetPlacement(position);
+      this.memory?.forgetPlacement(position, this.dimension);
     } catch (error) {
       this.log('placement_forget_failed', { position, error: String(error?.message ?? error) });
     }
@@ -7415,6 +7473,7 @@ export class BedrockAdapter {
     let hydrated = 0;
     try {
       for (const record of this.memory.placements({ limit: null })) {
+        if ((record.dimension ?? 'overworld') !== this.dimension) continue;
         if (!record?.position || !record.type) continue;
         const key = `${record.position.x},${record.position.y},${record.position.z}`;
         if (this._placedBlocks.has(key)) continue;
@@ -8429,6 +8488,7 @@ export class BedrockAdapter {
   _authTick () {
     const pending = this._authInputQueue.shift();
     if (pending) {
+      if (pending.signal?.aborted) { pending.reject(new Error('action_cancelled')); return; }
       const tick = this._advanceTick();
       try {
         this._sendAuthInput({ ...pending.input, tick });
@@ -8492,9 +8552,11 @@ export class BedrockAdapter {
   }
 
   _queueAuthInput (input) {
+    const context = this._actionScope?.getStore();
+    if (context?.signal.aborted) return Promise.reject(new Error('action_cancelled'));
     if (!this.client) return Promise.reject(new Error('connection_lost'));
     if (!this._authTickInterval) { this._sendAuthInput(input); return Promise.resolve(); }
-    return new Promise((resolve, reject) => this._authInputQueue.push({ input, resolve, reject }));
+    return new Promise((resolve, reject) => this._authInputQueue.push({ input, resolve, reject, signal: context?.signal }));
   }
 
   _sendAuthInput ({ yaw = 0, pitch = 0, moveVector = null, blockAction = null,
@@ -8504,6 +8566,10 @@ export class BedrockAdapter {
     this.tick = tick != null ? tick : this._advanceTick();
     const position = { ...this.position };
     const inputData = ['block_breaking_delay_enabled'];
+    if (this._constructionSneaking) inputData.push('sneaking');
+    if (this._constructionSneaking && !this._constructionWasSneaking) inputData.push('start_sneaking');
+    if (!this._constructionSneaking && this._constructionWasSneaking) inputData.push('stop_sneaking');
+    this._constructionWasSneaking = !!this._constructionSneaking;
     let move = moveVector || { x: 0, z: 0 };
     const motion = this._motion;
     if (this.riding) {
@@ -9087,7 +9153,8 @@ export class BedrockAdapter {
     const beforeX = this._feet.x, beforeZ = this._feet.z;
     if (motion?.active && motion.forward) {
       const yawRad = motion.yaw * Math.PI / 180;
-      const speed = this._wading() ? WALK_SPEED * WADE_SPEED_FACTOR : WALK_SPEED;
+      let speed = this._wading() ? WALK_SPEED * WADE_SPEED_FACTOR : WALK_SPEED;
+      if (motion.preciseEdge) speed = Math.min(speed * 0.3, Math.hypot(motion.target.x - this._feet.x, motion.target.z - this._feet.z));
       this._moveHorizontal(-Math.sin(yawRad) * speed, Math.cos(yawRad) * speed);
     }
     this._velocity.x = this._feet.x - beforeX;
@@ -9170,6 +9237,15 @@ export class BedrockAdapter {
     if (!motion?.active) return;
     if (Date.now() > motion.deadline) return this._finishMotion('timeout');
     const feet = this._feet;
+    if (motion.preciseEdge) {
+      if (Math.hypot(feet.x - motion.target.x, feet.z - motion.target.z) < 0.025 && Math.abs(feet.y - motion.target.y) < 0.15) return this._finishMotion('goal');
+      // The player bounding box must retain a known support and stay within
+      // the small approved overhang. No jump or forward tick can extend it.
+      const base = motion.edgeBase;
+      if (Math.abs(feet.x - base.x - 0.5) > 0.6 || Math.abs(feet.z - base.z - 0.5) > 0.6 || Math.abs(feet.y - base.y) > 0.2) return this._finishMotion('unsafe_edge');
+      motion.yaw = this._yawTo(feet, motion.target); motion.forward = true;
+      return;
+    }
 
     // Bersaglio richiesto raggiunto (in orizzontale, con tolleranza verticale).
     if (Math.hypot(feet.x - motion.target.x, feet.z - motion.target.z) <= motion.stopDistance &&
@@ -9577,6 +9653,28 @@ export class BedrockAdapter {
 
   _yawTo (from, to) {
     return -Math.atan2(to.x - from.x, to.z - from.z) * 180 / Math.PI;
+  }
+
+  async _constructionEdge (stand, { signal, timeoutMs = 2500 } = {}) {
+    if (!stand.edge || !this._authTickInterval || signal?.aborted) throw new Error('construction_edge_unavailable');
+    const below = this.world.blockAt({ x: stand.x, y: stand.y - 1, z: stand.z });
+    if (!below || below.name === 'unknown' || below.boundingBox !== 'block') throw new Error('construction_edge_no_support');
+    if (Math.hypot(this._feet.x - stand.x - 0.5, this._feet.y - stand.y, this._feet.z - stand.z - 0.5) > 0.45) throw new Error('construction_edge_not_at_start');
+    const target = { x: stand.x + 0.5 + stand.edge.x, y: stand.y, z: stand.z + 0.5 + stand.edge.z };
+    if (this._collides(target.x, target.y, target.z)) throw new Error('construction_edge_blocked');
+    this._constructionSneaking = true;
+    const motion = this._startMotion([stand], stand, target, 0.025, Date.now() + timeoutMs);
+    this._motion.preciseEdge = true; this._motion.edgeBase = stand;
+    this._motion.yaw = this._yawTo(this._feet, target);
+    const abort = () => this._finishMotion('timeout');
+    signal?.addEventListener('abort', abort, { once: true });
+    const timer = setTimeout(abort, timeoutMs);
+    try {
+      const outcome = await motion;
+      if (signal?.aborted || outcome !== 'goal') throw new Error(`construction_edge_${outcome}`);
+    } finally {
+      clearTimeout(timer); signal?.removeEventListener('abort', abort); this._stopMotion();
+    }
   }
 
   async _moveTo (target, stopDistance = 1.5, timeoutMs = 30000, { signal = null } = {}) {

@@ -289,6 +289,16 @@ export function evaluateCriteria (criteria, observation, { before = null, contex
       ? { ok: true, evidence }
       : fail(`power ${row.power} < ${atLeast} at ${want.x},${want.y},${want.z}`);
   }
+  if ('structureBuilt' in criteria) {
+    const built = after.construction;
+    const wanted = criteria.structureBuilt;
+    if (wanted.projectId && built?.projectId !== wanted.projectId) return fail('different construction project');
+    if (!built?.projectId || built.type !== wanted.type || built.state !== 'complete' || built.verification?.ok !== true || !(built.placed > 0)) return fail('no verified new structure');
+    if (before?.construction?.projectId === built.projectId && before.construction.state === 'complete') return fail('structure already complete before the skill');
+    evidence.structureBuilt = built.projectId;
+    evidence.structureVerification = built.verification;
+    return { ok: true, evidence };
+  }
   if ('circuitBuilt' in criteria) {
     const want = criteria.circuitBuilt;
     const last = after.circuits?.last ?? null;
@@ -365,7 +375,7 @@ export const CRITERIA_KEYS = [
   'threatDistanceIncreasedBy', 'nightSurvived', 'deathsAtLeast', 'itemPreserved',
   'inWater', 'notInLava', 'airAtLeast', 'waterBreathing',
   'descendedAtLeast', 'climbedAtLeast', 'movedAtLeast',
-  'blockPoweredAt', 'circuitActive', 'circuitBuilt',
+  'blockPoweredAt', 'circuitActive', 'circuitBuilt', 'structureBuilt',
   'allOf', 'anyOf',
 ];
 
@@ -380,6 +390,7 @@ export function validateCriteria (criteria, where = 'criteria') {
   }
   if (typeof criteria !== 'object') return [`${where}: criteria must be an object`];
   for (const [key, value] of Object.entries(criteria)) {
+    if (key === 'structureBuilt' && (!value || !['platform', 'house', 'bridge', 'tower', 'warehouse'].includes(value.type))) errors.push(`${where}.${key}: requires a supported structure type`);
     if (!CRITERIA_KEYS.includes(key)) { errors.push(`${where}: unknown criterion "${key}"`); continue; }
     if ((key === 'allOf' || key === 'anyOf') && !Array.isArray(value)) { errors.push(`${where}.${key}: must be an array`); continue; }
     if (key === 'allOf' || key === 'anyOf') {

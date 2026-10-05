@@ -2476,3 +2476,19 @@ with the formerly stuck stack back in the inventory.
 
 See [verification](wiki/verification.md) row 47.44, [headless-client](wiki/headless-client.md)
 §4.3 and [open-questions](wiki/open-questions.md) §"Taking from a container".
+
+## 2026-10-05 — Ingest: remembered resource sites in material supply
+
+Integrated the existing construction work with current crafting on a dedicated
+branch. The shared resource-site provider ranks historical compatible sites,
+navigates with a bounded waypoint, refreshes the census and observes again, then
+requires a live gather key. Failed/empty sites fall back locally; construction
+retains explicit missing-material evidence and container authorization. Updated
+crafting/construction wiki pages and the source catalogue. Offline verification
+includes site ranking, stale/unreachable cases, live gathering and ownership guards;
+real-server validation remains pending.
+
+Verification: the integrated full suite passed **1333/1333** tests; the final
+focused crafting/provider/controller/recall check passed **31/31**. The provider
+file contains 13 targeted cases. Strict wiki/privacy lint and `git diff --check`
+passed. Construction live validation and this new sourcing slice remain pending.

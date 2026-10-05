@@ -1,0 +1,1 @@
+{"id":"bridge","version":1,"kind":"bridge","description":"A straight level bridge with full-block side rails; width includes the rails","defaults":{"width":5,"length":9},"limits":{"width":[3,7],"length":[3,24]},"palette":{"floor":"cobblestone","wall":"cobblestone"}}
