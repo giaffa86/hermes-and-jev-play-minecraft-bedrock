@@ -4983,6 +4983,9 @@ export class BedrockAdapter {
     if (containerId === 'inventory') return slot + 9;
     if (containerId === 'hotbar_and_inventory') return slot;
     if (containerId == null) {
+      // BDS can reuse numeric window 2 for a chest/workbench and omit the container
+      // label. Its slot updates must not become phantom player inventory.
+      if (this._openContainer && this._openContainer.type !== 'inventory' && windowId === this._openContainer.id) return null;
       if (windowId === 'hotbar') return slot;
       if (windowId === 'inventory' || windowId === 0 || windowId === 2) return slot;
     }

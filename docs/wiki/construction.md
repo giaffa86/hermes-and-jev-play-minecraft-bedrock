@@ -170,3 +170,7 @@ supply passed the full offline suite (**1333/1333**) and a final focused check
 The movement fixes from the 2026-10-05 live approach passed the complete offline
 suite (**1337/1337**) and strict wiki lint. This still does not prove live house
 placement or completion.
+
+Targeted food/material withdrawals on 2026-10-05 were confirmed by the live
+server. A follow-up inventory fix prevents unlabelled chest/workbench window
+updates from creating phantom player items when the server reuses window 2.

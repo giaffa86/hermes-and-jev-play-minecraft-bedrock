@@ -67,6 +67,18 @@ test('storage container slot types map chest/barrel/shulker', () => {
   assert.equal(adapter._storageContainerSlotType('unknown_block'), 'container');
 });
 
+test('unlabelled chest window updates are never mapped to player inventory', () => {
+  const adapter = storageAdapter();
+  adapter._openContainer = { id: 2, type: 'container' };
+  assert.equal(adapter._playerSlotIndex(null, 2, 26), null);
+  assert.equal(adapter._playerSlotIndex('hotbar_and_inventory', 2, 26), 26);
+  assert.equal(adapter._playerSlotIndex(null, 0, 26), 26);
+  adapter._openContainer = { id: 2, type: 'workbench' };
+  assert.equal(adapter._playerSlotIndex(null, 2, 26), null);
+  adapter._openContainer = { id: 2, type: 'inventory' };
+  assert.equal(adapter._playerSlotIndex(null, 2, 26), 26);
+});
+
 test('valuable items are ingots, ores and gems — not dirt or planks', () => {
   const adapter = storageAdapter();
   assert.equal(adapter._isValuable('iron_ingot'), true);
