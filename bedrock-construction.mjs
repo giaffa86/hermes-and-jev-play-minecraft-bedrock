@@ -278,7 +278,7 @@ export class ConstructionEngine {
     if (!this.capacity(item)) return this.surplusDeposit();
     const allowed = pos => p.authorizedContainers.some(c => keyOf(c) === keyOf(pos));
     const containers = [...(a._cachedContainers?.() ?? []), ...(a._rememberedStorage?.() ?? [])];
-    const source = containers.find(c => allowed(c.position) && c.contents?.[item] > 0);
+    const source = containers.find(c => allowed(c.position) && c.contents?.[item] > 0 && !a._inOpenFailureCooldown?.(c.position));
     if (source && this.capacity(item) > 0) return { type: 'take', item, position: source.position };
     if (a._craftableNow(item)) return { type: 'craft', item };
     for (const entry of a.recipes?.get(item) ?? []) {
@@ -384,6 +384,7 @@ export class ConstructionEngine {
     if (this.session) return { ok: false, error: 'busy' };
     this.session = session;
     const placedBefore = this.project.placed;
+    let supplyContext = null;
     const abort = () => { session.abort(); this.a._finishMotion('timeout'); this.a._stopMotion(); };
     signal?.addEventListener('abort', abort, { once: true });
     // Async-local context is inherited by every protocol primitive, including
@@ -414,6 +415,7 @@ export class ConstructionEngine {
         const choice = need.map(n => this.supplyChoice(n.item)).find(Boolean);
         if (!choice) return this.fail('construction_materials_unavailable', need);
         const a = this.a;
+        supplyContext = { type: choice.type, item: choice.item, ...(choice.position ? { position: choice.position } : {}) };
         guard();
         let result;
         if (this.capacity(choice.item) === 0 && !['station', 'deposit'].includes(choice.type)) return this.fail('construction_inventory_full', { item: choice.item });
@@ -436,11 +438,20 @@ export class ConstructionEngine {
           if (!offered.some(option => option.key === choice.key)) return this.fail('construction_materials_unavailable', missingMaterials(p.plan, p.claims, a.inventory));
           result = await a._runAction(choice.key);
         }
-        if (choice.type === 'take') result = await a._takeFromContainer(choice.item, { position: choice.position, maxCount: Math.min(64, this.capacity(choice.item)) });
-        if (choice.type === 'deposit') result = await a._depositItem(choice.item, { position: choice.position });
+        if (['take', 'deposit'].includes(choice.type)) {
+          if (a._pointDistance(choice.position) > 3.5) {
+            const target = { x: choice.position.x + 0.5, y: choice.position.y, z: choice.position.z + 0.5 };
+            const moved = await a._moveTo(target, 3, Math.min(8000, deadline - clock()), { signal: session.signal });
+            guard();
+            if (moved?.ok === false || a._pointDistance(choice.position) > 3.5) return this.fail('construction_supply_approach_failed', { choice: supplyContext, target, actual: { ...a._feet }, moved });
+          }
+          guard();
+          if (choice.type === 'take') result = await a._takeFromContainer(choice.item, { position: choice.position, maxCount: Math.min(64, this.capacity(choice.item)) });
+          else result = await a._depositItem(choice.item, { position: choice.position });
+        }
         guard();
         if (!result?.ok) return this.fail('construction_supply_failed', { choice, result });
-        p.lastError = null; this.save();
+        p.lastError = null; p.navigation = null; this.save();
         return { ok: true, projectId: p.id, supply: { type: choice.type, item: choice.item }, result };
       }
       if (p.phase === 'cleanup') return await this.cleanup(guard, session.signal, deadline);
@@ -521,13 +532,14 @@ export class ConstructionEngine {
       }
       if (error.message === 'movement timeout' && error.details) {
         const p = this.project;
-        const attempts = (p.navigation?.attempts ?? 0) + 1;
-        const navigation = { ...error.details, arrived: false, attempts };
-        if (kind === 'step' && navigation.progressed && attempts <= 6) {
+        const attempts = (p.navigation?.purpose === kind ? p.navigation.attempts : 0) + 1;
+        const navigation = { ...error.details, purpose: kind, arrived: false, attempts };
+        if (navigation.progressed && attempts <= (kind === 'supply' ? 24 : 6)) {
           // A completed movement segment is useful work, never proof of arrival
           // or placement. Return control to Jev within the existing action budget.
           p.navigation = navigation; p.lastError = null; this.save();
-          return { ok: true, projectId: p.id, placed: p.placed - placedBefore, state: p.state, phase: p.phase, navigation };
+          return { ok: true, projectId: p.id, placed: p.placed - placedBefore, state: p.state, phase: p.phase, navigation,
+            ...(supplyContext ? { supply: { ...supplyContext, supplied: false } } : {}) };
         }
         return this.fail('construction_move_failed', navigation);
       }

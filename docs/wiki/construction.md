@@ -156,6 +156,13 @@ navigation evidence. A stationary timeout blocks immediately. Survival and
 cancellation still pause the project rather than treating interrupted movement
 as progress.
 
+Trips to an authorized supply chest use the same eight-second navigation
+segments before any take/deposit primitive starts. Supply trips permit at most
+24 partial segments and report `supplied:false` until the inventory operation
+actually succeeds. Current distance is checked before opening the chest; an
+incorrect arrival fails with approach evidence. Cached chests in the existing
+open-failure cooldown are skipped, without authorizing a neighboring chest.
+
 ## Persistence and verification
 
 Projects use the existing [world memory](memory.md) repository (`kind: construction`),

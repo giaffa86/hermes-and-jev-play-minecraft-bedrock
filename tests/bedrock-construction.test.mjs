@@ -425,3 +425,65 @@ test('repeated partial approaches stop within a fixed retry budget without claim
   assert.equal(result.error, 'construction_move_failed'); assert.equal(result.details.attempts, 7);
   assert.equal(adapter.construction.project.state, 'blocked'); assert.equal(events.placed.length, 0);
 });
+
+test('approved remote supplies require a real approach before withdrawal and subsequent construction', async () => {
+  const { adapter, events, put } = constructionAdapter();
+  const approved = { x: 15, y: 64, z: 15 }, other = { x: 3, y: 64, z: -4 };
+  put(approved, 'chest'); put(other, 'chest');
+  adapter.setPlan({ construction: { type: 'platform', origin, authorizedContainers: [approved] } });
+  adapter._cachedContainers = () => [other, approved].map(position => ({ position, contents: { cobblestone: 25 } }));
+  adapter._rememberedStorage = () => [];
+  const fixtureMove = adapter._moveTo;
+  adapter._onGround = true; adapter._velocity = { x: 0, y: 0, z: 0 };
+  adapter._moveTo = (target, stop, _timeout, options) => BedrockAdapter.prototype._moveTo.call(adapter, target, stop, 1500, options);
+  let taken = 0;
+  adapter._takeFromContainer = async (item, { position }) => {
+    assert.deepEqual(position, approved); assert.equal(item, 'cobblestone');
+    assert.ok(adapter._pointDistance(position) <= 3.5, 'never withdraw remotely');
+    taken++; adapter.inventory.cobblestone = 25;
+    adapter.inventorySlots = [{ name: 'cobblestone', network_id: 1, count: 25 }];
+    return { ok: true, count: 25, inventoryDelta: 25 };
+  };
+  adapter._authTickInterval = setInterval(() => adapter._driveMotion(adapter._advanceTick()), 30);
+  try {
+    const segment = await adapter.executeAction('construction_supply');
+    assert.equal(segment.ok, true, JSON.stringify(segment)); assert.equal(segment.navigation.arrived, false);
+    assert.equal(segment.supply.supplied, false); assert.deepEqual(segment.supply.position, approved);
+    assert.equal(taken, 0); assert.equal(adapter.inventory.cobblestone ?? 0, 0); assert.equal(events.placed.length, 0);
+  } finally { clearInterval(adapter._authTickInterval); adapter._authTickInterval = null; adapter._stopMotion(); }
+  adapter._moveTo = (target, stop, timeout, options) => BedrockAdapter.prototype._moveTo.call(adapter, target, stop, timeout, options);
+  adapter._authTickInterval = setInterval(() => adapter._driveMotion(adapter._advanceTick()), 5);
+  try {
+    const acquired = await adapter.executeAction('construction_supply');
+    assert.equal(acquired.ok, true, JSON.stringify(acquired)); assert.equal(taken, 1);
+    assert.equal(adapter.construction.project.navigation, null); assert.equal(events.placed.length, 0);
+  } finally { clearInterval(adapter._authTickInterval); adapter._authTickInterval = null; adapter._stopMotion(); }
+  adapter._moveTo = fixtureMove; await finish(adapter);
+  assert.equal(events.placed.length, 25); assert.equal(adapter.world.blockAt(other).name, 'chest');
+});
+
+test('a failed cached chest is skipped without permitting the adjacent unauthorized chest', () => {
+  const { adapter } = constructionAdapter();
+  const failed = { x: 10, y: 64, z: 10 }, other = { x: 11, y: 64, z: 10 }, approved = { x: 12, y: 64, z: 10 };
+  adapter.setPlan({ construction: { type: 'platform', origin, authorizedContainers: [failed, approved] } });
+  adapter._cachedContainers = () => [failed, other, approved].map(position => ({ position, contents: { cobblestone: 64 } }));
+  adapter._rememberedStorage = () => [];
+  adapter._storageOpenFailures.set(adapter._containerCacheKey(failed), { at: Date.now(), error: 'container_open_timeout' });
+  assert.deepEqual(adapter.construction.supplyChoice('cobblestone'), { type: 'take', item: 'cobblestone', position: approved });
+});
+
+test('supply navigation has a fixed trip budget and cannot claim any withdrawal on exhaustion', async () => {
+  const { adapter } = constructionAdapter();
+  const approved = { x: 100, y: 64, z: 100 };
+  adapter.setPlan({ construction: { type: 'platform', origin, authorizedContainers: [approved] } });
+  adapter._cachedContainers = () => [{ position: approved, contents: { cobblestone: 64 } }]; adapter._rememberedStorage = () => [];
+  let taken = 0; adapter._takeFromContainer = async () => { taken++; return { ok: true }; };
+  adapter._moveTo = async target => {
+    const from = { ...adapter._feet }; adapter._feet.x += 0.5; adapter._syncPositionFromFeet();
+    const error = new Error('movement timeout');
+    error.details = { target, from, position: { ...adapter._feet }, reachedWaypoints: 1, progressed: true }; throw error;
+  };
+  let result; for (let i = 0; i < 25; i++) result = await adapter.executeAction('construction_supply');
+  assert.equal(result.error, 'construction_move_failed'); assert.equal(result.details.attempts, 25);
+  assert.equal(adapter.construction.project.state, 'blocked'); assert.equal(taken, 0);
+});

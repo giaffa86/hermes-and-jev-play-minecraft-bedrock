@@ -2877,6 +2877,7 @@ The model chose the geometry; no prefab substitution or manual geometry repair
 was used. Rich-house generation and live BDS construction remain separate checks.
 See [construction](wiki/construction.md).
 
+
 ## [2026-10-05] ingest | Bounded architectural data repairs
 
 Hermes can patch an unpublished design atomically through bounded JSON edits,
@@ -2906,3 +2907,13 @@ cover progress, a no-tick timeout, subsequent completion and exhausted retries.
 The focused suite passed 81/81 checks and the complete integrated suite passed
 1425/1425. Strict wiki lint and `git diff --check` passed.
 See [construction](wiki/construction.md).
+
+## [2026-10-05] ingest | Bounded trips to approved construction supply chests
+
+Construction approaches distant authorized chests in bounded navigation segments
+before starting a take or deposit. Each partial trip reports no supplied items;
+stationary/exhausted movement still blocks with evidence. Warm cached chests in
+open-failure cooldown are skipped. Real-physics offline acceptance covers an
+approved remote chest, an ignored nearer unauthorized chest, actual approach,
+withdrawal and subsequent construction completion. Live verification awaits the
+user-confirmed server maintenance. See [construction](wiki/construction.md).
