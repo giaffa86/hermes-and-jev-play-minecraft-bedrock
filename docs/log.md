@@ -31,7 +31,11 @@ enqueue in the `IDLE` block after the autonomy one, sharing a lazily-fetched
 `GET /options`); `tests/village-labor.test.mjs` (18 tests, no server) plus the
 village case in `tests/controller-session.test.mjs` (integration: an offered
 `harvest_*` becomes a completed `village` goal closed by the state delta).
-Full suite: **1414 pass / 0 fail**.## [2026-10-05] feat | Chat M7: the reply sounds like a player, not a status line
+Full suite: **1414 pass / 0 fail**. `.env.example` now documents the whole
+enablement chain: `SESSION=on` (persistent session + `IDLE`), `AUTONOMY=on`, then
+`VILLAGE_WORK`; `AUTONOMY_COOLDOWN_MS`/`AUTONOMY_MAX_GOALS`/
+`SURVIVAL_IDLE_COOLDOWN_MS` and `VILLAGE_COOLDOWN_MS`/`VILLAGE_MAX_CHORES`/
+`VILLAGE_STORE_THRESHOLD` carry their defaults.## [2026-10-05] feat | Chat M7: the reply sounds like a player, not a status line
 
 The family noticed the bot answering **in the third person** and sometimes **in
 English**: *"ho notato che in chat il bot risponde come se fosse in terza persona
