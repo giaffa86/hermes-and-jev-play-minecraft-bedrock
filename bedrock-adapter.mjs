@@ -9853,14 +9853,24 @@ export class BedrockAdapter {
       // villaggio — rendeva il controllo verticale insoddisfacibile (live 03/10:
       // il bot è arrivato a destinazione e l'azione ha finito `path_failed` in 28,5 s).
       const endNode = path.at(-1);
+      const motionStart = { ...this._feet };
       const outcome = await this._startMotion(path, goal, { x: endNode.x + 0.5, y: endNode.y, z: endNode.z + 0.5 }, stop, deadline, { arrivalVerticalTolerance });
       if (signal?.aborted) throw new Error('action_cancelled');
+      const reachedWaypoints = Math.max(0, (this._motion?.index ?? 1) - Math.min(1, path.length - 1));
       this._stopMotion();
       if (outcome === 'goal' && chosen !== bestPartial) {
         const distance = Math.hypot(this.position.x - target.x, this.position.y - target.y, this.position.z - target.z);
         return { ok: true, distance: +distance.toFixed(2), pathNodes: path.length, goal: { x: goal.x, y: goal.y, z: goal.z } };
       }
-      if (outcome === 'timeout') throw new Error('movement timeout');
+      if (outcome === 'timeout') {
+        const position = { ...this._feet };
+        const distance = p => Math.hypot(p.x - target.x, p.y - target.y, p.z - target.z);
+        const displacement = Math.hypot(position.x - motionStart.x, position.y - motionStart.y, position.z - motionStart.z);
+        const error = new Error('movement timeout');
+        error.details = { target: { ...target }, from: motionStart, position, pathNodes: path.length, reachedWaypoints,
+          progressed: displacement >= 0.3 && (reachedWaypoints > 0 || distance(motionStart) - distance(position) >= 0.3) };
+        throw error;
+      }
       const feet = this._feet;
       const moved = lastFeet ? Math.hypot(feet.x - lastFeet.x, feet.z - lastFeet.z) : Infinity;
       if (moved < 0.3) {

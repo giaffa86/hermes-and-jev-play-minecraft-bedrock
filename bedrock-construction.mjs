@@ -168,7 +168,7 @@ export class ConstructionEngine {
       if (this.project.state === 'cancelled') return { ok: false, error: 'construction_cancelled' };
       const check = inspectSite(this.project.plan, this.read, this.project.claims, { cleaned: this.project.phase === 'cleanup' });
       if (!check.ok) return this.fail('construction_site_changed', check.issues.slice(0, 20));
-      this.project.state = 'building'; this.project.lastError = null;
+      this.project.state = 'building'; this.project.lastError = null; this.project.navigation = null;
       // Movement/container checks must be run again after an interruption.
       this.project.functionalIndex = 0; this.project.walkIndex = 0;
     }
@@ -193,7 +193,7 @@ export class ConstructionEngine {
       currentStage: p.plan.cells.filter(c => !p.claims[keyOf(c.position)] && !p.removed.includes(keyOf(c.position))).sort((a, b) => (a.stage ?? 0) - (b.stage ?? 0))[0]?.stage ?? null,
       parameters: p.plan.blueprint.parameters, bounds: p.plan.bounds, state: p.state, phase: p.phase,
       placed: p.placed, total: p.plan.cells.length, missing: missingMaterials(p.plan, p.claims, this.a.inventory, { cleaned: p.phase === 'cleanup' || p.state === 'complete' }),
-      lastError: p.lastError, verification: p.verification, functionalIndex: p.functionalIndex, walkIndex: p.walkIndex, temporaryRemoved: p.removed.length,
+      lastError: p.lastError, navigation: p.navigation ?? null, verification: p.verification, functionalIndex: p.functionalIndex, walkIndex: p.walkIndex, temporaryRemoved: p.removed.length,
       siteIssues: inspectSite(p.plan, this.read, p.claims, { cleaned: p.phase === 'cleanup' || p.state === 'complete' }).issues.slice(0, 8) };
   }
 
@@ -383,6 +383,7 @@ export class ConstructionEngine {
     const session = new AbortController();
     if (this.session) return { ok: false, error: 'busy' };
     this.session = session;
+    const placedBefore = this.project.placed;
     const abort = () => { session.abort(); this.a._finishMotion('timeout'); this.a._stopMotion(); };
     signal?.addEventListener('abort', abort, { once: true });
     // Async-local context is inherited by every protocol primitive, including
@@ -500,7 +501,7 @@ export class ConstructionEngine {
           a._rememberPlacement({ position: row.position, block: row.block, item: cell.item, projectId: p.id, signature, source: 'construction' });
           p.claims[keyOf(row.position)] = { signature, block: row.block, at: clock() };
         }
-        p.placed++; p.phase = cell.phase; p.lastError = null;
+        p.placed++; p.phase = cell.phase; p.lastError = null; p.navigation = null;
         a._reachCache = null;
         this.save();
       }
@@ -518,7 +519,19 @@ export class ConstructionEngine {
         this.save();
         return { ok: false, error: 'construction_interrupted', projectId: this.project.id };
       }
-      return this.fail(error.message);
+      if (error.message === 'movement timeout' && error.details) {
+        const p = this.project;
+        const attempts = (p.navigation?.attempts ?? 0) + 1;
+        const navigation = { ...error.details, arrived: false, attempts };
+        if (kind === 'step' && navigation.progressed && attempts <= 6) {
+          // A completed movement segment is useful work, never proof of arrival
+          // or placement. Return control to Jev within the existing action budget.
+          p.navigation = navigation; p.lastError = null; this.save();
+          return { ok: true, projectId: p.id, placed: p.placed - placedBefore, state: p.state, phase: p.phase, navigation };
+        }
+        return this.fail('construction_move_failed', navigation);
+      }
+      return this.fail(error.message, error.details ?? null);
     } finally {
       this.a._constructionSneaking = false;
       clearTimeout(timer);
@@ -539,7 +552,7 @@ export class ConstructionEngine {
         const moved = await a._moveTo({ x: target.x + 0.5, y: target.y, z: target.z + 0.5 }, 0.4, Math.min(8000, deadline - clock()), { signal: this.session.signal });
         guard();
         if (moved?.ok === false || Math.hypot(a._feet.x - target.x - 0.5, a._feet.y - target.y, a._feet.z - target.z - 0.5) > 0.9) return this.fail('construction_traversal_failed', { target, moved });
-        p.walkIndex++;
+        p.walkIndex++; p.navigation = null;
         if (p.walkIndex >= route.points.length) { p.functionalIndex++; p.walkIndex = 0; }
       } else if (route.type === 'approach') {
         const cell = p.plan.cells.find(c => keyOf(c.position) === keyOf(route.position));
@@ -563,6 +576,7 @@ export class ConstructionEngine {
         if (!a._openContainer || !a._openContainerBlock || keyOf(a._openContainerBlock.position) !== keyOf(route.position)) return this.fail('construction_container_not_opened', { position: route.position });
         await a._closeContainer(); guard(); p.functionalIndex++;
       }
+      p.navigation = null;
       this.save();
       return { ok: true, projectId: p.id, phase: 'verify', checksCompleted: p.functionalIndex, walkIndex: p.walkIndex };
     }
@@ -607,7 +621,7 @@ export class ConstructionEngine {
       if (owned?.projectId !== p.id) return this.fail('construction_scaffold_not_owned');
       const result = await a._mineBlock({ ...actual, position: cell.position }); guard();
       if (!result.ok || !isAir(this.read(cell.position))) return this.fail('construction_cleanup_failed', result);
-      a._forgetPlacement(cell.position); delete p.claims[keyOf(cell.position)]; p.removed.push(keyOf(cell.position));
+      a._forgetPlacement(cell.position); delete p.claims[keyOf(cell.position)]; p.removed.push(keyOf(cell.position)); p.navigation = null;
       a._reachCache = null; this.save();
       return { ok: true, projectId: p.id, removed: cell.position, remaining: pending.length - 1 };
     }

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { constructionAdapter } from './fixtures/construction-adapter.mjs';
+import { BedrockAdapter } from '../bedrock-adapter.mjs';
 import { loadStructures, createBlueprint, planStructure, keyOf, constructionGoalMet } from '../construction.mjs';
 import { ConstructionEngine } from '../bedrock-construction.mjs';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -373,4 +374,54 @@ test('a work movement ending inside the next placement cell is rejected before t
   assert.equal(result.error, 'construction_work_position_changed');
   assert.equal(result.details.occupiedByBot, true);
   assert.equal(events.placed.length, 0);
+});
+
+test('a bounded real physics approach preserves the project and places nothing before arrival', async () => {
+  const { adapter, events } = constructionAdapter({ inventory: budgetFor('platform') });
+  adapter.setPlan({ construction: { type: 'platform', origin } });
+  adapter._feet = { x: -14.5, y: 64, z: -10.5 }; adapter._syncPositionFromFeet();
+  adapter._onGround = true; adapter._velocity = { x: 0, y: 0, z: 0 };
+  const fixtureMove = adapter._moveTo;
+  adapter._moveTo = (target, stop, _timeout, options) => BedrockAdapter.prototype._moveTo.call(adapter, target, stop, 150, options);
+  adapter._authTickInterval = setInterval(() => adapter._driveMotion(adapter._advanceTick()), 5);
+  try {
+    const result = await adapter.executeAction('construction_step');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.navigation.arrived, false); assert.equal(result.navigation.progressed, true);
+    assert.ok(result.navigation.reachedWaypoints > 0);
+    assert.equal(adapter.construction.project.state, 'building');
+    assert.equal(events.placed.length, 0); assert.equal(adapter.construction.project.placed, 0);
+  } finally { clearInterval(adapter._authTickInterval); adapter._authTickInterval = null; adapter._stopMotion(); }
+  adapter._moveTo = fixtureMove;
+  await finish(adapter);
+});
+
+test('a movement timeout without physical progress blocks with exact navigation evidence', async () => {
+  const { adapter, events } = constructionAdapter({ inventory: budgetFor('platform') });
+  adapter.setPlan({ construction: { type: 'platform', origin } });
+  adapter._feet = { x: -14.5, y: 64, z: -10.5 }; adapter._syncPositionFromFeet();
+  adapter._authTickInterval = true; // No client ticks: the real motion watchdog must end the wait.
+  adapter._moveTo = (target, stop, _timeout, options) => BedrockAdapter.prototype._moveTo.call(adapter, target, stop, 50, options);
+  try {
+    const result = await adapter.executeAction('construction_step');
+    assert.equal(result.error, 'construction_move_failed'); assert.equal(result.details.progressed, false);
+    assert.deepEqual(result.details.position, result.details.from);
+    assert.equal(adapter.construction.project.state, 'blocked'); assert.equal(events.placed.length, 0);
+  } finally { adapter._authTickInterval = null; adapter._stopMotion(); }
+});
+
+test('repeated partial approaches stop within a fixed retry budget without claiming construction', async () => {
+  const { adapter, events } = constructionAdapter({ inventory: budgetFor('platform') });
+  adapter.setPlan({ construction: { type: 'platform', origin } });
+  adapter._feet = { x: -14.5, y: 64, z: -10.5 }; adapter._syncPositionFromFeet();
+  adapter._moveTo = async target => {
+    const from = { ...adapter._feet }; adapter._feet.x += 0.5; adapter._syncPositionFromFeet();
+    const error = new Error('movement timeout');
+    error.details = { target, from, position: { ...adapter._feet }, pathNodes: 30, reachedWaypoints: 1, progressed: true };
+    throw error;
+  };
+  let result;
+  for (let attempt = 0; attempt < 7; attempt++) result = await adapter.executeAction('construction_step');
+  assert.equal(result.error, 'construction_move_failed'); assert.equal(result.details.attempts, 7);
+  assert.equal(adapter.construction.project.state, 'blocked'); assert.equal(events.placed.length, 0);
 });

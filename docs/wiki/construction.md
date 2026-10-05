@@ -147,6 +147,15 @@ of the clicked face. Bridge extension uses a bounded sneaking edge movement.
 Cancellation guards placement, movement and inventory requests; expired queued
 inputs are rejected. Server confirmations precede placement claims.
 
+A work approach that uses its eight-second movement budget may return a completed
+navigation segment to Jev when real displacement and reached path waypoints (or
+reduced target distance) prove progress. It explicitly reports `arrived:false`;
+no placement or functional-check claim follows that segment. Six such segments
+without a placement or traversed route point are permitted before blocking with
+navigation evidence. A stationary timeout blocks immediately. Survival and
+cancellation still pause the project rather than treating interrupted movement
+as progress.
+
 ## Persistence and verification
 
 Projects use the existing [world memory](memory.md) repository (`kind: construction`),
@@ -236,6 +245,11 @@ working position. The live existing house still has **18 confirmed placements**.
 Its latest daytime controller round stopped after a movement timeout; the
 project was paused and the harness shut down. Runtime navigation remains to be
 resolved before claiming live house completion.
+
+The bounded-navigation update passed **81/81** focused checks and the full
+integrated suite (**1425/1425**). These include real physics while approaching
+under a short movement budget, subsequent construction completion, stationary
+timeouts and exhausted retries. Strict wiki lint and `git diff --check` passed.
 
 ## Sources
 

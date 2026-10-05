@@ -2717,3 +2717,14 @@ permanent placements, five functional checks and removal of 161 temporary
 placements. The integrated suite passed 1422/1422 tests. Live BDS completion
 remains pending: the existing house is paused at 18 placements after a daytime
 movement timeout, with the harness off. See [construction](wiki/construction.md).
+
+## [2026-10-05] ingest | Bounded construction approaches preserve physical progress
+
+Movement timeouts now carry actual start/end positions and reached waypoints.
+Construction can return a proven navigation segment to Jev without claiming
+arrival, placement or functional completion. Stationary movement blocks, and
+six consecutive partial segments bound retries. Accelerated real-physics tests
+cover progress, a no-tick timeout, subsequent completion and exhausted retries.
+The focused suite passed 81/81 checks and the complete integrated suite passed
+1425/1425. Strict wiki lint and `git diff --check` passed.
+See [construction](wiki/construction.md).
