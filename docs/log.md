@@ -1,5 +1,36 @@
 # Log
 
+## [2026-10-05] fix | The deterministic reply speaks the sender's language (M7.1)
+
+The user's clarification: *"la risposta deterministica dovrebbe essere in
+italiano se la domanda è in italiano, per questo chiedevo di introdurre llm e
+farlo sembrare naturale"* — the LLM is for naturalness, not for the language.
+M7 could rephrase only when a key was present, so without one the ack and the
+outcome still pasted the planner's English, third-person objective (`Stay put and
+wait for the next order`), and `activityAnswer` ("cosa stai facendo?") pasted the
+knowledge-base objective of a chore or a need (`Harvest the ripe crops in the
+village plots …`).
+
+M7.1 moves the language into the deterministic path and leaves the model the
+naturalness: the `humanCommandPlan` prompt now asks for `objective` in the same
+language as the human message and in the first person (the ack sends exactly that
+text), and the fallbacks that never reach the planner are Italian — `resto fermo
+in attesa del prossimo ordine`, `seguo <name> ed eseguo il suo ultimo ordine:
+"…"`, `mi metto l'armatura che ho in inventario (elmo, corazza, gambali,
+stivali)`. `human-questions.mjs` gains `CHORE_LABELS`, `NEED_LABELS` and
+`planPhrase(plan)`: a village chore, a survival need, `wear_armor`, a loot
+recovery, a construction plan or an `opportunity:`/`curriculum:` note becomes an
+Italian sentence, and `activityAnswer` falls back to `plan.objective` only for a
+human order (already in the sender's language) — `targets` are deliberately
+ignored for that reason.
+
+Tests: `tests/human-questions.test.mjs` (+3: label coverage over every
+`VILLAGE_CHORES` id and every `NEED_PRIORITY` need, `planPhrase` per goal form,
+the Italian activity answer) and `tests/controller-follow-order.test.mjs` (the
+stop-order fallback asserts the Italian outcome); `tests/human-questions` +
+`tests/human-replies` **34 pass / 0 fail**, the three controller chat suites
+**23 pass / 0 fail**.
+
 ## [2026-10-05] feat | Village labor: the bot is not furniture
 
 The user's standing request: *"mi sta bene che si dichiari bot ma voglio che non
@@ -35,7 +66,9 @@ Full suite: **1414 pass / 0 fail**. `.env.example` now documents the whole
 enablement chain: `SESSION=on` (persistent session + `IDLE`), `AUTONOMY=on`, then
 `VILLAGE_WORK`; `AUTONOMY_COOLDOWN_MS`/`AUTONOMY_MAX_GOALS`/
 `SURVIVAL_IDLE_COOLDOWN_MS` and `VILLAGE_COOLDOWN_MS`/`VILLAGE_MAX_CHORES`/
-`VILLAGE_STORE_THRESHOLD` carry their defaults.## [2026-10-05] feat | Chat M7: the reply sounds like a player, not a status line
+`VILLAGE_STORE_THRESHOLD` carry their defaults.
+
+## [2026-10-05] feat | Chat M7: the reply sounds like a player, not a status line
 
 The family noticed the bot answering **in the third person** and sometimes **in
 English**: *"ho notato che in chat il bot risponde come se fosse in terza persona

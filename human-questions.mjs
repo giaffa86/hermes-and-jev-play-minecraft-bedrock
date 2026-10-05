@@ -51,10 +51,64 @@ function healthAnswer (obs) {
   return `ho ${parts.join(' e ')}`;
 }
 
+// Cosa sta facendo il bot, in italiano. L'`objective` di un goal e' la
+// descrizione tecnica che vive nella knowledge base (`idle-goals.mjs`,
+// `village-labor.mjs`, `knowledge/progression.json`) ed e' in inglese: leggerlo
+// in chat sarebbe la risposta sbagliata alla domanda di un italiano. Le
+// etichette qui sotto coprono i goal strutturati; un objective che viene dal
+// messaggio di un umano e' gia' nella sua lingua e si usa com'e'. La copertura
+// delle etichette e' verificata dai test contro `VILLAGE_CHORES` e
+// `NEED_PRIORITY`.
+export const CHORE_LABELS = Object.freeze({
+  harvest_crops: 'raccogliere il raccolto maturo',
+  store_harvest: 'mettere da parte il raccolto',
+  shear_sheep: 'tosare le pecore',
+  milk_cows: 'mungere le mucche',
+  collect_honey: 'raccogliere il miele',
+  tend_animals: 'far crescere il gregge',
+  plant_crops: 'seminare gli orti',
+  go_fishing: 'pescare',
+  chop_wood: 'tagliare legna',
+  gather_stone: 'raccogliere pietra',
+  mine_ore: 'cercare minerali',
+});
+
+export const NEED_LABELS = Object.freeze({
+  survive: 'mettermi in salvo',
+  escape: 'scappare dal pericolo',
+  eat: 'mangiare qualcosa',
+  heal: 'curarmi',
+  sleep: 'andare a dormire',
+  shelter: 'trovarmi un riparo',
+  obtain_food: 'procurarmi del cibo',
+  obtain_weapon: "procurarmi un'arma",
+  obtain_armor: "procurarmi un'armatura",
+  replace_tool: "cambiare l'attrezzo rotto",
+  wear_armor: "indossare l'armatura",
+  surface: 'risalire in superficie',
+  continue_progression: 'portare avanti la progressione',
+});
+
+// Frase italiana per il goal in corso, o null quando il plan non dice
+// abbastanza: in quel caso si usa il suo objective (ordine di un umano, gia'
+// nella sua lingua).
+export function planPhrase (plan) {
+  if (!plan || typeof plan !== 'object') return null;
+  if (plan.equip) return "indossare l'armatura";
+  if (plan.recover) return 'recuperare quello che ho perso morendo';
+  if (plan.chore && CHORE_LABELS[plan.chore]) return CHORE_LABELS[plan.chore];
+  if (plan.need && NEED_LABELS[plan.need]) return NEED_LABELS[plan.need];
+  if (plan.construction) return 'costruire';
+  if (String(plan.notes ?? '').startsWith('opportunity:')) return 'raccogliere quello che ho visto qui vicino';
+  if (String(plan.notes ?? '').startsWith('curriculum:')) return 'portare avanti la missione';
+  return null;
+}
+
 function activityAnswer (obs) {
-  const objective = obs?.plan?.objective;
-  if (!objective) return 'non ho un obiettivo: sono in attesa di ordini';
-  return `sto facendo: ${objective}`;
+  const plan = obs?.plan;
+  const phrase = planPhrase(plan) ?? plan?.objective;
+  if (!phrase) return 'non ho un obiettivo: sono in attesa di ordini';
+  return `sto facendo: ${phrase}`;
 }
 
 // Parole italiane (e inglesi) con cui la famiglia chiede un oggetto preciso:

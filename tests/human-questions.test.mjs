@@ -5,10 +5,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  NO_INTENT, QUESTION_INTENTS, answerIntent, clockFromTicks, intentCriteria, intentFromChoice,
-  looksLikeQuestion, matchQuestionIntent, normalizeForMatching, renderAnswer, renderNoArmor, renderUnrouted,
+  CHORE_LABELS, NEED_LABELS, NO_INTENT, QUESTION_INTENTS, answerIntent, clockFromTicks, intentCriteria,
+  intentFromChoice, looksLikeQuestion, matchQuestionIntent, normalizeForMatching, planPhrase, renderAnswer,
+  renderNoArmor, renderUnrouted,
 } from '../human-questions.mjs';
 import { isSelfTriggering } from '../human-replies.mjs';
+import { VILLAGE_CHORES } from '../village-labor.mjs';
+import { NEED_PRIORITY } from '../survival/needs.mjs';
 
 const OBS = {
   position: { x: 118.4, y: 70.2, z: -180.6 },
@@ -240,4 +243,49 @@ test('an unroutable question gets a short refusal that shows the way back to ord
   assert.doesNotMatch(line, /[\r\n]/, 'una sola riga');
   assert.equal(isSelfTriggering(line, ['@bot', '@hermes']), false, 'il rifiuto non deve scatenare il bot');
   assert.ok(line.length <= 180);
+});
+
+// --- La risposta deterministica parla la lingua di chi scrive (M7.1) ---------
+// L'objective di un goal e' la descrizione tecnica della knowledge base, in
+// inglese: in chat non ci va mai. Queste etichette sono la traduzione italiana
+// dei goal strutturati, e il test di copertura impedisce che una chore o un
+// bisogno nuovi restino senza risposta in italiano.
+
+test('ogni chore del villaggio e ogni bisogno hanno un\'etichetta italiana', () => {
+  for (const chore of VILLAGE_CHORES) {
+    const label = CHORE_LABELS[chore.id];
+    assert.equal(typeof label, 'string', `${chore.id} deve avere un'etichetta italiana`);
+    assert.doesNotMatch(label, /\b(the|and|then|with|from)\b/i, `${chore.id} non deve contenere inglese (got "${label}")`);
+  }
+  for (const need of Object.keys(NEED_PRIORITY)) {
+    const label = NEED_LABELS[need];
+    assert.equal(typeof label, 'string', `${need} deve avere un'etichetta italiana`);
+    assert.doesNotMatch(label, /\b(the|and|then|with|from)\b/i, `${need} non deve contenere inglese (got "${label}")`);
+  }
+});
+
+test('planPhrase racconta in italiano cosa sta facendo il bot', () => {
+  assert.equal(planPhrase({ chore: 'harvest_crops' }), 'raccogliere il raccolto maturo');
+  assert.equal(planPhrase({ need: 'eat' }), 'mangiare qualcosa');
+  assert.equal(planPhrase({ equip: true, need: 'wear_armor' }), "indossare l'armatura");
+  assert.equal(planPhrase({ recover: true }), 'recuperare quello che ho perso morendo');
+  assert.equal(planPhrase({ construction: {} }), 'costruire');
+  assert.equal(planPhrase({ notes: 'opportunity:valuable_ore_seen' }), 'raccogliere quello che ho visto qui vicino');
+  assert.equal(planPhrase({ notes: 'curriculum:first_night' }), 'portare avanti la missione');
+  // Un ordine di un umano porta un objective gia' nella sua lingua: si usa
+  // quello, e un objective inglese senza struttura non viene inventato.
+  assert.equal(planPhrase({ objective: 'sto andando da Ale' }), null);
+  assert.equal(planPhrase({ chore: 'chore_che_non_esiste' }), null);
+  assert.equal(planPhrase(null), null);
+  assert.equal(planPhrase('non un plan'), null);
+});
+
+test('"cosa stai facendo?" risponde in italiano anche per un goal autonomo', () => {
+  const chore = { plan: { chore: 'mine_ore', objective: 'Mine the ore the village can see and bring it back for tools.' } };
+  assert.equal(answerIntent('q_activity', chore), 'sto facendo: cercare minerali');
+  const need = { plan: { need: 'sleep', objective: 'Reach the bed and sleep through the night.' } };
+  assert.equal(answerIntent('q_activity', need), 'sto facendo: andare a dormire');
+  const human = { plan: { objective: 'sto andando da Ale' } };
+  assert.equal(answerIntent('q_activity', human), 'sto facendo: sto andando da Ale');
+  assert.equal(answerIntent('q_activity', {}), 'non ho un obiettivo: sono in attesa di ordini');
 });

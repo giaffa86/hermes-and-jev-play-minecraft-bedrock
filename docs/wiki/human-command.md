@@ -528,6 +528,54 @@ is answered in English only if the model follows the instruction (not asserted
 live); the memory is per-process; and the M7 path has not been exercised against
 the deployed BDS (unit tests only).
 
+## Deterministic replies speak the sender's language (M7.1)
+
+M7 gave the reply a voice, but the **switch for the language was the key**: with
+no key (or `CHAT_LLM=off`) the deterministic path still pasted `plan.objective`,
+and the objective is the *technical* description of the goal — `Stay put and wait
+for the next order`, `Equip the armor pieces carried in the inventory …`,
+`Harvest the ripe crops in the village plots …`. Those strings live in the
+knowledge base (`idle-goals.mjs`, `village-labor.mjs`,
+`knowledge/progression.json`) and are English on purpose; chat is not the place
+they belong to.
+
+The user's rule is explicit: *"la risposta deterministica dovrebbe essere in
+italiano se la domanda è in italiano, per questo chiedevo di introdurre llm e
+farlo sembrare naturale"*. So M7.1 makes the deterministic path Italian on its
+own, and the LLM stays what it was meant to be: naturalness, not the language
+switch.
+
+- **The planner writes the objective for the human.** The `humanCommandPlan`
+  prompt now asks for `objective` in the same language as the human message and
+  in the first person (`sto andando da <gamertag>`, `mi metto l'armatura`),
+  because that text is exactly what the ack and the outcome send back.
+- **The deterministic fallbacks are Italian too** (they run when Hermes is down
+  or returns garbage): `resto fermo in attesa del prossimo ordine` for a stop
+  order, `seguo <name> ed eseguo il suo ultimo ordine: "…"` for everything else,
+  and the equip order (which never reaches the planner) carries `mi metto
+  l'armatura che ho in inventario (elmo, corazza, gambali, stivali)`.
+- **`planPhrase` translates the structured goals.** `human-questions.mjs` owns
+  `CHORE_LABELS` (the 11 village chores) and `NEED_LABELS` (the survival needs
+  plus `wear_armor`) and turns a plan into an Italian sentence; `activityAnswer`
+  ("cosa stai facendo?") uses it, and falls back to `plan.objective` only when
+  the plan has no structured kind — an order, whose objective is already in the
+  human's language. `targets` are deliberately not used, for the same reason.
+- **Drift is a test failure.** `tests/human-questions.test.mjs` asserts that
+  every `VILLAGE_CHORES[].id` and every `NEED_PRIORITY` need has a label, so a
+  new chore cannot ship without its Italian phrase.
+
+Tests: `tests/human-questions.test.mjs` (label coverage, `planPhrase` and the
+activity answer per goal kind) and `tests/controller-follow-order.test.mjs` (the
+stop-order fallback now asserts the Italian outcome).
+
+**Open**: the *opportunity* and *curriculum* objectives still reach chat in
+English when the plan carries no structured hint (`planPhrase` returns null and
+the objective is used verbatim) — the `opportunity:`/`curriculum:` notes prefixes
+cover today's producers, but a new goal family must add a label (or stay out of
+chat); and the same-language rule for the planner is an instruction, not an
+assertion (a model that ignores it leaves an English objective inside an Italian
+scaffold).
+
 ## Proactive greeting (§6 Attention System)
 
 A human should not have to guess how to command the bot. When the bot perceives a

@@ -477,6 +477,9 @@ async function humanCommandPlan (obs, entry) {
     'If they ask you to help fight mobs, set the objective to stay near them and attack nearby hostile mobs (keep "follow" set if escorting).',
     'If they ask you to gather or mine a specific item, put it in "targets". If they ask you to stop or resume autonomy, set "objective" accordingly and leave "follow" null.',
     'Keep the objective to one sentence. The controller picks bounded actions from the harness; never invent action keys.',
+    // L'objective finisce in chat (ack, esito, "cosa stai facendo?"): va scritto
+    // nella lingua di chi ha scritto e in prima persona, come lo direbbe il bot.
+    `Write "objective" in the same language as the human message, in the first person, the way the bot would say it out loud (e.g. "sto andando da ${entry.from}", "mi metto l'armatura").`,
     `Current state: ${JSON.stringify(obs)}`,
   ].join('\n');
   // `equipaggiati con l'elmo` / `mettiti l'armatura` non passa dal planner: e'
@@ -485,7 +488,7 @@ async function humanCommandPlan (obs, entry) {
   // fraintendimento. Nessuna chiamata a Hermes, nessun modello.
   if (isEquipOrder(entry.message)) {
     const plan = {
-      objective: 'Equip the armor pieces carried in the inventory (helmet, chestplate, leggings, boots)',
+      objective: "mi metto l'armatura che ho in inventario (elmo, corazza, gambali, stivali)",
       targets: {},
       waypoint: null,
       follow: null,
@@ -504,14 +507,14 @@ async function humanCommandPlan (obs, entry) {
   const stopOrder = isStopOrder(entry.message);
   const fallback = (note) => (stopOrder
     ? {
-        objective: 'Stay put and wait for the next order',
+        objective: 'resto fermo in attesa del prossimo ordine',
         targets: {},
         waypoint: null,
         follow: null,
         notes: `human:${entry.from} ${note}`,
       }
     : {
-        objective: `Follow ${entry.from} and obey their last order: "${entry.message}"`,
+        objective: `seguo ${entry.from} ed eseguo il suo ultimo ordine: "${entry.message}"`,
         targets: {},
         waypoint: senderPos ? { x: Math.round(senderPos.x), z: Math.round(senderPos.z) } : null,
         follow: entry.from,

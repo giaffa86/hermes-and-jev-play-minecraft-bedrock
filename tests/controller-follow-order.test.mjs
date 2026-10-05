@@ -257,7 +257,7 @@ test('a stop order closes the follow even when the planner is down', async () =>
     assert.equal(events.some(e => e.type === 'plan_fallback'), true, 'the stop order is translated by the fallback');
     assert.equal(events.filter(e => e.type === 'goal_met').length, 1, 'the fallback stop order closes the goal');
     const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
-    assert.equal(says.some(m => /^@Ale fatto: Stay put and wait for the next order/.test(m)), true, `the stop is confirmed (got ${JSON.stringify(says)})`);
+    assert.equal(says.some(m => /^@Ale fatto: resto fermo in attesa del prossimo ordine/.test(m)), true, `the stop is confirmed (got ${JSON.stringify(says)})`);
   } finally {
     harness.server.close();
     rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
