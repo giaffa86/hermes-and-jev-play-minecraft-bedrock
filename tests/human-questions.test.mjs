@@ -176,6 +176,20 @@ test('a question that names an item is answered about that item', () => {
   assert.equal(answerIntent('q_inventory', obs, { message: 'cosa hai?' }), 'ho: dirt x64, bread x3, iron_boots x2, wooden_sword (+1 altri)');
 });
 
+// Il materiale fa parte della domanda: "una spada di rame" non è "una spada".
+// Il bronzo non esiste in vanilla (nessun item `bronze_*`, nessuna ricetta), e
+// dal Copper Age il tier fra pietra e ferro è il rame: "bronzo" si legge come rame.
+test('a question with a material is answered about that material', () => {
+  const obs = { inventory: { wooden_sword: 1, copper_sword: 1, copper_pickaxe: 2, raw_copper: 3, iron_ingot: 1 } };
+  assert.equal(answerIntent('q_inventory', obs, { message: 'hai una spada di rame?' }), 'sì: copper_sword');
+  assert.equal(answerIntent('q_inventory', obs, { message: 'hai una spada di bronzo?' }), 'sì: copper_sword');
+  assert.equal(answerIntent('q_inventory', obs, { message: 'hai un piccone di rame?' }), 'sì: copper_pickaxe x2');
+  // Il materiale mancante non è un "no" secco: si dice cosa c'è dello stesso tipo.
+  assert.equal(answerIntent('q_inventory', obs, { message: 'hai una spada di diamante?' }), 'no, non ne ho; ho: wooden_sword, copper_sword');
+  // "rame" da solo resta la domanda sul minerale e sul lingotto, senza restringere.
+  assert.equal(answerIntent('q_inventory', obs, { message: 'quanto rame hai?' }), 'sì: copper_sword, copper_pickaxe x2, raw_copper x3');
+});
+
 // Il catalogo conosce anche i nomi dei gruppi: "armatura" è un pezzo indossabile
 // qualunque, "spada" un utensile.
 test('q_armor answers what is worn, not what is carried', () => {

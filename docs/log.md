@@ -1,5 +1,57 @@
 # Log
 
+## [2026-10-05] feat | Chat M6.4: the copper tier, not bronze
+
+The family ordered *"equipaggiati con armatura in bronzo"* and objected when the
+bot said bronze does not exist: *"in minecraft esiste l'armatura di bronzo da
+qualche versione, anche le armi come spada e gli attrezzi come zappa, piccone,
+ascia"*. The objection was half right. **Copper** armour, tools and a sword do
+exist — *The Copper Age* (Bedrock 1.21.111 / Java 1.21.9, 30/09/2025) added them —
+while **bronze** is not in vanilla Minecraft at all: no `bronze_*` item and no
+recipe in any Java or Bedrock version (the only "Bronze" in the game files is the
+dye colour `Bronze Olive`; bronze exists as a mod, tin + copper, and as
+feedback-site proposals). M6.4 makes the bot agree with the game instead of the
+phrase, and adds the crafting step that was missing.
+
+- **`bronzo`/`bronze` mean copper** (`human-questions.mjs`): the alias sits in
+  `ITEM_WORDS` and `MATERIAL_WORDS`, with the reason in the code, so `hai una
+  spada di bronzo?` answers about the `copper_sword`.
+- **A material is part of the question**: `matchMaterial` (legno/wooden,
+  pietra/stone, rame/copper/bronzo, ferro/iron, oro/gold, chainmail, diamante,
+  netherite, cuoio/leather) narrows `inventoryAnswer` to items whose name starts
+  with that material, but only for tool/armour kinds (`MATERIAL_KINDS`) — `hai
+  della pietra?` stays the question about `stone` and `cobblestone`. A missing
+  material is no longer a flat refusal: `hai una spada di diamante?` → `no, non ne
+  ho; ho: wooden_sword, copper_sword`.
+- **The bot can craft copper gear** (`options()` in `bedrock-adapter.mjs`):
+  `craft_copper_pickaxe|sword|axe|hoe|shovel` and `craft_copper_helmet|chestplate|
+  leggings|boots`, offered only while the recipe exists, the materials are there
+  (`_craftable(name)` → `_hasMaterials` over the slots or over the aggregate
+  `inventory`, because a pickup updates the aggregate before the slots and
+  `_craftItem` re-syncs) and the craft is an upgrade (no tool of that kind at
+  harvest rank ≥ copper, no piece worn or carried). Mining with copper already
+  worked (`TOOL_TIER_SPEED.copper` = 6, `TOOL_HARVEST_RANK.copper` = 2, like
+  stone) and so did `raw_copper → copper_ingot` (`SMELT_RECIPES`); this is the
+  first tier above stone/wooden that the option list offers on its own. Iron and
+  diamond gear stay unoffered on purpose.
+- **Equipping stays material-agnostic**: `equip_armor` matches the `_helmet`/
+  `_chestplate`/`_leggings`/`_boots` suffixes, so "equipaggiati con l'armatura di
+  rame" wears whatever pieces are carried — copper included. A per-material equip
+  order is *not* implemented (the intent carries no material).
+- **Tests**: `tests/human-questions.test.mjs` ('a question with a material is
+  answered about that material': copper, the bronze alias, the informative
+  fallback, `quanto rame hai?` remaining the question about the ingot) and
+  `tests/bedrock-dig.test.mjs` ('options offer copper gear only while it is an
+  upgrade and the ingots are there': the pickaxe/sword offered with 3 ingots,
+  suppressed once a `stone_pickaxe` is carried, the chestplate only with 8 ingots
+  and only while not worn or carried, nothing of the tier without ingots).
+- **Docs**: `wiki/human-command.md` §M6.4 (and the M-list), `sources.md`
+  (`human-questions.mjs` row: seven intents + material narrowing; `bedrock-
+  adapter.mjs` row: the copper options and `_craftable`), `index.md`,
+  `wiki/verification.md`.
+- **Not verified live**: the containers still run the pre-M6 chat build, so the
+  claim is unit-level for now.
+
 ## [2026-10-05] feat | Chat M6.3: what the bot wears, and an equip order that actually equips
 
 A human asked in chat *"quanta vita hai? quanti cuori hai? quanta fame hai? cosa

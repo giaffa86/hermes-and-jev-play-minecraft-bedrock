@@ -394,6 +394,58 @@ test('options offer craft_stone_pickaxe with materials and a nearby table', () =
   assert.equal(adapter.options().some(o => o.key === 'craft_stone_pickaxe'), false);
 });
 
+// Il tier rame (The Copper Age, Bedrock 1.21.111+): spada, utensili e armatura.
+// "Bronzo" non esiste in vanilla, il materiale fra pietra e ferro è il rame.
+// L'opzione si offre solo se serve: nessun attrezzo dello stesso tipo con rango
+// pari o superiore, nessun pezzo di armatura già addosso o in inventario.
+test('options offer copper gear only while it is an upgrade and the ingots are there', () => {
+  const { adapter } = digAdapter();
+  const ing = n => ({ type: 'valid', descriptor_type: 'name', name: `minecraft:${n}`, metadata: 32767, count: 1 });
+  const cell = entry => (entry ? ing(entry) : { type: 'invalid', metadata: 32767, count: 0 });
+  const shaped = (networkId, recipeId, input, output) => ({
+    network_id: networkId, recipe_id: recipeId, width: 3, height: 3,
+    input: input.map(cell),
+    output: [{ network_id: output, count: 1, metadata: 0, block_runtime_id: 1 }],
+  });
+  adapter.world.findBlocks = name => name === 'crafting_table' ? [{ position: { x: 93, y: 72, z: 146 }, distance: 2 }] : [];
+  adapter.drops = [];
+  adapter.nearbyBlocks = {};
+  adapter.inventorySlots = [];
+  // Ricette con la forma di crafting_data: piccone 3 lingotti + 2 bastoni,
+  // spada 2 + 1, pettorale 8.
+  adapter.craftingData = { shaped_recipes: [
+    shaped(2001, 'minecraft:copper_pickaxe', ['copper_ingot', 'copper_ingot', 'copper_ingot', null, 'stick', null, null, 'stick', null], 900),
+    shaped(2002, 'minecraft:copper_sword', [null, 'copper_ingot', null, null, 'copper_ingot', null, null, 'stick', null], 901),
+    shaped(2003, 'minecraft:copper_chestplate', ['copper_ingot', null, 'copper_ingot', 'copper_ingot', 'copper_ingot', 'copper_ingot', 'copper_ingot', 'copper_ingot', 'copper_ingot'], 902),
+  ], shapeless_recipes: [] };
+  adapter.recipes = new Map([
+    ['copper_pickaxe', [{ kind: 'shaped', network_id: 2001 }]],
+    ['copper_sword', [{ kind: 'shaped', network_id: 2002 }]],
+    ['copper_chestplate', [{ kind: 'shaped', network_id: 2003 }]],
+  ]);
+  adapter.inventory = { copper_ingot: 3, stick: 2 };
+  let keys = adapter.options().map(o => o.key);
+  assert.equal(keys.includes('craft_copper_pickaxe'), true);
+  assert.equal(keys.includes('craft_copper_sword'), true);
+  assert.equal(keys.includes('craft_copper_chestplate'), false, 'servono 8 lingotti');
+  // Un piccone di pietra ha lo stesso rango di raccolta: il rame non è un upgrade.
+  adapter.inventory.stone_pickaxe = 1;
+  keys = adapter.options().map(o => o.key);
+  assert.equal(keys.includes('craft_copper_pickaxe'), false);
+  assert.equal(keys.includes('craft_copper_sword'), true);
+  // Con gli lingotti il pettorale si offre, ma non se è già addosso o in borsa.
+  adapter.inventory.copper_ingot = 8;
+  assert.equal(adapter.options().some(o => o.key === 'craft_copper_chestplate'), true);
+  adapter.armor.chestplate = 'iron_chestplate';
+  assert.equal(adapter.options().some(o => o.key === 'craft_copper_chestplate'), false, 'già addosso');
+  adapter.armor.chestplate = null;
+  adapter.inventory.iron_chestplate = 1;
+  assert.equal(adapter.options().some(o => o.key === 'craft_copper_chestplate'), false, 'già in inventario');
+  // Senza lingotti non si offre nulla del tier rame.
+  adapter.inventory = { stick: 2 };
+  assert.equal(adapter.options().some(o => /^craft_copper_/.test(o.key)), false);
+});
+
 test('dig_down steers the staircase toward the plan waypoint', () => {
   const { adapter } = digAdapter();
   adapter._lastYaw = 90; // guarderebbe a ovest

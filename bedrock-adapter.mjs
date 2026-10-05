@@ -4163,6 +4163,31 @@ export class BedrockAdapter {
           this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
         o.push({ key: 'craft_bed', description: 'Craft a bed (3 wool + 3 planks) to skip the night on a trip (uses a crafting table)' });
       }
+      // Rame (The Copper Age: Bedrock 1.21.111+/Java 1.21.9): spada, utensili e
+      // armatura. Il bronzo non esiste in vanilla (nessun item `bronze_*`,
+      // nessuna ricetta): il materiale fra pietra e ferro è il rame, ed è quello
+      // che si può davvero forgiare. Un'opzione si offre solo se serve: nessun
+      // attrezzo dello stesso tipo, o solo di rango inferiore, e nessun pezzo di
+      // armatura già addosso o in inventario.
+      const copperRank = TOOL_HARVEST_RANK.copper;
+      if (this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
+        for (const kind of ['pickaxe', 'sword', 'axe', 'hoe', 'shovel']) {
+          const name = `copper_${kind}`;
+          if (!this.recipes.has(name) || !this._craftable(name)) continue;
+          const best = Object.entries(this.inventory)
+            .filter(([item, count]) => Number(count) > 0 && item.endsWith(`_${kind}`))
+            .reduce((top, [item]) => Math.max(top, TOOL_HARVEST_RANK[String(item).split('_')[0]] || 0), 0);
+          if (best >= copperRank) continue;
+          o.push({ key: `craft_${name}`, description: `Craft a copper ${kind} at the crafting table (same harvesting tier as stone)` });
+        }
+        for (const piece of ['helmet', 'chestplate', 'leggings', 'boots']) {
+          const name = `copper_${piece}`;
+          if (!this.recipes.has(name) || !this._craftable(name)) continue;
+          if (this.armor?.[piece]) continue;
+          if (Object.entries(this.inventory).some(([item, count]) => Number(count) > 0 && item.endsWith(`_${piece}`))) continue;
+          o.push({ key: `craft_${name}`, description: `Craft a copper ${piece} at the crafting table (armor is worn, not just carried)` });
+        }
+      }
     }
     // Piazzamento: solo ciò che serve alla progressione.
     if ((this.inventory.crafting_table || 0) > 0 && !this.world.findBlocks('crafting_table', this.position, 8, 1).length) {
@@ -5226,10 +5251,15 @@ export class BedrockAdapter {
     return slots;
   }
 
-  _hasMaterials (recipe) {
+  // `items` (l'aggregato `inventory`) serve solo a decidere se *offrire* una
+  // ricetta: i pickup aggiornano l'aggregato prima che gli slot rispecchino lo
+  // stack id, e la verifica vera (quella che apre la griglia) resta sugli slot.
+  _hasMaterials (recipe, { items = null } = {}) {
     if (!recipe.output?.length) return false;
     const grid = this._planGrid(recipe, (recipe.width || 1) > 2 || (recipe.height || 1) > 2);
-    const available = this.inventorySlots.map(s => s ? { name: this._slotItemName(s), count: s.count } : null);
+    const available = items
+      ? Object.entries(items).filter(([, count]) => Number(count) > 0).map(([name, count]) => ({ name, count: Number(count) }))
+      : this.inventorySlots.map(s => s ? { name: this._slotItemName(s), count: s.count } : null);
     for (const { ingredient } of grid) {
       let remaining = ingredient.count || 1;
       for (let i = 0; i < available.length && remaining > 0; i++) {
@@ -5243,6 +5273,18 @@ export class BedrockAdapter {
       if (remaining > 0) return false;
     }
     return true;
+  }
+
+  // Una ricetta è offribile se la forma è nota e i materiali ci sono, sugli slot
+  // o almeno nell'aggregato (slot in ritardo dopo un pickup: `_craftItem` fa il
+  // resync). Evita di offrire un craft che fallirebbe con `missing_ingredients`.
+  _craftable (name) {
+    const candidates = (this.recipes && this.recipes.get(name)) || [];
+    return candidates.some(entry => {
+      const recipe = this._recipeBody(entry);
+      if (!recipe) return false;
+      return this._hasMaterials(recipe) || this._hasMaterials(recipe, { items: this.inventory });
+    });
   }
 
   _findSourceSlot (ingredient) {

@@ -78,12 +78,45 @@ const ITEM_WORDS = [
   [/\bpietr(a|e)\b|\bstone\b/, 'stone'],
   [/\blegn(o|a|e)\b|\bplanks?\b/, 'planks'],
   [/\bferr(o|i)\b|\biron\b/, 'iron'],
+  // "bronzo" non esiste in Minecraft vanilla: si legge come il tier rame.
+  [/\bram(e|i)\b|\bcopper\b|\bbronz(o|i)\b|\bbronze\b/, 'copper'],
+  [/\bor(o|i)\b|\bgold(en)?\b/, 'gold'],
   [/\bcarbon(e|i)\b|\bcoal\b/, 'coal'],
   [/\bdiamant(e|i)\b|\bdiamond\b/, 'diamond'],
   [/\btorci(a|e)\b|\btorch(es)?\b/, 'torch'],
   [/\blett(o|i)\b|\bbed\b/, 'bed'],
   [/\bzucca\b|\bzucche\b|\bpumpkin\b/, 'pumpkin'],
 ];
+
+// Materiale dell'oggetto nominato: "una spada di rame" è una domanda diversa da
+// "una spada". Il bronzo non esiste in Minecraft vanilla — nessun item
+// `bronze_*`, nessuna ricetta, solo mod e proposte — e dal Copper Age (Bedrock
+// 1.21.111, Java 1.21.9, 30/09/2025) il materiale fra pietra e ferro è il rame:
+// "bronzo"/"bronze" si leggono come rame invece di ignorare la domanda.
+const MATERIAL_WORDS = [
+  [/\b(legn(o|i)|wooden|wood)\b/, 'wooden'],
+  [/\b(pietr(a|e)|stone)\b/, 'stone'],
+  [/\b(ram(e|i)|copper|bronz(o|i)|bronze)\b/, 'copper'],
+  [/\b(ferr(o|i)|iron)\b/, 'iron'],
+  [/\b(or(o|i)|gold(en)?)\b/, 'gold'],
+  [/\b(chainmail|maglia)\b/, 'chainmail'],
+  [/\b(diamant(e|i)|diamond)\b/, 'diamond'],
+  [/\bnetherite\b/, 'netherite'],
+  [/\b(cuoio|leather)\b/, 'leather'],
+];
+
+// Il materiale restringe solo gli oggetti "di tipo" (armi, attrezzi, armatura):
+// "hai della pietra?" resta la domanda su `stone` e `cobblestone`.
+const MATERIAL_KINDS = new Set(['sword', 'pickaxe', 'axe', 'shovel', 'hoe', 'helmet', 'chestplate', 'leggings', 'boots', 'armor', 'shield']);
+
+function matchMaterial (message) {
+  const text = normalizeForMatching(message);
+  if (!text) return null;
+  for (const [pattern, material] of MATERIAL_WORDS) {
+    if (pattern.test(text)) return material;
+  }
+  return null;
+}
 
 const ARMOR_SUFFIX = /_(helmet|chestplate|leggings|boots)$/;
 
@@ -102,10 +135,16 @@ function inventoryAnswer (obs, { message = null, limit = 4 } = {}) {
   // se la domanda nomina qualcosa che il catalogo conosce, si dice sì o no.
   const token = matchItemWord(message);
   if (token) {
-    const names = Object.keys(inventory)
-      .filter(name => Number(inventory[name]) > 0)
-      .filter(name => (token === 'armor' ? ARMOR_SUFFIX.test(name) : name.includes(token)));
-    if (!names.length) return 'no, non ne ho';
+    const held = Object.keys(inventory).filter(name => Number(inventory[name]) > 0);
+    const ofKind = held.filter(name => (token === 'armor' ? ARMOR_SUFFIX.test(name) : name.includes(token)));
+    // Con un materiale nominato ("una spada di rame") conta quel materiale; se
+    // non c'è, si dice cosa c'è dello stesso tipo invece di un "no" secco.
+    const material = MATERIAL_KINDS.has(token) ? matchMaterial(message) : null;
+    const names = material ? ofKind.filter(name => name.startsWith(material)) : ofKind;
+    if (!names.length) {
+      if (material && ofKind.length) return `no, non ne ho; ho: ${ofKind.join(', ')}`;
+      return 'no, non ne ho';
+    }
     const shown = names.map(name => (Number(inventory[name]) > 1 ? `${name} x${inventory[name]}` : name));
     return `sì: ${shown.join(', ')}`;
   }
@@ -150,7 +189,7 @@ function timeAnswer (obs) {
   return 'non lo so che ore siano';
 }
 
-function identityAnswer (obs, { prefixes = DEFAULT_CHAT_PREFIX } = {}) {
+function identityAnswer (_obs, { prefixes = DEFAULT_CHAT_PREFIX } = {}) {
   const list = formatPrefixes(prefixes) || DEFAULT_CHAT_PREFIX;
   return `sono Hermes, il bot di casa. Scrivimi "${list} <ordine>", per esempio "${list} seguimi" o "${list} mina ferro".`;
 }
