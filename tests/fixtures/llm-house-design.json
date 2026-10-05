@@ -1,0 +1,626 @@
+{
+  "version": 1,
+  "id": "taiga_two_storeys",
+  "kind": "house",
+  "intent": {
+    "request": "A 7x7 spruce house with two storeys, a bed, crafting table and decorative brick chimney.",
+    "style": "taiga lodge",
+    "biome": "taiga",
+    "storeys": 2,
+    "requirements": [
+      "7x7 footprint",
+      "two storeys",
+      "spruce taiga style",
+      "bed and crafting table",
+      "decorative chimney"
+    ]
+  },
+  "rooms": [
+    {
+      "id": "workroom",
+      "purpose": "crafting and entry",
+      "from": [1, 1, 1],
+      "to": [5, 3, 5]
+    },
+    {
+      "id": "bedroom",
+      "purpose": "sleeping",
+      "from": [1, 5, 1],
+      "to": [5, 7, 5]
+    }
+  ],
+  "stages": [
+    {
+      "id": "foundation",
+      "objective": "Lay the requested footprint"
+    },
+    {
+      "id": "access",
+      "objective": "Build permanent stairs and temporary work access"
+    },
+    {
+      "id": "ground_walls",
+      "objective": "Enclose the ground storey"
+    },
+    {
+      "id": "upper_floor",
+      "objective": "Build the upper floor while keeping the stairwell open"
+    },
+    {
+      "id": "upper_walls",
+      "objective": "Enclose the upper storey"
+    },
+    {
+      "id": "roof",
+      "objective": "Cover the house and erect its decorative chimney"
+    },
+    {
+      "id": "furnish",
+      "objective": "Place the requested functional fittings"
+    }
+  ],
+  "cuboids": [
+    {
+      "id": "ground_floor",
+      "stage": "foundation",
+      "role": "floor",
+      "from": [0, 0, 0],
+      "to": [6, 0, 6],
+      "item": "spruce_planks",
+      "phase": "floor"
+    },
+    {
+      "id": "stair_1",
+      "stage": "access",
+      "role": "stairs",
+      "from": [1, 1, 1],
+      "to": [1, 1, 1],
+      "item": "spruce_planks",
+      "phase": "access"
+    },
+    {
+      "id": "stair_2",
+      "stage": "access",
+      "role": "stairs",
+      "from": [1, 1, 2],
+      "to": [1, 2, 2],
+      "item": "spruce_planks",
+      "phase": "access"
+    },
+    {
+      "id": "stair_3",
+      "stage": "access",
+      "role": "stairs",
+      "from": [1, 1, 3],
+      "to": [1, 3, 3],
+      "item": "spruce_planks",
+      "phase": "access"
+    },
+    {
+      "id": "stair_4",
+      "stage": "access",
+      "role": "stairs",
+      "from": [1, 1, 4],
+      "to": [1, 4, 4],
+      "item": "spruce_planks",
+      "phase": "access"
+    },
+    {
+      "id": "scaffold_0",
+      "stage": "access",
+      "role": "scaffold",
+      "from": [-2, 0, -3],
+      "to": [-2, 0, -3],
+      "item": "spruce_planks",
+      "phase": "access",
+      "temporary": true
+    },
+    {
+      "id": "scaffold_1",
+      "stage": "access",
+      "role": "scaffold",
+      "from": [-2, 0, -2],
+      "to": [-2, 1, -2],
+      "item": "spruce_planks",
+      "phase": "access",
+      "temporary": true
+    },
+    {
+      "id": "scaffold_2",
+      "stage": "access",
+      "role": "scaffold",
+      "from": [-2, 0, -1],
+      "to": [-2, 2, -1],
+      "item": "spruce_planks",
+      "phase": "access",
+      "temporary": true
+    },
+    {
+      "id": "scaffold_3",
+      "stage": "access",
+      "role": "scaffold",
+      "from": [-2, 0, 0],
+      "to": [-2, 3, 0],
+      "item": "spruce_planks",
+      "phase": "access",
+      "temporary": true
+    },
+    {
+      "id": "scaffold_4",
+      "stage": "access",
+      "role": "scaffold",
+      "from": [-2, 0, 1],
+      "to": [-2, 4, 1],
+      "item": "spruce_planks",
+      "phase": "access",
+      "temporary": true
+    },
+    {
+      "id": "scaffold_5",
+      "stage": "access",
+      "role": "scaffold",
+      "from": [-2, 0, 2],
+      "to": [-2, 5, 2],
+      "item": "spruce_planks",
+      "phase": "access",
+      "temporary": true
+    },
+    {
+      "id": "scaffold_6",
+      "stage": "access",
+      "role": "scaffold",
+      "from": [-2, 0, 3],
+      "to": [-2, 6, 3],
+      "item": "spruce_planks",
+      "phase": "access",
+      "temporary": true
+    },
+    {
+      "id": "scaffold_7",
+      "stage": "access",
+      "role": "scaffold",
+      "from": [-2, 0, 4],
+      "to": [-2, 7, 4],
+      "item": "spruce_planks",
+      "phase": "access",
+      "temporary": true
+    },
+    {
+      "id": "scaffold_8",
+      "stage": "access",
+      "role": "scaffold",
+      "from": [-2, 0, 5],
+      "to": [-2, 8, 5],
+      "item": "spruce_planks",
+      "phase": "access",
+      "temporary": true
+    },
+    {
+      "id": "work_ring_north",
+      "stage": "access",
+      "role": "scaffold",
+      "from": [-1, 8, -1],
+      "to": [7, 8, -1],
+      "item": "spruce_planks",
+      "phase": "access",
+      "temporary": true
+    },
+    {
+      "id": "work_ring_south",
+      "stage": "access",
+      "role": "scaffold",
+      "from": [-1, 8, 7],
+      "to": [7, 8, 7],
+      "item": "spruce_planks",
+      "phase": "access",
+      "temporary": true
+    },
+    {
+      "id": "work_ring_west",
+      "stage": "access",
+      "role": "scaffold",
+      "from": [-1, 8, 0],
+      "to": [-1, 8, 6],
+      "item": "spruce_planks",
+      "phase": "access",
+      "temporary": true
+    },
+    {
+      "id": "work_ring_east",
+      "stage": "access",
+      "role": "scaffold",
+      "from": [7, 8, 0],
+      "to": [7, 8, 6],
+      "item": "spruce_planks",
+      "phase": "access",
+      "temporary": true
+    },
+    {
+      "id": "ground_west",
+      "stage": "ground_walls",
+      "role": "wall",
+      "from": [0, 1, 0],
+      "to": [0, 3, 6],
+      "item": "spruce_planks",
+      "phase": "walls"
+    },
+    {
+      "id": "ground_east",
+      "stage": "ground_walls",
+      "role": "wall",
+      "from": [6, 1, 0],
+      "to": [6, 3, 6],
+      "item": "spruce_planks",
+      "phase": "walls"
+    },
+    {
+      "id": "ground_front_left",
+      "stage": "ground_walls",
+      "role": "wall",
+      "from": [1, 1, 0],
+      "to": [2, 3, 0],
+      "item": "spruce_planks",
+      "phase": "walls"
+    },
+    {
+      "id": "ground_front_right",
+      "stage": "ground_walls",
+      "role": "wall",
+      "from": [4, 1, 0],
+      "to": [5, 3, 0],
+      "item": "spruce_planks",
+      "phase": "walls"
+    },
+    {
+      "id": "ground_door_header",
+      "stage": "ground_walls",
+      "role": "wall",
+      "from": [3, 3, 0],
+      "to": [3, 3, 0],
+      "item": "spruce_planks",
+      "phase": "walls"
+    },
+    {
+      "id": "ground_rear",
+      "stage": "ground_walls",
+      "role": "wall",
+      "from": [1, 1, 6],
+      "to": [5, 3, 6],
+      "item": "spruce_planks",
+      "phase": "walls"
+    },
+    {
+      "id": "upper_floor_wide",
+      "stage": "upper_floor",
+      "role": "floor",
+      "from": [2, 4, 0],
+      "to": [6, 4, 6],
+      "item": "spruce_planks",
+      "phase": "floor"
+    },
+    {
+      "id": "upper_floor_west",
+      "stage": "upper_floor",
+      "role": "floor",
+      "from": [0, 4, 0],
+      "to": [0, 4, 6],
+      "item": "spruce_planks",
+      "phase": "floor"
+    },
+    {
+      "id": "upper_floor_front",
+      "stage": "upper_floor",
+      "role": "floor",
+      "from": [1, 4, 0],
+      "to": [1, 4, 1],
+      "item": "spruce_planks",
+      "phase": "floor"
+    },
+    {
+      "id": "upper_floor_rear",
+      "stage": "upper_floor",
+      "role": "floor",
+      "from": [1, 4, 5],
+      "to": [1, 4, 6],
+      "item": "spruce_planks",
+      "phase": "floor"
+    },
+    {
+      "id": "upper_west",
+      "stage": "upper_walls",
+      "role": "wall",
+      "from": [0, 5, 0],
+      "to": [0, 7, 6],
+      "item": "spruce_planks",
+      "phase": "walls"
+    },
+    {
+      "id": "upper_east",
+      "stage": "upper_walls",
+      "role": "wall",
+      "from": [6, 5, 0],
+      "to": [6, 7, 6],
+      "item": "spruce_planks",
+      "phase": "walls"
+    },
+    {
+      "id": "upper_front_low",
+      "stage": "upper_walls",
+      "role": "wall",
+      "from": [1, 5, 0],
+      "to": [5, 5, 0],
+      "item": "spruce_planks",
+      "phase": "walls"
+    },
+    {
+      "id": "upper_front_high",
+      "stage": "upper_walls",
+      "role": "wall",
+      "from": [1, 7, 0],
+      "to": [5, 7, 0],
+      "item": "spruce_planks",
+      "phase": "walls"
+    },
+    {
+      "id": "upper_front_left",
+      "stage": "upper_walls",
+      "role": "wall",
+      "from": [1, 6, 0],
+      "to": [1, 6, 0],
+      "item": "spruce_planks",
+      "phase": "walls"
+    },
+    {
+      "id": "upper_front_right",
+      "stage": "upper_walls",
+      "role": "wall",
+      "from": [5, 6, 0],
+      "to": [5, 6, 0],
+      "item": "spruce_planks",
+      "phase": "walls"
+    },
+    {
+      "id": "upper_rear",
+      "stage": "upper_walls",
+      "role": "wall",
+      "from": [1, 5, 6],
+      "to": [5, 7, 6],
+      "item": "spruce_planks",
+      "phase": "walls"
+    },
+    {
+      "id": "upper_window",
+      "stage": "upper_walls",
+      "role": "window",
+      "from": [2, 6, 0],
+      "to": [4, 6, 0],
+      "item": "glass",
+      "phase": "walls"
+    },
+    {
+      "id": "roof_wide",
+      "stage": "roof",
+      "role": "roof",
+      "from": [0, 8, 0],
+      "to": [6, 8, 5],
+      "item": "spruce_planks",
+      "phase": "roof"
+    },
+    {
+      "id": "roof_rear_left",
+      "stage": "roof",
+      "role": "roof",
+      "from": [0, 8, 6],
+      "to": [4, 8, 6],
+      "item": "spruce_planks",
+      "phase": "roof"
+    },
+    {
+      "id": "roof_rear_right",
+      "stage": "roof",
+      "role": "roof",
+      "from": [6, 8, 6],
+      "to": [6, 8, 6],
+      "item": "spruce_planks",
+      "phase": "roof"
+    },
+    {
+      "id": "brick_chimney",
+      "stage": "roof",
+      "role": "chimney",
+      "from": [5, 8, 6],
+      "to": [5, 10, 6],
+      "item": "bricks",
+      "phase": "roof"
+    }
+  ],
+  "cells": [
+    {
+      "id": "front_door",
+      "stage": "furnish",
+      "role": "entry",
+      "offset": [3, 1, 0],
+      "item": "wooden_door",
+      "phase": "fittings",
+      "facing": "south"
+    },
+    {
+      "id": "upstairs_bed",
+      "stage": "furnish",
+      "role": "sleeping",
+      "offset": [5, 5, 3],
+      "item": "bed",
+      "phase": "fittings",
+      "facing": "north"
+    },
+    {
+      "id": "workbench",
+      "stage": "furnish",
+      "role": "crafting",
+      "offset": [5, 1, 4],
+      "item": "crafting_table",
+      "phase": "fittings"
+    },
+    {
+      "id": "lower_light",
+      "stage": "furnish",
+      "role": "lighting",
+      "offset": [3, 1, 4],
+      "item": "torch",
+      "phase": "fittings"
+    },
+    {
+      "id": "upper_light",
+      "stage": "furnish",
+      "role": "lighting",
+      "offset": [3, 5, 2],
+      "item": "torch",
+      "phase": "fittings"
+    }
+  ],
+  "clearance": [
+    [1, 2, 1],
+    [2, 1, 1],
+    [3, 6, 4],
+    [1, 3, 2],
+    [3, 5, 4],
+    [1, 5, 4],
+    [1, 3, 1],
+    [1, 4, 3],
+    [3, 2, 1],
+    [1, 5, 3],
+    [2, 2, 1],
+    [1, 4, 2],
+    [1, 6, 4],
+    [3, 1, 1],
+    [3, 0, -1],
+    [3, 1, -1],
+    [3, 2, -1],
+    [5, 6, 3],
+    [5, 6, 2],
+    [5, 2, 4]
+  ],
+  "terrain": [
+    [0, -1, 0],
+    [0, -1, 1],
+    [0, -1, 2],
+    [0, -1, 3],
+    [0, -1, 4],
+    [0, -1, 5],
+    [0, -1, 6],
+    [1, -1, 0],
+    [1, -1, 1],
+    [1, -1, 2],
+    [1, -1, 3],
+    [1, -1, 4],
+    [1, -1, 5],
+    [1, -1, 6],
+    [2, -1, 0],
+    [2, -1, 1],
+    [2, -1, 2],
+    [2, -1, 3],
+    [2, -1, 4],
+    [2, -1, 5],
+    [2, -1, 6],
+    [3, -1, 0],
+    [3, -1, 1],
+    [3, -1, 2],
+    [3, -1, 3],
+    [3, -1, 4],
+    [3, -1, 5],
+    [3, -1, 6],
+    [4, -1, 0],
+    [4, -1, 1],
+    [4, -1, 2],
+    [4, -1, 3],
+    [4, -1, 4],
+    [4, -1, 5],
+    [4, -1, 6],
+    [5, -1, 0],
+    [5, -1, 1],
+    [5, -1, 2],
+    [5, -1, 3],
+    [5, -1, 4],
+    [5, -1, 5],
+    [5, -1, 6],
+    [6, -1, 0],
+    [6, -1, 1],
+    [6, -1, 2],
+    [6, -1, 3],
+    [6, -1, 4],
+    [6, -1, 5],
+    [6, -1, 6],
+    [3, -1, -1],
+    [-2, -1, -4],
+    [-2, -1, -3],
+    [-2, -1, -2],
+    [-2, -1, -1],
+    [-2, -1, 0],
+    [-2, -1, 1],
+    [-2, -1, 2],
+    [-2, -1, 3],
+    [-2, -1, 4],
+    [-2, -1, 5]
+  ],
+  "routes": [
+    {
+      "type": "walk",
+      "points": [
+        [3, 0, -1],
+        [3, 1, 1],
+        [2, 1, 1],
+        [1, 2, 1],
+        [1, 3, 2],
+        [1, 4, 3],
+        [1, 5, 4],
+        [3, 5, 4],
+        [3, 0, -1]
+      ]
+    },
+    {
+      "type": "approach",
+      "offset": [5, 5, 3]
+    },
+    {
+      "type": "approach",
+      "offset": [5, 1, 4]
+    }
+  ],
+  "coverage": [
+    {
+      "requirement": "7x7 footprint",
+      "parts": [
+        "ground_floor"
+      ]
+    },
+    {
+      "requirement": "two storeys",
+      "parts": [
+        "ground_floor",
+        "upper_floor_wide",
+        "stair_4"
+      ]
+    },
+    {
+      "requirement": "spruce taiga style",
+      "parts": [
+        "ground_west",
+        "upper_west",
+        "roof_wide"
+      ]
+    },
+    {
+      "requirement": "bed and crafting table",
+      "parts": [
+        "upstairs_bed",
+        "workbench"
+      ]
+    },
+    {
+      "requirement": "decorative chimney",
+      "parts": [
+        "brick_chimney"
+      ]
+    }
+  ]
+}

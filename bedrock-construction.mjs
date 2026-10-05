@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { evaluateSurvival, summarizeSurvival } from './survival/governor.mjs';
 import { loadSurvivalRules } from './survival/rules.mjs';
+import { compileConstructionDesign, constructionDesignInstructions, designCapabilities } from './construction-design.mjs';
+import { campfireLit } from './bedrock-bees.mjs';
 import {
   loadStructures, createBlueprint, planStructure, inspectSite, missingMaterials,
   keyOf, isAir, known, usableSupport, safeSolid, placementSupports, matchesCell,
@@ -20,7 +22,7 @@ const parseKey = s => Object.fromEntries(['x', 'y', 'z'].map((k, i) => [k, Numbe
 const CLICK_POS = { 1: { x: 0.5, y: 1, z: 0.5 }, 2: { x: 0.5, y: 0.5, z: 0 }, 3: { x: 0.5, y: 0.5, z: 1 }, 4: { x: 0, y: 0.5, z: 0.5 }, 5: { x: 1, y: 0.5, z: 0.5 } };
 
 export function constructionPlannerInstructions () {
-  return 'For construction requests use "construction": {"type":"platform|house|bridge|tower|warehouse", "parameters": {"width":int,"length":int,"height":int,"chests":int,"palette":{}}, "origin":{"x":int,"y":int,"z":int}, "facing":"south|east|north|west"}. Omit unknown parameters and origin so the harness can survey a site. Width of a bridge includes its two rails. Reuse the current construction.projectId on replans via {"projectId":"..."}; never change an active blueprint. Pause/resume an existing project with {"projectId":"...","command":"pause|resume"}. Construction completion is verified by the harness, never by inventory targets. Do not invent coordinates or unsupported materials.';
+  return constructionDesignInstructions() + '\nLegacy explicit templates use construction:{type,parameters,origin?,facing?}. Pause/resume uses {projectId,command:"pause|resume"}. Do not invent world coordinates or authorized containers.';
 }
 
 export function constructionFromText (message, observation = {}) {
@@ -54,9 +56,11 @@ export class ConstructionEngine {
 
   preview (request = {}) {
     request = bridgeRequest(request);
+    if (request.designRequired && !request.design) throw new Error('construction_design_required');
     const def = catalogue.get(request.type);
     if (!def) throw new Error('unknown_structure');
-    const blueprint = createBlueprint(def, request.parameters ?? {});
+    if (request.design && request.parameters) throw new Error('ambiguous_construction_design');
+    const blueprint = request.design ? compileConstructionDesign(request.design, request.type) : createBlueprint(def, request.parameters ?? {});
     const facing = request.facing ?? this.a._facingFromYaw();
     const dimension = request.dimension ?? this.a.dimension;
     if (dimension !== this.a.dimension) throw new Error('wrong_dimension');
@@ -90,7 +94,7 @@ export class ConstructionEngine {
     if (!this.memory?.saveConstruction) throw new Error('construction_memory_unavailable');
     if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error('invalid_construction_request');
     if (request.projectId) {
-      if (request.type || request.parameters || request.origin || request.facing) throw new Error('immutable_construction_project');
+      if (request.type || request.parameters || request.design || request.origin || request.facing) throw new Error('immutable_construction_project');
       const project = this.memory.getConstruction(request.projectId);
       if (!project) throw new Error('unknown_construction_project');
       if (project.dimension !== this.a.dimension) throw new Error('wrong_dimension');
@@ -180,8 +184,12 @@ export class ConstructionEngine {
 
   view () {
     const p = this.project;
-    if (!p) return { catalogue: [...catalogue.values()].map(d => ({ id: d.id, description: d.description, defaults: d.defaults, limits: d.limits })) };
+    if (!p) return { designer: designCapabilities(), catalogue: [...catalogue.values()].map(d => ({ id: d.id, description: d.description, defaults: d.defaults, limits: d.limits })) };
     return { projectId: p.id, type: p.type, dimension: p.dimension, origin: p.plan.origin, facing: p.plan.facing,
+      designer: p.plan.blueprint.designer ?? 'template', intent: p.plan.blueprint.intent ?? null,
+      stages: p.plan.blueprint.stages ?? null, coverage: p.plan.blueprint.coverage ?? null,
+      rooms: p.plan.blueprint.rooms ?? null,
+      currentStage: p.plan.cells.filter(c => !p.claims[keyOf(c.position)] && !p.removed.includes(keyOf(c.position))).sort((a, b) => (a.stage ?? 0) - (b.stage ?? 0))[0]?.stage ?? null,
       parameters: p.plan.blueprint.parameters, bounds: p.plan.bounds, state: p.state, phase: p.phase,
       placed: p.placed, total: p.plan.cells.length, missing: missingMaterials(p.plan, p.claims, this.a.inventory, { cleaned: p.phase === 'cleanup' || p.state === 'complete' }),
       lastError: p.lastError, verification: p.verification, functionalIndex: p.functionalIndex, walkIndex: p.walkIndex, temporaryRemoved: p.removed.length,
@@ -250,7 +258,8 @@ export class ConstructionEngine {
     // Complete structural blocks before fittings; never consume the last floor
     // materials crafting decoration while a supported structural step is ready.
     const order = { floor: 0, access: 1, walls: 2, roof: 3, fittings: 4 };
-    const sorted = [...pending].sort((a, b) => order[a.phase] - order[b.phase] || a.position.y - b.position.y);
+    const stage = Math.min(...pending.map(c => c.stage ?? 0));
+    const sorted = pending.filter(c => (c.stage ?? 0) === stage).sort((a, b) => order[a.phase] - order[b.phase] || a.position.y - b.position.y);
     for (const cell of sorted) {
       if (!(this.a.inventory[cell.item] > 0)) continue;
       for (const support of placementSupports(cell, this.read)) {
@@ -281,7 +290,7 @@ export class ConstructionEngine {
       }
       for (const { ingredient, count } of a._recipeIngredientCounts(recipe, true)) {
         if (a._heldMatching(ingredient) >= count) continue;
-        if (ingredient.descriptor_type === 'item_tag' && !/^(planks|logs?|wooden_logs|coals?|stone_tool_materials|stone_crafting_materials)$/.test(String(ingredient.tag).replace(/^minecraft:/, ''))) continue;
+        if (ingredient.descriptor_type === 'item_tag' && !/^(planks|logs?|wooden_logs|coals?|wools?|stone_tool_materials|stone_crafting_materials)$/.test(String(ingredient.tag).replace(/^minecraft:/, ''))) continue;
         const candidates = ingredient.name ? [String(ingredient.name).replace(/^minecraft:/, '')] : Object.keys(a.world.registry?.itemsByName ?? {}).filter(n => a._ingredientMatches(ingredient, n));
         for (const material of candidates.sort((x, y) => Number(y === 'oak_planks' || y === 'oak_log' || y === 'coal') - Number(x === 'oak_planks' || x === 'oak_log' || x === 'coal'))) {
           const choice = this.supplyChoice(material, new Set(seen));
@@ -464,7 +473,7 @@ export class ConstructionEngine {
         try {
           result = await a._placeAtCell(cell.item, cell.block, cell.position, support.position, support.face, CLICK_POS[support.face],
             { signal: session.signal, projectId: p.id, source: 'construction', guard, secondary: cell.secondary,
-              yaw: a._yawTo(a._feet, { x: support.position.x + CLICK_POS[support.face].x, z: support.position.z + CLICK_POS[support.face].z }),
+              yaw: cell.yaw ?? a._yawTo(a._feet, { x: support.position.x + CLICK_POS[support.face].x, z: support.position.z + CLICK_POS[support.face].z }),
               pitch: a._lookAt({ x: support.position.x + CLICK_POS[support.face].x, y: support.position.y + CLICK_POS[support.face].y, z: support.position.z + CLICK_POS[support.face].z }).pitch });
         } catch (error) {
           guard();
@@ -526,6 +535,22 @@ export class ConstructionEngine {
         if (moved?.ok === false || Math.hypot(a._feet.x - target.x - 0.5, a._feet.y - target.y, a._feet.z - target.z - 0.5) > 0.9) return this.fail('construction_traversal_failed', { target, moved });
         p.walkIndex++;
         if (p.walkIndex >= route.points.length) { p.functionalIndex++; p.walkIndex = 0; }
+      } else if (route.type === 'approach') {
+        const cell = p.plan.cells.find(c => keyOf(c.position) === keyOf(route.position));
+        if (!cell || !matchesCell(this.read(cell.position), cell)) return this.fail('construction_fitting_missing', { position: route.position });
+        const stand = this.workPosition(cell, { position: cell.position });
+        if (!stand) return this.fail('construction_fitting_inaccessible', { position: route.position });
+        const moved = await a._moveTo({ x: stand.x + 0.5, y: stand.y, z: stand.z + 0.5 }, 0.08, Math.min(8000, deadline - clock()),
+          { signal: this.session.signal, preciseArrival: true, verticalTolerance: 0, arrivalVerticalTolerance: 0.15 });
+        guard();
+        if (moved?.ok === false || Math.hypot(a._feet.x - stand.x - 0.5, a._feet.z - stand.z - 0.5) > 0.15 || Math.abs(a._feet.y - stand.y) > 0.15) return this.fail('construction_fitting_inaccessible', { position: cell.position, moved });
+        if (cell.block === 'campfire' && campfireLit(this.read(cell.position)) !== true) return this.fail('construction_fireplace_unlit', { position: cell.position });
+        if (cell.block === 'crafting_table') {
+          await a._ensureCraftingTableOpen({ position: cell.position }); guard();
+          if (a._openContainer?.type !== 'workbench' || keyOf(a._openContainerBlock?.position ?? {}) !== keyOf(cell.position)) return this.fail('construction_workbench_not_opened');
+          await a._closeContainer();
+        }
+        p.functionalIndex++; p.walkIndex = 0;
       } else {
         await a._openStorageWindow({ name: 'chest', position: route.position }, { walkTimeoutMs: Math.min(8000, deadline - clock()), contentTimeoutMs: 1500 });
         guard();
@@ -552,13 +577,23 @@ export class ConstructionEngine {
         await a._moveTo({ x: retreat.x + 0.5, y: retreat.y, z: retreat.z + 0.5 }, 0.4, Math.min(8000, deadline - clock()), { signal });
         guard();
       }
-      const cell = pending.sort((c, d) => d.position.y - c.position.y)[0];
+      let cell = null, stand = null;
       // A tall scaffold must be dismantled from another verified safe working
       // position; do not pretend distant blocks are in reach.
       // Mining aims at the block being removed, not at a placement support
       // behind it (that support may already have been dismantled).
-      const stand = this.workPosition(cell, { position: cell.position }, undefined, { removing: true });
-      if (!stand) return this.fail('construction_scaffold_unreachable', { position: cell.position });
+      const reachable = a.reachableCells({ limit: 5000, ttlMs: 0 }).cells;
+      let bestDistance = -1;
+      for (const candidate of pending.sort((c, d) => d.position.y - c.position.y)) {
+        if (cell && candidate.position.y < cell.position.y) break;
+        const candidateStand = this.workPosition(candidate, { position: candidate.position }, reachable, { removing: true });
+        if (!candidateStand) continue;
+        // Remove the far end of an access platform before its connecting span.
+        // Otherwise the bot can retreat safely yet strand the remaining blocks.
+        const distance = a._findPath(retreat, candidateStand)?.length ?? 0;
+        if (distance > bestDistance) { cell = candidate; stand = candidateStand; bestDistance = distance; }
+      }
+      if (!cell) return this.fail('construction_scaffold_unreachable', { positions: pending.slice(0, 8).map(c => c.position) });
       await a._moveTo({ x: stand.x + 0.5, y: stand.y, z: stand.z + 0.5 }, 0.4, Math.min(8000, deadline - clock()), { signal }); guard();
       const actual = this.read(cell.position), claim = p.claims[keyOf(cell.position)];
       if (!claim || claim.signature !== stateSignature(actual) || !matchesCell(actual, cell)) return this.fail('construction_scaffold_changed');

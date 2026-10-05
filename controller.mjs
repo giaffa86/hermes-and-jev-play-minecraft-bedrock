@@ -23,6 +23,7 @@ import {createGoalManager, GOAL_SOURCE, GOAL_STATUS} from './goal-manager.mjs';
 import {JsonMemoryRepository} from './memory-store.mjs';
 import {constructionPlannerInstructions, constructionFromText} from './bedrock-construction.mjs';
 import {constructionGoalMet} from './construction.mjs';
+import {prepareConstructionPlan} from './construction-planning.mjs';
 import {nextIdleGoal, isNeedResolved, DEFAULT_AUTONOMY_COOLDOWN_MS, DEFAULT_MAX_AUTONOMOUS_GOALS} from './idle-goals.mjs';
 import {detectEvents} from './world-events.mjs';
 import {emergencyGoalFor, DEFAULT_EMERGENCY_COOLDOWN_MS} from './emergency-goals.mjs';
@@ -59,6 +60,8 @@ function envJson (name, fallback) {
 const WAYPOINT = envJson('WAYPOINT', null);   // e.g. {"x":380,"z":16}
 const TARGETS = envJson('TARGETS', {dirt: 4}); // item -> min count
 const CONSTRUCTION = envJson('CONSTRUCTION', null);
+const CONSTRUCTION_AUTHORIZED_CONTAINERS = envJson('CONSTRUCTION_AUTHORIZED_CONTAINERS', []);
+const CONSTRUCTION_DESIGN_TIMEOUT = +(process.env.CONSTRUCTION_DESIGN_TIMEOUT_MS || 300000);
 const MAX_STEPS = +(process.env.MAX_STEPS || 20);
 // Un ordine "seguimi" aperto non deve girare a vuoto: se `follow_player` riesce
 // all'istante (l'umano e' gia' li') il passo successivo attende questo intervallo
@@ -197,6 +200,12 @@ const api = async (method, path, body) => {
   return r.json();
 };
 const publishPlan = async plan => {
+  plan = await prepareConstructionPlan(plan, { explicitTemplate: !!CONSTRUCTION,
+    authorizedContainers: CONSTRUCTION?.authorizedContainers ?? CONSTRUCTION_AUTHORIZED_CONTAINERS,
+    brief: plan.construction?.brief ?? plan.construction?.design?.intent?.request ?? plan.objective,
+    observation: plan.construction && !plan.construction.projectId ? await api('GET', '/observe') : null,
+    ask: prompt => runHermes(prompt, { timeoutMs: CONSTRUCTION_DESIGN_TIMEOUT }),
+    preview: construction => api('POST', '/construction/preview', construction) });
   const response = await api('POST', '/plan', plan);
   if (response.ok === false || response.error) throw new Error(`plan_rejected: ${response.error ?? 'invalid plan'}`);
   return response.plan ?? plan;
@@ -278,7 +287,7 @@ function nextMilestone (observation) {
 // fallback statico se il provider è giù o lento.
 const HERMES_TIMEOUT = +(process.env.HERMES_TIMEOUT_MS || 180000);
 
-function runHermes(prompt) {
+function runHermes(prompt, { timeoutMs = HERMES_TIMEOUT } = {}) {
   return new Promise(resolve => {
     const child = spawn('hermes', ['chat', '-Q', '--oneshot', '-t', '', '-q', prompt],
       {detached: true, stdio: ['ignore', 'pipe', 'ignore']});
@@ -291,7 +300,7 @@ function runHermes(prompt) {
     const timer = setTimeout(() => {
       try { process.kill(-child.pid, 'SIGKILL'); } catch {}
       finish(null);
-    }, HERMES_TIMEOUT);
+    }, timeoutMs);
   });
 }
 
@@ -397,7 +406,7 @@ async function hermesPlan(observation, { recall = '' } = {}) {
   }
   if (WAYPOINT && !plan.waypoint) plan.waypoint = WAYPOINT;
   plan.construction = CONSTRUCTION ?? plan.construction ?? constructionFromText(GOAL, observation);
-  if (plan.construction) plan.targets = {};
+  if (plan.construction) { plan.targets = {}; plan.construction.brief ??= GOAL; }
   log('plan', {plan, ms: Date.now() - started});
   return plan;
 }
@@ -502,7 +511,7 @@ async function humanCommandPlan (obs, entry) {
     plan.waypoint = null;
   } else if (plan.follow == null && /follow|stay near|come with|escort|seguimi|accompagn/i.test(entry.message)) plan.follow = entry.from;
   plan.notes = `human:${entry.from} ${plan.notes || ''}`.trim();
-  if (construction || plan.construction) { plan.construction ??= construction; plan.targets = {}; plan.follow = null; }
+  if (construction || plan.construction) { plan.construction ??= construction; plan.construction.brief = entry.message; plan.targets = {}; plan.follow = null; }
   log('plan', {plan, ms: Date.now() - started, source: 'human'});
   return plan;
 }

@@ -1,11 +1,46 @@
 # Construction
 
 The construction extension preserves the [bounded controller loop](control-flow.md).
-Hermes chooses a structure and parameters, Jev selects an offered action, and the
-local executor handles geometry, materials, working positions and confirmation.
-Implementation is covered by offline tests; real BDS construction is pending.
+For natural-language requests Hermes owns architecture: geometry, style, materials,
+storeys, rooms, roof, furniture and ordered work stages. Jev chooses an offered
+bounded action. Local code expands the model data, checks physical constraints,
+finds working positions, supplies the selected materials and confirms server state.
+Custom designs are offline-tested; complete real BDS construction is still pending.
 
-## Catalogue
+## Model-owned design
+
+The architect prompt lives in [construction-design.mjs](../../construction-design.mjs).
+It requires `construction.design`: a versioned intent and requirement list, named
+rooms, ordered stages, explicit inclusive cuboids and individual cells, terrain
+support, clearance, walk/approach/container checks, and a coverage map connecting
+requirements to part IDs. Coordinates are integer local offsets rotated by the
+chosen facing. Clearance and terrain may also use explicit inclusive regions
+`{from:[x,y,z],to:[x,y,z]}`, bounded to 20000 surveyed cells per list, so the model
+can describe room volumes without enumerating each air cell.
+Every material and geometric part comes from Hermes. The compiler
+only expands cuboids and the mechanical upper door/head bed halves.
+
+The [planning review](../../construction-planning.mjs) previews the design before
+publishing it. Invalid geometry or site issues return to Hermes for at most two
+repairs, preserving the original brief, explicit site and independently authorized
+containers. Architect repair calls have a separate `CONSTRUCTION_DESIGN_TIMEOUT_MS` budget
+(default 300000 ms); ordinary Hermes action calls keep `HERMES_TIMEOUT_MS`.
+An unavailable architect yields `construction_design_rejected`; it
+cannot silently substitute a standard house. Style/biome and semantic requirement
+coverage remain model judgments. The compiler checks declared footprint/storeys
+against floors, supports in stage order, bed support, room walk points, route
+clearance and functional checks; it does not prove aesthetic fidelity.
+
+Supported parts are full structural blocks (including logs and glass), wooden
+doors, torches, chests, beds, crafting tables, furnaces and campfires. Stairs must
+be explicit supported full-block steps; oriented stair/slab states are not yet
+supported. A working campfire requires a nonflammable hearth and separation from
+planned wood/furniture; verification requires observed lit state. A decorative
+chimney alone does not prove a working fireplace. Limits are 4096 material cells,
+32 stages and offsets within 128 blocks. The model supplies temporary access.
+Existing projects retain their immutable geometry and resume by ID.
+
+## Explicit template catalogue
 
 | Type | Default | Supported parameters |
 |---|---|---|
@@ -26,9 +61,12 @@ functional verification. Four cardinal orientations rotate the entire blueprint.
 Use a trusted chat order such as `@bot Costruisci una casa 7x7`,
 `@bot Costruisci un magazzino con 4 casse`, or `@bot Metti in pausa il cantiere`.
 The [human command channel](human-command.md) must already be enabled. Hermes
-interprets the request; a deterministic fallback recognizes basic building orders.
+interprets the request and produces a custom design. A deterministic fallback
+recognizes the construction intent and dimensions only; natural-language requests
+still require the architect stage before a plan is published.
 
-An explicit controller request, against an already running harness:
+An explicit structured template request remains available for compatibility,
+against an already running harness:
 
 ```bash
 CONSTRUCTION='{"type":"house","parameters":{"width":7,"length":7}}' \
@@ -72,6 +110,10 @@ order and protections. A crafting table may be placed outside the reserved build
 area. An unavailable ingredient or unreachable target stops progress with evidence.
 The bot never treats a future blueprint block as current placement support.
 
+The controller accepts a trusted `CONSTRUCTION_AUTHORIZED_CONTAINERS` JSON list
+for natural-language requests. Explicit `CONSTRUCTION.authorizedContainers` takes
+precedence. Designer output cannot grant itself new storage permissions.
+
 Container access requires an explicit `authorizedContainers` list of integer
 `{x,y,z}` coordinates in the construction request. Both taking and surplus
 storage are restricted to those containers. Tools, food and reserved construction
@@ -106,13 +148,15 @@ The [placement ledger](redstone.md) records project ownership; resumption reconc
 only this project's confirmed cells and detects external edits.
 
 Completion requires matching geometry and clearance, actual route traversal,
-opening every warehouse chest, and removal of unchanged owned temporary access.
+opening every requested chest and the exact designed crafting table, approaching
+beds/workstations, observing a lit campfire when included, and removal of unchanged
+owned temporary access.
 Cleanup proves a retreat path and never mines the block under the bot. Partial
 buildings survive failure or cancellation. There is no automatic demolition.
 The `structureBuilt` gameplay criterion requires newly verified construction.
 
-Freeform buildings, sloped bridges, unsupported fitting materials, terrain
-levelling and automatic demolition are outside this first catalogue.
+Sloped bridges, unsupported fitting materials/states, terrain levelling and
+automatic demolition remain outside the supported execution contract.
 
 ## Verification status
 
@@ -151,6 +195,18 @@ Follow the [bounded live-session policy](final-report.md): the production bot st
 off until a scoped round is authorized. Each round needs an approved site,
 materials or approved supply containers, a time/action budget, evidence capture
 and shutdown. See [verification](verification.md) and [open questions](open-questions.md).
+
+The final integrated full offline suite passed **1385/1385** tests. A subsequent
+controller/targeted-workbench check passed **21/21**, and the geometry-repair
+feedback regression passed. Strict wiki lint and `git diff --check` passed.
+
+A subsequent offline design acceptance completed a custom 7 × 7 spruce house
+with two traversable storeys, an upstairs bed, a ground-floor crafting table,
+glass windows and a decorative brick chimney, in the declared stage order. The
+server boundary was simulated. A separate controller/HTTP test passed an actual
+natural-language planning path with a model stub, preview and a custom platform.
+A real Hermes CLI design probe timed out without a usable plan; this is not
+evidence of successful model generation or live execution of a custom house.
 
 ## Sources
 

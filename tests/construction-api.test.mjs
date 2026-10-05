@@ -11,10 +11,12 @@ import { constructionAdapter } from './fixtures/construction-adapter.mjs';
 async function startFixture () {
   const { adapter, events } = constructionAdapter({ inventory: { cobblestone: 25 } });
   const plans = [];
+  const previews = [];
   const server = createServer(async (req, res) => {
     let raw = ''; for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : {};
     try {
+      if (req.url === '/construction/preview') previews.push(body);
       let response = await constructionResponse(adapter, req.method, req.url, body);
       if (!response && req.url === '/observe') response = [200, { position: adapter.pos(), health: 20, food: 20, inventory: adapter.inventory, dimension: 'overworld', construction: adapter.construction.view(), entities: [], drops: [], chat: [], time: { phase: 'day' }, plan: adapter.plan }];
       if (!response && req.url === '/options') response = [200, { options: adapter.options() }];
@@ -25,7 +27,7 @@ async function startFixture () {
     } catch (error) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: error.message })); }
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  return { server, adapter, events, plans, url: `http://127.0.0.1:${server.address().port}` };
+  return { server, adapter, events, plans, previews, url: `http://127.0.0.1:${server.address().port}` };
 }
 
 test('HTTP preview/start/control retain a concrete immutable instance and preview never writes', async () => {
@@ -72,5 +74,44 @@ test('real controller completes a project through HTTP and cannot stop at the ma
   } finally {
     server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true }); rmSync(join('runs', runId), { recursive: true, force: true });
+  }
+});
+
+test('a natural-language order follows Hermes design, read-only preview and bounded HTTP execution', { timeout: 30000 }, async () => {
+  const { server, adapter, plans, previews, events, url } = await startFixture();
+  const dir = mkdtempSync(join(tmpdir(), 'construction-architect-'));
+  const runId = `test-construction-architect-${process.pid}-${Date.now()}`;
+  const brief = 'Build a custom 3x4 stone platform';
+  const design = { version: 1, id: 'model_platform', kind: 'platform',
+    intent: { request: brief, storeys: 1, footprint: {width:3,length:4}, requirements: ['3x4 stone floor'] },
+    stages: [{ id:'foundation',objective:'Build the requested floor' }],
+    cuboids: [{id:'custom_floor',stage:'foundation',role:'floor',phase:'floor',item:'cobblestone',from:[0,0,0],to:[2,0,3]}], cells: [],
+    terrain: [...Array.from({length:12},(_,i)=>[i%3,-1,Math.floor(i/3)]),[1,-1,-1]],
+    clearance: [[1,0,-1],[1,1,-1],[1,2,-1],[1,1,1],[1,2,1]],
+    routes: [{type:'walk',points:[[1,0,-1],[1,1,1],[1,0,-1]]}],
+    coverage: [{requirement:'3x4 stone floor',parts:['custom_floor']}] };
+  const modelPlan = { objective: brief, targets:{}, construction:{type:'platform',origin:{x:0,y:64,z:0},facing:'south',design} };
+  writeFileSync(join(dir,'hermes'), `#!/usr/bin/env node\nconst prompt=process.argv.at(-1);process.stdout.write(prompt.startsWith('Objective:')?'construction_step':${JSON.stringify(JSON.stringify(modelPlan))});\n`, {mode:0o755});
+  let child;
+  try {
+    child = spawn(process.execPath, ['controller.mjs'], {env:{...process.env,PATH:`${dir}:${process.env.PATH}`,HARNESS:url,RUN_ID:runId,CONTROLLER:'hermes',
+      GOAL:brief,CONSTRUCTION:'',CONSTRUCTION_AUTHORIZED_CONTAINERS:'[]',TARGETS:'{}',WAYPOINT:'',CURRICULUM:'',SESSION:'',AUTONOMY:'off',EMERGENCY:'off',GOAL_CONTRACT:'',
+      CHAT_CONTROL:'off',CHAT_ALLOWLIST:'',CHAT_GREET:'off',CHAT_REPLY:'off',MAX_STEPS:'20',REPLAN_EVERY:'2',HERMES_TIMEOUT_MS:'2000'}});
+    let stdout='',stderr='';child.stdout.on('data',c=>stdout+=c);child.stderr.on('data',c=>stderr+=c);
+    const timer=setTimeout(()=>child.kill('SIGKILL'),25000);
+    const code=await new Promise(resolve=>child.on('close',resolve));clearTimeout(timer);
+    assert.equal(code,0,stderr+stdout);
+    assert.match(stdout,/GOAL MET/);
+    assert.equal(previews.length,1);
+    assert.equal(previews[0].design.intent.request,brief);
+    assert.equal(plans.length,1);
+    assert.equal(adapter.construction.project.plan.blueprint.designer,'Hermes');
+    assert.equal(events.placed.length,12,'the stock 25-block platform was not substituted');
+    assert.equal(adapter.construction.project.state,'complete');
+    assert.deepEqual(adapter.construction.project.authorizedContainers,[]);
+  } finally {
+    if(child?.exitCode==null) child?.kill('SIGKILL');
+    server.closeAllConnections();await new Promise(resolve=>server.close(resolve));
+    rmSync(dir,{recursive:true,force:true});rmSync(join('runs',runId),{recursive:true,force:true});
   }
 });

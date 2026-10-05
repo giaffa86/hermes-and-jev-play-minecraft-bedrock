@@ -58,6 +58,8 @@ never committed.
 | `skills/gameplay/` | Declarative gameplay skills. |
 | `harness.mjs` | The Java Edition "toy" harness (flying-squid + mineflayer). |
 
+| `construction-design.mjs` / `construction-planning.mjs` | Model-owned architectural geometry, compiler contracts and read-only planner repair; no aesthetic fallback. |
+
 ## Private sources (not committed)
 
 | Source | Role |

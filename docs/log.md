@@ -2604,3 +2604,12 @@ Verification: the integrated full suite passed **1333/1333** tests; the final
 focused crafting/provider/controller/recall check passed **31/31**. The provider
 file contains 13 targeted cases. Strict wiki/privacy lint and `git diff --check`
 passed. Construction live validation and this new sourcing slice remain pending.
+
+## [2026-10-05] ingest | Model-owned construction architecture
+
+Natural-language construction now requires Hermes geometry, ordered stages, rooms,
+furniture and explicit requirement coverage. A read-only preview returns failures
+for model repair without granting new chest permissions or replacing the brief
+with a prefab. Offline custom-house and controller/HTTP acceptance passed; the
+real Hermes probe timed out. The live house remains partial at 18 confirmed floor
+blocks, paused, with the harness off. See [construction](wiki/construction.md).

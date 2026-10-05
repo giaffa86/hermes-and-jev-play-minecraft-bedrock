@@ -3645,6 +3645,7 @@ export class BedrockAdapter {
       // come trigger chat: il bot risponde anche se lo si chiama per nome.
       self: {username: USERNAME, name: this.selfName ?? null},
       position: this.pos(),
+      biome: this.position && typeof this.world.biomeAt === 'function' ? this.world.biomeAt(this.position) : null,
       health: this.health,
       food: this.food,
       dimension: this.dimension,
@@ -5442,11 +5443,13 @@ export class BedrockAdapter {
     return { actions, result };
   }
 
-  async _ensureCraftingTableOpen () {
-    if (this._openContainer?.type === 'workbench') return;
+  async _ensureCraftingTableOpen ({ position = null } = {}) {
+    if (this._openContainer?.type === 'workbench' && !position) return;
     if (this._openContainer) await this._closeContainer();
-    const table = this.world.findBlocks('crafting_table', this.position, 32, 1)[0];
-    if (!table) throw new Error('crafting_table_not_found');
+    const table = position ? { ...this.world.blockAt(position), position,
+      distance: Math.hypot(this.position.x - position.x - 0.5, this.position.y - position.y - 0.5, this.position.z - position.z - 0.5) }
+      : this.world.findBlocks('crafting_table', this.position, 32, 1)[0];
+    if (!table || table.name !== 'crafting_table') throw new Error('crafting_table_not_found');
     if (table.distance > 3.5) {
       // Bersaglio a quota tavolo: i piedi accanto al tavolo stanno alla stessa
       // quota del blocco (il tavolo è appoggiato al terreno).
@@ -5468,6 +5471,7 @@ export class BedrockAdapter {
       }
     }
     if (this._openContainer?.type !== 'workbench') throw lastError || new Error('crafting_table_not_opened');
+    this._openContainerBlock = table;
     await delay(200); // lascia arrivare inventory_content con lo stato della griglia
   }
 

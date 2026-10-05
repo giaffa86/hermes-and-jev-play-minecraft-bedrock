@@ -58,7 +58,7 @@ export function constructionAdapter ({ inventory = {}, memory = null, refuse = n
   };
   // The real _queueAuthInput reaches this simulated server. It rejects distant
   // clicks, missing inventory and occupied destinations exactly at the boundary.
-  a._sendAuthInput = ({ transaction }) => {
+  a._sendAuthInput = ({ transaction, yaw = 0 }) => {
     if (!transaction) return;
     const data = transaction.data;
     if (data.action_type !== 'click_block') throw new Error('fixture_unsupported_packet');
@@ -71,8 +71,15 @@ export function constructionAdapter ({ inventory = {}, memory = null, refuse = n
     if (Math.hypot(a.position.x - support.x - 0.5, a.position.y - support.y - 0.5, a.position.z - support.z - 0.5) > 4.6) throw new Error('fixture_out_of_reach');
     if (!(a.inventory[name] > 0) || !(data.held_item.count > 0)) throw new Error('fixture_missing_material');
     if (/door$/.test(name) && !isAir(a.world.blockAt({ ...position, y: position.y + 1 }))) throw new Error('fixture_door_upper_occupied');
+    let bedHead = null;
+    if (name === 'bed') {
+      const direction = { south: [0, 1], east: [1, 0], north: [0, -1], west: [-1, 0] }[a._facingFromYaw(yaw)];
+      bedHead = { x: position.x + direction[0], y: position.y, z: position.z + direction[1] };
+      if (!isAir(a.world.blockAt(bedHead)) || !safeSolid(a.world.blockAt({ ...bedHead, y: bedHead.y - 1 }))) throw new Error('fixture_bed_head_invalid');
+    }
     put(position, name, /door$/.test(name) ? { upper_block_bit: false } : {});
     if (/door$/.test(name)) put({ ...position, y: position.y + 1 }, name, { upper_block_bit: true });
+    if (bedHead) put(bedHead, 'bed');
     a.inventory[name]--; data.held_item.count--;
     events.placed.push({ name, position, support }); a._reachCache = null;
   };

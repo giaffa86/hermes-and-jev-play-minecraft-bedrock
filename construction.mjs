@@ -26,7 +26,7 @@ export function worldCell (origin, offset, facing = 'south') {
   return { x: origin.x + x, y: origin.y + y, z: origin.z + z };
 }
 
-const FULL_BLOCKS = /^(cobblestone|cobbled_deepslate|stone|blackstone|bricks|stone_bricks|deepslate_bricks|sandstone|smooth_sandstone|glass|[a-z_]+_planks)$/;
+const FULL_BLOCKS = /^(cobblestone|cobbled_deepslate|stone|blackstone|bricks|stone_bricks|deepslate_bricks|sandstone|smooth_sandstone|glass|[a-z_]+_planks|[a-z_]+_log)$/;
 const names = value => typeof value === 'string' && /^[a-z][a-z0-9_]*$/.test(value);
 const offsetOK = p => Array.isArray(p) && p.length === 3 && p.every(Number.isSafeInteger) && p.every(v => Math.abs(v) <= 128);
 
@@ -181,12 +181,16 @@ export function createBlueprint (def, parameters = {}) {
 export function validateBlueprint (b) {
   const errors = [];
   if (b?.version !== CONSTRUCTION_VERSION || !names(b?.id)) return ['invalid_identity'];
+  if (!b.parameters?.palette || typeof b.parameters.palette !== 'object' || Array.isArray(b.parameters.palette)) errors.push('invalid_palette');
   if (!Array.isArray(b.cells) || !b.cells.length || b.cells.length > MAX_CONSTRUCTION_CELLS) return ['invalid_cell_count'];
   const occupied = new Set();
   for (const c of b.cells) {
+    if (!c || typeof c !== 'object') { errors.push('invalid_cell'); continue; }
     if (!names(c.item) || !names(c.block) || forbiddenBlock(c.item) || forbiddenBlock(c.block)) errors.push('invalid_material');
     if (!PHASES.includes(c.phase)) errors.push('invalid_phase');
+    if (c.secondary != null && !Array.isArray(c.secondary)) { errors.push('invalid_secondary'); continue; }
     for (const row of [c, ...(c.secondary ?? [])]) {
+      if (!row || !names(row.block) || forbiddenBlock(row.block)) { errors.push('invalid_secondary_material'); continue; }
       if (!offsetOK(row.offset)) { errors.push('invalid_offset'); continue; }
       const k = row.offset.join(',');
       if (occupied.has(k)) errors.push(`duplicate:${k}`);
@@ -198,14 +202,15 @@ export function validateBlueprint (b) {
     if (!Array.isArray(b[field])) { errors.push(`invalid_${field}`); continue; }
     for (const p of b[field]) {
       if (!offsetOK(p)) errors.push(`invalid_${field}_offset`);
-      if (field === 'clearance' && occupied.has(p.join(','))) errors.push('clearance_collision');
+      if (field === 'clearance' && offsetOK(p) && occupied.has(p.join(','))) errors.push('clearance_collision');
     }
   }
   if (!Array.isArray(b.routes) || !b.routes.length) errors.push('no_functional_checks');
   else for (const route of b.routes) {
+    if (!route || typeof route !== 'object') { errors.push('invalid_functional_check'); continue; }
     if (route.type === 'walk') {
       if (!Array.isArray(route.points) || route.points.length < 2 || !route.points.every(offsetOK)) errors.push('invalid_walk');
-    } else if (route.type !== 'container' || !offsetOK(route.offset)) errors.push('invalid_functional_check');
+    } else if (!['container', 'approach'].includes(route.type) || !offsetOK(route.offset)) errors.push('invalid_functional_check');
   }
   // A valid plan needs a chain of genuine supports rooted in declared terrain.
   // Interactive fittings cannot support other placements. The executor still
@@ -238,6 +243,10 @@ export function planStructure (blueprint, { origin, facing = 'south', dimension 
   if (dimension !== 'overworld' && Object.values(blueprint.parameters.palette).some(n => /_planks$|wooden_door/.test(n))) throw new Error('flammable_dimension_palette');
   const at = p => worldCell(origin, p, facing);
   const cells = blueprint.cells.map(c => ({ ...c, position: at(c.offset), secondary: (c.secondary ?? []).map(s => ({ ...s, position: at(s.offset) })) }));
+  for (const c of cells) if (c.facing) {
+    c.facing = FACINGS[(FACINGS.indexOf(c.facing) + FACINGS.indexOf(facing)) % 4];
+    c.yaw = { south: 0, east: 270, north: 180, west: 90 }[c.facing];
+  }
   if (cells.some(c => c.position.y > 319 || c.position.y < -64)) throw new Error('outside_world_height');
   const required = {};
   for (const c of cells) required[c.item] = (required[c.item] ?? 0) + 1;
@@ -319,7 +328,7 @@ export function placementSupports (cell, read) {
   const { x, y, z } = cell.position;
   const sides = [[{ x, y: y - 1, z }, 1], [{ x: x - 1, y, z }, 5], [{ x: x + 1, y, z }, 4],
     [{ x, y, z: z - 1 }, 3], [{ x, y, z: z + 1 }, 2]];
-  const candidates = /door$|torch$|chest$/.test(cell.block) ? sides.slice(0, 1) : sides;
+  const candidates = /door$|torch$|chest$|^bed$|campfire$|^crafting_table$|^furnace$/.test(cell.block) ? sides.slice(0, 1) : sides;
   return candidates.filter(([position]) => usableSupport(read(position))).map(([position, face]) => ({ position, face }));
 }
 

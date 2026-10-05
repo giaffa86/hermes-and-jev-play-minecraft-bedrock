@@ -5,6 +5,8 @@ export async function constructionResponse (adapter, method, path, body = {}) {
   if (method === 'POST' && path === '/construction/preview') {
     const report = adapter.construction.preview(body);
     return [200, { ok: report.ok, hash: report.plan.hash, bounds: report.plan.bounds,
+      designer: report.plan.blueprint.designer ?? 'template', intent: report.plan.blueprint.intent ?? null,
+      stages: report.plan.blueprint.stages ?? null, coverage: report.plan.blueprint.coverage ?? null,
       parameters: report.plan.blueprint.parameters, materials: report.materials, missing: report.missing,
       phases: [...new Set(report.plan.cells.map(c => c.phase))], issues: report.survey.issues.slice(0, 30),
       functionalChecks: report.plan.routes.length, temporaryBlocks: report.plan.cells.filter(c => c.temporary).length }];

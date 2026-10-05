@@ -285,3 +285,20 @@ test('the wool tag matches any wool colour (bed recipe)', () => {
   assert.equal(adapter._ingredientMatches(tag('wool'), 'red_wool'), true);
   assert.equal(adapter._ingredientMatches(tag('wool'), 'oak_planks'), false);
 });
+
+test('targeted workbench verification opens the requested table instead of reusing another window', async () => {
+  const a=craftAdapter(), target={x:0,y:64,z:0};
+  a._feet={x:1.5,y:64,z:0.5};a.position={x:1.5,y:65.62,z:0.5};
+  a._openContainer={id:9,type:'workbench'};
+  let closed=0,clicked=null;
+  a._closeContainer=async()=>{closed++;a._openContainer=null;};
+  a.world.blockAt=position=>({name:'crafting_table',position});
+  a.world.findBlocks=()=>assert.fail('an explicit table must not be replaced with a nearest table');
+  a._waitForContainerOpen=async()=>{};
+  a._blockUseTransaction=position=>({position});
+  a._queueAuthInput=async({transaction})=>{clicked=transaction.position;a._openContainer={id:2,type:'workbench'};};
+  await a._ensureCraftingTableOpen({position:target});
+  assert.equal(closed,1);
+  assert.deepEqual(clicked,target);
+  assert.deepEqual(a._openContainerBlock.position,target);
+});
