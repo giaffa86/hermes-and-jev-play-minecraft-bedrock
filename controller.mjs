@@ -521,8 +521,8 @@ async function humanCommandPlan (obs, entry) {
   // un *target* (cioe' minare!) e comunque non esiste un'opzione che generi lui
   // per buttare via qualcosa. `word` e' la parola dell'umano ("diamanti"),
   // `token` il nome Minecraft ("diamond"), `count` la quota o null = tutto.
-  if (isDropOrder(entry.message)) {
-    const item = orderItem(entry.message) ?? {};
+  if (isDropOrder(entry.message, obs)) {
+    const item = orderItem(entry.message, obs) ?? {};
     const items = inventoryMatchingToken(obs.inventory, item.token);
     const before = {};
     for (const name of items) before[name] = Number(obs.inventory?.[name] || 0);
@@ -531,7 +531,7 @@ async function humanCommandPlan (obs, entry) {
       targets: {},
       waypoint: null,
       follow: null,
-      drop: {token: item.token ?? null, word: item.word ?? null, count: dropCountFromText(entry.message), items, before},
+      drop: {token: item.token ?? null, word: item.word ?? null, count: dropCountFromText(entry.message), items, before, recipient:entry.from},
       notes: `human:${entry.from} drop:${item.token}`,
     };
     log('plan', {plan, ms: 0, source: 'human', deterministic: 'drop'});
@@ -542,8 +542,8 @@ async function humanCommandPlan (obs, entry) {
   // (`observe().drops`); se non ne vede nessuno il piano resta vuoto e l'ordine
   // si chiude con un avviso, invece di mandare il bot a *minare* (che e' quello
   // che farebbe il planner con "prendi/cattura <oggetto>").
-  if (isCollectOrder(entry.message)) {
-    const item = orderItem(entry.message) ?? {};
+  if (isCollectOrder(entry.message, obs)) {
+    const item = orderItem(entry.message, obs) ?? {};
     const drops = (obs.drops || []).filter(d => matchesItemToken(d.item, item.token));
     const plan = {
       objective: t(CHAT_LANG, 'fallback.collect', {word: item.word ?? item.token ?? ''}),

@@ -45,6 +45,23 @@ test('dropCountFromText legge la quota, e ignora le cifre dentro una parola', ()
   assert.equal(dropCountFromText('@bot1 getta i diamanti'), null, 'le cifre del gamertag non sono una quota');
   assert.equal(dropCountFromText('@bot1 getta i diamanti'), null);
   assert.equal(dropCountFromText('@bot getta 0 diamanti'), null);
+  assert.equal(dropCountFromText('@bot getta una patata cotta'), 1);
+  assert.equal(dropCountFromText('@bot getta una sola patata cotta'), 1);
+  assert.equal(dropCountFromText('@bot drop one baked potato'), 1);
+});
+
+test('cooked potatoes resolve to the cooked inventory item before the generic potato token', () => {
+  assert.equal(isDropOrder('@bot getta una patata cotta'),true);
+  assert.equal(orderItem('@bot getta una patata cotta').token,'baked_potato');
+  assert.deepEqual(inventoryMatchingToken({potato:4,baked_potato:31},orderItem('@bot getta una patata cotta').token),['baked_potato']);
+  assert.equal(isDropOrder('@bot drop one baked potato'),true);
+});
+
+test('observed Minecraft names beat incidental words such as da terra', () => {
+  const obs={inventory:{spruce_log:1},drops:[{item:'spruce_log',count:1}]};
+  assert.equal(isCollectOrder('@bot raccogli spruce log da terra',obs),true);
+  assert.equal(orderItem('@bot raccogli spruce log da terra',obs).token,'spruce_log');
+  assert.equal(orderItem('@bot getta uno spruce_log',obs).token,'spruce_log');
 });
 
 test('inventoryMatchingToken preferisce il nome esatto e non tocca gli attrezzi', () => {

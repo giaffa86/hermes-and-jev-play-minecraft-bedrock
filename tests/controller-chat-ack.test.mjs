@@ -759,6 +759,35 @@ async function startInventoryHarness ({ chatMessage, inv = {}, drops = [], token
   return { ...harness, inventory: () => ({ ...inventory }), ground: () => [...ground] };
 }
 
+test('getta una patata cotta executes one drop before saying fatto',async()=>{
+  let potatoes=31;
+  const harness=await startChatHarness({
+    chatMessage:'@bot getta una patata cotta',
+    extra:()=>({inventory:{dirt:1,baked_potato:potatoes}}),
+    options:()=>[{key:'drop_item',description:'Drop the requested baked potato'}],
+    act:key=>{assert.equal(key,'drop_item');potatoes--;return {ok:true,ms:5};},
+  });
+  const fake=fakeHermesQueue([]);
+  const runId=`test-chat-potato-${process.pid}-${Date.now()}`;
+  try {
+    const {code,stdout}=await runController({...baseEnv(runId,harness.port,fake.dir),GOAL_CONTRACT:'',TARGETS:'{"dirt":1}',GOAL:'wait for orders'});
+    assert.equal(code,0,stdout);
+    const events=readEvents(runId);
+    const plan=events.find(e=>e.type==='plan'&&e.deterministic==='drop')?.plan;
+    assert.equal(plan.drop.token,'baked_potato');
+    assert.equal(plan.drop.count,1);
+    assert.equal(potatoes,30);
+    const acts=harness.calls.filter(c=>c.path==='/act');
+    assert.deepEqual(acts.map(c=>c.payload.key),['drop_item']);
+    const lastSay=harness.calls.findLastIndex(c=>c.path==='/say');
+    assert.ok(lastSay>harness.calls.findIndex(c=>c.path==='/act'),'the completion reply follows the actual drop');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT,'runs',runId),{recursive:true,force:true});
+    rmSync(fake.dir,{recursive:true,force:true});
+  }
+});
+
 test("un ordine \"getta i diamanti\" è deterministico: drop_item scelto dal controller, non dal modello", async () => {
   const harness = await startInventoryHarness({
     chatMessage: '@bot getta i diamanti',

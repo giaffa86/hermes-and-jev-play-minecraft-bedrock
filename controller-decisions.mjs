@@ -149,8 +149,8 @@ const COLLECT_GATHER_VERB = /\b(raccogli|raccogliere|raccoglili|collect)\b/;
 const ANY_NUMBER = /\b\d+\b/;
 
 // L'oggetto nominato, o null: `{token, word}` dal catalogo.
-export function orderItem (message) {
-  return matchItemWordText(message);
+export function orderItem (message, {inventory = {}, drops = []} = {}) {
+  return matchItemWordText(message, {names:[...Object.keys(inventory), ...drops.map(drop=>drop.item).filter(Boolean)]});
 }
 
 // Quanti pezzi buttare: il primo numero del messaggio ("getta 5 diamanti"),
@@ -158,7 +158,7 @@ export function orderItem (message) {
 // parola ("@bot123") non contano: `\b` non ha confine fra lettera e cifra.
 export function dropCountFromText (message) {
   const hit = /\b(\d{1,3})\b/.exec(String(message || ''));
-  if (!hit) return null;
+  if (!hit) return /\b(una?|uno|one)\b|\b(drop|throw|toss)\s+(a|an)\s/i.test(String(message || '')) ? 1 : null;
   const count = Number(hit[1]);
   return count > 0 ? count : null;
 }
@@ -191,17 +191,17 @@ export function tokenInventoryTotal (inventory, token) {
 
 export { matchesItemToken };
 
-export function isDropOrder (message) {
+export function isDropOrder (message, observation) {
   const text = String(message || '').toLowerCase();
   if (!DROP_VERB.test(text)) return false;
-  return orderItem(text) != null;
+  return orderItem(text, observation) != null;
 }
 
-export function isCollectOrder (message) {
+export function isCollectOrder (message, observation) {
   const text = String(message || '').toLowerCase();
   if (!COLLECT_VERB.test(text)) return false;
   if (COLLECT_GATHER_VERB.test(text) && ANY_NUMBER.test(text)) return false;
-  return orderItem(text) != null;
+  return orderItem(text, observation) != null;
 }
 
 // Un ordine "getta <oggetto>" e' chiuso quando l'oggetto e' uscito

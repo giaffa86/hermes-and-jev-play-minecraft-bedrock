@@ -117,6 +117,8 @@ const ITEM_WORDS = [
   [/\b(armatur(a|e)|armor|armour|armures?|armaduras?|rustung(en)?)\b/, 'armor'],
   [/\b(scud(o|i)|shield|boucliers?|escudos?|schild(er)?)\b/, 'shield'],
   [/\b(pagnott(a|e)|pane|bread|pains?|pan(es)?|brot(e)?)\b/, 'bread'],
+  [/\b(patat[ae]\s+(cott[ae]|al\s+forno)|baked\s+potato(?:es)?|baked_potato)\b/, 'baked_potato'],
+  [/\b(patat[ae]|potato(?:es)?)\b/, 'potato'],
   [/\b(mel(a|e)|apple|pommes?|manzanas?|apfel)\b/, 'apple'],
   [/\b(terr(a|e)|dirt|terres?|tierras?|erde(n)?)\b/, 'dirt'],
   [/\b(pietr(a|e)|stone|pierres?|piedras?|stein(e)?)\b/, 'stone'],
@@ -181,9 +183,17 @@ export function matchesItemToken (name, token) {
 // "getta i diamanti" -> `{token: 'diamond', word: 'diamanti'}`. Serve agli
 // ordini di gettare/raccogliere, che devono *parlare* la lingua dell'umano
 // (`word`) ma *cercare* il nome dell'item (`token`).
-export function matchItemWordText (message) {
+export function matchItemWordText (message, { names = [] } = {}) {
   const text = normalizeForMatching(message);
   if (!text) return null;
+  // Resolve names actually observed in inventory/on the ground before aliases.
+  // In "raccogli spruce log da terra", spruce log is the item, not "terra".
+  for (const token of [...new Set(names)].sort((a,b)=>b.length-a.length)) {
+    if (!/^[a-z0-9_]+$/.test(token)) continue;
+    const pattern = new RegExp(`\\b${token.replaceAll('_','[ _]+')}\\b`);
+    const hit = pattern.exec(text);
+    if (hit) return {token, word:hit[0]};
+  }
   for (const [pattern, token] of ITEM_WORDS) {
     const hit = pattern.exec(text);
     if (hit) return { token, word: hit[0].trim() };

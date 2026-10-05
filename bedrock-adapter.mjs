@@ -490,6 +490,7 @@ export class BedrockAdapter {
     this._entitiesByUnique = new Map(); // uniqueId -> runtimeId
     this._timeBase = null;             // { ticks, at } dell'ultimo set_time
     this.sleeping = false;
+    this._playerSleepKnown = false;
     this.dead = false;
     this.deaths = 0;
     this._respawnAt = 0;
@@ -4617,7 +4618,7 @@ export class BedrockAdapter {
       } else if (key === 'collect_drop') {
         result = await this._collectDrop(20000, { names: this._plannedCollectNames() });
       } else if (key === 'drop_item') {
-        result = await this._dropItems(this._plannedDrop() ?? {});
+        result = await this._dropItems({ ...(this._plannedDrop() ?? {}), leaveDrop: true, recipient: this.plan?.drop?.recipient });
       } else if (key === 'dig_down') {
         result = await this._digDown();
       } else if (key === 'dig_up') {
@@ -5028,13 +5029,47 @@ export class BedrockAdapter {
   // sposta una pila dall'inventario al mondo, senza passare dal cursore (a
   // differenza di `take`+`place`). Serve una finestra inventario aperta, come
   // per ogni stack request. `count` null = tutto quello che c'e' dell'oggetto.
-  async _dropItems ({ names = [], count = null } = {}) {
+  _dropEscapeSpot (yaw) {
+    if (!this._feet) return null;
+    const start = this._startNode();
+    const angle = yaw * Math.PI / 180;
+    const forward = { x: -Math.sin(angle), z: Math.cos(angle) };
+    const candidates = [];
+    for (const [dx,dz] of [[3,0],[-3,0],[0,3],[0,-3],[2,2],[2,-2],[-2,2],[-2,-2]]) {
+      const spot = {x:start.x+dx+0.5,y:start.y,z:start.z+dz+0.5};
+      if (!this._bedStandSpotFree(spot)) continue;
+      const distance = Math.hypot(spot.x-this._feet.x,spot.z-this._feet.z);
+      if (distance < 2.5) continue;
+      const goal = {x:Math.floor(spot.x),y:spot.y,z:Math.floor(spot.z)};
+      const path = this._findPath(start,goal,{maxNodes:128});
+      const end = path?.at(-1);
+      if (!end || end.x!==goal.x || end.y!==goal.y || end.z!==goal.z || path.length>7) continue;
+      if (path.some(node=>node.y!==start.y || !this._bedStandSpotFree(node))) continue;
+      candidates.push({spot,score:(dx*forward.x+dz*forward.z)+path.length*0.1});
+    }
+    candidates.sort((a,b)=>a.score-b.score);
+    return candidates[0]?.spot ?? null;
+  }
+
+  async _dropItems ({ names = [], count = null, leaveDrop = false, recipient = null } = {}) {
     const wanted = (Array.isArray(names) ? names : []).filter(name => (this.inventory[name] || 0) > 0);
     if (!wanted.length) return { ok: false, error: 'nothing_to_drop', inventory: this.inventory };
+    const beforeInventory = {...this.inventory};
+    const human = recipient ? [...this.entities.values()].find(entity=>entity.kind==='player' && entity.username?.toLowerCase()===recipient.toLowerCase()) : null;
+    const yaw = human?.position ? this._yawTo(this.position,human.position) : this._lastYaw ?? 0;
+    const escape = leaveDrop ? this._dropEscapeSpot(yaw) : null;
+    if (leaveDrop && !escape) return {ok:false,error:'drop_clearance_unavailable',inventory:this.inventory};
     let remaining = Number.isFinite(count) && count > 0 ? Math.floor(count) : null;
     const dropped = [];
     try {
       await this._ensureInventoryOpen();
+      if (leaveDrop) {
+        // Bed use leaves the camera pointing down. Toss horizontally, then
+        // leave the pickup radius using a short, fully observed level path.
+        this._lastYaw=yaw;
+        this._lastPitch=0;
+        await this._queueAuthInput({yaw,pitch:0});
+      }
       for (const name of wanted) {
         while (remaining == null || remaining > 0) {
           // Lo slot si rilegge a ogni giro: `_applyStackResponse` aggiorna il
@@ -5074,10 +5109,17 @@ export class BedrockAdapter {
         }
       }
     } finally {
+      if (escape && dropped.length) {
+        try { await this._moveTo(escape,0.15,4000,{preciseArrival:true,arrivalVerticalTolerance:0.15}); }
+        catch (error) { this.log('drop_clearance_failed',{message:error.message}); }
+        await delay(300);
+      }
       this._refreshInventory();
     }
     if (!dropped.length) return { ok: false, error: 'nothing_to_drop', inventory: this.inventory };
     const total = dropped.reduce((sum, entry) => sum + entry.count, 0);
+    const lost = wanted.reduce((sum,name)=>sum+Math.max(0,(beforeInventory[name]||0)-(this.inventory[name]||0)),0);
+    if (leaveDrop && lost < total) return {ok:false,error:'drop_recollected',dropped,count:total,inventory:this.inventory};
     this.log('drop_item', { items: dropped, count: total });
     return { ok: true, dropped, count: total, inventory: this.inventory };
   }
@@ -9529,6 +9571,11 @@ export class BedrockAdapter {
   }
 
   _driveMotion (tick) {
+    if (this.sleeping) {
+      this._lastSimTick = tick;
+      this._velocity = { x: 0, y: 0, z: 0 };
+      return;
+    }
     let steps = this._lastSimTick == null ? 1 : Number(tick - this._lastSimTick);
     if (!(steps >= 0)) steps = 0;
     if (steps > MAX_SIM_STEPS) steps = MAX_SIM_STEPS;
@@ -10451,6 +10498,18 @@ export class BedrockAdapter {
     const isSelf = this.client && String(this.client.entityId) === runtimeId;
     const entity = this.entities.get(runtimeId);
     if (!isSelf && !entity) return;
+    // Player sleep is byte metadata 26, bit 1. Read it before generic flags:
+    // resting describes other actors and can be false in the same packet.
+    if (isSelf) {
+      for (const entry of packet.metadata || []) {
+        if (entry.key !== 'player_flags' && entry.key !== 26) continue;
+        const sleeping = this._metadataFlag(entry.value, 'sleep', { sleep: 1 });
+        if (sleeping == null) continue;
+        this._playerSleepKnown = true;
+        if (sleeping !== this.sleeping) this.log('sleep_signal', { source: 'player_flags', sleeping, raw: entry.value });
+        this._setSleeping(sleeping);
+      }
+    }
     for (const entry of packet.metadata || []) {
       const key = typeof entry.key === 'string'
         ? entry.key
@@ -10471,7 +10530,7 @@ export class BedrockAdapter {
       if (key === 'max_trade_tier' && entity) {
         entity.maxTradeTier = Number(entry.value);
       }
-      if (key === 'flags' && isSelf) {
+      if (key === 'flags' && isSelf && !this._playerSleepKnown) {
         const resting = this._metadataFlag(entry.value, 'resting');
         if (resting != null && resting !== this.sleeping) this.log('sleep_signal', { source: 'flags', resting, raw: entry.value?._value != null ? String(entry.value._value) : entry.value });
         if (resting != null) this._setSleeping(resting);
@@ -10827,6 +10886,11 @@ export class BedrockAdapter {
   _setSleeping (sleeping) {
     if (this.sleeping === sleeping) return;
     this.sleeping = sleeping;
+    if (sleeping) {
+      if (this._motion?.active) this._finishMotion('sleeping');
+      this._freeJump = null;
+      this._velocity = { x: 0, y: 0, z: 0 };
+    }
     this._daySince = null;
     this.log(sleeping ? 'sleep_start' : 'sleep_end', { position: this.pos() });
   }
@@ -12692,7 +12756,7 @@ export class BedrockAdapter {
     const waitUntil = Date.now() + confirmMs;
     while (Date.now() < waitUntil) {
       const confirmed = this._sleepConfirmed(beforeTicks);
-      if (this.sleeping || confirmed) return { ok: true, slept: confirmed ? 'night_skipped' : 'resting_flag', bed: bed.position };
+      if (this.sleeping || confirmed) return { ok: true, slept: confirmed ? 'night_skipped' : this._playerSleepKnown ? 'player_sleep_flag' : 'resting_flag', bed: bed.position };
       await delay(100);
     }
     // Nessuna conferma: il server può aver comunque spostato il giocatore a letto

@@ -907,3 +907,12 @@ quieter hello is preferred (still an open question).
   (`source_name`, `type`, `message`, `xuid`, …); `packet_add_player` (`username`).
 - Related wiki: [overview](overview.md), [headless-client](headless-client.md),
   [open-questions](open-questions.md).
+
+### Exact food quantities and observed names
+
+`getta una patata cotta` selects one `baked_potato`. Minecraft names observed in
+inventory or on the ground also accept spaces, such as `raccogli spruce log da terra`.
+After dropping, the bot levels its camera and leaves the pickup radius along a
+short, loaded, level path. It refuses without safe clearance and reports an
+item picked back up as `drop_recollected`. The inventory change must remain
+visible before the goal can close successfully.

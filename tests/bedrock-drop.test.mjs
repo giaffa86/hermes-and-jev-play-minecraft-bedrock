@@ -48,6 +48,38 @@ function dropAdapter (inventorySlots = []) {
 
 const slot = (name, count, stackId, index = 0) => ({ name, count, stack_id: stackId, network_id: 100 + index });
 
+function levelDropAdapter() {
+  const bot=dropAdapter([slot('baked_potato',31,7)]);
+  bot.world.blockAt=({y})=>y===62 ? {name:'stone',boundingBox:'block'}:{name:'air',boundingBox:'empty'};
+  bot._lastPitch=75;
+  bot.inputs=[];
+  bot._queueAuthInput=async input=>bot.inputs.push(input);
+  bot._moveTo=async target=>{bot._feet={...target};bot.position={...target,y:target.y+1.62};};
+  return bot;
+}
+
+test('live drop faces horizontally and leaves the pickup radius before reporting success',async()=>{
+  const bot=levelDropAdapter();
+  const start={...bot._feet};
+  const result=await bot._dropItems({names:['baked_potato'],count:1,leaveDrop:true});
+  assert.equal(result.ok,true,JSON.stringify(result));
+  assert.equal(bot.inputs[0].pitch,0,'a downward bed camera must not throw at the feet');
+  assert.ok(Math.hypot(bot._feet.x-start.x,bot._feet.z-start.z)>=2.5);
+  assert.equal(bot.inventory.baked_potato,30,'only one potato leaves the inventory');
+});
+
+test('live drop refuses without a clear level route and detects a potato picked back up',async()=>{
+  const blocked=dropAdapter([slot('baked_potato',31,7)]);
+  const refused=await blocked._dropItems({names:['baked_potato'],count:1,leaveDrop:true});
+  assert.equal(refused.error,'drop_clearance_unavailable');
+  assert.equal(blocked.stackRequests.length,0);
+  const bot=levelDropAdapter();
+  bot._moveTo=async()=>{bot.inventorySlots[0].count=31;};
+  const result=await bot._dropItems({names:['baked_potato'],count:1,leaveDrop:true});
+  assert.equal(result.ok,false);
+  assert.equal(result.error,'drop_recollected','a temporary inventory decrease cannot report success');
+});
+
 test('_dropItems butta via tutta la pila con l\'azione `drop`, senza cursore', async () => {
   const adapter = dropAdapter([slot('diamond', 3, 7)]);
   const result = await adapter._dropItems({ names: ['diamond'], count: null });

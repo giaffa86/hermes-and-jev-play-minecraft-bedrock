@@ -3029,3 +3029,37 @@ Validation: the 48 focused sleep/visibility/controller cases and all 64 survival
 cases pass. The complete offline suite passes **1476/1476** tests with exit status
 0. Strict wiki lint and `git diff --check` pass. The candidate is isolated and has
 not been deployed or verified live.
+
+
+## [2026-10-05] ingest | Player-specific sleep confirmation
+
+The integrated release connected successfully and answered a real trusted player's
+chat message, but bed attempts still returned `sleep_rejected`. The server moved
+the bot to the bed without the generic `resting` signal. The adapter had ignored
+player byte metadata 26: its sleep bit is 1, as defined by
+[BedrockProtocol player metadata flags](https://github.com/pmmp/BedrockProtocol/blob/master/src/types/entity/PlayerMetadataFlags.php).
+
+Player sleep metadata now takes precedence over generic actor flags in either
+packet order. A later player byte explicitly confirms waking. Local motion
+simulation pauses while sleeping and clears pending jumps, preserving the server
+position instead of predicting standing gravity. Bed use reports
+`player_sleep_flag` and does not send `stop_sleeping` after this confirmation.
+Regression coverage: [player sleep](../tests/bedrock-player-sleep.test.mjs).
+Live sleeping remains unverified until the new signal is observed on the server.
+
+
+## [2026-10-05] ingest | Food and observed item names in inventory orders
+
+Live chat orders for a baked potato went through the generic planner, which
+closed after approaching the human without dropping anything. The vocabulary
+now recognises cooked potatoes and singular quantities. Names present in the
+observed inventory or ground items accept spaces or underscores before aliases,
+so `raccogli spruce log da terra` selects `spruce_log` rather than dirt.
+
+The native drop was accepted, but the human saw the bot pick its own potato back
+up. Runtime drops now level the camera, face the sender when visible, and leave
+the pickup radius on a short, loaded path at the same elevation. Without that
+clearance they refuse before changing inventory. A regained item returns
+`drop_recollected` rather than a successful action. Regression coverage includes
+one cooked potato, names observed in the world, horizontal tossing, unavailable
+clearance, and immediate re-collection.
