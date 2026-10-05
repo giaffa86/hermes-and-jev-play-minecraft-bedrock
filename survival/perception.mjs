@@ -178,8 +178,9 @@ export function perceive (observation = {}) {
   const nearestThreat = threats[0] || null;
   const food = Number.isFinite(observation.food) ? observation.food : null;
   const health = Number.isFinite(observation.health) ? observation.health : null;
-  // Fame critica: anche un cibo di ultima istanza (patata cruda) conta come
-  // cibo, cosi' il governor chiede `eat` invece di mandare a raccogliere.
+  // La patata cruda e' cibo sicuro (in fondo a FOOD_PRIORITY); con la fame
+  // critica contano anche i commestibili con un effetto collaterale, cosi' il
+  // governor chiede `eat` invece di mandare a raccogliere.
   const bestFoodItem = bestFood(inventory, { allowLastResort: food != null && food <= STARVING_FOOD });
   const bed = observation.bed || null;
   return {

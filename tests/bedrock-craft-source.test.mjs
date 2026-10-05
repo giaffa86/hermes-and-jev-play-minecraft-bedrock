@@ -132,25 +132,31 @@ test('observe() espone la regola dei materiali', () => {
   assert.equal(craft.next.key, 'take_oak_planks');
 });
 
-test('le uova non sono cibo; la patata cruda solo con la fame critica', () => {
+test('le uova non sono cibo; la patata cruda e\' cibo sicuro di ultima preferenza', () => {
   assert.equal(bestFood({ egg: 34 }), null);
   assert.equal(bestFood({ egg: 34 }, { allowLastResort: true }), null, 'le uova restano un ingrediente, mai un pasto');
-  assert.equal(bestFood({ potato: 4 }), null);
-  assert.equal(bestFood({ potato: 4 }, { allowLastResort: true }), 'potato');
+  assert.equal(bestFood({ potato: 4 }), 'potato', 'la patata cruda e\' sicura, solo poco nutriente');
+  assert.equal(bestFood({ potato: 4, rotten_flesh: 2 }, { allowLastResort: true }), 'potato',
+    "una patata normale basta: non si rischia la Fame per fame");
   assert.equal(bestFood({ potato: 4, bread: 1 }, { allowLastResort: true }), 'bread', 'il cibo vero resta preferito');
   assert.equal(STARVING_FOOD, 4);
 });
 
-test('con la fame critica il governor vede il cibo di ultima istanza', () => {
+test('la patata cruda e\' cibo anche senza fame critica', () => {
+  const hungry = perceive({ inventory: { potato: 4 }, food: 12, health: 20, spawned: true });
+  assert.equal(hungry.hasFood, true);
+  assert.equal(hungry.bestFood, 'potato');
   const starving = perceive({ inventory: { potato: 4 }, food: 3, health: 20, spawned: true });
   assert.equal(starving.hasFood, true);
   assert.equal(starving.bestFood, 'potato');
-  const fed = perceive({ inventory: { potato: 4 }, food: 12, health: 20, spawned: true });
-  assert.equal(fed.hasFood, false, 'senza fame critica una patata cruda non è un pasto');
+  const fed = perceive({ inventory: { potato: 4 }, food: 20, health: 20, spawned: true });
+  assert.equal(fed.hasFood, true, 'la patata resta cibo: e\' il gate di `eat` (fame < 18) a decidere quando mangiarla');
 });
 
-test("l'opzione eat compare con la fame critica e una sola patata cruda", () => {
+test("l'opzione eat compare quando la fame scende, anche con la sola patata cruda", () => {
   assert.ok(keys(craftAdapter({ inventory: { potato: 4 }, food: 3, targets: {} }).adapter).includes('eat'));
+  assert.ok(keys(craftAdapter({ inventory: { potato: 4 }, food: 12, targets: {} }).adapter).includes('eat'),
+    'a fame 12 una patata cruda e\' meglio che continuare a scavare');
   assert.ok(!keys(craftAdapter({ inventory: { potato: 4 }, food: 20, targets: {} }).adapter).includes('eat'),
     'sazio non mangia una patata cruda');
 });

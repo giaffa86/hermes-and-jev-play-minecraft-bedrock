@@ -47,12 +47,16 @@ const ENTITY_HEIGHTS = {
 // carne putrefatta) e le golden apple, conservate per dopo. Le uova NON sono
 // cibo in Minecraft: servono solo come ingrediente di torta e pumpkin pie,
 // quindi non entrano in nessuna lista (nemmeno di ultima istanza).
+// La patata cruda e' l'ultima dei cibi SICURI: pessima (fame 1, saturazione
+// 0.6) ma senza effetti di stato — minecraft.wiki/w/Poison elenca solo la
+// patata velenosa fra le fonti di Veleno — quindi sta in fondo alla lista ma
+// prima di qualunque alimento che faccia male.
 const FOOD_PRIORITY = [
   'cooked_beef', 'cooked_porkchop', 'cooked_mutton', 'cooked_chicken', 'cooked_rabbit',
   'cooked_cod', 'cooked_salmon',
   'bread', 'baked_potato', 'carrot', 'apple', 'melon_slice', 'sweet_berries',
   'beef', 'porkchop', 'mutton', 'cod', 'salmon',
-  'dried_kelp', 'cookie',
+  'dried_kelp', 'cookie', 'potato',
 ];
 
 // Cibi di ultima istanza: commestibili in vanilla ma con un effetto collaterale
@@ -60,13 +64,13 @@ const FOOD_PRIORITY = [
 // meglio: una fame a zero fa morire, quindi quasi tutto e' meglio del nulla.
 // Ordine: prima cio' che sfama di piu' con l'effetto minore, poi i veleni brevi.
 // Restano fuori il pesce palla (il suo veleno puo' uccidere da solo) e le golden
-// apple (troppo preziose per un momento di fame).
+// apple (troppo preziose per un momento di fame). La patata cruda NON e' qui:
+// e' sicurezza, non ultima istanza, e vive in fondo a FOOD_PRIORITY.
 export const LAST_RESORT_FOODS = [
   'rotten_flesh',      // fame 4, 80% Fame I 30 s
   'chicken',           // fame 2, 30% Fame I 30 s (cruda)
   'poisonous_potato',  // fame 2, 60% Veleno I 5 s
-  'spider_eye',        // fame 2, Veleno I 4 s
-  'potato',            // fame 1, 60% Veleno I 4 s
+  'spider_eye',        // fame 2, Veleno I 5 s
 ];
 
 // Fame sotto la quale anche i cibi di ultima istanza contano come cibo.
