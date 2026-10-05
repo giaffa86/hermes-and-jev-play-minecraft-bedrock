@@ -185,3 +185,7 @@ one block of that height. A partial path frontier is progress only: movement
 replans there and cannot report it as reaching the final destination. The live
 house remains unbuilt after a night-time death during its approach; materials
 were withdrawn from authorized storage, and the bot was shut down with evidence.
+
+Missing finished supply targets outrank recipe ingredients in the eight-item
+withdrawal list. A chest already holding the required planks or tools must remain
+selectable even when several ingredient sources would otherwise fill that list.

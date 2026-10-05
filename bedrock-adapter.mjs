@@ -4241,6 +4241,8 @@ export class BedrockAdapter {
     const craft = this._craftNeeds({ offerKeys: o.map(option => option.key) });
     this.resourceSites.pending = craft?.next?.source === 'remembered_resource_site' ? craft.next : null;
     this.resourceSites.gatherKey = craft?.next?.source === 'gather' ? craft.next.key : null;
+    const wantedTargets = new Set(Object.entries(this.plan?.targets || {})
+      .filter(([item, count]) => (this.inventory[item] || 0) < count).map(([item]) => item));
     const wantedItems = new Set(Object.keys(this.plan?.targets || {}));
     for (const need of craft?.needs ?? []) {
       for (const miss of need.missing) {
@@ -4274,6 +4276,7 @@ export class BedrockAdapter {
       }
     }
     takeEntries.sort((a, b) =>
+      (Number(wantedTargets.has(b.item)) - Number(wantedTargets.has(a.item))) ||
       (Number(wantedItems.has(b.item)) - Number(wantedItems.has(a.item))) || (a.index - b.index));
     for (const e of takeEntries.slice(0, 8)) {
       const from = e.remembered

@@ -58,6 +58,18 @@ test('an item named in the plan targets comes first, even from the farthest cont
   assert.ok(keys.includes('take_cod'), `la rotazione rappresenta comunque lo scrigno del pesce: ${keys.join(', ')}`);
 });
 
+test('missing finished goods keep a take option when recipe ingredients would fill all eight slots', () => {
+  const adapter = storageAdapter();
+  const ingredients = Array.from({ length: 10 }, (_, i) => `ingredient_${i}`);
+  seedContainer(adapter, { contents: { ...Object.fromEntries(ingredients.map(n => [n, 64])), oak_planks: 139, salmon: 64 } });
+  adapter.inventory.salmon = 32;
+  adapter.plan = { targets: { oak_planks: 235, salmon: 32 } };
+  adapter._craftNeeds = () => ({ needs: [{ missing: [{ sources: ingredients.map(item => ({ item })), ingredient: 'unknown' }] }] });
+  const takes = adapter.options().filter(o => o.key.startsWith('take_'));
+  assert.equal(takes.length, 8);
+  assert.equal(takes[0].key, 'take_oak_planks');
+});
+
 test('storage container slot types map chest/barrel/shulker', () => {
   const adapter = storageAdapter();
   assert.equal(adapter._storageContainerSlotType('chest'), 'container');
