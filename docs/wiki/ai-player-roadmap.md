@@ -121,7 +121,8 @@ objective and a utility score and picks the best one, ranking `emergency` needs
 harness-side predicate `isNeedResolved(need, observation)` — the need
 disappearing from observation — never the model's opinion. A per-need cooldown
 (`AUTONOMY_COOLDOWN_MS`) prevents retry loops and `AUTONOMY_MAX_GOALS` bounds
-the session. Not yet produced: inventory-full → store, and "else explore".
+the session. Not yet produced: "else explore" (`store_harvest` is now also
+produced by village labor, below).
 Tests: `tests/idle-goals.test.mjs` (unit) and the autonomy case in
 `tests/controller-session.test.mjs` (integration: a night-without-bed need
 becomes a completed `autonomous` shelter goal). **Verified live on the BDS
@@ -129,6 +130,37 @@ becomes a completed `autonomous` shelter goal). **Verified live on the BDS
 `escape` (a hostile at ~9 blocks; `flee` pushed it beyond the danger radius) and
 `sleep` (bed reached; `sleep` → `night_skipped`) — each closed by
 `isNeedResolved` (deterministic, no LLM in the decision).
+
+## Milestone 3b — Village labor (implemented)
+
+The autonomy slice above keeps the bot *alive*; this one makes it *useful*.
+With `VILLAGE_WORK=on` (default: same as `AUTONOMY`) the same `IDLE` state also
+asks `village-labor.mjs` for a bounded **chore** drawn from the village's
+everyday work: `harvest_crops`, `store_harvest`, `shear_sheep`, `milk_cows`,
+`collect_honey`, `tend_animals` (breed), `plant_crops`, `go_fishing`,
+`chop_wood`, `gather_stone`, `mine_ore`. Two rules keep it honest:
+
+- **The harness is the arbiter.** A chore is only proposed if `GET /options`
+already offers one of its intents (`harvest_*`, `deposit_*`, `shear_sheep`,
+`milk_*`, `harvest_honey*`, `feed_*`/`breed_*`, `plant_*`,
+`fish`/`cast_rod`/`reel_in`, `mine_*`), so an invalid action can never become a
+goal. The module never invents an intent and never overrides a chat order or an
+emergency (chores are `autonomous`, the lowest source priority).
+- **Success is a state delta**, checked by `isChoreResolved` against a
+`villageSnapshot` taken when the goal was created: items gained (`choreGain`), a
+seed actually spent (`plant_crops`) or a new baby (`tend_animals`) — never an
+absolute count and never the model's opinion. The drop list is fixed at
+creation, because after the harvest the crop is gone and the delta would not be
+measurable.
+
+Utility ranks the chores (`harvest_crops` 70 … `mine_ore` 40, plus
+`min(count,5)*2`), `VILLAGE_COOLDOWN_MS` is the anti-loop and
+`VILLAGE_MAX_CHORES` bounds the session. A chore is enqueued as
+`source: autonomous` with `plan.chore`/`plan.choreBefore` and `type: 'village'`,
+so `goalMet` closes it on the same deterministic predicate the needs use. Tests:
+`tests/village-labor.test.mjs` (18 unit tests, no server) plus the village case
+in `tests/controller-session.test.mjs` (integration: an offered `harvest_*`
+becomes a completed `village` goal).
 
 ## Roadmap milestones
 

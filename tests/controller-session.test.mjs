@@ -204,6 +204,70 @@ test('idle autonomy: a survival need becomes an autonomous goal and completes', 
   }
 });
 
+function startVillageHarness () {
+  return new Promise(resolve => {
+    let worked = false;
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (req.method === 'GET' && req.url === '/observe') {
+        res.end(JSON.stringify({
+          ...OBSERVATION,
+          inventory: worked ? { wheat: 2 } : {},
+          food: 20, health: 20,
+          time: { ticks: 1000, night: false },
+          nearby: { wheat: worked ? [] : [{ name: 'wheat', position: { x: 1, y: 64, z: 0 }, distance: 1, mature: true }] },
+        }));
+      } else if (req.method === 'GET' && req.url === '/options') {
+        res.end(JSON.stringify({ options: [{ key: 'harvest_wheat', description: 'harvest the wheat' }] }));
+      } else if (req.method === 'POST' && req.url === '/act') {
+        worked = true;
+        res.end(JSON.stringify({ ok: true, ms: 1 }));
+      } else {
+        res.end('{}');
+      }
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
+  });
+}
+
+test('village labor: the idle bot picks an offered chore and closes it on a state delta', async () => {
+  const { server, port } = await startVillageHarness();
+  const runId = `test-village-${process.pid}-${Date.now()}`;
+  const dir = join(ROOT, 'runs', runId);
+  const hermes = fakeHermesBin({ objective: 'initial plan', targets: {}, waypoint: null });
+  try {
+    const { code, stdout } = await runController({
+      HARNESS: `http://127.0.0.1:${port}`,
+      RUN_ID: runId,
+      CONTROLLER: 'hermes',
+      MAX_STEPS: '5',
+      TARGETS: '{}',
+      SESSION: 'on',
+      AUTONOMY: 'off',
+      VILLAGE_WORK: 'on',
+      VILLAGE_COOLDOWN_MS: '50',
+      IDLE_POLL_MS: '50',
+      IDLE_TIMEOUT_MS: '1500',
+      OPENROUTER_API_KEY: '',
+      TYPESAFE_API_KEY: '',
+      CHAT_ALLOWLIST: '',
+      PATH: `${hermes.path}:${process.env.PATH}`,
+    });
+    assert.equal(code, 0, `unexpected exit code; stdout:\n${stdout}`);
+    assert.match(stdout, /IDLE -> village chore g\d+ \[harvest_crops\]/);
+    assert.match(stdout, /GOAL MET/);
+    const saved = JSON.parse(readFileSync(join(dir, 'goals', 'world.json'), 'utf8'));
+    const chore = saved.records.find(r => r.kind === 'goal' && r.goal.parameters?.chore === 'harvest_crops');
+    assert.ok(chore, 'village chore goal was not persisted');
+    assert.equal(chore.status, 'completed');
+    assert.equal(chore.goal.source, 'autonomous');
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(hermes.dir, { recursive: true, force: true });
+  }
+});
+
 test('cross-session resume: a goal left running is resumed and completed', async () => {
   const { server, port } = await startFakeHarness();
   const runId = `test-resume-${process.pid}-${Date.now()}`;

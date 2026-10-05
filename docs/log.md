@@ -1,6 +1,37 @@
 # Log
 
-## [2026-10-05] feat | Chat M7: the reply sounds like a player, not a status line
+## [2026-10-05] feat | Village labor: the bot is not furniture
+
+The user's standing request: *"mi sta bene che si dichiari bot ma voglio che non
+sia inutile, che sia semplicemente un arredo ma che contribuisca alle missioni e
+al lavoro nel villagio, coltivazioni, pastorizia, legname, minerali, pesca, etc"*.
+M7 gave the bot a voice; M3b gives it chores. `village-labor.mjs` is a pure,
+deterministic producer (no LLM) that turns `observe()` into ranked **chores**:
+`harvest_crops` (70), `store_harvest` (65), `shear_sheep` (60), `milk_cows`
+(58), `collect_honey` (56), `tend_animals` (54), `plant_crops` (52),
+`go_fishing` (50), `chop_wood` (46), `gather_stone` (42), `mine_ore` (40), each
+worth `utility + min(count,5)*2`.
+
+Two invariants, in the style of `idle-goals.mjs`: **the harness is the
+arbiter** — a chore is only proposed when `GET /options` already offers one of
+its intents (`offeredHas`/`offeredMatches`), so an invalid intent can never
+become a goal; and **success is a state delta** — `isChoreResolved` compares
+against a `villageSnapshot` captured at creation (`choreGain` for items gained,
+a seed actually spent for `plant_crops`, a new baby for `tend_animals`), never
+an absolute count and never the model's opinion. The drop list is fixed at
+creation because after the harvest the crop is no longer visible. Chores are
+`source: autonomous` (lowest priority: a chat order or an emergency always wins)
+with `plan.chore`/`plan.choreBefore`, `VILLAGE_COOLDOWN_MS` as the anti-loop and
+`VILLAGE_MAX_CHORES` as the session bound.
+
+Implemented: `village-labor.mjs`; wiring in `controller.mjs` (import, the
+`VILLAGE_WORK`/`VILLAGE_COOLDOWN_MS`/`VILLAGE_MAX_CHORES`/`VILLAGE_STORE_THRESHOLD`
+constants, the `plan.chore` branch in `goalMet` and the `type: 'village'`
+enqueue in the `IDLE` block after the autonomy one, sharing a lazily-fetched
+`GET /options`); `tests/village-labor.test.mjs` (18 tests, no server) plus the
+village case in `tests/controller-session.test.mjs` (integration: an offered
+`harvest_*` becomes a completed `village` goal closed by the state delta).
+Full suite: **1414 pass / 0 fail**.## [2026-10-05] feat | Chat M7: the reply sounds like a player, not a status line
 
 The family noticed the bot answering **in the third person** and sometimes **in
 English**: *"ho notato che in chat il bot risponde come se fosse in terza persona

@@ -25,6 +25,7 @@ import {constructionPlannerInstructions, constructionFromText} from './bedrock-c
 import {constructionGoalMet} from './construction.mjs';
 import {prepareConstructionPlan} from './construction-planning.mjs';
 import {nextIdleGoal, isNeedResolved, DEFAULT_AUTONOMY_COOLDOWN_MS, DEFAULT_MAX_AUTONOMOUS_GOALS} from './idle-goals.mjs';
+import {nextVillageChore, isChoreResolved, villageSnapshot, DEFAULT_VILLAGE_COOLDOWN_MS, DEFAULT_VILLAGE_MAX_CHORES} from './village-labor.mjs';
 import {detectEvents} from './world-events.mjs';
 import {emergencyGoalFor, DEFAULT_EMERGENCY_COOLDOWN_MS} from './emergency-goals.mjs';
 import {
@@ -192,6 +193,14 @@ const RESUME = process.env.RESUME == null ? SESSION : /^(1|on|true|yes)$/i.test(
 const AUTONOMY = /^(1|on|true|yes)$/i.test(process.env.AUTONOMY || '');
 const AUTONOMY_COOLDOWN_MS = +(process.env.AUTONOMY_COOLDOWN_MS || DEFAULT_AUTONOMY_COOLDOWN_MS);
 const AUTONOMY_MAX_GOALS = +(process.env.AUTONOMY_MAX_GOALS || DEFAULT_MAX_AUTONOMOUS_GOALS);
+// Lavoro di villaggio: in IDLE il bot si rende utile (coltivazioni, animali,
+// legname, pietra, pesca, deposito). Default: come AUTONOMY — chi ha scelto di
+// stare fermo (`AUTONOMY=off`) non si mette a lavorare da solo; `VILLAGE_WORK=on`
+// lo riaccende senza abilitare l'autonomia generale.
+const VILLAGE_WORK = process.env.VILLAGE_WORK == null ? AUTONOMY : /^(1|on|true|yes)$/i.test(process.env.VILLAGE_WORK);
+const VILLAGE_COOLDOWN_MS = +(process.env.VILLAGE_COOLDOWN_MS || DEFAULT_VILLAGE_COOLDOWN_MS);
+const VILLAGE_MAX_CHORES = +(process.env.VILLAGE_MAX_CHORES || DEFAULT_VILLAGE_MAX_CHORES);
+const VILLAGE_STORE_THRESHOLD = +(process.env.VILLAGE_STORE_THRESHOLD || 8);
 // Bisogni di sopravvivenza: in IDLE un bisogno che il governor dichiara
 // *adesso* genera un goal anche con AUTONOMY off — l'autonomia e' inventarsi
 // obiettivi, dormire di notte con un letto a due passi e' la policy di
@@ -244,6 +253,8 @@ const completedMilestones = new Set();   // verificati davvero in questa session
 let skillRun = null;                     // {id, def, milestone, startedAt, startObservation, actions, sawNight}
 let autonomousGoalCount = 0;             // goal autonomi generati in questa sessione (cap)
 const autonomousAttempts = new Map();    // need -> ultimo tentativo (anti-loop in IDLE)
+let villageGoalCount = 0;                // lavori di villaggio generati in questa sessione (cap)
+const villageAttempts = new Map();       // chore -> ultimo tentativo (anti-loop in IDLE)
 const emergencyAttempts = new Map();     // dedupKey evento -> ultima emergenza creata
 
 function milestoneForSkill (skillId) {
@@ -774,6 +785,10 @@ const goalMet = (obs, plan, skillStatus) => {
   // Un goal autonomo è ancorato al bisogno che l'ha generato: il successo è la
   // scomparsa del bisogno dallo stato del harness, non un target inventato.
   if (plan.need) return isNeedResolved(plan.need, obs, {rules: survivalRules});
+  // Un goal di villaggio e' ancorato al lavoro scelto: il successo e' il delta
+  // rispetto allo snapshot iniziale (oggetti guadagnati, semi spesi, un cucciolo
+  // nato), non un conteggio assoluto dell'inventario.
+  if (plan.chore) return isChoreResolved(plan.chore, obs, {before: plan.choreBefore});
   // Un goal di emergenza per il recupero loot termina quando l'harness azzera
   // il sito di morte (nessun drop rimasto).
   if (plan.recover) return !obs.deathSite;
@@ -1338,17 +1353,24 @@ async function waitForGoal () {
       // crea anche con AUTONOMY off. Il bisogno resta aperto (`plan.need`)
       // finche' il predicato deterministico non dice che e' risolto.
       const governor = evaluateSurvival(obs, {rules: survivalRules});
+      // Il harness e' l'unico arbitro di cosa e' valido: la lista delle azioni
+      // offerte ora serve sia ai bisogni sia ai lavori di villaggio, quindi si
+      // legge una volta per giro di IDLE.
+      let offered = null;
+      const offeredKeys = async () => {
+        if (!offered) {
+          const availability = await api('GET', '/options').catch(() => null);
+          offered = new Set((availability?.options || []).map(o => o.key));
+        }
+        return offered;
+      };
       let candidate = null;
       if (governor.needs.length) {
-        // Il harness e' l'unico arbitro di cosa e' valido: un bisogno senza
-        // un'azione corrispondente offerta adesso non diventa un goal (niente
-        // caccia al letto quando il letto non e' raggiungibile).
-        const availability = await api('GET', '/options').catch(() => null);
-        const offered = new Set((availability?.options || []).map(o => o.key));
+        const keys = await offeredKeys();
         candidate = nextIdleGoal(obs, {
           rules: survivalRules, attempts: autonomousAttempts,
           cooldownMs: AUTONOMY ? AUTONOMY_COOLDOWN_MS : SURVIVAL_IDLE_COOLDOWN_MS,
-          allow: (c) => offered.has(c.need) && governor.needs.includes(c.need),
+          allow: (c) => keys.has(c.need) && governor.needs.includes(c.need),
         });
       }
       // Autonomia generale (bisogni non correnti): solo quando e' abilitata.
@@ -1366,6 +1388,29 @@ async function waitForGoal () {
         console.log(`IDLE -> autonomous goal ${goal.id} [${candidate.need}] ${goal.objective}`);
         log('idle_goal', {goalId: goal.id, need: candidate.need, source: candidate.source, mode: candidate.mode, reason: candidate.reason, autonomy: AUTONOMY});
         return goal;
+      }
+      // Lavoro nel villaggio: se non c'e' un bisogno da soddisfare, il bot cerca
+      // un lavoro utile che il harness sta gia' offrendo (VILLAGE_WORK=off lo spegne).
+      if (VILLAGE_WORK && villageGoalCount < VILLAGE_MAX_CHORES) {
+        const chore = nextVillageChore(obs, {
+          offered: await offeredKeys(), attempts: villageAttempts,
+          cooldownMs: VILLAGE_COOLDOWN_MS, storeThreshold: VILLAGE_STORE_THRESHOLD,
+        });
+        if (chore) {
+          villageAttempts.set(chore.id, Date.now());
+          villageGoalCount += 1;
+          const goal = goalManager.enqueue({
+            type: 'village', source: GOAL_SOURCE.AUTONOMOUS, priority: chore.priority, objective: chore.objective,
+            plan: {
+              objective: chore.objective, targets: {}, waypoint: null, priority: 'village',
+              chore: chore.id, choreBefore: villageSnapshot(obs, {spend: chore.spend}), notes: `village:${chore.id}`,
+            },
+            parameters: {chore: chore.id, reason: chore.reason},
+          });
+          console.log(`IDLE -> village chore ${goal.id} [${chore.id}] ${goal.objective}`);
+          log('village_chore', {goalId: goal.id, chore: chore.id, reason: chore.reason, utility: chore.utility, count: chore.count});
+          return goal;
+        }
       }
     }
     if (IDLE_TIMEOUT_MS && Date.now() - startedAt >= IDLE_TIMEOUT_MS) {
