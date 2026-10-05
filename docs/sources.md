@@ -52,7 +52,7 @@ never committed.
 | `emergency-goals.mjs` | Pure **emergency mapping** (M2): `emergencyGoalFor(event, …)` maps events to preempting `EMERGENCY` goals (`PLAYER_DIED → recover_loot`), with cooldown/dedup. |
 | `ore-value.mjs` | Pure **ore/item value table** (`ORE_VALUES`, `ITEM_VALUES`): the deterministic answer to "is this vein worth a detour?" — thresholds for the event floor, the option-priority lift and the opportunity gate. |
 | `opportunity-goals.mjs` | Pure **opportunity mapping** (curiosity): `evaluateOpportunity(event, …)` / `opportunityGoalFor(event, …)` turn a `VALUABLE_ORE_SEEN` event into a suspending `OPPORTUNITY` goal (relative-value gate, cooldown/dedup, one level, never over a chat order). |
-| `controller-decisions.mjs` | Pure decision helpers (ranking, anti-loop, cap, diagnostics), incl. the **valuable-ore tier 4.5** for gold-and-above ore. |
+| `controller-decisions.mjs` | Pure decision helpers (ranking, anti-loop, cap, diagnostics), incl. the **valuable-ore tier 4.5** for gold-and-above ore and the equip-order classifier `isEquipOrder` (M6.3: an equip verb *plus* an armor noun — `equipaggiati`/`mettiti`/`indossa`/`wear`/`put on`, so `mettiti a lavorare` stays an order). |
 | `survival/` | Survival Intelligence Layer (governor, resolver, verifier, progression, ...). |
 | `knowledge/` | `survival-rules.json`, `progression.json`. |
 | `skills/gameplay/` | Declarative gameplay skills. |

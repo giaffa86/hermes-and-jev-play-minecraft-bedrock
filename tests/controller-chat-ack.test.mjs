@@ -41,7 +41,7 @@ process.stdout.write(next);
 // Scripted harness. `chatFrom` is the sender of the order injected from the
 // second observation on; `calls` records every request so the test can inspect
 // the `/say` traffic.
-function startChatHarness ({ chatFrom = 'Ale', chatMessage = '@bot prendi la terra', chatAgeMs = 0, self = { username: 'hermes-bot', name: null } } = {}) {
+function startChatHarness ({ chatFrom = 'Ale', chatMessage = '@bot prendi la terra', chatAgeMs = 0, self = { username: 'hermes-bot', name: null }, options = null, act = null, extra = () => ({}) } = {}) {
   return new Promise(resolve => {
     const calls = [];
     let observes = 0;
@@ -57,6 +57,10 @@ function startChatHarness ({ chatFrom = 'Ale', chatMessage = '@bot prendi la ter
       self,
       time: { ticks: 1000, night: false, phase: 'day' },
       entities: [], humans: [], dropped: [], containers: [],
+      // `extra()` consente a un test di far evolvere l'osservazione (armatura
+      // indossata, inventario) e quindi di verificare un vero criterio di
+      // successo invece del solo testo delle risposte.
+      ...extra(),
       chat: observes >= 2 && chatFrom
         ? [{ from: chatFrom, message: chatMessage, type: 'chat', xuid: '1234567890', at: chatAt }]
         : [],
@@ -72,6 +76,8 @@ function startChatHarness ({ chatFrom = 'Ale', chatMessage = '@bot prendi la ter
         res.writeHead(200, { 'Content-Type': 'application/json' });
         if (req.method === 'GET' && path === '/observe') { observes += 1; res.end(JSON.stringify(observation())); }
         else if (path === '/say') res.end(JSON.stringify({ ok: true, sent: payload.message }));
+        else if (path === '/options') res.end(JSON.stringify({ options: typeof options === 'function' ? options() : (options ?? []) }));
+        else if (path === '/act') res.end(JSON.stringify(act ? act(payload.key) : {}));
         else if (path === '/plan') res.end(JSON.stringify({ ok: true }));
         else if (path === '/mission') res.end(JSON.stringify({ ok: true, mission: { id: 'mission_test', type: payload.type, intent: payload.intent } }));
         else if (path === '/mission/finish') res.end(JSON.stringify({ ok: true, mission: { id: payload.missionId, ...payload } }));
@@ -81,6 +87,40 @@ function startChatHarness ({ chatFrom = 'Ale', chatMessage = '@bot prendi la ter
     });
     server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, calls }));
   });
+}
+
+// Harness scriptato per gli ordini di equipaggiamento: `equip_armor` è offerto
+// solo finché l'armatura è in inventario e, dopo l'azione, l'osservazione mostra
+// i pezzi *addosso* — è `observe().armor` il criterio di successo, non
+// l'inventario (un elmetto nello zaino non è un elmetto indossato).
+async function startEquipHarness ({ chatMessage = "@bot equipaggiati con l'elmetto", inv = { dirt: 1, iron_helmet: 1 } } = {}) {
+  let equipped = false;
+  // `equip_armor` è offerto solo finché un pezzo di armatura è davvero in
+  // inventario (come `options()` dell'adapter): senza armatura l'ordine deve
+  // incontrare il rifiuto, non un'azione che fallisce.
+  const hasArmor = Object.keys(inv).some(name => /_(helmet|chestplate|leggings|boots)$/.test(name));
+  const harness = await startChatHarness({
+    chatMessage,
+    extra: () => ({
+      inventory: equipped ? { dirt: 1 } : { ...inv },
+      armor: {
+        helmet: equipped ? 'iron_helmet' : null,
+        chestplate: null, leggings: null, boots: null,
+        points: equipped ? 2 : 0,
+      },
+    }),
+    options: () => (equipped || !hasArmor
+      ? [{ key: 'wait', description: 'Wait' }]
+      : [
+          { key: 'equip_armor', description: 'Equip armor pieces from inventory (helmet/chestplate/leggings/boots)' },
+          { key: 'wait', description: 'Wait' },
+        ]),
+    act: key => {
+      if (key === 'equip_armor') equipped = true;
+      return { ok: true, ms: 5 };
+    },
+  });
+  return { ...harness, isEquipped: () => equipped };
 }
 
 function runController (env) {
@@ -369,7 +409,7 @@ test('a free-form question is routed by System One and still answered from the f
 function startHangingDecisionStub () {
   return new Promise(resolve => {
     const calls = [];
-    const server = createServer((req, res) => {
+    const server = createServer((req, _res) => {
       calls.push({ method: req.method, path: req.url });
       // Nessuna risposta: l'unico limite è l'AbortSignal.timeout del controller.
     });
@@ -472,10 +512,12 @@ test('an order phrased as a question is decided by the model, not by the guard',
 });
 
 // Un router che non risponde in tempo: la domanda resta senza risposta, ma non
-// diventa un ordine.
+// diventa un ordine. Il messaggio deve stare **fuori** dalla fast path regex
+// (`q_health`/`q_inventory` risponderebbero offline, senza mai toccare il
+// router): `chi mi sta guardando?` è una domanda che nessuna regex copre.
 test('a router timeout is reported and the bot does not move', async () => {
   const stub = await startHangingDecisionStub();
-  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot quanti cuori hai?' });
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot chi mi sta guardando?' });
   const fake = fakeHermesQueue([HUMAN_PLAN]);
   const runId = `test-chat-timeout-${process.pid}-${Date.now()}`;
   try {
@@ -504,15 +546,18 @@ test('a router timeout is reported and the bot does not move', async () => {
 });
 
 // Il caso che ha motivato M6.1: una domanda innocua con il router giù non deve
-// diventare `follow <sender>`.
+// diventare `follow <sender>`. Il messaggio è fuori dalla fast path regex
+// (`q_health` risponderebbe offline), così il rifiuto è davvero quello di M6.1.
 test('a question can no longer become a follow goal when the router is down (M6.1)', async () => {
-  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot quanti cuori hai?' });
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot chi mi sta guardando?' });
   const fake = fakeHermesQueue([HUMAN_PLAN]);
   const runId = `test-chat-nofollow-${process.pid}-${Date.now()}`;
   try {
     const { code, stdout } = await runController({ ...baseEnv(runId, harness.port, fake.dir), CHAT_INTENT: 'off' });
     assert.equal(code, 0);
     assert.equal(stdout.includes('from Ale'), false, 'nessun goal: niente follow');
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.match(says[0], /non ho capito la domanda/, 'rifiuto, non silenzio');
     const events = readEvents(runId);
     assert.equal(events.some(e => e.type === 'chat_command'), false);
     assert.equal(events.some(e => e.type === 'plan' && e.source === 'human'), false, 'nessun piano umano creato');
@@ -600,6 +645,77 @@ test('CHAT_SELF_NAME=off leaves only the configured triggers', async () => {
     assert.equal(stdout.includes('from Ale'), false, 'senza i nomi il messaggio non è un ordine');
     assert.equal(harness.calls.filter(c => c.method === 'POST' && c.path === '/say').length, 0, 'nessun ack');
     assert.equal(readEvents(runId).some(e => e.type === 'chat_command'), false);
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+test("un ordine di equipaggiamento è deterministico: equip_armor scelto dal controller, non dal modello", async () => {
+  const harness = await startEquipHarness();
+  // Coda vuota: se il controller interrogasse Hermes, il finto CLI stamperebbe
+  // 'wait' e nessuna azione di equipaggiamento verrebbe eseguita.
+  const fake = fakeHermesQueue([]);
+  const runId = `test-chat-equip-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, harness.port, fake.dir),
+      // Nessun contratto e target già soddisfatto: il goal autonomo seminato si
+      // chiude a passo 0 e l'ordine in chat viene preso in IDLE come goal `chat`
+      // a sé (se il goal autonomo fosse ancora aperto l'ordine verrebbe
+      // assorbito da quello, come in `maybeHumanCommand` dentro `runGoal`).
+      GOAL_CONTRACT: '', TARGETS: '{"dirt":1}', GOAL: 'wait for orders',
+    });
+    assert.equal(code, 0, `controller exited with ${code}`);
+    assert.match(stdout, /EQUIP ORDER: equip_armor deterministico/, stdout);
+    assert.equal(harness.isEquipped(), true, "l'armatura è finita addosso, non solo in inventario");
+
+    const events = readEvents(runId);
+    const plan = events.find(e => e.type === 'plan' && e.deterministic === 'equip');
+    assert.equal(plan?.plan?.need, 'wear_armor', 'il piano dichiara un bisogno verificabile');
+    assert.equal(plan?.plan?.equip, true);
+    assert.equal(plan?.plan?.follow, null, 'un ordine di equipaggiamento non è un `follow`');
+    assert.equal(events.some(e => e.type === 'plan_fallback'), false, 'Hermes non è mai interrogato');
+
+    const acts = harness.calls.filter(c => c.path === '/act');
+    assert.deepEqual(acts.map(c => c.payload.key), ['equip_armor']);
+    // Una sola azione eseguita: nessun passo sprecato in `wait` o in ripensamenti.
+    assert.equal(events.filter(e => e.type === 'result').length, 1);
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.match(says[0], /^@Ale ok: /, 'ack immediato');
+    // `stepsUsed` conta anche l'iterazione che *conferma* il successo (`goalMet`
+    // è valutato in testa al loop), quindi le azioni riportate sono 1 + 1.
+    assert.match(says[1], /^@Ale fatto: .*\(2 azioni\)/, 'esito con il conteggio azioni');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+test("un ordine di equipaggiamento senza armatura lo dice all'umano e fallisce, senza girare a vuoto", async () => {
+  const harness = await startEquipHarness({ inv: { dirt: 1 } });
+  const fake = fakeHermesQueue([]);
+  const runId = `test-chat-equip-none-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, harness.port, fake.dir),
+      GOAL_CONTRACT: '', TARGETS: '{"dirt":1}', GOAL: 'wait for orders',
+    });
+    assert.equal(code, 0, `controller exited with ${code}`);
+
+    const events = readEvents(runId);
+    const equip = events.find(e => e.type === 'equip_order');
+    assert.equal(equip?.error, 'no_armor_in_inventory', `${stdout}\n${JSON.stringify(events)}`);
+    const end = events.find(e => e.type === 'goal_end' && e.status === 'failed');
+    assert.equal(end?.reason, 'no_armor_in_inventory', 'il motivo arriva fino a goal_end');
+
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.match(says[0], /^@Ale ok: /);
+    assert.ok(says.some(m => /non ho armatura in inventario/.test(m)), `manca il rifiuto: ${JSON.stringify(says)}`);
+    assert.ok(says.some(m => /non ce l'ho fatta/.test(m)), `manca l'esito di fallimento: ${JSON.stringify(says)}`);
+    assert.equal(harness.calls.some(c => c.path === '/act'), false, "nessuna azione: non c'è nulla da equipaggiare");
   } finally {
     harness.server.close();
     rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });

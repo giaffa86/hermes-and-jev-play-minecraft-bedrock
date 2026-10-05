@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   NO_INTENT, QUESTION_INTENTS, answerIntent, clockFromTicks, intentCriteria, intentFromChoice,
-  looksLikeQuestion, matchQuestionIntent, normalizeForMatching, renderAnswer, renderUnrouted,
+  looksLikeQuestion, matchQuestionIntent, normalizeForMatching, renderAnswer, renderNoArmor, renderUnrouted,
 } from '../human-questions.mjs';
 import { isSelfTriggering } from '../human-replies.mjs';
 
@@ -40,11 +40,17 @@ test('the fast path recognises the phrasings the family actually uses', () => {
     ['where are you', 'q_position'],
     ['come stai?', 'q_health'],
     ['hai fame', 'q_health'],
+    ['quanta vita hai?', 'q_health'],
+    ['quanti cuori hai?', 'q_health'],
+    ['quanta fame hai?', 'q_health'],
+    ['che armatura hai?', 'q_armor'],
+    ['cosa indossi?', 'q_armor'],
     ['che fai?', 'q_activity'],
     ['che fai, non ti muovi?', 'q_activity'],
     ['what are you doing', 'q_activity'],
     ['cosa hai?', 'q_inventory'],
-    ['inventario', 'q_inventory'],
+    ['hai una spada?', 'q_inventory'],
+    ['quanta terra hai?', 'q_inventory'],
     ['che ore sono?', 'q_time'],
     ['chi sei', 'q_identity'],
     ['aiuto', 'q_identity'],
@@ -65,6 +71,11 @@ test('an order is never swallowed by the fast path', () => {
     'aiutami con gli zombie',
     'fermati',
     'porta la pietra alla base',
+    'equipaggiati con l\'elmetto',
+    'equipaggiati con armatura in bronzo',
+    'mettiti l\'armatura',
+    'wear your helmet',
+    'mettiti a lavorare',
   ];
   for (const message of orders) {
     assert.equal(matchQuestionIntent(message), null, `"${message}" resta un ordine`);
@@ -78,7 +89,7 @@ test('normalisation makes case and punctuation irrelevant', () => {
 
 test('answers come from the observation, one fact per intent', () => {
   assert.equal(answerIntent('q_position', OBS), 'sono a x 118, y 70, z -181 (overworld)');
-  assert.equal(answerIntent('q_health', OBS), 'ho 20/20 di vita e 12/20 di cibo');
+  assert.equal(answerIntent('q_health', OBS), 'ho 10 cuori (20/20 di vita) e 12/20 di cibo');
   assert.equal(answerIntent('q_activity', OBS), 'sto facendo: mine 4 dirt');
   assert.equal(answerIntent('q_inventory', OBS), 'ho: dirt x64, iron_ingot x2, stick');
   assert.equal(answerIntent('q_time', OBS), 'sono le 12:00 (giorno)');
@@ -91,6 +102,7 @@ test('a missing fact is admitted, never invented', () => {
   assert.equal(answerIntent('q_activity', {}), 'non ho un obiettivo: sono in attesa di ordini');
   assert.equal(answerIntent('q_inventory', {}), 'non ho niente in inventario');
   assert.match(answerIntent('q_time', {}), /^non lo so/);
+  assert.match(answerIntent('q_armor', {}), /^non lo so/);
   assert.equal(answerIntent('q_health', { dead: true }), 'sono morto, sto rinascendo');
 });
 
@@ -115,11 +127,11 @@ test('a very long objective is clamped to the chat line limit', () => {
 test('the option list offered to Jev is closed and ends with q_none', () => {
   const criteria = intentCriteria();
   const keys = Object.keys(criteria);
-  assert.deepEqual(keys, ['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6']);
+  assert.deepEqual(keys, ['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7']);
   for (const intent of QUESTION_INTENTS) {
     assert.ok(keys.some(key => criteria[key].includes(`[${intent.id}]`)), `${intent.id} è offerto al modello`);
   }
-  assert.match(criteria.a6, new RegExp(`^\\[${NO_INTENT}\\]`), 'q_none è l\'ultima opzione');
+  assert.match(criteria.a7, new RegExp(`^\\[${NO_INTENT}\\]`), 'q_none è l\'ultima opzione');
 });
 
 test('the model choice maps back to a catalogue id, q_none included', () => {
@@ -148,6 +160,43 @@ test('a reply is addressed to the sender and never looks like an order to the bo
   // (`isSelfTriggering`) a rifiutare la riga, non questo modulo.
   assert.equal(isSelfTriggering(renderAnswer({ from: 'bot', answer }), '@bot'), true);
   assert.equal(isSelfTriggering(renderAnswer({ from: 'Ale', answer }), '@bot'), false);
+});
+
+// Il router risponde "sì/no" sull'oggetto nominato invece di scaricare la lista
+// intera: la domanda della famiglia è "hai una spada?", non "cosa hai?".
+test('a question that names an item is answered about that item', () => {
+  const obs = { inventory: { wooden_sword: 1, dirt: 64, iron_helmet: 1, iron_boots: 2, bread: 3 } };
+  assert.equal(answerIntent('q_inventory', obs, { message: 'hai una spada?' }), 'sì: wooden_sword');
+  assert.equal(answerIntent('q_inventory', obs, { message: 'hai un elmo?' }), 'sì: iron_helmet');
+  assert.equal(answerIntent('q_inventory', obs, { message: 'quanta terra hai?' }), 'sì: dirt x64');
+  assert.equal(answerIntent('q_inventory', obs, { message: 'hai del diamante?' }), 'no, non ne ho');
+  // Nessun oggetto nominato (o oggetto fuori catalogo): resta la lista, ordinata
+  // per quantità e limitata.
+  assert.equal(answerIntent('q_inventory', obs), 'ho: dirt x64, bread x3, iron_boots x2, wooden_sword (+1 altri)');
+  assert.equal(answerIntent('q_inventory', obs, { message: 'cosa hai?' }), 'ho: dirt x64, bread x3, iron_boots x2, wooden_sword (+1 altri)');
+});
+
+// Il catalogo conosce anche i nomi dei gruppi: "armatura" è un pezzo indossabile
+// qualunque, "spada" un utensile.
+test('q_armor answers what is worn, not what is carried', () => {
+  const obs = {
+    inventory: { iron_chestplate: 1 },
+    armor: { helmet: 'iron_helmet', chestplate: null, leggings: null, boots: 'iron_boots', points: 9 },
+  };
+  assert.equal(matchQuestionIntent('che armatura hai?')?.id, 'q_armor');
+  assert.equal(answerIntent('q_armor', obs), 'indosso: iron_helmet, iron_boots (9 punti armatura)');
+  assert.equal(answerIntent('q_armor', { armor: { helmet: null, chestplate: null, leggings: null, boots: null, points: 0 } }), 'non indosso armatura');
+  // Il pettorale è in inventario ma non addosso: non conta.
+  assert.doesNotMatch(answerIntent('q_armor', obs), /chestplate/);
+  // Un ordine di equipaggiamento non è una domanda sull'armatura.
+  assert.equal(matchQuestionIntent('equipaggiati con armatura in bronzo'), null);
+  assert.equal(matchQuestionIntent('mettiti l\'elmo'), null);
+});
+
+test('an equip order with nothing to wear gets a short refusal', () => {
+  const line = renderNoArmor({ from: 'Ale' });
+  assert.equal(line, '@Ale non ho armatura in inventario, non posso equipaggiarmi');
+  assert.equal(isSelfTriggering(line, '@bot'), false);
 });
 
 // M6.1: la guardia che decide se un messaggio può essere instradato a Jev. Deve

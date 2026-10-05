@@ -59,6 +59,14 @@ test('nextIdleGoal honours the per-need cooldown', () => {
   assert.equal(later.need, 'shelter');
 });
 
+test('isNeedResolved: wear_armor is about what is worn, not what is carried', () => {
+  // Un ordine "equipaggiati" ha come criterio l'armatura *addosso*: un elmo in
+  // inventario non basta a chiudere il goal.
+  assert.equal(isNeedResolved('wear_armor', base({ inventory: { iron_helmet: 1 } })), false);
+  assert.equal(isNeedResolved('wear_armor', base({ armor: { helmet: null, chestplate: null, leggings: null, boots: null } })), false);
+  assert.equal(isNeedResolved('wear_armor', base({ inventory: { iron_helmet: 1 }, armor: { helmet: 'iron_helmet', chestplate: null, leggings: null, boots: null } })), true);
+});
+
 test('isNeedResolved: eat, sleep, obtain_food, escape, replace_tool', () => {
   assert.equal(isNeedResolved('eat', base({ food: 10, inventory: { bread: 1 } })), false);
   assert.equal(isNeedResolved('eat', base({ food: 18, inventory: { bread: 1 } })), true);

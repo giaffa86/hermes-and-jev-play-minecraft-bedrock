@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildCriteria, buildDecisionInstructions, capOptions, detectRepeatedAction, filterOptions, isStopOrder,
+  buildCriteria, buildDecisionInstructions, capOptions, detectRepeatedAction, filterOptions, isEquipOrder, isStopOrder,
   optionPriority, parseDistance, progressFingerprint, rankOptions, summarizePlan, waitOnlyReason,
   withStickyFollow, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
 } from '../controller-decisions.mjs';
@@ -240,4 +240,30 @@ test('isStopOrder recognizes stop orders and never a follow request', () => {
   }
   assert.equal(isStopOrder(null), false);
   assert.equal(isStopOrder(undefined), false);
+});
+
+// Un ordine di equipaggiamento è deterministico (nessun planner, nessun
+// modello): l'harness offre `equip_armor` solo se l'inventario ha pezzi, quindi
+// il riconoscimento deve essere stretto — "mettiti a lavorare" resta un ordine
+// normale, non un ordine di equipaggiamento.
+test('isEquipOrder recognizes equip orders and only those', () => {
+  for (const message of [
+    "equipaggiati con l'elmetto",
+    'equipaggiati con armatura in bronzo',
+    'equipaggia tutto',
+    "mettiti l'armatura in bronzo",
+    'mettiti il casco',
+    'indossa i gambali',
+    'wear your helmet',
+    'put on your boots',
+    'mettiti la zucca',
+    "mettiti lo scudo nell'altra mano",
+  ]) {
+    assert.equal(isEquipOrder(message), true, `"${message}" è un ordine di equipaggiamento`);
+  }
+  for (const message of ['mettiti a lavorare', 'mettiti in cammino', 'seguimi', 'mina 4 dirt', 'prendi la terra', '', 'quanti cuori hai?']) {
+    assert.equal(isEquipOrder(message), false, `"${message}" non è un ordine di equipaggiamento`);
+  }
+  assert.equal(isEquipOrder(null), false);
+  assert.equal(isEquipOrder(undefined), false);
 });

@@ -101,6 +101,9 @@ export function isNeedResolved (need, observation = {}, { rules = [] } = {}) {
     case 'obtain_food': return perception.hasFood;
     case 'obtain_weapon': return !!perception.weapon;
     case 'obtain_armor': return perception.armorCount > 0;
+    // `wear_armor` e' l'ordine umano "equipaggiati": il successo e' l'armatura
+    // addosso (`observe().armor`), non un pezzo nell'inventario.
+    case 'wear_armor': return perception.wornArmorCount > 0;
     case 'replace_tool': {
       const held = perception.heldDurability;
       return !(held && held.max > 0 && held.max - held.damage <= 5);

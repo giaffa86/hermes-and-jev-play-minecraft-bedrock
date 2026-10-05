@@ -1,5 +1,65 @@
 # Log
 
+## [2026-10-05] feat | Chat M6.3: what the bot wears, and an equip order that actually equips
+
+A human asked in chat *"quanta vita hai? quanti cuori hai? quanta fame hai? cosa
+hai nell'inventario? hai una spada?"* and then ordered *"equipaggiati con
+l'elmetto"*, *"equipaggiati con armatura in bronzo"*. M6 answered inventory
+questions as a ranked list and never read the equipment slots, and an equip order
+was not an order at all: it fell through to the static fallback and became `follow
+<sender>` — a bot walking to the sender instead of putting on a helmet.
+
+- **`q_armor`, the seventh intent** (`human-questions.mjs`): `armorAnswer(obs)`
+  answers from `observe().armor` (`{helmet, chestplate, leggings, boots, points}`,
+  the equipment slots, **worn** ≠ carried) — `indosso: iron_helmet, iron_boots (9
+  punti armatura)` / `non indosso armatura` / `non lo so: non ho letto la mia
+  armatura` when the fact is missing. Inserted right after `q_health` so its
+  phrases beat `q_inventory`'s; the closed option list for Jev is now `a0..a7`
+  with `q_none` last (`intentCriteria` derives it, so the model sees it with no
+  extra wiring).
+- **A named item is the answer**: `inventoryAnswer` now detects the item in the
+  message (`ITEM_WORDS`, `matchItemWord` over `normalizeForMatching`) and answers
+  that single item (`hai una spada?` → `sì: wooden_sword`, `quanta terra hai?` →
+  `dirt x64`, `no, non ne ho`); the ranked list is the fallback.
+- **Hearts first**: `q_health` covers `quanti cuori hai?`/`quanta fame hai?` and
+  `healthAnswer` leads with `ho 10 cuori (20/20 di vita) e 12/20 di cibo` — Bedrock
+  counts half-hearts 0-20, so `round(health / 2)` is what a human expects.
+- **Equip orders are deterministic, not model work**: `isEquipOrder`
+  (`controller-decisions.mjs`) accepts an equip verb (`equipaggiati`, `mettiti`,
+  `indossa`, `wear`, `put on`) **plus** an armor noun (elmo/elmetto/casco/armatura/
+  corazza/pettorale/gambali/stivali/scudo/zucca + English), so `mettiti a lavorare`
+  stays an ordinary order. `humanCommandPlan` then short-circuits to
+  `{need: 'wear_armor', equip: true, follow: null}` with **no Hermes call**
+  (`plan` event, `deterministic: 'equip'`), and the controller picks `equip_armor`
+  itself whenever the harness offers it (`EQUIP ORDER … deterministico`,
+  `equip_order` event).
+- **Success is state**: `isNeedResolved('wear_armor', …)` uses the new
+  `perception.wornArmorCount` (`survival/perception.mjs`, from `observe().armor`),
+  so a helmet in the backpack resolves nothing; the goal closes on the
+  confirmatory `goalMet` after exactly one successful action.
+- **Nothing to wear is an answer, not a wandering**: with `plan.equip` set and
+  `equip_armor` not offered, the bot replies `non ho armatura in inventario, non
+  posso equipaggiarmi` (`renderNoArmor`), logs
+  `equip_order {key: null, error: 'no_armor_in_inventory'}` and fails the goal with
+  that reason, so the human gets `non ce l'ho fatta: …` instead of a silent
+  timeout.
+
+Tests: `tests/human-questions.test.mjs` (fast-path phrases, `q_armor` precedence,
+item-named answer, hearts/food, missing fact), `tests/controller-decisions.test.mjs`
+(`isEquipOrder` true/false pairs), `tests/idle-goals.test.mjs` (`wear_armor`:
+worn, not carried), `tests/chat-intent.test.mjs` (the rerouted model-path
+messages are ones the fast path does not cover) and
+`tests/controller-chat-ack.test.mjs` (end-to-end over a scripted harness: the
+equip order is acked, planned `deterministic: 'equip'`, executed as `equip_armor`
+with the armor **worn** in `observe().armor`, and with an empty inventory it is
+refused and fails with `no_armor_in_inventory`, no `/act` at all). Suite: 1340
+pass / 0 fail for the unit files, `tests/controller-chat-ack.test.mjs` green.
+
+Docs: `wiki/human-command.md` §M6.3 (and the M-list, seven intents),
+`wiki/verification.md` row 18, `sources.md` (`human-questions.mjs`,
+`controller.mjs`, `controller-decisions.mjs`, `idle-goals.mjs`), `index.md`.
+No new env var. Not deployed; not pushed.
+
 ## [2026-10-05] ingest | The raw potato is safe food, not a poison: safe meals first, harmful ones only when starving
 
 The previous entry (commit `552b562`) put the raw potato in `LAST_RESORT_FOODS`

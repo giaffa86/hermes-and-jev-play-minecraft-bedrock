@@ -27,12 +27,12 @@ import {nextIdleGoal, isNeedResolved, DEFAULT_AUTONOMY_COOLDOWN_MS, DEFAULT_MAX_
 import {detectEvents} from './world-events.mjs';
 import {emergencyGoalFor, DEFAULT_EMERGENCY_COOLDOWN_MS} from './emergency-goals.mjs';
 import {
-  buildCriteria, buildDecisionInstructions, detectRepeatedAction, filterOptions, isStopOrder, withStickyFollow,
+  buildCriteria, buildDecisionInstructions, detectRepeatedAction, filterOptions, isEquipOrder, isStopOrder, withStickyFollow,
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
 import {planGreetings, DEFAULT_GREETING_TEMPLATE, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
 import {orderAck, orderOutcome, lostNotice, isSelfTriggering, normalizePrefixes, matchChatPrefix, selfPrefixes, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
-import {answerIntent, renderAnswer, renderUnrouted} from './human-questions.mjs';
+import {answerIntent, renderAnswer, renderNoArmor, renderUnrouted} from './human-questions.mjs';
 import {resolveQuestionIntent, DEFAULT_INTENT_TIMEOUT_MS, DEFAULT_INTENT_MIN_P} from './chat-intent.mjs';
 import {systemOneDecide} from './system-one.mjs';
 import {
@@ -447,6 +447,23 @@ async function humanCommandPlan (obs, entry) {
     'Keep the objective to one sentence. The controller picks bounded actions from the harness; never invent action keys.',
     `Current state: ${JSON.stringify(obs)}`,
   ].join('\n');
+  // `equipaggiati con l'elmo` / `mettiti l'armatura` non passa dal planner: e'
+  // un ordine di equipaggiamento, deterministico e verificabile (il successo e'
+  // `observe().armor` non vuoto) e il fallback "segui il mittente" sarebbe un
+  // fraintendimento. Nessuna chiamata a Hermes, nessun modello.
+  if (isEquipOrder(entry.message)) {
+    const plan = {
+      objective: 'Equip the armor pieces carried in the inventory (helmet, chestplate, leggings, boots)',
+      targets: {},
+      waypoint: null,
+      follow: null,
+      need: 'wear_armor',
+      equip: true,
+      notes: `human:${entry.from} equip`,
+    };
+    log('plan', {plan, ms: 0, source: 'human', deterministic: 'equip'});
+    return plan;
+  }
   const started = Date.now();
   const out = await runHermes(prompt);
   // "fermati" non deve mai diventare un inseguimento: il fallback
@@ -525,7 +542,7 @@ async function resolveQuestion (obs, entry) {
     });
     return decision;
   }
-  const answer = answerIntent(decision.id, obs, {prefixes: entry.prefixes ?? CHAT_PREFIXES, maxLength: CHAT_REPLY_MAX_LENGTH});
+  const answer = answerIntent(decision.id, obs, {prefixes: entry.prefixes ?? CHAT_PREFIXES, maxLength: CHAT_REPLY_MAX_LENGTH, message: entry.message});
   if (!answer) {
     // Intento in catalogo ma fatto assente (es. inventario vuoto): stesso rifiuto.
     log('chat_unrouted', {
@@ -728,6 +745,10 @@ const goalContract = hasContractConfig() ? contractFromEnv() : null;
 const contractBaseline = obs;
 let lastContractStatus = null;
 let runExitCode = 0; // non-zero quando un contratto termina FAILED/BLOCKED/EXHAUSTED
+// Motivo esplicito di un'esecuzione fallita decisa dal loop (es. ordine di
+// equipaggiamento senza niente da indossare): finisce in `outcome.reason` e
+// quindi nel messaggio di esito all'umano, invece di un generico "failed".
+let failureReason = null;
 // `stepsUsed` = azioni già eseguite; a fine budget il contratto ancora RUNNING
 // viene tradotto in `exhausted` (vedi survival/goal-contract.mjs).
 let plan = goal.plan ?? { construction: CONSTRUCTION ?? constructionFromText(goal.objective ?? GOAL, obs) };
@@ -797,6 +818,7 @@ let prevObs = null;             // osservazione del passo precedente (eventi del
 let lastFollowTarget = null;    // ultimo ordine "seguimi" annunciato nei log
 let lastNeedKey = null;         // ultimo bisogno di sopravvivenza annunciato nei log
 let lastCraftKey = null;        // ultimo passo di approvvigionamento annunciato nei log
+let lastEquipKey = null;        // ultimo ordine di equipaggiamento annunciato nei log
 let lostFollowSteps = 0;        // passi consecutivi con l'ordine "seguimi" aperto ma senza bersaglio
 let lostNoticeSent = false;     // l'avviso in chat e' uno per episodio, non uno per cooldown
 let lostHoldSteps = 0;          // passi di attesa a tracce perse (nessuna azione, nessun modello)
@@ -1082,10 +1104,36 @@ for (let step = 1; step <= maxSteps; step++) {
   } else {
     lostHoldSteps = 0;
   }
+  // Ordine di equipaggiamento umano (`equipaggiati con l'elmo`): quando il
+  // piano lo dichiara e l'harness offre davvero `equip_armor`, la scelta e'
+  // deterministica — il modello non deve decidere se indossare l'armatura che
+  // l'umano ha chiesto. Se `equip_armor` non c'e', l'inventario non ha pezzi:
+  // l'ordine non puo' riuscire e si chiude subito, con un avviso (non si lascia
+  // il modello libero di girare per la mappa dentro un goal impossibile).
+  const canEquip = plan.equip === true && options.some(o => o.key === 'equip_armor');
+  const equipKey = !needKey && !pursuitKey && !lostWaitKey && !lostHold && canEquip ? 'equip_armor' : null;
+  const equipBlocked = !needKey && !pursuitKey && plan.equip === true && !canEquip;
+  if (equipBlocked) {
+    // Niente da indossare: si dice all'umano e il goal finisce *fallito* (non
+    // "fatto"), invece di lasciare il modello libero dentro un goal impossibile.
+    console.log('EQUIP ORDER: nessun pezzo di armatura in inventario');
+    log('equip_order', {step, key: null, error: 'no_armor_in_inventory'});
+    await replyChat(renderNoArmor({from: goal.humanOrder?.from ?? null, maxLength: CHAT_REPLY_MAX_LENGTH}), {context: 'equip_no_armor', prefixes: CHAT_PREFIXES});
+    lastEquipKey = 'blocked';
+    failureReason = 'no_armor_in_inventory';
+    runExitCode = 2;
+    break;
+  } else if (equipKey && lastEquipKey !== equipKey) {
+    lastEquipKey = equipKey;
+    console.log('EQUIP ORDER: equip_armor deterministico (nessuna chiamata al modello)');
+    log('equip_order', {step, key: equipKey});
+  } else if (!equipKey) {
+    lastEquipKey = null;
+  }
   // Provviste per una costruzione: la regola sta nell'harness (inventario ->
   // bauli -> natura, mai costruzioni) e qui si esegue soltanto, senza chiedere
   // al modello. Il passo vale solo se l'harness lo offre davvero.
-  const craftStep = !needKey && !pursuitKey && !lostWaitKey && !lostHold ? (obs.craft?.next ?? null) : null;
+  const craftStep = !needKey && !pursuitKey && !lostWaitKey && !lostHold && !equipKey ? (obs.craft?.next ?? null) : null;
   const craftKey = craftStep && filtered.options.some(o => o.key === craftStep.key) ? craftStep.key : null;
   if (craftKey && lastCraftKey !== craftKey) {
     lastCraftKey = craftKey;
@@ -1102,6 +1150,8 @@ for (let step = 1; step <= maxSteps; step++) {
     ? {key: seekKey, reason: `follow_seek:${goal.follow}`, source: 'follow_seek'}
     : lostWaitKey
     ? {key: lostWaitKey, reason: `follow_lost:${goal.follow}`, source: 'follow_lost'}
+    : equipKey
+    ? {key: equipKey, reason: 'equip_order', source: 'equip_order'}
     : craftKey
     ? {key: craftKey, reason: `craft_source:${craftStep.source}:${craftKey}`, source: 'craft_source'}
     : (CONTROLLER === 'jev' ? await jevDecide(obs, filtered.options, decisionPlan) : await hermesDecide(obs, filtered.options, decisionPlan));
@@ -1111,7 +1161,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // lo stato desiderato (l'umano e' li'), non un loop da punire con l'anti-loop.
   // Ne' una ricerca ne' un'attesa di recupero sono stagnazione: la prima ha un
   // bersaglio verificato dall'harness, la seconda e' il tempo che l'umano torni.
-  chosenFingerprint = pursuitKey || lostWaitKey || craftKey ? null : progressFingerprint(obs, plan);
+  chosenFingerprint = pursuitKey || lostWaitKey || craftKey || equipKey ? null : progressFingerprint(obs, plan);
   const actStarted = Date.now();
   let result = await api('POST', '/act', {key});
   // `busy` non è un verdetto sull'azione: il harness sta ancora eseguendo
@@ -1147,7 +1197,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // Un bisogno risolto in pochi ms (notte saltata) non deve far girare il loop
   // a vuoto; il fingerprint resta comunque contato per il bisogno, cosi' un
   // `sleep` che fallisce e si ripete finisce nell'anti-loop.
-  if ((pursuitKey || needKey || lostWaitKey || craftKey) && result?.ok && (result.ms ?? 0) < 250) await delay(FOLLOW_IDLE_POLL_MS);
+  if ((pursuitKey || needKey || lostWaitKey || equipKey || craftKey) && result?.ok && (result.ms ?? 0) < 250) await delay(FOLLOW_IDLE_POLL_MS);
   if (goal.follow && step >= maxSteps) {
     // Il budget si rinnova finche' l'ordine "seguimi" resta aperto: l'impegno
     // finisce con un altro ordine (o con un'emergenza che preempta il goal).
@@ -1181,7 +1231,7 @@ if (!goalReached) {
 }
 // Non si esce dal processo: l'esito torna al session loop (main), che decide se
 // registrarlo e passare a IDLE o terminare (modalità one-shot).
-return {status: goalReached ? 'success' : (runExitCode ? 'failed' : 'exhausted'), exitCode: runExitCode, steps: stepsUsed, totalCost};
+return {status: goalReached ? 'success' : (runExitCode ? 'failed' : 'exhausted'), exitCode: runExitCode, steps: stepsUsed, totalCost, ...(failureReason ? {reason: failureReason} : {})};
 }
 
 // ---- session loop: IDLE <-> GOAL_RUNNING ----------------------------------------------------

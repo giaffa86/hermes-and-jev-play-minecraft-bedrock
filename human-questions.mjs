@@ -39,7 +39,13 @@ function positionAnswer (obs) {
 function healthAnswer (obs) {
   if (obs?.dead) return 'sono morto, sto rinascendo';
   const parts = [];
-  if (Number.isFinite(Number(obs?.health))) parts.push(`${round(obs.health)}/20 di vita`);
+  // Bedrock conta la vita in mezzi-cuori (0-20): 20 punti = 10 cuori. La
+  // domanda del giocatore è quasi sempre "quanti cuori hai?", quindi si dà
+  // prima il numero di cuori e poi i punti, senza inventare nulla.
+  if (Number.isFinite(Number(obs?.health))) {
+    const health = Number(obs.health);
+    parts.push(`${round(health / 2)} cuori (${round(health)}/20 di vita)`);
+  }
   if (Number.isFinite(Number(obs?.food))) parts.push(`${round(obs.food)}/20 di cibo`);
   if (!parts.length) return 'non lo so: non ho letto la mia vita';
   return `ho ${parts.join(' e ')}`;
@@ -51,8 +57,58 @@ function activityAnswer (obs) {
   return `sto facendo: ${objective}`;
 }
 
-function inventoryAnswer (obs, { limit = 4 } = {}) {
+// Parole italiane (e inglesi) con cui la famiglia chiede un oggetto preciso:
+// il token è la parte del nome Minecraft che deve comparire in inventario.
+// `armor` e `food` sono gruppi, risolti dai pattern qui sotto.
+const ITEM_WORDS = [
+  [/\bspad(a|e|ina|ine|ino|ini)\b|\bsword\b/, 'sword'],
+  [/\bpiccon(e|i|etto|etti)\b|\bpick(axe)?\b/, 'pickaxe'],
+  [/\basci(a|e)\b|\baxe\b/, 'axe'],
+  [/\bpal(a|e)\b|\bshovel\b/, 'shovel'],
+  [/\bzapp(a|e)\b|\bhoe\b/, 'hoe'],
+  [/\belm(o|etto|etti|i)\b|\bcasco\b|\bhelmet\b/, 'helmet'],
+  [/\bcorazz(a|e)\b|\bpettoral(e|i)\b|\bchestplate\b/, 'chestplate'],
+  [/\bgambal(e|i)\b|\bleggings\b/, 'leggings'],
+  [/\bstival(e|i)\b|\bboots\b/, 'boots'],
+  [/\barmatur(a|e)\b|\barmor\b/, 'armor'],
+  [/\bscud(o|i)\b|\bshield\b/, 'shield'],
+  [/\bpagnott(a|e)\b|\bpane\b|\bbread\b/, 'bread'],
+  [/\bmel(a|e)\b|\bapple\b/, 'apple'],
+  [/\bterr(a|e)\b|\bdirt\b/, 'dirt'],
+  [/\bpietr(a|e)\b|\bstone\b/, 'stone'],
+  [/\blegn(o|a|e)\b|\bplanks?\b/, 'planks'],
+  [/\bferr(o|i)\b|\biron\b/, 'iron'],
+  [/\bcarbon(e|i)\b|\bcoal\b/, 'coal'],
+  [/\bdiamant(e|i)\b|\bdiamond\b/, 'diamond'],
+  [/\btorci(a|e)\b|\btorch(es)?\b/, 'torch'],
+  [/\blett(o|i)\b|\bbed\b/, 'bed'],
+  [/\bzucca\b|\bzucche\b|\bpumpkin\b/, 'pumpkin'],
+];
+
+const ARMOR_SUFFIX = /_(helmet|chestplate|leggings|boots)$/;
+
+function matchItemWord (message) {
+  const text = normalizeForMatching(message);
+  if (!text) return null;
+  for (const [pattern, token] of ITEM_WORDS) {
+    if (pattern.test(text)) return token;
+  }
+  return null;
+}
+
+function inventoryAnswer (obs, { message = null, limit = 4 } = {}) {
   const inventory = obs?.inventory && typeof obs.inventory === 'object' ? obs.inventory : {};
+  // "hai una spada?" si risponde sull'oggetto chiesto, non con la lista intera:
+  // se la domanda nomina qualcosa che il catalogo conosce, si dice sì o no.
+  const token = matchItemWord(message);
+  if (token) {
+    const names = Object.keys(inventory)
+      .filter(name => Number(inventory[name]) > 0)
+      .filter(name => (token === 'armor' ? ARMOR_SUFFIX.test(name) : name.includes(token)));
+    if (!names.length) return 'no, non ne ho';
+    const shown = names.map(name => (Number(inventory[name]) > 1 ? `${name} x${inventory[name]}` : name));
+    return `sì: ${shown.join(', ')}`;
+  }
   const rows = Object.entries(inventory)
     .filter(([, count]) => Number(count) > 0)
     .sort((a, b) => Number(b[1]) - Number(a[1]));
@@ -60,6 +116,17 @@ function inventoryAnswer (obs, { limit = 4 } = {}) {
   const shown = rows.slice(0, limit).map(([item, count]) => (Number(count) > 1 ? `${item} x${count}` : item));
   const more = rows.length > limit ? ` (+${rows.length - limit} altri)` : '';
   return `ho: ${shown.join(', ')}${more}`;
+}
+
+// Cosa indossa, non cosa possiede: `observe().armor` è lo stato degli slot
+// addosso (elmo/pettorale/gambali/stivali) più i punti armatura vanilla.
+function armorAnswer (obs) {
+  const armor = obs?.armor && typeof obs.armor === 'object' ? obs.armor : null;
+  if (!armor) return 'non lo so: non ho letto la mia armatura';
+  const worn = ['helmet', 'chestplate', 'leggings', 'boots'].map(slot => armor[slot]).filter(Boolean);
+  if (!worn.length) return 'non indosso armatura';
+  const points = Number.isFinite(Number(armor.points)) ? ` (${round(armor.points)} punti armatura)` : '';
+  return `indosso: ${worn.join(', ')}${points}`;
 }
 
 // Bedrock keeps time in ticks: 0 ticks is 06:00, one full day is 24000 ticks.
@@ -101,8 +168,14 @@ export const QUESTION_INTENTS = [
   {
     id: 'q_health',
     description: 'The human asks how the bot is doing: its health, its food/hunger, or whether it is hurt or dead (e.g. "come stai", "how are you", "hai fame", "sei vivo").',
-    patterns: [/\b(come stai|come ti senti|quanta vita|hai fame|sei vivo|how are you|how much health|your health)\b/],
+    patterns: [/\b(come stai|come ti senti|quanta vita|quanti cuori|quante cuori|quanto cuore|quanta fame|quanto cibo|quanta cibo|hai fame|hai vita|sei vivo|how are you|how much health|how many hearts|your health)\b/],
     answer: healthAnswer,
+  },
+  {
+    id: 'q_armor',
+    description: 'The human asks which armor or equipment the bot is *wearing* right now (e.g. "che armatura hai", "cosa indossi", "sei equipaggiato", "what armor are you wearing"). Not the inventory: a piece held in the inventory but not equipped is not worn yet.',
+    patterns: [/\b(che armatura|quale armatura|armatura (hai|indossi|addosso)|hai (l |la |una |un )?armatura|cosa indossi|cosa hai addosso|cosa hai in testa|sei equipaggiat|what armor|what are you wearing|are you wearing)\b/],
+    answer: armorAnswer,
   },
   {
     id: 'q_activity',
@@ -113,7 +186,7 @@ export const QUESTION_INTENTS = [
   {
     id: 'q_inventory',
     description: 'The human asks which items the bot carries, or whether it has a specific item (e.g. "cosa hai", "che oggetti hai", "hai della pietra", "what do you have").',
-    patterns: [/\b(cosa hai\b(?!\s+(fatto|detto|visto|trovato|imparato))|cosa porti|che oggetti|inventario|inventory|what do you have)\b/],
+    patterns: [/\b(cosa hai\b(?!\s+(fatto|detto|visto|trovato|imparato))|cosa porti|cosa possiedi|che oggetti|inventario|inventory|what do you have|do you have|have you got|hai (un|uno|una|del|dello|della|dei|degli|delle|qualche|qualcosa)|quanto \w+ (hai|possiedi)|quant[oaie] \w+ (hai|possiedi)|quanti \w+ (hai|possiedi))\b/],
     answer: inventoryAnswer,
   },
   {
@@ -207,10 +280,13 @@ export function intentFromChoice (choice) {
 
 // Render the answer for an intent from harness facts. Returns null when the id
 // is unknown or is the `q_none` sentinel (both mean "no answer to give").
-export function answerIntent (id, obs = {}, { prefixes = DEFAULT_CHAT_PREFIX, maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
+export function answerIntent (id, obs = {}, { prefixes = DEFAULT_CHAT_PREFIX, maxLength = DEFAULT_REPLY_MAX_LENGTH, message = null } = {}) {
   const intent = QUESTION_INTENTS.find(candidate => candidate.id === id);
   if (!intent) return null;
-  const answer = intent.answer(obs ?? {}, { prefixes });
+  // `message` arriva all'answer: una domanda come "hai una spada?" nomina
+  // l'oggetto, e l'inventario deve rispondere su quello. Il testo resta
+  // un'indicazione, i fatti restano quelli di `observe()`.
+  const answer = intent.answer(obs ?? {}, { prefixes, message });
   return answer ? clampMessage(answer, maxLength) : null;
 }
 
@@ -233,4 +309,13 @@ export const UNROUTED_TEMPLATE = 'non ho capito la domanda. Se era un ordine, sc
 export function renderUnrouted ({ from, prefixes = DEFAULT_CHAT_PREFIX, template = UNROUTED_TEMPLATE, maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
   const answer = renderReply(template, { prefixes: formatPrefixes(prefixes) || DEFAULT_CHAT_PREFIX });
   return renderAnswer({ from, answer, maxLength });
+}
+
+// Un ordine di equipaggiamento non si puo' eseguire perche' non c'e' nulla da
+// indossare: si dice all'umano, non si lascia il goal aperto su un'azione che
+// l'harness non offre (`equip_armor` compare solo se l'inventario ha pezzi).
+export const NO_ARMOR_TEMPLATE = 'non ho armatura in inventario, non posso equipaggiarmi';
+
+export function renderNoArmor ({ from, template = NO_ARMOR_TEMPLATE, maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
+  return renderAnswer({ from, answer: template, maxLength });
 }

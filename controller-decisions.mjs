@@ -118,6 +118,20 @@ export function isStopOrder (message) {
   return /\b(fermati|fermo|stop|basta|aspett\w*|resta|rimani|smettila|non seguirmi|stay|wait|stand still)\b/i.test(String(message || ''));
 }
 
+// Un ordine di equipaggiamento ("equipaggiati con l'elmo", "mettiti l'armatura",
+// "wear your helmet"): e' un ordine di *azione*, non una domanda, ma il
+// fallback deterministico del traduttore ("segui chi ti ha scritto") sarebbe un
+// fraintendimento, e Hermes non sa esprimere l'equipaggiamento (il suo piano ha
+// solo target/waypoint/follow). Riconosce il verbo equipaggiare da solo, oppure
+// mettersi/indossare solo quando nomina un capo o un utensile: cosi' "mettiti a
+// lavorare" resta un ordine normale.
+const EQUIP_NOUN = /\b(armatur\w*|elmo|elmetto|casco|corazz\w*|pettoral\w*|gambal\w*|stival\w*|scudo|zucca|helmet|chestplate|leggings|boots|shield|armor|pumpkin)\b/;
+export function isEquipOrder (message) {
+  const text = String(message || '').toLowerCase();
+  if (/\bequip\w*\b/.test(text)) return true;
+  return /\b(mettiti|mettiamoci|indossa|indossare|wear|put on)\b/.test(text) && EQUIP_NOUN.test(text);
+}
+
 // Consecutive trailing executions of `key` without progress. A successful
 // action (stagnant: false) or a different key resets the streak.
 export function detectRepeatedAction (history = [], key, { threshold = DEFAULT_ANTI_LOOP_THRESHOLD } = {}) {

@@ -210,6 +210,15 @@ export function perceive (observation = {}) {
     armorCount: Object.keys(inventory)
       .filter(name => /_(helmet|chestplate|leggings|boots)$/.test(name))
       .reduce((sum, name) => sum + (inventory[name] || 0), 0),
+    // Pezzi *indossati* (non posseduti): `wear_armor` verifica che l'armatura sia
+    // addosso, quindi un ordine "equipaggiati" non puo' chiudersi solo perche'
+    // l'elmo e' in inventario. `armor` e' opzionale (harness Java): vuoto = assente.
+    wornArmor: observation.armor && typeof observation.armor === 'object'
+      ? ['helmet', 'chestplate', 'leggings', 'boots'].map(slot => observation.armor[slot]).filter(Boolean)
+      : [],
+    wornArmorCount: observation.armor && typeof observation.armor === 'object'
+      ? ['helmet', 'chestplate', 'leggings', 'boots'].filter(slot => observation.armor[slot]).length
+      : 0,
     bedAvailable: !!bed,
     bedDistance: bed?.distance ?? null,
     lootNearby: Array.isArray(observation.drops) && observation.drops.length > 0,

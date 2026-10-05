@@ -93,6 +93,14 @@ human chat message
   `@<BEDROCK_USERNAME>` and the gamertag the server attributes to it
   (`observe().self`, learned from the chat echo), composed per observation by
   `chatPrefixes(obs)`; `CHAT_SELF_NAME=off` disables them.
+- **M6.3 — worn armor is a fact, equipping is an order** ✅ questions about
+  *what the bot is wearing* (`q_armor`) are answered from `observe().armor` —
+  worn, not carried — a question that names an item is answered about that item,
+  and an equip order (`equipaggiati con l'elmetto`, `mettiti l'armatura in
+  bronzo`) is planned **deterministically** (`need: 'wear_armor'`, no Hermes
+  call) and closed by the `equip_armor` intents; with nothing to wear the bot
+  says so and the goal fails with `no_armor_in_inventory` instead of wandering
+  off.
 
 ## Live evidence (2026-10-03, BDS 1.26.52 via CT 108, VM 100 container)
 
@@ -259,13 +267,13 @@ A human will ask *"dove sei?"*, not only give orders. Such a message is not an
 order, and answering it with `follow <sender>` (the old fallback) was worse than
 answering nothing. M6 inserts a question path **before** the order path:
 
-- **Fast path (free, offline)**: `human-questions.mjs` holds a catalogue of six
-  intents (`q_position`, `q_health`, `q_activity`, `q_inventory`, `q_time`,
-  `q_identity`), each with a regex. A message that matches is answered without
-  any model call.
+- **Fast path (free, offline)**: `human-questions.mjs` holds a catalogue of
+  seven intents (`q_position`, `q_health`, `q_activity`, `q_inventory`, `q_time`,
+  `q_identity`, `q_armor`), each with a regex. A message that matches is answered
+  without any model call.
 - **Router (System One = Jev)**: a message that matches nothing is classified by
-  the decisions endpoint over a **closed option list** — the six intents plus the
-  sentinel `q_none`. The model picks an option; it never writes the answer.
+  the decisions endpoint over a **closed option list** — the seven intents plus
+  the sentinel `q_none`. The model picks an option; it never writes the answer.
   `chat-intent.mjs` asks, `system-one.mjs` is the transport shared with the
   action decision (`jevDecide`).
 - **The answer is composed from `observe()`** by `answerIntent(...)`: position,
@@ -297,7 +305,9 @@ answering nothing. M6 inserts a question path **before** the order path:
 
 M6 failed **open**: with `@bot quanti cuori hai?` and an unreachable Jev the
 message fell through to the order path and became the static `follow <sender>`
-fallback — a failure moving the bot. M6.1 closes that boundary:
+fallback — a failure moving the bot (that phrase is answered offline by the
+`q_health` fast path since M6.3, so the live probe uses a question no regex
+covers, e.g. `chi mi sta guardando?`). M6.1 closes that boundary:
 
 - **Question guard (pure, on the raw text)**: `looksLikeQuestion` in
   `human-questions.mjs` fires on an explicit `?`/`¿` or on an interrogative
@@ -326,13 +336,64 @@ fallback — a failure moving the bot. M6.1 closes that boundary:
 - **Tests**: `tests/human-questions.test.mjs` (the guard's true/false pairs, the
   refusal line), `tests/chat-intent.test.mjs` (the pre-filter costs no call;
   `q_none` → order; timeout/unparsable/low-p/disabled/no-key → `unrouted`) and
-  `tests/controller-chat-ack.test.mjs` (`quanti cuori hai?` with a dead router is
+  `tests/controller-chat-ack.test.mjs` (`chi mi sta guardando?` with a dead router is
   refused and never becomes `follow`; `sei un cretino` skips the model;
   `riesci a raggiungermi?` with a model that answers `q_none` stays an order; a
   hanging endpoint is logged as `timeout`).
 - **Not done on purpose**: a tie-break through Hermes (System Two) for
   interrogative *orders* — `chat_intent.reason = 'not_a_question'` and
   `chat_unrouted` are the data that will decide whether M7 needs it.
+
+### M6.3 — worn armor is a fact, equipping is an order
+
+M6 could say what the bot *carries* (`q_inventory`) but not what it *wears*, and
+an equip order — short, imperative, unmistakable — fell through to the static
+`follow <sender>` fallback. M6.3 adds both halves:
+
+- **`q_armor` (the seventh intent)**: `armorAnswer(obs)` reads `observe()`'s
+  `armor` (`{helmet, chestplate, leggings, boots, points}`, filled by
+  `bedrock-adapter.mjs` from the equipment slots — **worn**, not carried) and
+  answers `indosso: iron_helmet, iron_boots (9 punti armatura)`,
+  `non indosso armatura`, or `non lo so: non ho letto la mia armatura` when the
+  fact is missing. The intent sits right after `q_health` so its phrases win over
+  `q_inventory`'s; the closed option list is now `a0..a7` with `q_none` last.
+- **A question that names an item is answered about that item**: `inventoryAnswer`
+  reads the message (`matchItemWord`, `ITEM_WORDS`, `normalizeForMatching`) and
+  answers the count of that one item (`hai una spada?` → `sì: wooden_sword`,
+  `quanta terra hai?` → `dirt x64`, or `no, non ne ho`) instead of the ranked
+  list. The list is the fallback, not the answer.
+- **Hearts first**: `q_health` now covers `quanti cuori hai?`/`quanta fame hai?`
+  and `healthAnswer` leads with hearts (`ho 10 cuori (20/20 di vita) e 12/20 di
+  cibo`) — Bedrock counts half-hearts 0-20, so `round(health / 2)` is the number
+  a human expects.
+- **Equip orders are planned deterministically** (`isEquipOrder` +
+  `humanCommandPlan`): `equipaggiati …`, `equipaggia tutto`, `mettiti l'armatura`,
+  `indossa i gambali`, `wear your helmet`, `put on your boots` (and the shield /
+  pumpkin nouns) produce `{need: 'wear_armor', equip: true, follow: null}` with
+  **no Hermes call** (`plan` event, `deterministic: 'equip'`) and no model in the
+  loop: the controller picks `equip_armor` itself whenever the harness offers it
+  (`EQUIP ORDER … deterministico`, `equip_order` event) — the model cannot
+  express equipment, and the old fallback would have sent `follow <sender>`.
+  `mettiti a lavorare` stays an ordinary order: the verb alone is not enough.
+- **Success is state, not opinion**: `isNeedResolved('wear_armor', …)` uses
+  `perception.wornArmorCount` (`survival/perception.mjs`, from `observe().armor`),
+  so a helmet in the backpack resolves nothing and the goal closes on the
+  confirmatory `goalMet`, after exactly one successful action.
+- **Nothing to wear is an answer, not a wandering**: when `plan.equip` is set and
+  `equip_armor` is *not* offered, the controller refuses
+  (`renderNoArmor`: `non ho armatura in inventario, non posso equipaggiarmi`),
+  logs `equip_order {key: null, error: 'no_armor_in_inventory'}` and fails the
+  goal with that `reason` (so the human gets `non ce l'ho fatta: …` instead of a
+  silent timeout).
+- **Tests**: `tests/human-questions.test.mjs` (the new fast-path phrases,
+  `q_armor` precedence, the item-named answer, hearts-and-food, the missing-fact
+  policy), `tests/controller-decisions.test.mjs` (`isEquipOrder` true/false
+  pairs), `tests/idle-goals.test.mjs` (`wear_armor` = worn, not carried),
+  `tests/chat-intent.test.mjs` (the fast path must not swallow the phrases the
+  model path is exercised with) and `tests/controller-chat-ack.test.mjs` (an
+  equip order is acked, planned with `deterministic: 'equip'`, ends on
+  `equip_armor` alone with the armor **worn** in `observe().armor`, and with an
+  empty inventory it is refused and fails — no `/act` at all).
 
 ## Proactive greeting (§6 Attention System)
 

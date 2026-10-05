@@ -77,7 +77,10 @@ test('q_none leaves the message to the order path', async () => {
 test('a hesitated question never becomes an order (M6.1)', async () => {
   const choice = choiceFor('q_inventory');
   const { fetchImpl } = stubFetch(() => answers(choice, { [choice]: 0.3 }));
-  const decision = await resolveQuestionIntent('quanta pietra hai?', { fetchImpl, url: URL, key: KEY, minProbability: 0.4 });
+  // Messaggio *non* coperto dal fast path regex (che ormai riconosce "quanta
+  // pietra hai?" e "quanti cuori hai?"): serve una domanda vera che debba
+  // passare dal modello, altrimenti il test non prova più nulla.
+  const decision = await resolveQuestionIntent('quanta pietra ho?', { fetchImpl, url: URL, key: KEY, minProbability: 0.4 });
   assert.equal(decision.action, 'unrouted', 'una domanda incerta non muove il bot');
   assert.equal(decision.id, null);
   assert.equal(decision.reason, 'low_probability');
@@ -101,7 +104,7 @@ test('a timeout is reported as unroutable, not as an order', async () => {
     error.name = 'TimeoutError';
     throw error;
   };
-  const decision = await resolveQuestionIntent('quanti cuori hai?', { fetchImpl: timeout, url: URL, key: KEY });
+  const decision = await resolveQuestionIntent('chi mi sta guardando?', { fetchImpl: timeout, url: URL, key: KEY });
   assert.equal(decision.action, 'unrouted');
   assert.equal(decision.reason, 'timeout');
   assert.match(decision.error, /timeout/);
