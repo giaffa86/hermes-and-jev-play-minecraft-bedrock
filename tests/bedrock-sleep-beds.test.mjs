@@ -32,6 +32,11 @@ function bed (position, distance, occupied = false) {
 function stubBeds (adapter, beds) {
   adapter._bedCache = null;
   adapter.world.findBlocks = (name) => (name === 'bed' ? beds : []);
+  adapter.world.blockAt = ({ x, y, z }) => {
+    const found = beds.find(b => b.position.x === x && b.position.y === y && b.position.z === z);
+    if (found) return { ...found, boundingBox: 'empty', shapes: [[0, 0, 0, 1, 0.5625, 1]] };
+    return y === 62 ? { name: 'stone', boundingBox: 'block' } : { name: 'air', boundingBox: 'empty' };
+  };
 }
 
 test('findBeds lists every bed, free ones first and then by distance', () => {

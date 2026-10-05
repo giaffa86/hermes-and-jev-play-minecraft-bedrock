@@ -8495,6 +8495,10 @@ export class BedrockAdapter {
     if (!entity?.position || !this.position) return { visible: true, unknown: true, blockedBy: null };
     const eye = this.position;
     const aim = { x: entity.position.x, y: entity.position.y + entityHeight(entity.type) * ratio, z: entity.position.z };
+    return this._segmentVisible(eye, aim);
+  }
+
+  _segmentVisible (eye, aim, { targetCell = null, requireLoaded = false } = {}) {
     const axes = ['x', 'y', 'z'];
     const delta = Object.fromEntries(axes.map(axis => [axis, aim[axis] - eye[axis]]));
     const cell = Object.fromEntries(axes.map(axis => [axis, Math.floor(eye[axis])]));
@@ -8504,7 +8508,9 @@ export class BedrockAdapter {
     let entry = 0;
     while (entry < 1) {
       const block = this.world.blockAt(cell);
-      if (block) {
+      if (requireLoaded && (!block || block.name === 'unknown')) return { visible: false, unknown: true, blockedBy: null, blockedAt: { ...cell } };
+      const atTarget = targetCell && ['x', 'y', 'z'].every(axis => cell[axis] === targetCell[axis]);
+      if (block && !atTarget) {
         readable++;
         const shapes = Array.isArray(block.shapes) ? block.shapes
           : this._passable(block) ? [] : [[0, 0, 0, 1, 1, 1]];
@@ -9953,7 +9959,7 @@ export class BedrockAdapter {
     return path.reverse();
   }
 
-  _findPath (start, goal) {
+  _findPath (start, goal, { maxNodes = PATH_MAX_NODES } = {}) {
     const key = n => `${n.x},${n.y},${n.z}`;
     const startKey = key(start), goalKey = key(goal);
     const heuristic = n => Math.abs(n.x - goal.x) + Math.abs(n.z - goal.z) + 0.4 * Math.abs(n.y - goal.y);
@@ -9991,7 +9997,7 @@ export class BedrockAdapter {
     push(start, heuristic(start));
     let expanded = 0;
     let bestNode = start, bestH = heuristic(start);
-    while (open.length && expanded < PATH_MAX_NODES) {
+    while (open.length && expanded < maxNodes) {
       const current = pop();
       const currentKey = key(current);
       if (closed.has(currentKey)) continue;
@@ -12660,17 +12666,19 @@ export class BedrockAdapter {
     let distance = this._pointDistance(bedCenter);
     const horizontal = () => (this._feet ? Math.hypot(this._feet.x - bedCenter.x, this._feet.z - bedCenter.z) : Infinity);
     const stand = this._bedStandSpot(bed);
-    // Senza un punto di sosta verificabile (mondo non caricato) si ripiega sul
-    // centro del letto: è la vecchia via, meno pulita ma meglio che niente.
-    if ((distance > reach || horizontal() < 1.3) && (stand || bedCenter)) {
+    // Distance alone accepts a bed behind a wall. Approach a loaded, walkable
+    // cell with a clear click path and arrive at that cell's actual elevation.
+    if (distance > reach || horizontal() < 0.9 || !this._bedVisible(bed)) {
+      if (!stand) return { ok: false, error: 'bed_access_unavailable', bed: bed.position, distance: +distance.toFixed(2) };
       try {
-        await this._moveTo(stand || bedCenter, stand ? 0.6 : 1.8, approachTimeoutMs);
+        await this._moveTo(stand, 0.08, approachTimeoutMs, { preciseArrival: true, verticalTolerance: 0.15, arrivalVerticalTolerance: 0.15 });
       } catch (error) {
         this.log('bed_approach_failed', { message: error.message, bed: bed.position, distance: +this._pointDistance(bedCenter).toFixed(2) });
       }
       distance = this._pointDistance(bedCenter);
     }
     if (distance > reach) return { ok: false, error: 'bed_unreachable', bed: bed.position, distance: +distance.toFixed(2) };
+    if (!this._bedVisible(bed)) return { ok: false, error: 'bed_click_obstructed', bed: bed.position, distance: +distance.toFixed(2) };
     const beforeTicks = this._timeInfo()?.ticks ?? null;
     const occupiedBefore = this._bedOccupiedAt(bed.position);
     const levelEventBefore = this._sleepLevelEventAt;
@@ -12754,23 +12762,37 @@ export class BedrockAdapter {
     const dirs = [];
     if (len > 0.3) dirs.push([dx / len, dz / len]);
     dirs.push([0, 1], [0, -1], [1, 0], [-1, 0]);
-    const radius = 1.9;
-    for (const [ux, uz] of dirs) {
-      const spot = { x: center.x + ux * radius, y: center.y, z: center.z + uz * radius };
-      if (this._bedStandSpotFree(spot)) return spot;
+    const spots = [];
+    for (const radius of [1.9, 1]) for (const [ux, uz] of dirs) {
+      const spot = { x: Math.floor(center.x + ux * radius) + 0.5, y: center.y, z: Math.floor(center.z + uz * radius) + 0.5 };
+      if (!this._bedStandSpotFree(spot) || !this._bedVisible(bed, { x: spot.x, y: spot.y + EYE_HEIGHT, z: spot.z })) continue;
+      const goal = { x: Math.floor(spot.x), y: spot.y, z: Math.floor(spot.z) };
+      const path = this._findPath(this._startNode(), goal, { maxNodes: 512 });
+      const end = path?.at(-1);
+      if (!end || !['x', 'y', 'z'].every(axis => end[axis] === goal[axis])) continue;
+      spots.push({ spot, length: path.length });
     }
-    return null;
+    spots.sort((a, b) => a.length - b.length);
+    return spots[0]?.spot ?? null;
+  }
+
+  _bedVisible (bed, eye = this.position) {
+    if (!bed?.position || !eye) return false;
+    const aim = { x: bed.position.x + 0.5, y: bed.position.y + 0.5, z: bed.position.z + 0.5 };
+    const verdict = this._segmentVisible(eye, aim, { targetCell: bed.position, requireLoaded: true });
+    return verdict.visible && !verdict.unknown;
   }
 
   _bedStandSpotFree (spot) {
     try {
       const bx = Math.floor(spot.x), by = Math.floor(spot.y), bz = Math.floor(spot.z);
       const feet = this.world.blockAt({ x: bx, y: by, z: bz });
+      const head = this.world.blockAt({ x: bx, y: by + 1, z: bz });
       const below = this.world.blockAt({ x: bx, y: by - 1, z: bz });
-      const free = block => !block || block.name === 'unknown' || block.boundingBox !== 'block';
-      const floor = block => !!block && (block.boundingBox === 'block' || block.name === 'unknown');
-      return free(feet) && floor(below);
-    } catch { return true; }
+      const free = block => !!block && block.name !== 'unknown' && block.name !== 'bed' && !block.name.endsWith('_bed') && this._passable(block);
+      const floor = block => !!block && block.name !== 'unknown' && block.boundingBox === 'block';
+      return free(feet) && free(head) && floor(below);
+    } catch { return false; }
   }
 
   // ---- risalita a gradini (uscita da buche/pozzi) ------------------------------------

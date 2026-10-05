@@ -64,7 +64,7 @@ test('bedStandSpot: punto di sosta fuori dal footprint del letto', () => {
   assert.ok(spot, 'un punto di sosta esiste');
   const center = { x: 2.5, z: 0.5 };
   const horizontal = Math.hypot(spot.x - center.x, spot.z - center.z);
-  assert.ok(horizontal > 1.5 && horizontal < 2.1, `sosta a ~1,9 blocchi dal centro (${horizontal.toFixed(2)})`);
+  assert.ok(horizontal >= 1 && horizontal < 2.1, `sosta fuori dal letto e nel raggio d'uso (${horizontal.toFixed(2)})`);
   assert.equal(Math.floor(spot.y), 63, 'sosta alla quota del letto');
 });
 

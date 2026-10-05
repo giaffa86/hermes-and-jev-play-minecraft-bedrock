@@ -623,10 +623,17 @@ test('flee counts a timeout as success when it still gains distance', async () =
   assert.equal(result.partial, true);
 });
 
+function loadedSleepBed (adapter) {
+  const bed = { name: 'bed', position: { x: 0, y: 63, z: 2 }, distance: 2, boundingBox: 'empty' };
+  adapter.world.findBlocks = name => name === 'bed' ? [bed] : [];
+  adapter.world.blockAt = ({ x, y, z }) => x === 0 && y === 63 && z === 2 ? bed
+    : y === 62 ? { name: 'stone', boundingBox: 'block' } : { name: 'air', boundingBox: 'empty' };
+}
+
 test('sleepInBed reports success when the night is skipped (fast-forward)', async () => {
   const adapter = spawnedAdapter();
   adapter._recordTime(18000);
-  adapter.world.findBlocks = name => name === 'bed' ? [{ name: 'bed', position: { x: 0, y: 63, z: 2 }, distance: 2 }] : [];
+  loadedSleepBed(adapter);
   let inputs = 0;
   adapter._queueAuthInput = async () => {
     inputs++;
@@ -640,7 +647,7 @@ test('sleepInBed reports success when the night is skipped (fast-forward)', asyn
 test('sleepInBed clicks the bed and reports the rejection when sleep does not start', async () => {
   const adapter = spawnedAdapter();
   adapter._recordTime(18000);
-  adapter.world.findBlocks = (name) => name === 'bed' ? [{ name: 'bed', position: { x: 0, y: 63, z: 2 }, distance: 2 }] : [];
+  loadedSleepBed(adapter);
   adapter._queueAuthInput = async () => {};
   const result = await adapter._sleepInBed({ confirmMs: 10 });
   assert.equal(result.ok, false);

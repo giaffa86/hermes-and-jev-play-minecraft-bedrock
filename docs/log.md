@@ -3012,3 +3012,20 @@ Validation: all five focused cases passed. After rebasing onto the current
 inventory/deposit changes, the complete offline suite passed **1470/1470** tests
 with exit status 0. Strict wiki lint and `git diff --check` passed. The live house
 remains paused at 18 placements; merge/deploy await the other active session.
+
+## [2026-10-05] ingest | Visible and reachable standing cells before sleeping
+
+Live sleep attempts repeatedly failed near village beds. Bed use now requires
+loaded foot/head cells, a complete path to a standing cell outside the bed,
+precise arrival at that elevation, and an unobstructed collision-shape ray to
+the bed. A nearby bed behind a wall triggers an approach through its doorway;
+an inaccessible room or unknown geometry never causes a blind click. Bed access
+searches have a 512-node budget per candidate. The shared visibility traversal
+preserves the existing entity visibility policy. See
+[verification](wiki/verification.md) and the
+[bedroom regression cases](../tests/bedrock-sleep-access.test.mjs).
+
+Validation: the 48 focused sleep/visibility/controller cases and all 64 survival
+cases pass. The complete offline suite passes **1476/1476** tests with exit status
+0. Strict wiki lint and `git diff --check` pass. The candidate is isolated and has
+not been deployed or verified live.
