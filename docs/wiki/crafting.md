@@ -14,16 +14,30 @@ validity: it knows the recipes, the inventory, the read chests and which options
 are executable) derives what the target is missing and *where each missing
 ingredient can come from*, in this order:
 
-1. **A craftable intermediate already in the inventory** — with two oak logs
-   held, `craft_oak_planks` is the next step, and the planks are then used
-   instead of fetched.
-2. **A known chest** — a read cache (`_cachedContainers`) or a remembered one
-   (`_rememberedStorage`), taking the item that satisfies the ingredient
-   (`take_oak_planks`).
-3. **A natural block, only if the harvest option is already offered** — the
-   step is accepted only when `mine_<block>` / `harvest_<crop>` exists among the
-   options, otherwise `next` stays `null` and the model decides: an action that
-   cannot succeed is never promised.
+1. **Inventory** — held ingredients satisfy demand immediately. A ready target is crafted directly.
+2. **Remembered/cached storage** — the existing chest selection and re-read behavior apply.
+3. **Craft** — craft an intermediate from ingredients already held when storage does not supply it.
+4. **Remembered resource site** — choose a compatible `resource_site_*` as a waypoint, then refresh the local census and observe again.
+5. **Local census** — select only an actually offered `mine_*` or `harvest_*` action.
+6. **Missing materials** — keep an unavailable craft step empty; construction returns its explicit failure with `missingMaterials(...)` evidence.
+
+The shared [resource-site provider](../../remembered-resource-sites.mjs) ranks
+observations, consolidated productivity and tags by compatibility, current path
+reachability, distance and freshness. Invalid records and other dimensions are
+excluded. A stale record can suggest a destination but never authorizes gathering.
+When the reachability component is truncated, a complete path through loaded cells
+can prove an individual destination; semantic planner recall is unchanged.
+
+A visit is one bounded `goto_waypoint`, separate from gathering. It refreshes the
+census after success or a partial/failed walk. The next step uses only live offered
+keys, with another check before execution. Empty or failed sites fall back to the
+local census and are not retried for five minutes for the same resource/dimension.
+No historical coordinate is passed to mining. The planner waypoint is preserved.
+
+The same provider serves [construction](construction.md) without changing its
+`authorizedContainers` policy. Both paths exclude project cells, persistent
+placements and bot-owned blocks from ordinary gather targets; `DIG_PROTECTED`
+and crop maturity protections remain active.
 
 Buildings are not a source *structurally*, not by a rule that could be
 forgotten: the mining census (`_refreshNearby`) is a whitelist of natural blocks
@@ -39,13 +53,13 @@ crafting tables or glass can never appear in a `mine_*` option, and
 | `bedrock-adapter.mjs` `_craftTargets()` | the `plan.targets` / `plan.craft` entries that have a recipe and are not held yet |
 | `_craftNeedFor(target)` | the recipe reduced to the missing ingredients, each with `need`/`have`/`short` and up to four chest `sources` |
 | `_craftableCandidatesFor(ingredient)` | what can be crafted **now** and satisfies an ingredient (the inventory side of the rule) |
-| `_gatherStepFor(ingredient, offered)` | the natural-block fallback, filtered by the options actually offered |
+| `_gatherStepFor(ingredient, offered)` | shared remembered-site navigation, then natural gathering filtered by live options |
 | `_craftSourceStep(needs, offered)` | the chosen `next` step, with its `source` (`inventory` / `chest` / `gather`) and `reason` |
 | `_craftNeeds({offerKeys})` | the whole view: `{rule, targets, needs, next}`; `observe().craft` exposes it |
 | `options()` | the craft steps are added to the `wantedItems` of the `take_*` block (so the 8-slot cap cannot push them out), and the description of the chosen option states the rule ("inventory first, then the chests; nothing is taken from buildings") |
 | `controller.mjs` | a deterministic stage in the goal loop: `craft_source` runs after the survival need and the follow/seek stages and before the model; it announces `CRAFT SOURCE <key> (<source> for <target>)`, logs `craft_source`, and is exonerated from the anti-loop counter (a satisfied step is not stagnation) |
 
-The rule string is `inventory_first_then_chests_never_buildings`.
+The legacy rule string remains `inventory_first_then_chests_never_buildings`; the detailed sourcing order above governs selection.
 
 ## Food is not crafting
 
@@ -83,3 +97,10 @@ a chest nearby and no logs held, watching for `CRAFT SOURCE take_oak_planks`.
 See [survival-intelligence](survival-intelligence.md) for the need → intent →
 action ladder that feeds this stage, and [human-command](human-command.md) for
 the order channel.
+
+Resource-site supply has offline coverage in
+[the provider tests](../../tests/remembered-resource-supply.test.mjs), including
+successful navigation and live gathering in both crafting and construction,
+stale/invalid/unreachable sites, ranking, local fallback, missing-material evidence,
+late resource disappearance, crops, consolidated productivity and placement protection.
+This slice has not been deployed or tested against a real BDS.

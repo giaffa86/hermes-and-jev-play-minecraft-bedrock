@@ -3,6 +3,7 @@
 //   observe(), getAvailableActions(), executeAction(), connect(), disconnect()
 // Il controller Hermes/Jev non deve sapere che siamo su Bedrock.
 import { createRequire } from 'node:module';
+import { RememberedResourceSites, naturalGatherCandidates } from './remembered-resource-sites.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BedrockWorld } from './bedrock-world.mjs';
 import { HIVE_BLOCKS, BEE_CRAFT_ITEMS, BEE_SCAN_RADIUS, BEE_SCAN_LIMIT, isBeeProtected, hiveVerdict, honeyLevel, beeFlower, beeFlowerCount } from './bedrock-bees.mjs';
@@ -272,6 +273,7 @@ export class BedrockAdapter {
     this.onLog = onLog;
     this.onDisconnect = onDisconnect;
     this.memory = memory;
+    this.resourceSites = new RememberedResourceSites(this);
     this.missionId = null;             // missione di esplorazione attiva (checkpoint)
     this._lastDiscoveryChunk = null;   // dedup: scoperte scansionate una volta per chunk
     this._lastDiscoveryAt = 0;
@@ -3652,7 +3654,7 @@ export class BedrockAdapter {
       })),
       plan: this.plan,
       follow: this._followView(),
-      craft: this._craftNeeds(),
+      craft: this._craftNeeds({ liveGather: true }),
       chat: this.chatInbox.slice(-10),
       nearby: this.nearbyBlocks,
       structures: this.structures.slice(0, 8),
@@ -3694,7 +3696,7 @@ export class BedrockAdapter {
     };
   }
 
-  options () {
+  options ({ localGatherOnly = false } = {}) {
     // Durante una riconnessione NetherNet l'unica azione sensata è attendere:
     // le opzioni calcolate sul mondo vecchio fallirebbero comunque.
     if (!this.spawned || this.status !== 'spawned') {
@@ -4045,10 +4047,11 @@ export class BedrockAdapter {
     const offeredKeys = new Set(o.map(option => option.key));
     for (const ore of this.valuableOres ?? []) {
       const key = `mine_${ore.name}`;
-      if (offeredKeys.has(key) || !ore.harvestable) continue;
+      if (offeredKeys.has(key) || !ore.harvestable || this._gatherProtected(ore)) continue;
       offeredKeys.add(key);
       o.push({ key, description: `Mine ${ore.name} at ${JSON.stringify(ore.position)} (${ore.distance} blocks away, opportunity)` });
     }
+    if (localGatherOnly) return o.filter(option => /^(mine_|harvest_)/.test(option.key));
     // R4: il bot può anche *disfare* una propria posa (`mine_owned`): è l'unica
     // azione che toglie un blocco «protetto» (`crafting_table`, `_planks`, …)
     // senza allentare `DIG_PROTECTED`, perché il registro dice che la cella è sua.
@@ -4230,6 +4233,8 @@ export class BedrockAdapter {
     // item che servono al craft passano per primi nella lista dei prelievi, cosi'
     // il tetto di 8 posti non li scarta.
     const craft = this._craftNeeds({ offerKeys: o.map(option => option.key) });
+    this.resourceSites.pending = craft?.next?.source === 'remembered_resource_site' ? craft.next : null;
+    this.resourceSites.gatherKey = craft?.next?.source === 'gather' ? craft.next.key : null;
     const wantedItems = new Set(Object.keys(this.plan?.targets || {}));
     for (const need of craft?.needs ?? []) {
       for (const miss of need.missing) {
@@ -4281,6 +4286,8 @@ export class BedrockAdapter {
         ? `Take ${step.short} ${step.item} from the ${step.chest.type} at ${JSON.stringify(step.chest.position)} to build ${step.target} (inventory first, then the chests; nothing is taken from buildings)`
         : step.source === 'inventory'
         ? `Craft ${step.item} from what the bot already holds to build ${step.target} (inventory first, then the chests)`
+        : step.source === 'remembered_resource_site'
+        ? `Go to remembered resource site ${step.site} and re-observe before gathering ${step.item}`
         : `Gather ${step.item} in the wild to build ${step.target} (natural blocks only: nothing is taken from buildings)`;
       const existing = o.find(option => option.key === step.key);
       if (existing) existing.description = `${existing.description} — ${note}`;
@@ -4454,12 +4461,20 @@ export class BedrockAdapter {
 
   // Il corpo dell'azione, separato dal lock e dal watchdog: `result` è locale e
   // un'eccezione diventa un errore tipizzato.
-  async _runAction (key) {
+  async _runAction (key, context = {}) {
     let result;
     try {
+      if (key === this.resourceSites.gatherKey) {
+        this._refreshNearby();
+        if (!this.options({ localGatherOnly: true }).some(option => option.key === key)) {
+          return { ok: false, error: 'gather_not_offered', action: key };
+        }
+      }
       if (key === 'wait') {
         await new Promise(r => setTimeout(r, 2000));
         result = { ok: true };
+      } else if (key === 'goto_waypoint' && this.resourceSites.pending) {
+        result = await this.resourceSites.navigate(this.resourceSites.pending, context);
       } else if (key === 'goto_waypoint' && this.plan?.waypoint) {
         const w = this.plan.waypoint;
         const target = { x: w.x, y: this.position?.y ?? 70, z: w.z };
@@ -6535,15 +6550,17 @@ export class BedrockAdapter {
     return { entry, known: declared.length, retrying: fresh.length === 0 };
   }
 
-  async _takeFromContainer (itemName) {
+  async _takeFromContainer (itemName, { position = null, maxCount = 64 } = {}) {
     // Live 04/10/2026: l'opzione può essere stata generata da un contenitore in
     // memoria mentre la cache runtime non lo ha (riavvio, o TTL scaduto fra
     // l'offerta e l'esecuzione) — e viceversa la cache può essere stantia. Qui si
     // accetta entrambe le sorgenti e si rilegge sempre il contenitore sul posto.
-    let entry = this._cachedContainers().find(c => (c.contents[itemName] || 0) > 0);
+    const allowed = c => !position || (c.position.x === position.x && c.position.y === position.y && c.position.z === position.z);
+    let entry = this._cachedContainers().find(c => allowed(c) && (c.contents[itemName] || 0) > 0);
     let remembered = false;
     if (!entry) {
-      const fromMemory = this._rememberedContainerFor(itemName);
+      const specified = position ? this._rememberedStorage({ reachableOnly: false }).find(c => allowed(c) && (c.contents[itemName] || 0) > 0) : null;
+      const fromMemory = position ? (specified ? { entry: specified, known: 1, retrying: false } : null) : this._rememberedContainerFor(itemName);
       if (!fromMemory) return { ok: false, error: 'item_not_in_container' };
       // La memoria lo sa ma nessuno di quei bauli è raggiungibile ora: dirlo, invece
       // di negare che l'oggetto esista (la distinzione conta per chi legge l'esito).
@@ -6570,7 +6587,7 @@ export class BedrockAdapter {
         return { ok: false, error: 'item_not_in_container' };
       }
       const slot = slots[slotIndex];
-      const count = slot.count || 1;
+      const count = Math.max(1, Math.min(slot.count || 1, maxCount));
       const slotType = this._storageContainerSlotType(entry.type);
       // Il cursore deve essere vuoto *prima* del take: BDS rifiuta con status 50
       // (FailedToValidateDstSlot) un take verso un cursore che contiene già uno
@@ -6603,11 +6620,12 @@ export class BedrockAdapter {
     }
   }
 
-  async _depositItem (itemName) {
+  async _depositItem (itemName, { position = null } = {}) {
     const cached = this._cachedContainers();
-    let target = cached[0];
+    const allowed = c => !position || (c.position.x === position.x && c.position.y === position.y && c.position.z === position.z);
+    let target = cached.find(allowed);
     if (!target) {
-      const block = this._findNearbyStorageBlocks()[0];
+      const block = this._findNearbyStorageBlocks().find(allowed);
       if (!block) return { ok: false, error: 'container_not_found' };
       target = { key: this._containerCacheKey(block.position), type: block.name, position: block.position, contents: {} };
     }
@@ -7186,37 +7204,14 @@ export class BedrockAdapter {
     return names.filter(name => this._craftableNow(name));
   }
 
-  // Fonte naturale di un ingrediente: solo blocchi del censimento naturale, mai
-  // costruzioni. Un passo si accetta solo se l'opzione corrispondente esiste
-  // gia' (`offered`), altrimenti sarebbe un'azione che non puo' riuscire.
+  // La memoria suggerisce solo un waypoint da rivalidare. Una gather action
+  // viene dal census live e deve essere presente in `offered`.
   _gatherStepFor (ingredient, offered) {
-    const blocks = {
-      planks: ['oak_log', 'spruce_log', 'cherry_log', 'birch_log'],
-      log: ['oak_log', 'spruce_log', 'cherry_log', 'birch_log'],
-      stick: ['oak_log', 'spruce_log', 'cherry_log', 'birch_log'],
-      cobblestone: ['stone'],
-      stone: ['stone'],
-      coal: ['coal_ore'],
-      iron_ingot: ['iron_ore'],
-      copper_ingot: ['copper_ore'],
-    };
-    const crops = { potato: 'potatoes', carrot: 'carrots', wheat: 'wheat', beetroot: 'beetroot' };
-    const names = ingredient.descriptor_type === 'name'
-      ? [String(ingredient.name).replace(/^minecraft:/, '')]
-      : [String(ingredient.tag || '')];
-    for (const name of names) {
-      for (const block of blocks[name] || []) {
-        if (offered.has(`mine_${block}`)) return { key: `mine_${block}`, item: block, source: 'gather' };
-      }
-      const crop = crops[name];
-      if (crop && offered.has(`harvest_${crop}`)) return { key: `harvest_${crop}`, item: name, source: 'gather' };
-    }
-    return null;
+    return this.resourceSites.step(naturalGatherCandidates(ingredient), offered);
   }
 
-  // Il passo di approvvigionamento successivo: prima l'inventario (craft di un
-  // intermedio con quello che si ha), poi un baulo noto, poi la raccolta in
-  // natura. `offerKeys` limita il terzo caso alle opzioni davvero offerte.
+  // Inventario -> storage -> craft -> sito ricordato -> census locale.
+  // `offered` limita la raccolta alle azioni live dell'adapter.
   _craftSourceStep (needs, offered) {
     for (const need of needs) {
       if (!need.missing.length && this._craftableNow(need.target)) {
@@ -7224,9 +7219,6 @@ export class BedrockAdapter {
       }
       for (const miss of need.missing) {
         const ingredient = miss.ref ?? miss.ingredient;
-        for (const item of this._craftableCandidatesFor(ingredient)) {
-          return { key: `craft_${item}`, source: 'inventory', item, ingredient: miss.ingredient, target: need.target, short: miss.short, reason: 'craft_from_inventory' };
-        }
         if (miss.sources.length) {
           const src = miss.sources[0];
           return {
@@ -7236,8 +7228,11 @@ export class BedrockAdapter {
             reason: 'take_from_chest',
           };
         }
+        for (const item of this._craftableCandidatesFor(ingredient)) {
+          return { key: `craft_${item}`, source: 'inventory', item, ingredient: miss.ingredient, target: need.target, short: miss.short, reason: 'craft_from_inventory' };
+        }
         const gather = offered ? this._gatherStepFor(ingredient, offered) : null;
-        if (gather) return { ...gather, target: need.target, short: miss.short, reason: `gather_${gather.item}` };
+        if (gather) return { ...gather, target: need.target, short: miss.short, reason: gather.reason ?? `gather_${gather.item}` };
       }
     }
     return null;
@@ -7247,9 +7242,10 @@ export class BedrockAdapter {
   // scelto (o `null`). In `observe()` non ci sono opzioni offerte, quindi il
   // ripiego "raccogli in natura" resta fuori e si vede solo nei casi in cui la
   // sorgente e' certa (inventario o baulo).
-  _craftNeeds ({ offerKeys = null } = {}) {
+  _craftNeeds ({ offerKeys = null, liveGather = false } = {}) {
     const targets = this._craftTargets();
     if (!targets.length) return null;
+    if (liveGather && !offerKeys) offerKeys = this.options({ localGatherOnly: true });
     const offered = offerKeys ? new Set([...offerKeys].map(key => (typeof key === 'string' ? key : key.key))) : null;
     const needs = targets.map(t => this._craftNeedFor(t)).filter(Boolean);
     return {
@@ -7835,8 +7831,18 @@ export class BedrockAdapter {
 
   // Sceglie il candidato più vicino già a portata oppure, se nessuno lo è, il
   // primo con una faccia scoperta: un blocco sepolto non è minabile senza scavare.
+  _gatherProtected (block) {
+    if (!block?.position) return true;
+    const pos = block.position, key = `${pos.x},${pos.y},${pos.z}`;
+    if (DIG_PROTECTED.test(block.name ?? '') && !isCropBlock(block.name)) return true;
+    if (this._placedBlocks?.has(key) || this.memory?.placementAt?.(pos, this.dimension)) return true;
+    const project = this.construction?.project;
+    return project?.dimension === this.dimension && project.plan.cells.some(cell =>
+      [cell, ...(cell.secondary ?? [])].some(row => `${row.position.x},${row.position.y},${row.position.z}` === key));
+  }
+
   _pickMineTarget (blocks) {
-    const candidates = (blocks || []).filter(b => b?.diggable);
+    const candidates = (blocks || []).filter(b => b?.diggable && !this._gatherProtected(b));
     if (!candidates.length) return null;
     return candidates.find(b => this._blockInReach(b)) || candidates.find(b => this._blockExposed(b)) || null;
   }
@@ -9573,7 +9579,10 @@ export class BedrockAdapter {
     return -Math.atan2(to.x - from.x, to.z - from.z) * 180 / Math.PI;
   }
 
-  async _moveTo (target, stopDistance = 1.5, timeoutMs = 30000) {
+  async _moveTo (target, stopDistance = 1.5, timeoutMs = 30000, { signal = null } = {}) {
+    this._constructionSneaking = false;
+    signal ??= this._actionScope?.getStore()?.signal;
+    if (signal?.aborted) throw new Error('action_cancelled');
     if (!this.position || !this._feet) throw new Error('no position');
     if (!this._authTickInterval) throw new Error('movement unavailable before spawn');
     const deadline = Date.now() + timeoutMs;
@@ -9585,6 +9594,7 @@ export class BedrockAdapter {
       // movimento non puo' avanzare ne' scadere, quindi si esce subito (il close
       // azzera `client`, quindi la guardia copre la disconnessione reale).
       if (!this.client) throw new Error('connection_lost');
+      if (signal?.aborted) throw new Error('action_cancelled');
       const start = this._startNode();
       // Il limite più alto del default (8) serve a non perdere la cella esatta
       // quando sta più in basso: la penalità verticale del punteggio la spinge
@@ -9622,6 +9632,7 @@ export class BedrockAdapter {
       // il bot è arrivato a destinazione e l'azione ha finito `path_failed` in 28,5 s).
       const endNode = path.at(-1);
       const outcome = await this._startMotion(path, goal, { x: endNode.x + 0.5, y: endNode.y, z: endNode.z + 0.5 }, stop, deadline);
+      if (signal?.aborted) throw new Error('action_cancelled');
       this._stopMotion();
       if (outcome === 'goal') {
         const distance = Math.hypot(this.position.x - target.x, this.position.y - target.y, this.position.z - target.z);

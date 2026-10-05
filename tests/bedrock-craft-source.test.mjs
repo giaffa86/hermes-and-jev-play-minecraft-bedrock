@@ -79,13 +79,12 @@ test('un ingrediente mancante si prende dal baulo, non si raccoglie', () => {
   assert.match(take.description, /nothing is taken from buildings/);
 });
 
-test("l'inventario viene prima dei bauli", () => {
+test("i materiali ricordati nei bauli vengono prima del craft di intermedi", () => {
   const { adapter } = craftAdapter({ inventory: { oak_log: 2 }, chests: [{ contents: { oak_planks: 4, stick: 2 } }] });
   const craft = adapter._craftNeeds({ offerKeys: keys(adapter) });
-  assert.equal(craft.next.key, 'craft_oak_planks');
-  assert.equal(craft.next.source, 'inventory');
-  assert.equal(craft.next.reason, 'craft_from_inventory');
-  assert.match(option(adapter, 'craft_oak_planks').description, /inventory first/);
+  assert.equal(craft.next.key, 'take_oak_planks');
+  assert.equal(craft.next.source, 'chest');
+  assert.equal(craft.next.reason, 'take_from_chest');
 });
 
 test('i materiali del craft passano davanti al tetto di 8 prelievi', () => {
