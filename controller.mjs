@@ -757,6 +757,7 @@ console.log('PLAN', plan.objective, plan.waypoint ? JSON.stringify(plan.waypoint
 let history = [];              // [{key, stagnant}] per l'anti-loop
 const cooldowns = new Map();   // key -> primo step in cui torna proponibile
 let lastKey = null;            // ultima azione eseguita
+let lastResult = null;         // esito dell'ultima azione (un ordine umano vuoto si chiude solo dopo un successo)
 let lastFailedKey = null;
 let chosenFingerprint = null;  // fingerprint dell'osservazione al momento della scelta
 let lastSurvivalFingerprint = null;
@@ -869,7 +870,19 @@ for (let step = 1; step <= maxSteps; step++) {
   }
   // `goalMet` vede il follow del *goal*: un waypoint raggiunto da un piano
   // ripianificato non puo' chiudere un ordine "seguimi" ancora aperto.
-  if (goalMet(obs, withStickyFollow(plan, goal.follow), skillStatus)) {
+  const stickyPlan = withStickyFollow(plan, goal.follow);
+  // Un ordine umano il cui piano non dichiara nulla di terminale (nessun
+  // target/waypoint/follow/need/skill) non e' "soddisfatto": e' solo vuoto.
+  // Senza questa guardia un ordine come "mangia le patate" finiva con
+  // `GOAL MET after 0 actions` e in chat arrivava un "fatto" mai avvenuto
+  // (visto live il 04/10). Un ordine del genere si chiude dopo almeno una
+  // azione riuscita.
+  const humanOrder = goal.source === GOAL_SOURCE.CHAT || !!goal.humanOrder;
+  const openPlan = !stickyPlan.follow && !stickyPlan.need && !stickyPlan.recover && !stickyPlan.skill &&
+    !Object.keys(stickyPlan.targets || {}).length && !Object.keys(TARGETS).length &&
+    !stickyPlan.waypoint && !WAYPOINT;
+  const hasWorked = step > 1 && lastResult?.ok === true;
+  if ((!humanOrder || !openPlan || hasWorked) && goalMet(obs, stickyPlan, skillStatus)) {
     console.log(`GOAL MET after ${step - 1} actions`, JSON.stringify({position: obs.position, inventory: obs.inventory}));
     log('goal_met', {steps: step - 1, totalCost, obs});
     goalReached = true;
@@ -1090,6 +1103,7 @@ for (let step = 1; step <= maxSteps; step++) {
   if (skillRun) skillRun.actions += 1;
   lastFailedKey = result.ok ? null : key;
   lastKey = key;
+  lastResult = result;
   log('result', {step, key, ok: !!result.ok, error: result.error ?? null, ms: result.ms ?? null, missionId: goal.missionId ?? null});
   if (goal.missionId) {
     // `data.position` dà al consolidamento un'ancora spaziale forte (l'azione
