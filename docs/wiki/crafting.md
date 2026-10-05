@@ -50,12 +50,16 @@ The rule string is `inventory_first_then_chests_never_buildings`.
 ## Food is not crafting
 
 Eggs are **not** food in Bedrock: they are an ingredient (cake, pumpkin pie), so
-`bestFood({egg: N})` is `null`. A bot starving with only raw potatoes would
-starve forever because the cooked-food list (`FOOD_PRIORITY`) deliberately
-excludes raw potato as well; therefore `LAST_RESORT_FOODS = ['potato']` is
-accepted only below `STARVING_FOOD = 4` hunger, and `perceive()` reports
-`hasFood` accordingly so the governor asks for `eat` instead of sending the bot
-to gather food it could already eat. Real food always wins over the last resort.
+`bestFood({egg: N})` is `null`. The raw potato is different: it is a **safe**
+but poor food (1 hunger, 0.6 saturation, no status effect — `minecraft.wiki/w/Poison`
+lists only the *poisonous* potato among the Poison sources), so it is the last
+entry of `FOOD_PRIORITY`, after every real meal but before anything with a
+side effect. `LAST_RESORT_FOODS = ['rotten_flesh', 'chicken', 'poisonous_potato',
+'spider_eye']` is accepted only below `STARVING_FOOD = 4` hunger: with a cooked
+meal, a carrot or even a plain potato in the inventory the bot never risks
+Hunger or Poison, and `perceive()` reports `hasFood` accordingly so the governor
+asks for `eat` instead of sending the bot to gather food it could already eat.
+Pufferfish (Poison II, one minute) and golden apples stay out of both lists.
 
 ## Verification
 
@@ -63,12 +67,14 @@ to gather food it could already eat. Real food always wins over the last resort.
   inventory before the chest, the craft ingredients survive the 8-slot take cap,
   a gather step only among the offered options, never a constructed block,
   `craft_target_ready` when everything is held, `observe().craft`, eggs never
-  food, raw potato only at critical hunger, the `eat` option below the threshold.
+  food, the raw potato as the last *safe* food (it beats every harmful item, and
+  `hasFood` is true at hunger 12 and 20), the `eat` option offered from hunger
+  12 with a lone raw potato.
 - `tests/controller-craft-source.test.mjs` (2 cases): the scripted harness walks
   the whole ladder in one goal (`take_oak_planks` → `craft_stick` →
   `craft_wooden_pickaxe`) with a single planner call, and a step the harness does
   not offer is left to the planner instead of being forced.
-- Full suite at the time: **1285 pass / 0 fail**.
+- Full suite at the time: **1287 pass / 0 fail**.
 
 Live verification is still pending (the rule has not been deployed): the live
 round would be a chat order such as *"@bot costruisci un piccone di legno"* with

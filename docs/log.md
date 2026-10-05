@@ -1,5 +1,23 @@
 # Log
 
+## [2026-10-05] ingest | The raw potato is safe food, not a poison: safe meals first, harmful ones only when starving
+
+The previous entry (commit `552b562`) put the raw potato in `LAST_RESORT_FOODS`
+with the other items that have a side effect. That was wrong, and the wiki says
+so explicitly: `minecraft.wiki/w/Poison` lists **only the poisonous potato**
+among the Poison sources (I, 0:05, 60% chance), and `minecraft.wiki/w/Potato`
+gives *"Eating a potato restores 1 hunger and 0.6 saturation"* with no status
+effect at all. The poisonous potato is the risky one *"2 hunger and 1.2 hunger
+saturation and has a 60% chance of applying 5 seconds of Poison I"*, identical
+in Java and Bedrock. So the policy has two levels and one boundary: a **safe**
+meal (cooked food, bread, carrots, apples … and the raw potato last of all),
+then — only below `STARVING_FOOD = 4` hunger — `rotten_flesh`, raw `chicken`,
+`poisonous_potato` and `spider_eye`. Since `potato` now sits in `FOOD_PRIORITY`,
+`perceive().hasFood` is true with a lone raw potato at hunger 12, so the governor
+asks for `eat` instead of `obtain_food`, and the `eat` option appears from hunger
+18 with nothing better in the inventory. `FOODS` (the "safe food" item tag)
+inherits the change. Suite **1287 pass / 0 fail**; commit `17f39b0`.
+
 ## [2026-10-05] ingest | An order with an empty plan is no longer "done" at zero actions
 
 Live, the order *"eat the potatoes you have"* closed with `GOAL MET after 0

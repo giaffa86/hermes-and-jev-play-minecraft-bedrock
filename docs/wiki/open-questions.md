@@ -1040,10 +1040,13 @@ Two open design questions follow from that framing:
   a fake success (`tests/controller-chat-open-plan.test.mjs`).
 - **Eggs, and why the bot was stuck at 2 hearts.** Eggs are an ingredient, never
   a meal; the bot had only 34 eggs and 4 raw potatoes, so `bestFood` returned
-  `null` and the governor kept asking for `obtain_food`. With the last-resort
-  food rule (deployed 05/10/2026) a starving bot eats the raw potato instead.
-  Worth remembering for any live round: hunger `<= 4` is the only condition
-  under which a raw potato counts.
+  `null` and the governor kept asking for `obtain_food`. The raw potato was put
+  in the last-resort list first, then moved where it belongs (05/10/2026): it is
+  **safe** — only the *poisonous* potato applies Poison (60%, 5 s) — so it is the
+  last entry of `FOOD_PRIORITY`, a meal the bot eats whenever hunger drops below
+  18, while `rotten_flesh`, raw `chicken`, `poisonous_potato` and `spider_eye`
+  stay behind the `STARVING_FOOD = 4` gate. Worth remembering for any live
+  round: a plain potato is never a risk, it is just a poor meal.
 - **The `AUTONOMY=off` invariant holds**: the needs-driven idle autonomy is still
   opt-in; what runs by default is only the *rule-driven* ladder plus the
   survival needs the governor declares right now.
