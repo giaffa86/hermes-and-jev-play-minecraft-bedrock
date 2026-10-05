@@ -1021,33 +1021,29 @@ Two open design questions follow from that framing:
 
 ## Material sourcing, the survival ladder and the chat orders (04/10/2026)
 
-- **The material rule is not deployed.** The sourcing ladder
+- **The material rule is deployed** (05/10/2026). The sourcing ladder
   (`observe().craft`, the `craft_source` controller stage) and the food
-  correction (`LAST_RESORT_FOODS`, `STARVING_FOOD`) live on the
-  `wip-live-20261005` branch with 1285 passing tests; the live container only has
-  the first survival-ladder round. Live round to run: ask in chat for a wooden
-  pickaxe with a chest nearby and no logs held, then watch for
-  `CRAFT SOURCE take_oak_planks`.
+  correction (`LAST_RESORT_FOODS`, `STARVING_FOOD`) are on the live containers
+  (`bedrock-adapter.mjs` `25b33d50…`, `controller.mjs` `1def6142…`); the branch is
+  `wip-live-20261005` at `f3c8d46` with 1287 passing tests. Live round still to
+  run: ask in chat for a wooden pickaxe with a chest nearby and no logs held,
+  then watch for `CRAFT SOURCE take_oak_planks`.
 - **The `surface` branch is unit-tested but never exercised live.** The census
   knows only a two-cell-deep pool, so a real drowning round (head under water,
   air below `DROWNING_AIR = 60`, `surface` offered) still has to happen.
-- **The live container lags the branch.** `survival/resolver.mjs` and
-  `knowledge/survival-rules.json` on the VM are the round-3 versions (the
-  emergency order is global urgency, `no_food_available` does not list `smelt`),
-  so a hungry bot live still chooses `collect_drop` where the branch would cook
-  first.
-- **A chat order with no waypoint and no targets closes at 0 actions.** The
-  order *"eat the potatoes you have"* (`g21`) ended with
-  `GOAL MET after 0 actions`: an empty plan is considered satisfied, so the bot
-  never eats and the human is never told. The chat-order path needs a contract
-  that is not trivially met (e.g. require the first action, or a success
-  criterion derived from the order).
+- **The chat-order contract is fixed** (05/10/2026). An order whose plan declares
+  no terminal criterion (no targets, waypoint, follow, need or skill) used to
+  close at once: *"eat the potatoes you have"* (`g21`) ended with
+  `GOAL MET after 0 actions` and the chat got a "done" that never happened. The
+  met check now requires at least one **successful** action before such an order
+  can close, and an order that never succeeds ends on the step budget instead of
+  a fake success (`tests/controller-chat-open-plan.test.mjs`).
 - **Eggs, and why the bot was stuck at 2 hearts.** Eggs are an ingredient, never
   a meal; the bot had only 34 eggs and 4 raw potatoes, so `bestFood` returned
   `null` and the governor kept asking for `obtain_food`. With the last-resort
-  food rule (branch only) a starving bot eats the raw potato instead. Worth
-  remembering for any live round: hunger `<= 4` is the only condition under
-  which a raw potato counts.
+  food rule (deployed 05/10/2026) a starving bot eats the raw potato instead.
+  Worth remembering for any live round: hunger `<= 4` is the only condition
+  under which a raw potato counts.
 - **The `AUTONOMY=off` invariant holds**: the needs-driven idle autonomy is still
   opt-in; what runs by default is only the *rule-driven* ladder plus the
   survival needs the governor declares right now.

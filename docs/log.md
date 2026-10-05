@@ -1,5 +1,22 @@
 # Log
 
+## [2026-10-05] ingest | An order with an empty plan is no longer "done" at zero actions
+
+Live, the order *"eat the potatoes you have"* closed with `GOAL MET after 0
+actions`: `goalMet` treats `targets: {}` as vacuously satisfied, so a chat order
+whose plan declares no terminal criterion (no targets, waypoint, follow, need or
+skill) was reported as done before the bot touched anything. `controller.mjs`
+now requires at least one **successful** action before such an order can close
+(`(!humanOrder || !openPlan || hasWorked) && goalMet(...)`, with `lastResult`
+kept from the previous step); an order that never succeeds ends on the step
+budget. Covered by `tests/controller-chat-open-plan.test.mjs` (order picked up
+from IDLE as a `chat` goal, and mid-goal). Same round: the branch
+`wip-live-20261005` (`f3c8d46`, 1287 tests) was deployed to the live containers —
+the sourcing ladder, the last-resort food rule, the survival ladder with its
+rule-order policy and the chat-order guard all run there now, and the
+diagnostic env vars (`MOVE_DEBUG`, `PACKET_DEBUG`, `BEDROCK_META_LOG`) were
+removed.
+
 ## [2026-10-04] ingest | Material sourcing: the inventory first, then the chests, never a building
 
 A human order to build something declares it in `plan.targets`; the harness now
