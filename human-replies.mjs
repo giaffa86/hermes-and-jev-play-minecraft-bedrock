@@ -18,6 +18,8 @@
 //     objective (as understood by the planner), the step count and the failure
 //     reason the controller itself logged.
 
+import { DEFAULT_LANG, t } from './chat-i18n.mjs';
+
 export const DEFAULT_REPLY_MAX_LENGTH = 180;
 
 export const DEFAULT_CHAT_PREFIX = '@bot';
@@ -74,19 +76,22 @@ export function matchChatPrefix (message, prefixes = DEFAULT_CHAT_PREFIX) {
 }
 
 // `{name}` is the sender, `{objective}` the plan objective, `{steps}` the action
-// count, `{reason}` the failure/cancel reason.
-export const DEFAULT_ACK_TEMPLATE = '@{name} ok: {objective}';
-export const DEFAULT_DONE_TEMPLATE = '@{name} fatto: {objective} ({steps} azioni)';
-export const DEFAULT_FAILED_TEMPLATE = "@{name} non ce l'ho fatta: {reason}";
-export const DEFAULT_STOPPED_TEMPLATE = '@{name} mi fermo qui: {reason}';
+// count, `{reason}` the failure/cancel reason. These constants are the default
+// language (Italian) entries of the `chat-i18n.mjs` catalogue, kept exported so
+// a caller can read or override them; the language always comes from `lang`
+// (the controller resolves it once from `CHAT_LANG`).
+export const DEFAULT_ACK_TEMPLATE = t(DEFAULT_LANG, 'ack');
+export const DEFAULT_DONE_TEMPLATE = t(DEFAULT_LANG, 'done');
+export const DEFAULT_FAILED_TEMPLATE = t(DEFAULT_LANG, 'failed');
+export const DEFAULT_STOPPED_TEMPLATE = t(DEFAULT_LANG, 'stopped');
 
 // Ultima risorsa del "wolf recovery": l'harness non offre piu' ne'
 // `follow_player` ne' `seek_player`, quindi la ricerca autonoma e' fallita. Il
 // messaggio non inizia mai con il trigger (il prefisso e' citato fra
 // virgolette) e il controller lo manda una volta per episodio, non a ogni passo.
-export const DEFAULT_LOST_TEMPLATE = "@{name} non ti vedo piu': ti aspetto qui. Se ti allontani troppo scrivimi \"{prefix} seguimi\".";
+export const DEFAULT_LOST_TEMPLATE = t(DEFAULT_LANG, 'lost');
 
-export function lostNotice ({ from, prefix = '@bot', template = DEFAULT_LOST_TEMPLATE, maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
+export function lostNotice ({ from, prefix = '@bot', lang = DEFAULT_LANG, template = t(lang, 'lost'), maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
   return renderReply(template, { name: from ?? '?', prefix }, maxLength);
 }
 
@@ -112,29 +117,29 @@ export function renderReply (template, vars = {}, maxLength = DEFAULT_REPLY_MAX_
 // The bot accepted the order: confirm what it understood (M5 "ack a specific
 // order"). `plan.follow` is worth naming because an escort order is open-ended
 // and the human wants to know the bot is coming.
-export function orderAck ({ from, plan, template = DEFAULT_ACK_TEMPLATE, maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
-  const objective = plan?.objective ?? plan?.notes ?? 'ordine ricevuto';
-  const follow = plan?.follow ? ` — arrivo da ${plan.follow}` : '';
+export function orderAck ({ from, plan, lang = DEFAULT_LANG, template = t(lang, 'ack'), maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
+  const objective = plan?.objective ?? plan?.notes ?? t(lang, 'objective_received');
+  const follow = plan?.follow ? t(lang, 'follow_suffix', { from: plan.follow }) : '';
   return renderReply(template, { name: from ?? '?', objective: `${objective}${follow}`, follow: plan?.follow ?? '' }, maxLength);
 }
 
 // The goal that carried the order ended. `status` is the controller outcome:
 // `success` | `failed` | anything else (exhausted/cancelled => "stopped").
 export function orderOutcome ({
-  from, status, objective, steps, reason,
+  from, status, objective, steps, reason, lang = DEFAULT_LANG,
   templates = {}, maxLength = DEFAULT_REPLY_MAX_LENGTH,
 } = {}) {
-  const t = {
-    done: templates.done ?? DEFAULT_DONE_TEMPLATE,
-    failed: templates.failed ?? DEFAULT_FAILED_TEMPLATE,
-    stopped: templates.stopped ?? DEFAULT_STOPPED_TEMPLATE,
+  const tpl = {
+    done: templates.done ?? t(lang, 'done'),
+    failed: templates.failed ?? t(lang, 'failed'),
+    stopped: templates.stopped ?? t(lang, 'stopped'),
   };
   const name = from ?? '?';
   if (status === 'success') {
-    return renderReply(t.done, { name, objective: objective ?? 'ordine', steps: steps == null ? '?' : steps }, maxLength);
+    return renderReply(tpl.done, { name, objective: objective ?? t(lang, 'objective_default'), steps: steps == null ? '?' : steps }, maxLength);
   }
-  const why = reason ?? (status === 'failed' ? 'fallito' : 'budget di azioni esaurito');
-  return renderReply(status === 'failed' ? t.failed : t.stopped, { name, objective: objective ?? 'ordine', steps: steps ?? '', reason: why }, maxLength);
+  const why = reason ?? t(lang, status === 'failed' ? 'reason_failed' : 'reason_stopped');
+  return renderReply(status === 'failed' ? tpl.failed : tpl.stopped, { name, objective: objective ?? t(lang, 'objective_default'), steps: steps ?? '', reason: why }, maxLength);
 }
 
 // The reply must never look like an order to the bot itself (or to another bot

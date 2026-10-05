@@ -16,8 +16,9 @@
 
 import { DEFAULT_CHAT_PREFIX, DEFAULT_REPLY_MAX_LENGTH, clampMessage, renderReply } from './human-replies.mjs';
 import { formatPrefixes } from './human-greeting.mjs';
+import { DEFAULT_LANG, MESSAGES, hasMessage, listAnd, t } from './chat-i18n.mjs';
 
-export const DEFAULT_ANSWER_TEMPLATE = '@{name} {answer}';
+export const DEFAULT_ANSWER_TEMPLATE = t(DEFAULT_LANG, 'answer_template');
 
 // Sentinel chosen by the model when the message is not a question about the
 // bot's own state (an order, a greeting, small talk). It deliberately carries
@@ -26,120 +27,105 @@ export const NO_INTENT = 'q_none';
 
 const round = value => Math.round(Number(value));
 
-function positionAnswer (obs) {
+function positionAnswer (obs, { lang = DEFAULT_LANG } = {}) {
   const p = obs?.position;
   if (!p || !Number.isFinite(Number(p.x)) || !Number.isFinite(Number(p.z))) {
-    return 'non lo so: non ho ancora una posizione dal server';
+    return t(lang, 'pos_unknown');
   }
-  const y = Number.isFinite(Number(p.y)) ? `, y ${round(p.y)}` : '';
-  const where = obs?.dimension ? ` (${obs.dimension})` : '';
-  return `sono a x ${round(p.x)}${y}, z ${round(p.z)}${where}`;
+  const y = Number.isFinite(Number(p.y)) ? t(lang, 'pos_y', { y: round(p.y) }) : '';
+  const where = obs?.dimension ? t(lang, 'pos_dim', { dimension: obs.dimension }) : '';
+  return t(lang, 'pos', { x: round(p.x), y, z: round(p.z), where });
 }
 
-function healthAnswer (obs) {
-  if (obs?.dead) return 'sono morto, sto rinascendo';
+function healthAnswer (obs, { lang = DEFAULT_LANG } = {}) {
+  if (obs?.dead) return t(lang, 'health_dead');
   const parts = [];
   // Bedrock conta la vita in mezzi-cuori (0-20): 20 punti = 10 cuori. La
   // domanda del giocatore è quasi sempre "quanti cuori hai?", quindi si dà
   // prima il numero di cuori e poi i punti, senza inventare nulla.
   if (Number.isFinite(Number(obs?.health))) {
     const health = Number(obs.health);
-    parts.push(`${round(health / 2)} cuori (${round(health)}/20 di vita)`);
+    parts.push(t(lang, 'health_hearts', { hearts: round(health / 2), points: round(health) }));
   }
-  if (Number.isFinite(Number(obs?.food))) parts.push(`${round(obs.food)}/20 di cibo`);
-  if (!parts.length) return 'non lo so: non ho letto la mia vita';
-  return `ho ${parts.join(' e ')}`;
+  if (Number.isFinite(Number(obs?.food))) parts.push(t(lang, 'health_food', { food: round(obs.food) }));
+  if (!parts.length) return t(lang, 'health_unknown');
+  return t(lang, 'health', { parts: listAnd(parts, lang) });
 }
 
-// Cosa sta facendo il bot, in italiano. L'`objective` di un goal e' la
-// descrizione tecnica che vive nella knowledge base (`idle-goals.mjs`,
-// `village-labor.mjs`, `knowledge/progression.json`) ed e' in inglese: leggerlo
-// in chat sarebbe la risposta sbagliata alla domanda di un italiano. Le
-// etichette qui sotto coprono i goal strutturati; un objective che viene dal
-// messaggio di un umano e' gia' nella sua lingua e si usa com'e'. La copertura
-// delle etichette e' verificata dai test contro `VILLAGE_CHORES` e
-// `NEED_PRIORITY`.
-export const CHORE_LABELS = Object.freeze({
-  harvest_crops: 'raccogliere il raccolto maturo',
-  store_harvest: 'mettere da parte il raccolto',
-  shear_sheep: 'tosare le pecore',
-  milk_cows: 'mungere le mucche',
-  collect_honey: 'raccogliere il miele',
-  tend_animals: 'far crescere il gregge',
-  plant_crops: 'seminare gli orti',
-  go_fishing: 'pescare',
-  chop_wood: 'tagliare legna',
-  gather_stone: 'raccogliere pietra',
-  mine_ore: 'cercare minerali',
-});
+// I goal strutturati (chore del villaggio, bisogni di sopravvivenza) vivono
+// nella knowledge base con un `objective` tecnico in inglese: leggerlo in chat
+// sarebbe la risposta sbagliata. Le etichette stanno nel catalogo `chat-i18n`
+// (`chore.*` / `need.*`), una per lingua: qui si espongono solo le mappe della
+// lingua di default (compatibilita' con i chiamanti esistenti) e le funzioni
+// che rispondono nella lingua configurata. La copertura delle etichette e'
+// verificata dai test contro `VILLAGE_CHORES` e `NEED_PRIORITY`.
+function labelsFromCatalogue (prefix, lang = DEFAULT_LANG) {
+  return Object.freeze(Object.fromEntries(
+    Object.entries(MESSAGES[lang])
+      .filter(([key]) => key.startsWith(`${prefix}.`))
+      .map(([key, value]) => [key.slice(prefix.length + 1), value])
+  ));
+}
 
-export const NEED_LABELS = Object.freeze({
-  survive: 'mettermi in salvo',
-  escape: 'scappare dal pericolo',
-  eat: 'mangiare qualcosa',
-  heal: 'curarmi',
-  sleep: 'andare a dormire',
-  shelter: 'trovarmi un riparo',
-  obtain_food: 'procurarmi del cibo',
-  obtain_weapon: "procurarmi un'arma",
-  obtain_armor: "procurarmi un'armatura",
-  replace_tool: "cambiare l'attrezzo rotto",
-  wear_armor: "indossare l'armatura",
-  surface: 'risalire in superficie',
-  continue_progression: 'portare avanti la progressione',
-});
+export const CHORE_LABELS = labelsFromCatalogue('chore');
+export const NEED_LABELS = labelsFromCatalogue('need');
 
-// Frase italiana per il goal in corso, o null quando il plan non dice
-// abbastanza: in quel caso si usa il suo objective (ordine di un umano, gia'
-// nella sua lingua).
-export function planPhrase (plan) {
+// Esistenza dell'id controllata sul catalogo di default (gli id non dipendono
+// dalla lingua): un id sconosciuto resta null e non produce una frase a meta'.
+export const choreLabel = (id, lang = DEFAULT_LANG) => (hasMessage(DEFAULT_LANG, `chore.${id}`) ? t(lang, `chore.${id}`) : null);
+export const needLabel = (id, lang = DEFAULT_LANG) => (hasMessage(DEFAULT_LANG, `need.${id}`) ? t(lang, `need.${id}`) : null);
+
+// Frase per il goal in corso, o null quando il plan non dice abbastanza: in
+// quel caso si usa il suo objective (un ordine umano arriva gia' nella lingua
+// di chi lo ha scritto).
+export function planPhrase (plan, { lang = DEFAULT_LANG } = {}) {
   if (!plan || typeof plan !== 'object') return null;
-  if (plan.equip) return "indossare l'armatura";
-  if (plan.recover) return 'recuperare quello che ho perso morendo';
-  if (plan.chore && CHORE_LABELS[plan.chore]) return CHORE_LABELS[plan.chore];
-  if (plan.need && NEED_LABELS[plan.need]) return NEED_LABELS[plan.need];
-  if (plan.construction) return 'costruire';
-  if (String(plan.notes ?? '').startsWith('opportunity:')) return 'raccogliere quello che ho visto qui vicino';
-  if (String(plan.notes ?? '').startsWith('curriculum:')) return 'portare avanti la missione';
+  if (plan.equip) return t(lang, 'phrase.equip');
+  if (plan.recover) return t(lang, 'phrase.recover');
+  if (plan.chore && hasMessage(DEFAULT_LANG, `chore.${plan.chore}`)) return t(lang, `chore.${plan.chore}`);
+  if (plan.need && hasMessage(DEFAULT_LANG, `need.${plan.need}`)) return t(lang, `need.${plan.need}`);
+  if (plan.construction) return t(lang, 'phrase.construction');
+  if (String(plan.notes ?? '').startsWith('opportunity:')) return t(lang, 'phrase.opportunity');
+  if (String(plan.notes ?? '').startsWith('curriculum:')) return t(lang, 'phrase.curriculum');
   return null;
 }
 
-function activityAnswer (obs) {
+function activityAnswer (obs, { lang = DEFAULT_LANG } = {}) {
   const plan = obs?.plan;
-  const phrase = planPhrase(plan) ?? plan?.objective;
-  if (!phrase) return 'non ho un obiettivo: sono in attesa di ordini';
-  return `sto facendo: ${phrase}`;
+  const phrase = planPhrase(plan, { lang }) ?? plan?.objective;
+  if (!phrase) return t(lang, 'activity_none');
+  return t(lang, 'activity', { phrase });
 }
 
 // Parole italiane (e inglesi) con cui la famiglia chiede un oggetto preciso:
 // il token è la parte del nome Minecraft che deve comparire in inventario.
 // `armor` e `food` sono gruppi, risolti dai pattern qui sotto.
 const ITEM_WORDS = [
-  [/\bspad(a|e|ina|ine|ino|ini)\b|\bsword\b/, 'sword'],
-  [/\bpiccon(e|i|etto|etti)\b|\bpick(axe)?\b/, 'pickaxe'],
-  [/\basci(a|e)\b|\baxe\b/, 'axe'],
-  [/\bpal(a|e)\b|\bshovel\b/, 'shovel'],
-  [/\bzapp(a|e)\b|\bhoe\b/, 'hoe'],
-  [/\belm(o|etto|etti|i)\b|\bcasco\b|\bhelmet\b/, 'helmet'],
-  [/\bcorazz(a|e)\b|\bpettoral(e|i)\b|\bchestplate\b/, 'chestplate'],
-  [/\bgambal(e|i)\b|\bleggings\b/, 'leggings'],
-  [/\bstival(e|i)\b|\bboots\b/, 'boots'],
-  [/\barmatur(a|e)\b|\barmor\b/, 'armor'],
-  [/\bscud(o|i)\b|\bshield\b/, 'shield'],
-  [/\bpagnott(a|e)\b|\bpane\b|\bbread\b/, 'bread'],
-  [/\bmel(a|e)\b|\bapple\b/, 'apple'],
-  [/\bterr(a|e)\b|\bdirt\b/, 'dirt'],
-  [/\bpietr(a|e)\b|\bstone\b/, 'stone'],
-  [/\blegn(o|a|e)\b|\bplanks?\b/, 'planks'],
-  [/\bferr(o|i)\b|\biron\b/, 'iron'],
+  [/\b(spad(a|e|ina|ine|ino|ini)|sword|epees?|espadas?|schwert(er)?)\b/, 'sword'],
+  [/\b(piccon(e|i|etto|etti)|pick(axe)?|pioches?|picos?|spitzhacke(n)?)\b/, 'pickaxe'],
+  [/\b(asci(a|e)|axe|haches?|hachas?|axt(e)?|beil(e)?)\b/, 'axe'],
+  [/\b(pal(a|e)|shovel|pelles?|palas?|schaufel(n)?)\b/, 'shovel'],
+  [/\b(zapp(a|e)|hoe|houes?|azadas?|hacke(n)?)\b/, 'hoe'],
+  [/\b(elm(o|etto|etti|i)|casco|helmet|casques?|helm(e)?)\b/, 'helmet'],
+  [/\b(corazz(a|e)|pettoral(e|i)|chestplate|plastrons?|petos?|brustplatte(n)?|brustpanzer)\b/, 'chestplate'],
+  [/\b(gambal(e|i)|leggings|jambieres?|grebas?|beinschutz)\b/, 'leggings'],
+  [/\b(stival(e|i)|boots|bottes?|botas?|stiefel)\b/, 'boots'],
+  [/\b(armatur(a|e)|armor|armour|armures?|armaduras?|rustung(en)?)\b/, 'armor'],
+  [/\b(scud(o|i)|shield|boucliers?|escudos?|schild(er)?)\b/, 'shield'],
+  [/\b(pagnott(a|e)|pane|bread|pains?|pan(es)?|brot(e)?)\b/, 'bread'],
+  [/\b(mel(a|e)|apple|pommes?|manzanas?|apfel)\b/, 'apple'],
+  [/\b(terr(a|e)|dirt|terres?|tierras?|erde(n)?)\b/, 'dirt'],
+  [/\b(pietr(a|e)|stone|pierres?|piedras?|stein(e)?)\b/, 'stone'],
+  [/\b(legn(o|a|e)|planks?|planches?|tablones?|brett(er)?|planken)\b/, 'planks'],
+  [/\b(ferr(o|i)|iron|fers?|hierro|eisen)\b/, 'iron'],
   // "bronzo" non esiste in Minecraft vanilla: si legge come il tier rame.
-  [/\bram(e|i)\b|\bcopper\b|\bbronz(o|i)\b|\bbronze\b/, 'copper'],
-  [/\bor(o|i)\b|\bgold(en)?\b/, 'gold'],
-  [/\bcarbon(e|i)\b|\bcoal\b/, 'coal'],
-  [/\bdiamant(e|i)\b|\bdiamond\b/, 'diamond'],
-  [/\btorci(a|e)\b|\btorch(es)?\b/, 'torch'],
-  [/\blett(o|i)\b|\bbed\b/, 'bed'],
-  [/\bzucca\b|\bzucche\b|\bpumpkin\b/, 'pumpkin'],
+  [/\b(ram(e|i)|copper|bronz(o|i)|bronze|cuivre|cobre|kupfer)\b/, 'copper'],
+  [/\b(or(o|i)?|gold(en)?|oro)\b/, 'gold'],
+  [/\b(carbon(e|i)|coal|charbon|kohle)\b/, 'coal'],
+  [/\b(diamant(e|i)|diamond|diamante|diamant)\b/, 'diamond'],
+  [/\b(torci(a|e)|torch(es)?|torches?|antorchas?|fackel(n)?)\b/, 'torch'],
+  [/\b(lett(o|i)|bed|lits?|camas?|bett(en)?)\b/, 'bed'],
+  [/\b(zucca|zucche|pumpkin|citrouilles?|calabazas?|kurbis(se)?)\b/, 'pumpkin'],
 ];
 
 // Materiale dell'oggetto nominato: "una spada di rame" è una domanda diversa da
@@ -148,15 +134,15 @@ const ITEM_WORDS = [
 // 1.21.111, Java 1.21.9, 30/09/2025) il materiale fra pietra e ferro è il rame:
 // "bronzo"/"bronze" si leggono come rame invece di ignorare la domanda.
 const MATERIAL_WORDS = [
-  [/\b(legn(o|i)|wooden|wood)\b/, 'wooden'],
-  [/\b(pietr(a|e)|stone)\b/, 'stone'],
-  [/\b(ram(e|i)|copper|bronz(o|i)|bronze)\b/, 'copper'],
-  [/\b(ferr(o|i)|iron)\b/, 'iron'],
-  [/\b(or(o|i)|gold(en)?)\b/, 'gold'],
-  [/\b(chainmail|maglia)\b/, 'chainmail'],
-  [/\b(diamant(e|i)|diamond)\b/, 'diamond'],
-  [/\bnetherite\b/, 'netherite'],
-  [/\b(cuoio|leather)\b/, 'leather'],
+  [/\b(legn(o|i)|wooden|wood|bois|madera|holz)\b/, 'wooden'],
+  [/\b(pietr(a|e)|stone|pierre|piedra|stein)\b/, 'stone'],
+  [/\b(ram(e|i)|copper|bronz(o|i)|bronze|cuivre|cobre|kupfer)\b/, 'copper'],
+  [/\b(ferr(o|i)|iron|fer|hierro|eisen)\b/, 'iron'],
+  [/\b(or(o|i)?|gold(en)?|oro)\b/, 'gold'],
+  [/\b(chainmail|maglia|mailles|malla|kettenhemd)\b/, 'chainmail'],
+  [/\b(diamant(e|i)|diamond|diamante|diamant)\b/, 'diamond'],
+  [/\bnetherite\b|\bnetherita\b|\bnetherit\b/, 'netherite'],
+  [/\b(cuoio|leather|cuir|cuero|leder)\b/, 'leather'],
 ];
 
 // Il materiale restringe solo gli oggetti "di tipo" (armi, attrezzi, armatura):
@@ -183,7 +169,7 @@ function matchItemWord (message) {
   return null;
 }
 
-function inventoryAnswer (obs, { message = null, limit = 4 } = {}) {
+function inventoryAnswer (obs, { message = null, limit = 4, lang = DEFAULT_LANG } = {}) {
   const inventory = obs?.inventory && typeof obs.inventory === 'object' ? obs.inventory : {};
   // "hai una spada?" si risponde sull'oggetto chiesto, non con la lista intera:
   // se la domanda nomina qualcosa che il catalogo conosce, si dice sì o no.
@@ -196,30 +182,30 @@ function inventoryAnswer (obs, { message = null, limit = 4 } = {}) {
     const material = MATERIAL_KINDS.has(token) ? matchMaterial(message) : null;
     const names = material ? ofKind.filter(name => name.startsWith(material)) : ofKind;
     if (!names.length) {
-      if (material && ofKind.length) return `no, non ne ho; ho: ${ofKind.join(', ')}`;
-      return 'no, non ne ho';
+      if (material && ofKind.length) return t(lang, 'inv_no_material', { items: ofKind.join(', ') });
+      return t(lang, 'inv_no');
     }
     const shown = names.map(name => (Number(inventory[name]) > 1 ? `${name} x${inventory[name]}` : name));
-    return `sì: ${shown.join(', ')}`;
+    return t(lang, 'inv_yes', { items: shown.join(', ') });
   }
   const rows = Object.entries(inventory)
     .filter(([, count]) => Number(count) > 0)
     .sort((a, b) => Number(b[1]) - Number(a[1]));
-  if (!rows.length) return 'non ho niente in inventario';
+  if (!rows.length) return t(lang, 'inv_empty');
   const shown = rows.slice(0, limit).map(([item, count]) => (Number(count) > 1 ? `${item} x${count}` : item));
-  const more = rows.length > limit ? ` (+${rows.length - limit} altri)` : '';
-  return `ho: ${shown.join(', ')}${more}`;
+  const more = rows.length > limit ? t(lang, 'inv_more', { n: rows.length - limit }) : '';
+  return t(lang, 'inv_list', { items: shown.join(', '), more });
 }
 
 // Cosa indossa, non cosa possiede: `observe().armor` è lo stato degli slot
 // addosso (elmo/pettorale/gambali/stivali) più i punti armatura vanilla.
-function armorAnswer (obs) {
+function armorAnswer (obs, { lang = DEFAULT_LANG } = {}) {
   const armor = obs?.armor && typeof obs.armor === 'object' ? obs.armor : null;
-  if (!armor) return 'non lo so: non ho letto la mia armatura';
+  if (!armor) return t(lang, 'armor_unknown');
   const worn = ['helmet', 'chestplate', 'leggings', 'boots'].map(slot => armor[slot]).filter(Boolean);
-  if (!worn.length) return 'non indosso armatura';
-  const points = Number.isFinite(Number(armor.points)) ? ` (${round(armor.points)} punti armatura)` : '';
-  return `indosso: ${worn.join(', ')}${points}`;
+  if (!worn.length) return t(lang, 'armor_none');
+  const points = Number.isFinite(Number(armor.points)) ? t(lang, 'armor_points', { points: round(armor.points) }) : '';
+  return t(lang, 'armor_worn', { items: worn.join(', '), points });
 }
 
 // Bedrock keeps time in ticks: 0 ticks is 06:00, one full day is 24000 ticks.
@@ -233,19 +219,19 @@ export function clockFromTicks (ticks) {
   return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 }
 
-function timeAnswer (obs) {
+function timeAnswer (obs, { lang = DEFAULT_LANG } = {}) {
   const info = obs?.time;
   const clock = clockFromTicks(info?.ticks);
-  const phase = info?.night === true ? 'notte' : info?.night === false ? 'giorno' : null;
-  if (clock && phase) return `sono le ${clock} (${phase})`;
-  if (clock) return `sono le ${clock}`;
-  if (phase) return `è ${phase}`;
-  return 'non lo so che ore siano';
+  const phase = info?.night === true ? t(lang, 'phase_night') : info?.night === false ? t(lang, 'phase_day') : null;
+  if (clock && phase) return t(lang, 'time', { clock, phase: t(lang, 'time_phase', { phase }) });
+  if (clock) return t(lang, 'time', { clock, phase: '' });
+  if (phase) return t(lang, 'time_only_phase', { phase });
+  return t(lang, 'time_unknown');
 }
 
-function identityAnswer (_obs, { prefixes = DEFAULT_CHAT_PREFIX } = {}) {
-  const list = formatPrefixes(prefixes) || DEFAULT_CHAT_PREFIX;
-  return `sono Hermes, il bot di casa. Scrivimi "${list} <ordine>", per esempio "${list} seguimi" o "${list} mina ferro".`;
+function identityAnswer (_obs, { prefixes = DEFAULT_CHAT_PREFIX, lang = DEFAULT_LANG } = {}) {
+  const list = formatPrefixes(prefixes, { separator: t(lang, 'list_or') }) || DEFAULT_CHAT_PREFIX;
+  return t(lang, 'identity', { prefixes: list });
 }
 
 // The catalogue: `patterns` is the regex fast path (answered without any model
@@ -255,43 +241,43 @@ export const QUESTION_INTENTS = [
   {
     id: 'q_position',
     description: 'The human asks where the bot is right now: its position, its coordinates or its dimension (e.g. "dove sei", "where are you", "non ti vedo").',
-    patterns: [/\b(dove (sei|ti trovi|siete)|posizione|coordinate|non ti vedo|where are you|your (position|coordinates))\b/],
+    patterns: [/\b(dove (sei|ti trovi|siete)|posizione|coordinate|non ti vedo|where are you|your (position|coordinates)|ou (es|est)[- ]?tu|donde estas|wo (bist|seid) du|deine position|tu posicion)\b/],
     answer: positionAnswer,
   },
   {
     id: 'q_health',
     description: 'The human asks how the bot is doing: its health, its food/hunger, or whether it is hurt or dead (e.g. "come stai", "how are you", "hai fame", "sei vivo").',
-    patterns: [/\b(come stai|come ti senti|quanta vita|quanti cuori|quante cuori|quanto cuore|quanta fame|quanto cibo|quanta cibo|hai fame|hai vita|sei vivo|how are you|how much health|how many hearts|your health)\b/],
+    patterns: [/\b(come stai|come ti senti|quanta vita|quanti cuori|quante cuori|quanto cuore|quanta fame|quanto cibo|quanta cibo|hai fame|hai vita|sei vivo|how are you|how much health|how many hearts|your health|comment (vas|va)-tu|ca va|combien de (coeurs|vie)|como estas|cuanta vida|cuantos corazones|wie geht es dir|wie gehts|wie viel leben|wie viele herzen)\b/],
     answer: healthAnswer,
   },
   {
     id: 'q_armor',
     description: 'The human asks which armor or equipment the bot is *wearing* right now (e.g. "che armatura hai", "cosa indossi", "sei equipaggiato", "what armor are you wearing"). Not the inventory: a piece held in the inventory but not equipped is not worn yet.',
-    patterns: [/\b(che armatura|quale armatura|armatura (hai|indossi|addosso)|hai (l |la |una |un )?armatura|cosa indossi|cosa hai addosso|cosa hai in testa|sei equipaggiat|what armor|what are you wearing|are you wearing)\b/],
+    patterns: [/\b(che armatura|quale armatura|armatura (hai|indossi|addosso)|hai (l |la |una |un )?armatura|cosa indossi|cosa hai addosso|cosa hai in testa|sei equipaggiat|what armor|what are you wearing|are you wearing|quelle armure|que armadura|llevas armadura|welche rustung|was tragst du)\b/],
     answer: armorAnswer,
   },
   {
     id: 'q_activity',
     description: 'The human asks what the bot is doing right now, or why it is not moving (e.g. "che fai", "cosa stai facendo", "non ti vedo che fai", "what are you doing").',
-    patterns: [/\b(che fai|che stai facendo|cosa stai facendo|che cosa fai|what are you doing|what'?s your plan)\b/],
+    patterns: [/\b(che fai|che stai facendo|cosa stai facendo|che cosa fai|what are you doing|what'?s your plan|que fais-tu|qu est ce que tu fais|que haces|was machst du|was tust du)\b/],
     answer: activityAnswer,
   },
   {
     id: 'q_inventory',
     description: 'The human asks which items the bot carries, or whether it has a specific item (e.g. "cosa hai", "che oggetti hai", "hai della pietra", "what do you have").',
-    patterns: [/\b(cosa hai\b(?!\s+(fatto|detto|visto|trovato|imparato))|cosa porti|cosa possiedi|che oggetti|inventario|inventory|what do you have|do you have|have you got|hai (un|uno|una|del|dello|della|dei|degli|delle|qualche|qualcosa)|quanto \w+ (hai|possiedi)|quant[oaie] \w+ (hai|possiedi)|quanti \w+ (hai|possiedi))\b/],
+    patterns: [/\b(cosa hai\b(?!\s+(fatto|detto|visto|trovato|imparato))|cosa porti|cosa possiedi|che oggetti|inventario|inventory|what do you have|do you have|have you got|hai (un|uno|una|del|dello|della|dei|degli|delle|qualche|qualcosa)|quanto \w+ (hai|possiedi)|quant[oaie] \w+ (hai|possiedi)|quanti \w+ (hai|possiedi)|qu as tu|tu as quoi|que tienes|was hast du)\b/],
     answer: inventoryAnswer,
   },
   {
     id: 'q_time',
     description: 'The human asks the in-game time, or whether it is day or night (e.g. "che ore sono", "is it night").',
-    patterns: [/\b(che ora|che ore|what time is it|is it night|fa buio)\b/],
+    patterns: [/\b(che ora|che ore|what time is it|is it night|fa buio|quelle heure|que hora|wie spat|wie viel uhr)\b/],
     answer: timeAnswer,
   },
   {
     id: 'q_identity',
     description: 'The human asks who the bot is, what it can do, or how to give it orders (e.g. "chi sei", "aiuto", "who are you", "what can you do").',
-    patterns: [/\b(chi sei|cosa sai fare|aiuto|who are you|what can you do)\b/],
+    patterns: [/\b(chi sei|cosa sai fare|aiuto|who are you|what can you do|qui es-tu|quien eres|wer bist du|was kannst du)\b/],
     answer: identityAnswer,
   },
 ];
@@ -301,6 +287,10 @@ export const QUESTION_INTENTS = [
 export function normalizeForMatching (message) {
   return String(message ?? '')
     .toLowerCase()
+    // Gli accenti si tolgono prima del match: "épée" / "café" / "Kürbis" devono
+    // cadere sulle stesse parole ASCII dei pattern, che restano leggibili.
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
     .replace(/[?!.,;:"'“”¡¿()[\]]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -335,6 +325,16 @@ export const QUESTION_OPENERS = [
   'quanto', 'quanta', 'quanti', 'quante',
   'perché', 'perche', 'quale', 'quali',
   'what', 'where', 'when', 'why', 'how', 'who', 'which', 'whose',
+  // Francese (folded: `où` -> `ou`, `qu'est-ce` -> `qu est ce`)
+  'qui', 'que', 'quoi', 'ou', 'quand', 'comment', 'combien', 'pourquoi',
+  'quel', 'quelle', 'quels', 'quelles', 'est', "qu'est-ce",
+  // Spagnolo
+  'quién', 'quien', 'qué', 'qué', 'dónde', 'donde', 'cuándo', 'cuando',
+  'cómo', 'como', 'cuánto', 'cuanto', 'cuánta', 'cuanta', 'cuántos', 'cuantos',
+  'cuántas', 'cuantas', 'cuál', 'cual', 'cuales',
+  // Tedesco (folded: `wann` resta `wann`, `wie` resta `wie`)
+  'wer', 'was', 'wo', 'wann', 'warum', 'wieso', 'weshalb', 'wie',
+  'welche', 'welcher', 'welches', 'wohin', 'woher',
 ];
 
 export function looksLikeQuestion (message) {
@@ -357,6 +357,16 @@ export const SMALL_TALK = [
   'grazie', 'grazie mille', 'ti ringrazio', 'bravo', 'bella', 'bello', 'grande', 'sei forte', 'forte',
   'a dopo', 'ci vediamo', 'ci sono', 'presente', 'perfetto', 'ottimo', 'va bene', 'bene grazie',
   'hi', 'hello', 'how are you', 'thanks', 'thank you', 'nice', 'good job', 'well done', 'goodbye', 'bye',
+  // Français (folded)
+  'salut', 'bonjour', 'bonsoir', 'coucou', 'merci', 'merci beaucoup', 'au revoir', 'a plus',
+  'a bientot', 'ca va', 'comment ca va', 'bien', 'tres bien', 'super', 'parfait', 'd accord',
+  // Español
+  'hola', 'buenos dias', 'buenas', 'buenas tardes', 'gracias', 'muchas gracias', 'adios',
+  'hasta luego', 'que tal', 'como estas', 'muy bien', 'perfecto', 'genial', 'buen trabajo',
+  // Deutsch
+  'hallo', 'guten tag', 'guten morgen', 'guten abend', 'danke', 'danke schon', 'tschuss',
+  'auf wiedersehen', 'wie gehts', 'wie geht es dir', 'alles klar', 'sehr gut', 'gut gemacht',
+  'bis spater', 'bis bald',
 ];
 
 export function looksLikeSmallTalk (message) {
@@ -391,19 +401,19 @@ export function intentFromChoice (choice) {
 
 // Render the answer for an intent from harness facts. Returns null when the id
 // is unknown or is the `q_none` sentinel (both mean "no answer to give").
-export function answerIntent (id, obs = {}, { prefixes = DEFAULT_CHAT_PREFIX, maxLength = DEFAULT_REPLY_MAX_LENGTH, message = null } = {}) {
+export function answerIntent (id, obs = {}, { prefixes = DEFAULT_CHAT_PREFIX, maxLength = DEFAULT_REPLY_MAX_LENGTH, message = null, lang = DEFAULT_LANG } = {}) {
   const intent = QUESTION_INTENTS.find(candidate => candidate.id === id);
   if (!intent) return null;
   // `message` arriva all'answer: una domanda come "hai una spada?" nomina
   // l'oggetto, e l'inventario deve rispondere su quello. Il testo resta
   // un'indicazione, i fatti restano quelli di `observe()`.
-  const answer = intent.answer(obs ?? {}, { prefixes, message });
+  const answer = intent.answer(obs ?? {}, { prefixes, message, lang });
   return answer ? clampMessage(answer, maxLength) : null;
 }
 
 // One addressed chat line: `@<sender> <answer>` — never the trigger itself, so
 // `replyChat`'s self-trigger guard has nothing to refuse.
-export function renderAnswer ({ from, answer, template = DEFAULT_ANSWER_TEMPLATE, maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
+export function renderAnswer ({ from, answer, lang = DEFAULT_LANG, template = t(lang, 'answer_template'), maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
   return renderReply(template, { name: from ?? '?', answer: answer ?? '' }, maxLength);
 }
 
@@ -415,18 +425,18 @@ export function renderAnswer ({ from, answer, template = DEFAULT_ANSWER_TEMPLATE
 // <sender>`), so the bot says it did not understand instead — and shows the way
 // back to the order path, because the human's message may well have been an
 // order expressed as a question ("riesci a raggiungermi?").
-export const UNROUTED_TEMPLATE = 'non ho capito la domanda. Se era un ordine, scrivi "{prefixes} <ordine>".';
+export const UNROUTED_TEMPLATE = t(DEFAULT_LANG, 'unrouted');
 
-export function renderUnrouted ({ from, prefixes = DEFAULT_CHAT_PREFIX, template = UNROUTED_TEMPLATE, maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
-  const answer = renderReply(template, { prefixes: formatPrefixes(prefixes) || DEFAULT_CHAT_PREFIX });
-  return renderAnswer({ from, answer, maxLength });
+export function renderUnrouted ({ from, prefixes = DEFAULT_CHAT_PREFIX, lang = DEFAULT_LANG, template = t(lang, 'unrouted'), maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
+  const answer = renderReply(template, { prefixes: formatPrefixes(prefixes, { separator: t(lang, 'list_or') }) || DEFAULT_CHAT_PREFIX });
+  return renderAnswer({ from, answer, lang, maxLength });
 }
 
 // Un ordine di equipaggiamento non si puo' eseguire perche' non c'e' nulla da
 // indossare: si dice all'umano, non si lascia il goal aperto su un'azione che
 // l'harness non offre (`equip_armor` compare solo se l'inventario ha pezzi).
-export const NO_ARMOR_TEMPLATE = 'non ho armatura in inventario, non posso equipaggiarmi';
+export const NO_ARMOR_TEMPLATE = t(DEFAULT_LANG, 'no_armor');
 
-export function renderNoArmor ({ from, template = NO_ARMOR_TEMPLATE, maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
-  return renderAnswer({ from, answer: template, maxLength });
+export function renderNoArmor ({ from, lang = DEFAULT_LANG, template = t(lang, 'no_armor'), maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
+  return renderAnswer({ from, answer: template, lang, maxLength });
 }

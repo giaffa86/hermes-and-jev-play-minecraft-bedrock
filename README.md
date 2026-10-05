@@ -15,7 +15,7 @@ The split is the one [rmalde/minecraft-agent](https://github.com/rmalde/minecraf
 | `bedrock-harness.mjs` | The Bedrock target: the bot (NetherNet transport) plus the same bounded-action API against a Bedrock server. Boot it instead of `harness.mjs` for everything the village runs on; see [`BEDROCK.md`](BEDROCK.md). |
 | `bedrock-adapter.mjs` | The Bedrock adapter behind that API: `observe()` (nearby blocks with crop growth, farm animals, bees, fishing, fluids, redstone, portals, containers, drops), `options()` (which intents are valid *right now*) and every action implementation. |
 | `idle-goals.mjs` + `village-labor.mjs` | The two deterministic `IDLE` producers: survival **needs** (M3) and village **chores** (M3b). No model decides them; see [Player-facing properties](#player-facing-properties-bedrock). |
-| `human-replies.mjs` + `human-questions.mjs` + `chat-llm.mjs` | The chat layer: deterministic replies and answers (`planPhrase`, `CHORE_LABELS`/`NEED_LABELS`) plus the optional LLM rephrasing (M6/M7/M7.1). |
+| `human-replies.mjs` + `human-questions.mjs` + `chat-llm.mjs` + `chat-i18n.mjs` | The chat layer: the message catalogue (it/en/fr/es/de, `CHAT_LANG`), the deterministic replies and answers (`planPhrase`, `CHORE_LABELS`/`NEED_LABELS`) and the optional LLM rephrasing (M6/M7/M7.1/M7.2). |
 | `controller.mjs` | The loop. Planner = Hermes via `hermes chat -Q --oneshot` at milestones. Controller = Jev via OpenRouter `POST /api/alpha/decisions` (a `choice` question over the harness's options), or Hermes with `CONTROLLER=hermes`. Logs every plan and decision (choice, candidate keys, per-key probabilities, confidence, cost, latency) to `runs/<id>/controller.jsonl`. Anti-loop: repeated actions with no progress (position, inventory, objective) force a replan and are temporarily excluded. |
 | `controller-decisions.mjs` | Pure decision helpers for the controller: option ranking/cap, anti-loop detection, progress fingerprint, wait diagnostics, decision instructions. Unit tests in `tests/controller-decisions.test.mjs`. |
 | `survival/` | Deterministic Survival Intelligence Layer: perception, risk/needs scoring, Survival Governor, declarative gameplay-skill loader, skill resolver, deterministic verification, progression resolver, JSONL experience. Pure logic with unit tests; no model, no code generation. |
@@ -50,7 +50,7 @@ RUN_ID=demo WAYPOINT='{"x":380,"z":16}' TARGETS='{"dirt":4}' MAX_STEPS=14 node c
 
 Expected output ends with `GOAL MET after N actions {...}`; the full trail is in `runs/demo/controller.jsonl` (plans + every Jev decision with probabilities, confidence, latency, cost) and `runs/demo/events.jsonl` (harness-side actions and results).
 
-Knobs (all env vars): `GOAL` (free text for the planner), `TARGETS` (`{item: minCount}`), `WAYPOINT` (`{x, z}` or unset), `MAX_STEPS`, `REPLAN_EVERY` (default 8), `CONTROLLER=jev|hermes`, `JEV_MODEL` (default `typesafe/jev-1.13`), `MAX_OPTIONS` (cap on the options passed to the controller, default 12, 0 disables), `ANTI_LOOP_THRESHOLD`/`ANTI_LOOP_COOLDOWN` (default 3), `CURRICULUM=<milestone>` (e.g. `first_night`, `enter_nether`: the progression engine picks the next missing prerequisite itself), `MC_PORT`/`API_PORT` if 25599/3077 are taken, and the human chat command channel: `CHAT_ALLOWLIST` (gamertag/xuid, comma-separated; enables `@bot` control), `CHAT_PREFIXES` (triggers accepted, comma or space separated, e.g. `@bot,@hermes`; default `@bot`, the legacy `CHAT_PREFIX` still works and is summed in), `CHAT_CONTROL` (default `on` when allowlist set), `CHAT_GREET`/`CHAT_GREET_RANGE`/`CHAT_GREET_COOLDOWN_MS`/`CHAT_GREET_TEMPLATE` (proactive greeting: the bot tells a nearby trusted human the order syntax via `POST /say`; default on when the channel is open), `CHAT_INTENT`/`CHAT_INTENT_URL`/`CHAT_INTENT_MODEL`/`CHAT_INTENT_TIMEOUT_MS`/`CHAT_INTENT_MIN_P` (chat **questions**: `@bot dove sei?` is answered from `observe()` — regex fast path, then System One/Jev over a closed intent list — and creates no goal; default on with a TypeSafe/OpenRouter key), `CHAT_SELF_NAME`, `CHAT_REPLY`/`CHAT_REPLY_MAX_LENGTH`, `CHAT_MAX_AGE_MS`, `CHAT_ECHO_WINDOW_MS` (chat lifecycle: answer to its own name, reply length, stale-order window, own-echo recognition), `DEEPSEEK_API_KEY`/`CHAT_LLM_API_KEY` + `CHAT_LLM`/`CHAT_LLM_URL`/`CHAT_LLM_MODEL`/`CHAT_LLM_TIMEOUT_MS`/`CHAT_PERSONA` (natural chat: an LLM rephrases the deterministic reply, see below) and `SESSION`/`AUTONOMY`/`VILLAGE_WORK` (persistent session, needs-driven goals, village chores; each with its cooldown and cap). The complete list with defaults is in [`BEDROCK.md`](BEDROCK.md#environment-variables) — see `docs/wiki/human-command.md` for the chat design.
+Knobs (all env vars): `GOAL` (free text for the planner), `TARGETS` (`{item: minCount}`), `WAYPOINT` (`{x, z}` or unset), `MAX_STEPS`, `REPLAN_EVERY` (default 8), `CONTROLLER=jev|hermes`, `JEV_MODEL` (default `typesafe/jev-1.13`), `MAX_OPTIONS` (cap on the options passed to the controller, default 12, 0 disables), `ANTI_LOOP_THRESHOLD`/`ANTI_LOOP_COOLDOWN` (default 3), `CURRICULUM=<milestone>` (e.g. `first_night`, `enter_nether`: the progression engine picks the next missing prerequisite itself), `MC_PORT`/`API_PORT` if 25599/3077 are taken, and the human chat command channel: `CHAT_ALLOWLIST` (gamertag/xuid, comma-separated; enables `@bot` control), `CHAT_PREFIXES` (triggers accepted, comma or space separated, e.g. `@bot,@hermes`; default `@bot`, the legacy `CHAT_PREFIX` still works and is summed in), `CHAT_CONTROL` (default `on` when allowlist set), `CHAT_GREET`/`CHAT_GREET_RANGE`/`CHAT_GREET_COOLDOWN_MS`/`CHAT_GREET_TEMPLATE` (proactive greeting: the bot tells a nearby trusted human the order syntax via `POST /say`; default on when the channel is open), `CHAT_INTENT`/`CHAT_INTENT_URL`/`CHAT_INTENT_MODEL`/`CHAT_INTENT_TIMEOUT_MS`/`CHAT_INTENT_MIN_P` (chat **questions**: `@bot dove sei?` is answered from `observe()` — regex fast path, then System One/Jev over a closed intent list — and creates no goal; default on with a TypeSafe/OpenRouter key), `CHAT_SELF_NAME`, `CHAT_REPLY`/`CHAT_REPLY_MAX_LENGTH`, `CHAT_MAX_AGE_MS`, `CHAT_ECHO_WINDOW_MS` (chat lifecycle: answer to its own name, reply length, stale-order window, own-echo recognition), `CHAT_LANG` (language of every sentence the bot composes: `it`/`en`/`fr`/`es`/`de`, default `it`), `DEEPSEEK_API_KEY`/`CHAT_LLM_API_KEY` + `CHAT_LLM`/`CHAT_LLM_URL`/`CHAT_LLM_MODEL`/`CHAT_LLM_TIMEOUT_MS`/`CHAT_PERSONA` (natural chat: an LLM rephrases the deterministic reply, see below) and `SESSION`/`AUTONOMY`/`VILLAGE_WORK` (persistent session, needs-driven goals, village chores; each with its cooldown and cap). The complete list with defaults is in [`BEDROCK.md`](BEDROCK.md#environment-variables) — see `docs/wiki/human-command.md` for the chat design.
 
 ### Survival Intelligence Layer
 
@@ -121,9 +121,11 @@ exists to teach `{prefix}`/`{prefixes}`, and a model could garble them.
 - **Deterministic first.** Ack, outcome and answers are composed in code, and the
 language is part of that code: the planner must write the objective **in the same
 language as the human message and in the first person** (that text is what the ack
-sends), the stop/follow/equip fallbacks are Italian, and `human-questions.mjs`
+sends), the stop/follow/equip fallbacks come from the `CHAT_LANG` catalogue
+(`chat-i18n.mjs`), and `human-questions.mjs`
 owns `planPhrase` with `CHORE_LABELS`/`NEED_LABELS`, so a village chore, a
-survival need, `wear_armor` or a loot recovery is described in Italian instead of
+survival need, `wear_armor` or a loot recovery is described in the configured
+language instead of
 echoing the English knowledge-base objective. A human order keeps its own
 objective, already in the sender's language. `tests/human-questions.test.mjs`
 fails if a new chore or need ships without a label.
@@ -141,6 +143,32 @@ the language switch: it is what makes the phrasing varied. Small talk (`ciao`,
 order.
 - **Memory.** The last ~6 turns per sender, for up to 8 senders, in RAM only (a
 restart forgets).
+
+### One catalogue, five languages (M7.2)
+
+- **`CHAT_LANG` is the language of everything the bot says by itself**: ack,
+outcome, question answers, proactive greeting, refusals. Supported values are
+`it` (default, the historical behaviour of this server), `en`, `fr`, `es`, `de`;
+region codes are tolerated (`en-US` → `en`) and an unknown value is not fatal —
+the bot falls back to the default and says so once at startup.
+- **The catalogue is the only place a sentence is written.**
+`chat-i18n.mjs` holds `MESSAGES` (one entry per key per language) and `t()`;
+the code never concatenates a translated fragment. `tests/chat-i18n.test.mjs`
+enforces the three properties that keep it honest: every language defines every
+key, the placeholders of a key are identical across languages, and the five
+versions are actually different strings.
+- **A new chore or need cannot ship untranslated.** The village chores and the
+survival needs come from the same catalogue (`chore.*`, `need.*`), and the test
+walks `VILLAGE_CHORES` and `NEED_PRIORITY` to prove each id has a label in all
+five languages.
+- **The LLM follows the same rule.** A clear message always wins: the bot
+answers in the language the human wrote. `CHAT_LANG` is the fallback used when
+the message does not make the language clear (`ok`, `grazie`, a two-word order):
+the model is told to use it.
+- **What is not translated.** The human's own text, and the objective the planner
+writes for an order (M7.1 requires it in the sender's language). A question
+written in a language the intent patterns do not cover is still answered: the
+`chat_unrouted` reply is in `CHAT_LANG` and teaches the order syntax.
 
 ### The bot is not furniture: idle autonomy and village labor (M3/M3b)
 

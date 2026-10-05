@@ -18,8 +18,9 @@ only the network protocol, see
 |---|---|
 | `bedrock-harness.mjs` | Container entry point: connects the Bedrock bot to the BDS and exposes the HTTP API (`/observe`, `/options`, `/act`, `/plan`, `/survival`). Also applies the Survival Governor's emergency filter to the options. |
 | `bedrock-adapter.mjs` | Adapter that translates Bedrock state into the format expected by `controller.mjs`. |
-| `human-replies.mjs` | The deterministic chat composer: trigger match (`normalizePrefixes`, `selfPrefixes`, `matchChatPrefix`), ack/outcome/failed/stopped/lost templates, `clampMessage`, `isSelfTriggering`. |
-| `human-questions.mjs` | Chat answers: `matchQuestionIntent`/`answerIntent`/`renderAnswer` over a closed intent list, the Italian vocabulary of the structured goals (`CHORE_LABELS`, `NEED_LABELS`, `planPhrase`, M7.1) and the `renderUnrouted`/`renderNoArmor` fallbacks. |
+| `human-replies.mjs` | The deterministic chat composer: trigger match (`normalizePrefixes`, `selfPrefixes`, `matchChatPrefix`), ack/outcome/failed/stopped/lost templates (read from the i18n catalogue), `clampMessage`, `isSelfTriggering`. |
+| `human-questions.mjs` | Chat answers: `matchQuestionIntent`/`answerIntent`/`renderAnswer` over a closed intent list, the vocabulary of the structured goals (`CHORE_LABELS`, `NEED_LABELS`, `choreLabel`, `needLabel`, `planPhrase`, M7.1) and the `renderUnrouted`/`renderNoArmor` fallbacks. Question patterns and small talk cover it/en/fr/es/de. |
+| `chat-i18n.mjs` | The message catalogue: `MESSAGES` (it/en/fr/es/de, one entry per key), `t(lang, key, vars)`, `chatLangConfig`/`normalizeLang` for `CHAT_LANG`, `languageName`/`LANG_NATIVE_NAMES` for the prompts, `listAnd`. No I/O: it is the only place a user-facing sentence is written (M7.2). |
 | `chat-intent.mjs` / `chat-llm.mjs` | The optional models on the chat path: `chat-intent.mjs` routes a question to an intent (M6), `chat-llm.mjs` rephrases an already-composed reply (M7). Both are typed clients with a timeout and a deterministic fallback. |
 | `idle-goals.mjs` / `village-labor.mjs` | The `IDLE` producers: survival needs (M3) and village chores (M3b). Pure and deterministic, with a success predicate evaluated on harness state (`isNeedResolved`, `isChoreResolved`). |
 | `controller-decisions.mjs` | Pure controller functions (no I/O): option ranking/cap (including the active skill's intents), anti-loop, progress fingerprint, diagnostics and decision instructions. Unit tests in `tests/controller-decisions.test.mjs`. |
@@ -99,6 +100,13 @@ CHAT_REPLY=on                      # on/off for the order lifecycle replies (ack
 CHAT_REPLY_MAX_LENGTH=180          # clamp on every outgoing reply
 CHAT_MAX_AGE_MS=300000             # an order older than this is dropped (chat_stale) after a restart
 CHAT_ECHO_WINDOW_MS=15000          # how long the bot recognises its own chat coming back from the server
+
+# Chat language (M7.2): every sentence the bot composes by itself (ack, outcome,
+# question answers, proactive greeting, refusals) comes from the chat-i18n.mjs
+# catalogue. The configured language does not depend on the LLM: without a key
+# the deterministic path speaks it too. A clear message always wins (the bot
+# replies in the sender's language); CHAT_LANG covers the ambiguous ones.
+CHAT_LANG=it                       # it | en | fr | es | de; default it, unknown value falls back with a warning
 
 # Natural chat (M7, optional): an LLM rephrases the deterministic reply;
 # without a key (or with CHAT_LLM=off) the reply is still sent, in the

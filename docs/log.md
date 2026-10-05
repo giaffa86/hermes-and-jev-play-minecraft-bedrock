@@ -1,5 +1,62 @@
 # Log
 
+## [2026-10-05] feat | One chat catalogue, five languages (M7.2)
+
+The ask: *"facciamo una bella cosa, i18n per i messaggi con una proprietà env con
+la lingua default, potremmo fare italiano, inglese, francese, spagnolo, tedesco
+per iniziare"*. M7.1 had made the deterministic path Italian by hand; the general
+case needs a catalogue, otherwise the next language duplicates every sentence and
+the two copies drift.
+
+- **`chat-i18n.mjs`** (new, pure): `MESSAGES` — one entry per key for `it`, `en`,
+  `fr`, `es`, `de` — plus `t(lang, key, vars)`, `listAnd`, `LANGS`,
+  `DEFAULT_LANG='it'`, `LANG_NAMES` (English, for the prompts),
+  `LANG_NATIVE_NAMES` (`italiano`…`Deutsch`, to tell the model which language a
+  clear message did not pick) and the `CHAT_LANG` resolution (`chatLangConfig`,
+  `normalizeLang`, `isSupportedLang`). Region codes resolve (`en-US` → `en`) and
+  an unknown value falls back with a single `CHAT_LANG="pt" non supportata`
+  line at startup — a quiet typo is worse than a warning.
+- **One trap caught by the tests**: `t()` without `vars` must return the
+  *template* (`@{name} ok: {objective}`), not an interpolation with an empty
+  object — the first run sent `'@ ok:'` to chat because every placeholder had
+  been emptied before `renderReply` filled it. `interpolate` now leaves a
+  placeholder with no value visible, so an incomplete template is readable
+  instead of silent.
+- **Deterministic first, again**: `orderAck`, `orderOutcome`, `lostNotice`,
+  `renderAnswer`, `renderUnrouted`, `renderNoArmor`, `planPhrase`,
+  `planGreetings` and the three planner fallbacks (`fallback.stop`,
+  `fallback.follow`, `fallback.equip`) all take `lang` and are wired to
+  `CHAT_LANG` in `controller.mjs`. No key is needed: the language is data, not a
+  provider fee.
+- **Labels are derived, not copied**: `CHORE_LABELS`/`NEED_LABELS` are built from
+  the `chore.*`/`need.*` catalogue keys by `labelsFromCatalogue`, and
+  `choreLabel(id, lang)`/`needLabel(id, lang)` answer in any language (unknown id
+  → `null`, never an invented phrase).
+- **The five languages reach the intent patterns**: `ITEM_WORDS`,
+  `MATERIAL_WORDS`, `QUESTION_OPENERS`, `SMALL_TALK` and the seven
+  `QUESTION_INTENTS` regexes take French/Spanish/German alternatives (`ou es-tu`,
+  `donde estas`, `wo bist du`, `que fais-tu`, `quelle heure`, `quien eres`, `was
+  kannst du`), and `normalizeForMatching` folds accents (`Kürbis` → `kurbis`,
+  `¿dónde` → `donde`) so the word boundaries keep working.
+- **The LLM follows the message.** `buildChatMessages` receives `lang` and the
+  system prompt says: same language as the message, and if the message does not
+  make it clear, `LANG_NATIVE_NAMES[CHAT_LANG]`. A clear message always wins.
+- **Tests**: `tests/chat-i18n.test.mjs` (18 tests) proves every language defines
+  every key, the placeholders of a key are identical across the five versions,
+  the strings actually differ, every `VILLAGE_CHORES` id and every
+  `NEED_PRIORITY` need has a label in all five languages, the ack/outcome/refusal
+  /greeting follow `CHAT_LANG`, and the FR/ES/DE questions reach the right intent
+  without a model. The six chat suites (`tests/chat-i18n.test.mjs`,
+  `tests/human-questions.test.mjs`, `tests/human-replies.test.mjs`,
+  `tests/human-greeting.test.mjs`, `tests/chat-llm.test.mjs`,
+  `tests/chat-intent.test.mjs`) → **83 pass / 0 fail**; the four controller chat
+  suites → **31 pass / 0 fail**. Full suite: `node --test tests/*.test.mjs` →
+  **1446 pass / 0 fail** (153 s; +18 = the new catalogue tests).
+- **Docs**: `.env.example` (block `CHAT_LANG`), `BEDROCK.md` (env +
+  `chat-i18n.mjs` component), `README.md` (one catalogue, five languages),
+  `docs/sources.md`, `docs/index.md` and this entry; the wiki page
+  `docs/wiki/human-command.md` gained the M7.2 section.
+
 ## [2026-10-05] fix | The deterministic reply speaks the sender's language (M7.1)
 
 The user's clarification: *"la risposta deterministica dovrebbe essere in

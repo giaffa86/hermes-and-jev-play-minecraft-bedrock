@@ -576,6 +576,80 @@ chat); and the same-language rule for the planner is an instruction, not an
 assertion (a model that ignores it leaves an English objective inside an Italian
 scaffold).
 
+## One catalogue, five languages (M7.2)
+
+M7.1 made the deterministic path Italian; the user then asked for the general
+case: *"facciamo una bella cosa, i18n per i messaggi con una proprietà env con la
+lingua default, potremmo fare italiano, inglese, francese, spagnolo, tedesco per
+iniziare"*. The risk of a translation layer in a chat path is drift — one string
+updated in Italian and forgotten in German — so the rule is stricter than "add a
+lookup": **a user-facing sentence exists only in the catalogue**.
+
+- **`chat-i18n.mjs`** is the catalogue: `MESSAGES` (one entry per key, per
+  language), `t(lang, key, vars)`, `listAnd`, and the `CHAT_LANG` resolution
+  (`chatLangConfig`, `normalizeLang`, `isSupportedLang`). Languages: `it`
+  (default — it is the historical behaviour of this server), `en`, `fr`, `es`,
+  `de`. `LANG_NAMES` (English names) feeds the prompts, `LANG_NATIVE_NAMES`
+  (`italiano`, `English`, `français`, `español`, `Deutsch`) is what the model is
+  told to use when the message does not make the language clear.
+- **The templates are data, the renderers still fill them.** `t()` without
+  `vars` returns the template with its placeholders intact, because
+  `human-replies.mjs`/`human-greeting.mjs` interpolate afterwards
+  (`renderReply`, `renderGreeting`). Getting this wrong emptied every ack — the
+  first run produced `'@ ok:'` — so a placeholder with no value stays visible
+  instead of vanishing: an incomplete template is a bug you can read.
+- **`CHAT_LANG` does not depend on the LLM.** `chatLangConfig(process.env)` is
+  resolved once at startup; `orderAck`, `orderOutcome`, `lostNotice`,
+  `renderAnswer`, `renderUnrouted`, `renderNoArmor`, `planPhrase`,
+  `planGreetings` and the three planner fallbacks (`fallback.stop`,
+  `fallback.follow`, `fallback.equip`) all take `lang: CHAT_LANG`. A region code
+  is tolerated (`en-US` → `en`); an unknown value is not fatal — the bot uses the
+  default and logs one `CHAT_LANG="pt" non supportata …` line at startup.
+- **Labels are derived, not duplicated.** `CHORE_LABELS`/`NEED_LABELS` are no
+  longer hand-written Italian maps: `labelsFromCatalogue` builds them from the
+  `chore.*`/`need.*` keys, and `choreLabel(id, lang)`/`needLabel(id, lang)`
+  answer in any language. The Italian exports stay for compatibility (and keep
+  the existing tests meaningful).
+- **The intent patterns cover the five languages too.** A question is answered
+  without a model call in French, Spanish and German as well: `ITEM_WORDS`,
+  `MATERIAL_WORDS`, `QUESTION_OPENERS`, `SMALL_TALK` and the seven
+  `QUESTION_INTENTS` patterns were extended (`ou es-tu`, `donde estas`, `wo bist
+  du`, `que fais-tu`, `quelle heure`, `quien eres`, `was kannst du`, …).
+  `normalizeForMatching` now folds accents (`Kürbis` → `kurbis`, `¿dónde` →
+  `donde`) because a `\b` before an accented letter never matches; the pattern is
+  additive, so the Italian and English behaviour is untouched.
+- **The LLM follows the message, `CHAT_LANG` covers the ambiguity.**
+  `buildChatMessages` says "rispondi nella stessa lingua del messaggio; se dal
+  messaggio la lingua non è chiara, rispondi in `LANG_NATIVE_NAMES[CHAT_LANG]`
+  (`italiano`, `English`, `français`, `español`, `Deutsch`)". A clear message
+  always wins.
+- **Drift is a test failure.** `tests/chat-i18n.test.mjs` asserts that every
+  language defines every key of the default catalogue, that the placeholders of a
+  key are identical in the five versions, that the strings actually differ, that
+  each `VILLAGE_CHORES` id and each `NEED_PRIORITY` need has a label in all five
+  languages, and that the deterministic ack/outcome/refusal/greeting are
+  addressed and translated. The French/Spanish/German questions are asserted
+  against `matchQuestionIntent` with no key and no server.
+
+So the language chain is now: the human's own words (an order keeps its
+objective, M7.1) → `CHAT_LANG` for everything the bot composes → the LLM, which
+may rephrase but not change the language of a clear message.
+
+**Open**: `CHAT_LANG` is the *bot's* language, not a per-message detector: an
+order written in French gets a French objective (M7.1, the planner follows the
+sender) inside an Italian ack template, so the line can read `@Jean ok: je
+viens …`. Detecting the message language to pick the ack template as well would
+make the two mechanisms fight (the planner already answers in the sender's
+language), so the split is deliberate — but it is visible in the log and worth a
+second look. Also open: the catalogue is flat and small on purpose, but a sixth
+language is a
+full pass over `chat-i18n.mjs` plus the intent patterns, not a config change; the
+`chat.*` keys are English-named while most of the values were born Italian, so
+the `it` column is the reference one; and the German *"wie gehts"* is both small
+talk and a health question — the question-shape pre-filter wins, which is
+deliberate (the bot answers with its hearts) but it is the kind of overlap that
+a new language can reintroduce.
+
 ## Proactive greeting (§6 Attention System)
 
 A human should not have to guess how to command the bot. When the bot perceives a
@@ -649,6 +723,11 @@ quieter hello is preferred (still an open question).
   `_moveTo`/`goto_waypoint` (movement primitive); `DIG_PROTECTED`.
 - `bedrock-harness.mjs` — `/observe`, `/options`, `/act`, `/plan`, `/say` routes.
 - `human-greeting.mjs` — pure greeting policy (`planGreetings`, `renderGreeting`).
+- `human-replies.mjs` / `human-questions.mjs` — trigger matching and the
+  ack/outcome templates; the seven question intents, `planPhrase` and the
+  refusals.
+- `chat-i18n.mjs` — the message catalogue (`MESSAGES`, `t`, `chatLangConfig`): the
+  only place a chat sentence is written (M7.2, `CHAT_LANG`).
 - `controller.mjs` — Hermes natural-language planning (`runHermes`);
   `maybeGreetHumans` (proactive greeting).
 - `minecraft-data` `bedrock/1.26.51/protocol.json` — `packet_text` fields

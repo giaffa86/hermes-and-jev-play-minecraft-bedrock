@@ -32,11 +32,12 @@ import {
   buildCriteria, buildDecisionInstructions, detectRepeatedAction, filterOptions, isEquipOrder, isStopOrder, withStickyFollow,
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
-import {planGreetings, DEFAULT_GREETING_TEMPLATE, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
+import {planGreetings, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
 import {orderAck, orderOutcome, lostNotice, isSelfTriggering, normalizePrefixes, matchChatPrefix, selfPrefixes, renderReply, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
 import {answerIntent, renderAnswer, renderNoArmor, renderUnrouted, looksLikeSmallTalk} from './human-questions.mjs';
 import {resolveQuestionIntent, DEFAULT_INTENT_TIMEOUT_MS, DEFAULT_INTENT_MIN_P} from './chat-intent.mjs';
 import {composeChatReply, chatLlmConfig, compactChatFacts, createChatMemory} from './chat-llm.mjs';
+import {chatLangConfig, t, languageName, LANGS} from './chat-i18n.mjs';
 import {systemOneDecide} from './system-one.mjs';
 import {
   evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
@@ -126,6 +127,19 @@ function rememberSeen (set, key, limit = SEEN_LIMIT) {
   while (set.size > limit) set.delete(set.values().next().value);
   return true;
 }
+// Lingua della chat (M7.2): `CHAT_LANG` sceglie il catalogo dei messaggi
+// deterministici (`chat-i18n.mjs`, it/en/fr/es/de). Default italiano, che è il
+// comportamento storico del server. Un valore non supportato non spegne nulla:
+// si torna al default e lo si dice una volta, perché un refuso silenzioso è
+// peggio di un warning. La lingua **non** dipende dall'LLM: il percorso
+// deterministico parla la lingua configurata anche senza chiave.
+const CHAT_LANG_CONF = chatLangConfig(process.env);
+const CHAT_LANG = CHAT_LANG_CONF.lang;
+if (CHAT_LANG_CONF.requested && !CHAT_LANG_CONF.supported) {
+  console.warn(`CHAT_LANG="${CHAT_LANG_CONF.requested}" non supportata (${LANGS.join(', ')}): uso "${CHAT_LANG}"`);
+} else if (CHAT_LANG_CONF.requested) {
+  console.log(`CHAT LANG ${CHAT_LANG} (${languageName(CHAT_LANG, {native: true})})`);
+}
 // Saluto proattivo (roadmap AI player §6, Attention System): percepito un umano
 // vicino, il bot si presenta e gli spiega la sintassi per assegnargli un ordine.
 // Attivo solo se il canale ordini è aperto (allowlist presente), altrimenti
@@ -137,7 +151,7 @@ const CHAT_GREET_RANGE = +(process.env.CHAT_GREET_RANGE || DEFAULT_GREET_RANGE);
 const CHAT_GREET_COOLDOWN_MS = process.env.CHAT_GREET_COOLDOWN_MS == null
   ? DEFAULT_GREET_COOLDOWN_MS
   : +(process.env.CHAT_GREET_COOLDOWN_MS);
-const CHAT_GREET_TEMPLATE = process.env.CHAT_GREET_TEMPLATE || DEFAULT_GREETING_TEMPLATE;
+const CHAT_GREET_TEMPLATE = process.env.CHAT_GREET_TEMPLATE || t(CHAT_LANG, 'greet');
 const greetedHumans = new Map(); // gamertag minuscolo -> timestamp ultimo saluto
 // Risposta in chat (M5): il bot conferma l'ordine accettato e, alla chiusura del
 // goal, ne comunica l'esito al mittente. Come il saluto, è attiva solo se il
@@ -177,7 +191,7 @@ const CHAT_LLM_ON = CHAT_LLM.enabled;
 const chatMemory = createChatMemory();
 // Fallback deterministico dello small talk (usato senza LLM): una riga, mai
 // scatenante. Con l'LLM è solo il testo di appoggio (`grounding`).
-const CHAT_SMALLTALK_TEMPLATE = process.env.CHAT_SMALLTALK_TEMPLATE || '@{name} ciao! dimmi pure.';
+const CHAT_SMALLTALK_TEMPLATE = process.env.CHAT_SMALLTALK_TEMPLATE || t(CHAT_LANG, 'smalltalk');
 // Session mode (AI-player roadmap M0->1): con SESSION=on il controller non
 // esce a fine goal ma resta in IDLE e accetta nuovi goal (ordini in chat)
 // senza riconnettersi. Default off = comportamento one-shot storico.
@@ -479,7 +493,7 @@ async function humanCommandPlan (obs, entry) {
     'Keep the objective to one sentence. The controller picks bounded actions from the harness; never invent action keys.',
     // L'objective finisce in chat (ack, esito, "cosa stai facendo?"): va scritto
     // nella lingua di chi ha scritto e in prima persona, come lo direbbe il bot.
-    `Write "objective" in the same language as the human message, in the first person, the way the bot would say it out loud (e.g. "sto andando da ${entry.from}", "mi metto l'armatura").`,
+    `Write "objective" in the same language as the human message, in the first person, the way the bot would say it out loud (e.g. "sto andando da ${entry.from}", "mi metto l'armatura"). If the message does not make the language clear, write it in ${languageName(CHAT_LANG, {native: true})}.`,
     `Current state: ${JSON.stringify(obs)}`,
   ].join('\n');
   // `equipaggiati con l'elmo` / `mettiti l'armatura` non passa dal planner: e'
@@ -488,7 +502,7 @@ async function humanCommandPlan (obs, entry) {
   // fraintendimento. Nessuna chiamata a Hermes, nessun modello.
   if (isEquipOrder(entry.message)) {
     const plan = {
-      objective: "mi metto l'armatura che ho in inventario (elmo, corazza, gambali, stivali)",
+      objective: t(CHAT_LANG, 'fallback.equip'),
       targets: {},
       waypoint: null,
       follow: null,
@@ -507,14 +521,14 @@ async function humanCommandPlan (obs, entry) {
   const stopOrder = isStopOrder(entry.message);
   const fallback = (note) => (stopOrder
     ? {
-        objective: 'resto fermo in attesa del prossimo ordine',
+        objective: t(CHAT_LANG, 'fallback.stop'),
         targets: {},
         waypoint: null,
         follow: null,
         notes: `human:${entry.from} ${note}`,
       }
     : {
-        objective: `seguo ${entry.from} ed eseguo il suo ultimo ordine: "${entry.message}"`,
+        objective: t(CHAT_LANG, 'fallback.follow', {from: entry.from, message: entry.message}),
         targets: {},
         waypoint: senderPos ? { x: Math.round(senderPos.x), z: Math.round(senderPos.z) } : null,
         follow: entry.from,
@@ -577,7 +591,7 @@ async function resolveQuestion (obs, entry) {
     });
     return decision;
   }
-  const answer = answerIntent(decision.id, obs, {prefixes: entry.prefixes ?? CHAT_PREFIXES, maxLength: CHAT_REPLY_MAX_LENGTH, message: entry.message});
+  const answer = answerIntent(decision.id, obs, {prefixes: entry.prefixes ?? CHAT_PREFIXES, maxLength: CHAT_REPLY_MAX_LENGTH, message: entry.message, lang: CHAT_LANG});
   if (!answer) {
     // Intento in catalogo ma fatto assente (es. inventario vuoto): stesso rifiuto.
     log('chat_unrouted', {
@@ -631,12 +645,12 @@ async function maybeHumanCommand (obs) {
     // che non si è capito — sempre senza creare goal.
     const question = await resolveQuestion(obs, {...entry, message, prefix: match.prefix, prefixes});
     if (question?.action === 'answer' && question.answer) {
-      const fallback = renderAnswer({from: entry.from, answer: question.answer, maxLength: CHAT_REPLY_MAX_LENGTH});
+      const fallback = renderAnswer({from: entry.from, answer: question.answer, maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG});
       await saySmart('question', {from: entry.from, message, obs, grounding: fallback, fallback, prefixes});
       continue;
     }
     if (question?.action === 'unrouted') {
-      const fallback = renderUnrouted({from: entry.from, prefixes, maxLength: CHAT_REPLY_MAX_LENGTH});
+      const fallback = renderUnrouted({from: entry.from, prefixes, maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG});
       await saySmart('unrouted', {from: entry.from, message, obs, grounding: fallback, fallback, prefixes});
       continue;
     }
@@ -653,7 +667,7 @@ async function maybeHumanCommand (obs) {
     const plan = await humanCommandPlan(obs, {...entry, message});
     // M5: conferma dell'ordine in chat. Best-effort (l'adapter applica rate
     // limit e lunghezza); l'esito arriva alla chiusura del goal.
-    const ack = orderAck({from: entry.from, plan, maxLength: CHAT_REPLY_MAX_LENGTH});
+    const ack = orderAck({from: entry.from, plan, maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG});
     await saySmart('ack', {from: entry.from, message, obs, plan, grounding: ack, fallback: ack, prefixes});
     return {plan, entry: {...entry, message}};
   }
@@ -678,6 +692,7 @@ async function saySmart (context, {from, message = null, obs = null, plan = null
         history: chatMemory.history(from),
         persona: CHAT_LLM.persona,
         prefixes,
+        lang: CHAT_LANG,
         model: CHAT_LLM.model,
         url: CHAT_LLM.url,
         key: CHAT_LLM.key,
@@ -726,6 +741,7 @@ async function maybeGreetHumans (obs) {
     cooldownMs: CHAT_GREET_COOLDOWN_MS,
     range: CHAT_GREET_RANGE,
     template: CHAT_GREET_TEMPLATE,
+    lang: CHAT_LANG,
   });
   for (const greet of greetings) {
     // Segna subito il tentativo: su errore si ritenta dopo il cooldown, non a
@@ -1155,7 +1171,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // Ultima risorsa: la ricerca autonoma e' fallita (nessun bersaglio per due
   // passi). Un messaggio per episodio, mai a ogni passo.
   if (lostFollow && !lostNoticeSent && lostFollowSteps >= LOST_NOTICE_AFTER_STEPS && Date.now() - lastLostNoticeAt > LOST_NOTICE_COOLDOWN_MS) {
-    const notice = lostNotice({from: goal.follow, prefix: CHAT_PREFIXES[0]});
+    const notice = lostNotice({from: goal.follow, prefix: CHAT_PREFIXES[0], lang: CHAT_LANG});
     if (notice) {
       lastLostNoticeAt = Date.now();
       lostNoticeSent = true;
@@ -1205,7 +1221,7 @@ for (let step = 1; step <= maxSteps; step++) {
     // "fatto"), invece di lasciare il modello libero dentro un goal impossibile.
     console.log('EQUIP ORDER: nessun pezzo di armatura in inventario');
     log('equip_order', {step, key: null, error: 'no_armor_in_inventory'});
-    await replyChat(renderNoArmor({from: goal.humanOrder?.from ?? null, maxLength: CHAT_REPLY_MAX_LENGTH}), {context: 'equip_no_armor', prefixes: CHAT_PREFIXES});
+    await replyChat(renderNoArmor({from: goal.humanOrder?.from ?? null, maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG}), {context: 'equip_no_armor', prefixes: CHAT_PREFIXES});
     lastEquipKey = 'blocked';
     failureReason = 'no_armor_in_inventory';
     runExitCode = 2;
@@ -1499,6 +1515,7 @@ async function main () {
         steps: outcome.steps ?? null,
         reason: final.reason ?? outcome.reason ?? null,
         maxLength: CHAT_REPLY_MAX_LENGTH,
+        lang: CHAT_LANG,
       });
       // Qui `obs` non è in scope: l'LLM riceve almeno l'obiettivo e i passi veri
       // dal `grounding`, così può riformulare senza inventare.

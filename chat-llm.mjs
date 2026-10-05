@@ -55,6 +55,8 @@ export function chatLlmConfig ({ env = process.env, key, url, model, timeoutMs, 
   };
 }
 
+import {DEFAULT_LANG, LANG_NATIVE_NAMES, languageName} from './chat-i18n.mjs';
+
 function firstLine (text) {
   return String(text ?? '').replace(/```[a-z]*\n?/gi, '').split(/[\r\n]+/).map(line => line.trim()).filter(Boolean)[0] ?? '';
 }
@@ -65,12 +67,17 @@ function firstLine (text) {
 export function buildChatMessages ({
   message, from = null, facts = null, grounding = null, history = [],
   persona = DEFAULT_CHAT_PERSONA, prefixes = [], maxLength = DEFAULT_REPLY_MAX_LENGTH,
+  lang = DEFAULT_LANG,
 } = {}) {
   const triggers = (prefixes || []).map(p => `"${p}"`).join(', ');
+  // La lingua configurata (`CHAT_LANG`) non forza la risposta: comanda la lingua
+  // del messaggio. Serve però a coprire i casi ambigui ("ok", "grazie", un
+  // comando senza parole) — lì il bot risponde nella lingua di casa.
+  const native = LANG_NATIVE_NAMES[lang] ?? LANG_NATIVE_NAMES[DEFAULT_LANG];
   const system = [
     `Sei ${persona}.`,
     'Stai giocando in chat su un server Minecraft Bedrock con altri giocatori reali.',
-    'Rispondi SEMPRE nella stessa lingua del messaggio che ricevi (messaggio in italiano -> risposta in italiano).',
+    `Rispondi SEMPRE nella stessa lingua del messaggio che ricevi (messaggio in italiano -> risposta in italiano). Se dal messaggio la lingua non è chiara, rispondi in ${native}.`,
     'Parla di te in prima persona ("sto andando", "ho 3 pane"): mai in terza persona, mai come una descrizione.',
     `Rispondi con UNA sola riga breve (massimo circa ${maxLength} caratteri), tono naturale e colloquiale da giocatore: niente markdown, niente elenchi.`,
     "Usa SOLO i fatti elencati sotto. Se un fatto non c'e', di' che non lo sai: non inventare numeri, oggetti, coordinate, azioni o persone.",
@@ -100,6 +107,7 @@ export async function composeChatReply ({
   message, from = null, facts = null, grounding = null, history = [],
   persona = DEFAULT_CHAT_PERSONA, prefixes = [], model, url, key,
   timeoutMs = DEFAULT_CHAT_LLM_TIMEOUT_MS, maxLength = DEFAULT_REPLY_MAX_LENGTH,
+  lang = DEFAULT_LANG,
   fetchImpl = fetch,
 } = {}) {
   if (!key) {

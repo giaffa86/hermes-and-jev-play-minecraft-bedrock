@@ -12,10 +12,11 @@
 // already-greeted state to the messages to send *this step*.
 
 import {DEFAULT_CHAT_PREFIX, normalizePrefixes} from './human-replies.mjs';
+import {DEFAULT_LANG, t} from './chat-i18n.mjs';
 
-export const DEFAULT_GREETING_TEMPLATE =
-  'Ciao {name}! Sono Hermes, il bot di casa. Assegnami un task scrivendo in chat: ' +
-  '{prefix} <ordine> — per esempio "{prefix} seguimi" oppure "{prefix} mina ferro".';
+// The default (Italian) greeting, kept exported for compatibility; the language
+// is `CHAT_LANG` and the controller picks `t(lang, 'greet')`.
+export const DEFAULT_GREETING_TEMPLATE = t(DEFAULT_LANG, 'greet');
 
 // A human within this radius of the bot counts as "perceived" (the adapter
 // tracks players up to 64 blocks, but a greeting only makes sense up close).
@@ -29,8 +30,8 @@ export const DEFAULT_GREET_COOLDOWN_MS = 600000;
 // and `{prefixes}` are aliases for the same thing: the exact syntax the
 // controller accepts, i.e. every configured trigger joined by `separator`
 // (`@bot o @hermes`).
-export function renderGreeting (template, { username, prefix, prefixes, separator = ' o ' } = {}) {
-  const label = formatPrefixes(prefixes ?? prefix, { separator }) || formatPrefixes(prefix, { separator });
+export function renderGreeting (template, { username, prefix, prefixes, separator = null, lang = DEFAULT_LANG } = {}) {
+  const label = formatPrefixes(prefixes ?? prefix, { separator: separator ?? t(lang, 'list_or') }) || formatPrefixes(prefix, { separator: separator ?? t(lang, 'list_or') });
   return String(template ?? '')
     .replaceAll('{name}', username ?? '')
     .replaceAll('{prefixes}', label)
@@ -59,8 +60,11 @@ export function planGreetings ({
   now = Date.now(),
   cooldownMs = DEFAULT_GREET_COOLDOWN_MS,
   range = DEFAULT_GREET_RANGE,
-  template = DEFAULT_GREETING_TEMPLATE,
+  template = null,
+  separator = null,
+  lang = DEFAULT_LANG,
 } = {}) {
+  const greetingTemplate = template ?? t(lang, 'greet');
   if (!allowlist || !allowlist.size) return [];
   const out = [];
   const seen = new Set();
@@ -78,7 +82,7 @@ export function planGreetings ({
     out.push({
       username,
       distance: distance ?? null,
-      message: renderGreeting(template, { username, prefixes: prefixes ?? prefix }),
+      message: renderGreeting(greetingTemplate, { username, prefixes: prefixes ?? prefix, separator, lang }),
     });
   }
   return out;
