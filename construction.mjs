@@ -202,7 +202,7 @@ export function validateBlueprint (b) {
     if (!Array.isArray(b[field])) { errors.push(`invalid_${field}`); continue; }
     for (const p of b[field]) {
       if (!offsetOK(p)) errors.push(`invalid_${field}_offset`);
-      if (field === 'clearance' && offsetOK(p) && occupied.has(p.join(','))) errors.push('clearance_collision');
+      if (field === 'clearance' && offsetOK(p) && occupied.has(p.join(','))) errors.push(`clearance_collision:${p.join(',')}`);
     }
   }
   if (!Array.isArray(b.routes) || !b.routes.length) errors.push('no_functional_checks');

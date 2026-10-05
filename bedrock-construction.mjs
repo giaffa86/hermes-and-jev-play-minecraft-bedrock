@@ -55,6 +55,7 @@ export class ConstructionEngine {
   read = p => this.a.world.blockAt(p);
 
   preview (request = {}) {
+    if (request.designPatch) throw new Error('unapplied_construction_design_patch');
     request = bridgeRequest(request);
     if (request.designRequired && !request.design) throw new Error('construction_design_required');
     const def = catalogue.get(request.type);

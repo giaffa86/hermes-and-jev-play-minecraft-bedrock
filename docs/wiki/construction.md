@@ -26,7 +26,15 @@ repairs, preserving the original brief, explicit site and independently authoriz
 containers. Architect repair calls have a separate `CONSTRUCTION_DESIGN_TIMEOUT_MS` budget
 (default 300000 ms); ordinary Hermes action calls keep `HERMES_TIMEOUT_MS`.
 An unavailable architect yields `construction_design_rejected`; it
-cannot silently substitute a standard house. Style/biome and semantic requirement
+cannot silently substitute a standard house. Small corrections may return
+`construction.designPatch` with at most 128 JSON data edits (`add`, `replace`,
+`remove`) relative to the unpublished design. Edits are atomic, reject prototype
+traversal and invalid targets/indices, and are previewed again. They cannot grant
+chest access or change a persisted project. The harness refuses unapplied edits
+instead of falling back to a template. Clearance collision feedback includes
+local coordinates, including conflicting door/bed halves.
+
+Style/biome and semantic requirement
 coverage remain model judgments. The compiler checks declared footprint/storeys
 against floors, supports in stage order, bed support, room walk points, route
 clearance and functional checks; it does not prove aesthetic fidelity.

@@ -2698,3 +2698,12 @@ preview and completed by the real executor with 12 confirmed simulated placement
 The model chose the geometry; no prefab substitution or manual geometry repair
 was used. Rich-house generation and live BDS construction remain separate checks.
 See [construction](wiki/construction.md).
+
+## [2026-10-05] ingest | Bounded architectural data repairs
+
+Hermes can patch an unpublished design atomically through bounded JSON edits,
+with validation feedback and storage/site authorization retained. A real
+394-byte model repair added the missing workstation check to its own two-storey
+house; the preview passed. Placement simulation then exposed missing early access
+for the lower walls, so functional completion remains unproven. Clearance errors
+now report local coordinates. See [construction](wiki/construction.md).

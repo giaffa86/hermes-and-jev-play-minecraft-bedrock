@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { compileConstructionDesign, constructionDesignInstructions } from '../construction-design.mjs';
 import { planStructure, keyOf } from '../construction.mjs';
-import { prepareConstructionPlan } from '../construction-planning.mjs';
+import { prepareConstructionPlan, applyConstructionDesignPatch } from '../construction-planning.mjs';
 import { constructionAdapter } from './fixtures/construction-adapter.mjs';
 
 const sample = () => JSON.parse(readFileSync(new URL('./fixtures/llm-house-design.json', import.meta.url)));
@@ -119,4 +119,71 @@ test('designer-declared survey regions expand exactly and are bounded before all
   assert.deepEqual(expanded.clearance,original.clearance);
   d.terrain=[{from:[-128,-128,-128],to:[128,128,128]}];
   assert.throws(()=>compileConstructionDesign(d,'house'),/terrain_budget/);
+});
+
+test('clearance feedback identifies the exact conflicting door halves for architect repair', () => {
+  const d=sample();d.clearance.push([3,1,0],[3,2,0]);
+  assert.throws(()=>compileConstructionDesign(d,'house'), e=>{
+    assert.match(e.message,/clearance_collision:3,1,0/);
+    assert.match(e.message,/clearance_collision:3,2,0/);
+    return true;
+  });
+});
+
+test('Hermes can repair a missing workstation check with data edits while preserving architecture and permissions', async () => {
+  const design=sample();design.routes=design.routes.filter(r=>r.type!=='approach'||r.offset[1]!==1);
+  const original=structuredClone(design), authorized=[{x:10,y:64,z:-10}];
+  let calls=0;
+  const plan=await prepareConstructionPlan({objective:design.intent.request,construction:{type:'house',origin,design}}, {
+    authorizedContainers:authorized,
+    preview:async request=>{try{compileConstructionDesign(request.design,'house');return{ok:true};}catch(e){return{ok:false,error:e.message};}},
+    ask:async prompt=>{
+      calls++;assert.match(prompt,/functional_check_missing:workbench/);assert.match(prompt,/designPatch/);
+      return{construction:{origin:{x:999,y:64,z:999},authorizedContainers:[{x:999,y:64,z:999}],designPatch:[{op:'add',path:'/routes/-',value:{type:'approach',offset:[5,1,4]}}]}};
+    }
+  });
+  assert.equal(calls,1);assert.deepEqual(plan.construction.origin,origin);assert.deepEqual(plan.construction.authorizedContainers,authorized);
+  assert.deepEqual(plan.construction.design.cuboids,original.cuboids);assert.deepEqual(plan.construction.design.cells,original.cells);
+  assert.deepEqual(design,original,'the rejected candidate remains unchanged');assert.equal(plan.construction.designPatch,undefined);
+});
+
+test('unpublished design edits reject prototype traversal, invalid indices and missing targets', () => {
+  for(const patch of [
+    [{op:'add',path:'/__proto__/polluted',value:true}],
+    [{op:'remove',path:'/cells/99999'}],
+    [{op:'replace',path:'/missing_part',value:{}}],
+    [{op:'add',path:'/routes/00',value:{}}],
+    [{op:'move',path:'/cells/0',value:{}}],
+    Array.from({length:129},()=>({op:'remove',path:'/cells/0'})),
+  ]) assert.throws(()=>applyConstructionDesignPatch(sample(),patch),/invalid_construction_design_patch/);
+  assert.equal(Object.prototype.polluted,undefined);
+});
+
+test('the harness refuses an unapplied design patch instead of silently selecting a template', () => {
+  const {adapter}=constructionAdapter();
+  assert.throws(()=>adapter.construction.preview({type:'house',origin,designPatch:[{op:'remove',path:'/cells/0'}]}),/unapplied_construction_design_patch/);
+});
+
+test('a malformed edit is atomic and its error reaches Hermes before a second repair', async () => {
+  const d=sample();d.routes=d.routes.filter(r=>r.type!=='approach'||r.offset[1]!==1);
+  const originalStyle=d.intent.style;let calls=0;
+  const plan=await prepareConstructionPlan({objective:d.intent.request,construction:{type:'house',origin,design:d}},{
+    preview:async r=>{try{compileConstructionDesign(r.design,'house');return{ok:true};}catch(e){return{ok:false,error:e.message};}},
+    ask:async prompt=>{
+      calls++;
+      if(calls===1)return{construction:{designPatch:[{op:'replace',path:'/intent/style',value:'An unintended partial change'},{op:'remove',path:'/cells/99999'}]}};
+      assert.match(prompt,/invalid_construction_design_patch:index/);
+      return{construction:{designPatch:[{op:'add',path:'/routes/-',value:{type:'approach',offset:[5,1,4]}}]}};
+    }
+  });
+  assert.equal(calls,2);assert.equal(plan.construction.design.intent.style,originalStyle);
+});
+
+test('a malformed model design is returned to the architect instead of crashing before preview', async () => {
+  let calls=0;
+  const plan=await prepareConstructionPlan({objective:'A house',construction:{type:'house',origin,design:'invalid model output'}},{
+    preview:async r=>{compileConstructionDesign(r.design,'house');return{ok:true};},
+    ask:async prompt=>{calls++;assert.match(prompt,/invalid_construction_design:identity/);return{construction:{type:'house',origin,design:sample()}};}
+  });
+  assert.equal(calls,1);assert.equal(plan.construction.design.kind,'house');
 });
