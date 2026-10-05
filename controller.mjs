@@ -29,12 +29,13 @@ import {nextVillageChore, isChoreResolved, villageSnapshot, DEFAULT_VILLAGE_COOL
 import {detectEvents} from './world-events.mjs';
 import {emergencyGoalFor, DEFAULT_EMERGENCY_COOLDOWN_MS} from './emergency-goals.mjs';
 import {
-  buildCriteria, buildDecisionInstructions, detectRepeatedAction, filterOptions, isEquipOrder, isStopOrder, withStickyFollow,
+  buildCriteria, buildDecisionInstructions, collectFulfilled, detectRepeatedAction, dropCountFromText, dropFulfilled, filterOptions,
+  inventoryMatchingToken, isCollectOrder, isDropOrder, isEquipOrder, isStopOrder, matchesItemToken, orderItem, tokenInventoryTotal, withStickyFollow,
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
 import {planGreetings, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
 import {orderAck, orderOutcome, lostNotice, isSelfTriggering, normalizePrefixes, matchChatPrefix, selfPrefixes, renderReply, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
-import {answerIntent, renderAnswer, renderNoArmor, renderUnrouted, looksLikeSmallTalk} from './human-questions.mjs';
+import {answerIntent, renderAnswer, renderNoArmor, renderNoDrop, renderNoItem, renderUnrouted, looksLikeSmallTalk} from './human-questions.mjs';
 import {resolveQuestionIntent, DEFAULT_INTENT_TIMEOUT_MS, DEFAULT_INTENT_MIN_P} from './chat-intent.mjs';
 import {composeChatReply, chatLlmConfig, compactChatFacts, createChatMemory} from './chat-llm.mjs';
 import {chatLangConfig, t, languageName, LANGS} from './chat-i18n.mjs';
@@ -515,6 +516,46 @@ async function humanCommandPlan (obs, entry) {
     `Write "objective" in the same language as the human message, in the first person, the way the bot would say it out loud (e.g. "sto andando da ${entry.from}", "mi metto l'armatura"). If the message does not make the language clear, write it in ${languageName(CHAT_LANG, {native: true})}.`,
     `Current state: ${JSON.stringify(obs)}`,
   ].join('\n');
+  // "getta i diamanti" / "butta via la terra": ordine deterministico
+  // sull'inventario, come l'equipaggiamento. Il planner tradurrebbe "getta" in
+  // un *target* (cioe' minare!) e comunque non esiste un'opzione che generi lui
+  // per buttare via qualcosa. `word` e' la parola dell'umano ("diamanti"),
+  // `token` il nome Minecraft ("diamond"), `count` la quota o null = tutto.
+  if (isDropOrder(entry.message)) {
+    const item = orderItem(entry.message) ?? {};
+    const items = inventoryMatchingToken(obs.inventory, item.token);
+    const before = {};
+    for (const name of items) before[name] = Number(obs.inventory?.[name] || 0);
+    const plan = {
+      objective: t(CHAT_LANG, 'fallback.drop', {word: item.word ?? item.token ?? ''}),
+      targets: {},
+      waypoint: null,
+      follow: null,
+      drop: {token: item.token ?? null, word: item.word ?? null, count: dropCountFromText(entry.message), items, before},
+      notes: `human:${entry.from} drop:${item.token}`,
+    };
+    log('plan', {plan, ms: 0, source: 'human', deterministic: 'drop'});
+    return plan;
+  }
+  // "cattura i diamanti" / "raccogli la spada": raccogli da terra l'oggetto
+  // caduto. La lista degli item nasce dai drop che il bot vede adesso
+  // (`observe().drops`); se non ne vede nessuno il piano resta vuoto e l'ordine
+  // si chiude con un avviso, invece di mandare il bot a *minare* (che e' quello
+  // che farebbe il planner con "prendi/cattura <oggetto>").
+  if (isCollectOrder(entry.message)) {
+    const item = orderItem(entry.message) ?? {};
+    const drops = (obs.drops || []).filter(d => matchesItemToken(d.item, item.token));
+    const plan = {
+      objective: t(CHAT_LANG, 'fallback.collect', {word: item.word ?? item.token ?? ''}),
+      targets: {},
+      waypoint: null,
+      follow: null,
+      collect: {token: item.token ?? null, word: item.word ?? null, items: [...new Set(drops.map(d => d.item))].sort(), beforeTotal: tokenInventoryTotal(obs.inventory, item.token)},
+      notes: `human:${entry.from} collect:${item.token}`,
+    };
+    log('plan', {plan, ms: 0, source: 'human', deterministic: 'collect'});
+    return plan;
+  }
   // `equipaggiati con l'elmo` / `mettiti l'armatura` non passa dal planner: e'
   // un ordine di equipaggiamento, deterministico e verificabile (il successo e'
   // `observe().armor` non vuoto) e il fallback "segui il mittente" sarebbe un
@@ -903,6 +944,11 @@ const goalMet = (obs, plan, skillStatus) => {
     if (plan.construction.command === 'pause') return obs.construction?.projectId === plan.construction.projectId && obs.construction.state === 'paused';
     return constructionGoalMet(obs, plan.construction);
   }
+  // Ordini umani sull'inventario (M9): "getta <oggetto>" e' chiuso quando
+  // l'oggetto e' uscito, "cattura <oggetto>" quando e' entrato. Entrambi sono
+  // ancorati al delta dell'inventario, non a un target del planner.
+  if (plan.drop) return dropFulfilled(plan.drop, obs);
+  if (plan.collect) return collectFulfilled(plan.collect, obs);
   // I piani "seguimi" sono aperti: terminano solo con un nuovo ordine o a fine
   // budget, mai da soli (non hanno target/waypoint terminali).
   if (plan.follow) return false;
@@ -1027,6 +1073,8 @@ let lastFollowTarget = null;    // ultimo ordine "seguimi" annunciato nei log
 let lastNeedKey = null;         // ultimo bisogno di sopravvivenza annunciato nei log
 let lastCraftKey = null;        // ultimo passo di approvvigionamento annunciato nei log
 let lastEquipKey = null;        // ultimo ordine di equipaggiamento annunciato nei log
+let lastDropKey = null;         // ultimo ordine "getta" annunciato nei log
+let lastCollectKey = null;      // ultimo ordine "cattura" annunciato nei log
 let lostFollowSteps = 0;        // passi consecutivi con l'ordine "seguimi" aperto ma senza bersaglio
 let lostNoticeSent = false;     // l'avviso in chat e' uno per episodio, non uno per cooldown
 let lostHoldSteps = 0;          // passi di attesa a tracce perse (nessuna azione, nessun modello)
@@ -1139,6 +1187,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // azione riuscita.
   const humanOrder = goal.source === GOAL_SOURCE.CHAT || !!goal.humanOrder;
   const openPlan = !stickyPlan.follow && !stickyPlan.need && !stickyPlan.recover && !stickyPlan.skill &&
+    !stickyPlan.drop && !stickyPlan.collect &&
     !Object.keys(stickyPlan.targets || {}).length && !Object.keys(TARGETS).length &&
     !stickyPlan.waypoint && !WAYPOINT;
   const hasWorked = step > 1 && lastResult?.ok === true;
@@ -1172,7 +1221,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // Un goal autonomo/emergenza è ancorato al suo predicato di successo
   // (bisogno o recupero loot): non va sostituito da un nuovo piano, o si perde
   // l'ancoraggio e il goal non si chiude. Si salta il replan.
-  if (replanReason && (plan.need || plan.recover || plan.construction)) {
+  if (replanReason && (plan.need || plan.recover || plan.construction || plan.drop || plan.collect)) {
     log('replan_skipped', {step, reason: replanReason, need: plan.need ?? null, recover: plan.recover === true});
     replanReason = null;
   }
@@ -1338,6 +1387,50 @@ for (let step = 1; step <= maxSteps; step++) {
   } else if (!equipKey) {
     lastEquipKey = null;
   }
+  // Ordine di buttare via ("getta i diamanti"): quando il piano lo dichiara e
+  // l'harness offre davvero `drop_item`, la scelta e' deterministica. Se non
+  // c'e', l'inventario non ha (o non ha piu') quell'oggetto: l'ordine non puo'
+  // riuscire e si chiude subito con un avviso, senza liberare il modello in un
+  // goal impossibile.
+  const canDrop = !!plan.drop && options.some(o => o.key === 'drop_item');
+  const dropKey = !needKey && !pursuitKey && !lostWaitKey && !lostHold && !equipKey && canDrop ? 'drop_item' : null;
+  const dropBlocked = !needKey && !pursuitKey && !!plan.drop && !canDrop;
+  if (dropBlocked) {
+    console.log('DROP ORDER: oggetto non in inventario');
+    log('drop_order', {step, key: null, error: 'item_not_in_inventory', token: plan.drop?.token ?? null});
+    await replyChat(renderNoItem({from: goal.humanOrder?.from ?? null, item: plan.drop?.word ?? plan.drop?.token ?? '', maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG}), {context: 'drop_no_item', prefixes: CHAT_PREFIXES});
+    lastDropKey = 'blocked';
+    failureReason = 'item_not_in_inventory';
+    runExitCode = 2;
+    break;
+  } else if (dropKey && lastDropKey !== dropKey) {
+    lastDropKey = dropKey;
+    console.log('DROP ORDER: drop_item deterministico (nessuna chiamata al modello)');
+    log('drop_order', {step, key: dropKey, token: plan.drop?.token ?? null, count: plan.drop?.count ?? null});
+  } else if (!dropKey) {
+    lastDropKey = null;
+  }
+  // Ordine di raccogliere da terra ("cattura i diamanti"): stesso schema del
+  // drop. `collect_drop` e' offerto solo se c'e' un drop che l'ordine nomina
+  // (l'harness filtra per token), quindi se manca l'oggetto non e' a terra.
+  const canCollect = !!plan.collect && options.some(o => o.key === 'collect_drop');
+  const collectKey = !needKey && !pursuitKey && !lostWaitKey && !lostHold && !equipKey && !dropKey && canCollect ? 'collect_drop' : null;
+  const collectBlocked = !needKey && !pursuitKey && !!plan.collect && !canCollect;
+  if (collectBlocked) {
+    console.log('COLLECT ORDER: nessun oggetto a terra');
+    log('collect_order', {step, key: null, error: 'no_matching_drop', token: plan.collect?.token ?? null});
+    await replyChat(renderNoDrop({from: goal.humanOrder?.from ?? null, item: plan.collect?.word ?? plan.collect?.token ?? '', maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG}), {context: 'collect_no_drop', prefixes: CHAT_PREFIXES});
+    lastCollectKey = 'blocked';
+    failureReason = 'no_matching_drop';
+    runExitCode = 2;
+    break;
+  } else if (collectKey && lastCollectKey !== collectKey) {
+    lastCollectKey = collectKey;
+    console.log('COLLECT ORDER: collect_drop deterministico (nessuna chiamata al modello)');
+    log('collect_order', {step, key: collectKey, token: plan.collect?.token ?? null});
+  } else if (!collectKey) {
+    lastCollectKey = null;
+  }
   // Provviste per una costruzione: la regola sta nell'harness (inventario ->
   // bauli -> natura, mai costruzioni) e qui si esegue soltanto, senza chiedere
   // al modello. Il passo vale solo se l'harness lo offre davvero.
@@ -1360,6 +1453,10 @@ for (let step = 1; step <= maxSteps; step++) {
     ? {key: lostWaitKey, reason: `follow_lost:${goal.follow}`, source: 'follow_lost'}
     : equipKey
     ? {key: equipKey, reason: 'equip_order', source: 'equip_order'}
+    : dropKey
+    ? {key: dropKey, reason: 'drop_order', source: 'drop_order'}
+    : collectKey
+    ? {key: collectKey, reason: 'collect_order', source: 'collect_order'}
     : craftKey
     ? {key: craftKey, reason: `craft_source:${craftStep.source}:${craftKey}`, source: 'craft_source'}
     : (CONTROLLER === 'jev' ? await jevDecide(obs, filtered.options, decisionPlan) : await hermesDecide(obs, filtered.options, decisionPlan));
@@ -1369,7 +1466,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // lo stato desiderato (l'umano e' li'), non un loop da punire con l'anti-loop.
   // Ne' una ricerca ne' un'attesa di recupero sono stagnazione: la prima ha un
   // bersaglio verificato dall'harness, la seconda e' il tempo che l'umano torni.
-  chosenFingerprint = pursuitKey || lostWaitKey || craftKey || equipKey ? null : progressFingerprint(obs, plan);
+  chosenFingerprint = pursuitKey || lostWaitKey || craftKey || equipKey || dropKey || collectKey ? null : progressFingerprint(obs, plan);
   const actStarted = Date.now();
   let result = await api('POST', '/act', {key});
   // `busy` non è un verdetto sull'azione: il harness sta ancora eseguendo
@@ -1405,7 +1502,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // Un bisogno risolto in pochi ms (notte saltata) non deve far girare il loop
   // a vuoto; il fingerprint resta comunque contato per il bisogno, cosi' un
   // `sleep` che fallisce e si ripete finisce nell'anti-loop.
-  if ((pursuitKey || needKey || lostWaitKey || equipKey || craftKey) && result?.ok && (result.ms ?? 0) < 250) await delay(FOLLOW_IDLE_POLL_MS);
+  if ((pursuitKey || needKey || lostWaitKey || equipKey || dropKey || collectKey || craftKey) && result?.ok && (result.ms ?? 0) < 250) await delay(FOLLOW_IDLE_POLL_MS);
   if (goal.follow && step >= maxSteps) {
     // Il budget si rinnova finche' l'ordine "seguimi" resta aperto: l'impegno
     // finisce con un altro ordine (o con un'emergenza che preempta il goal).

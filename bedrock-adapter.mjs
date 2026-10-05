@@ -15,6 +15,11 @@ import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isMilkableType
 import { professionName, normalizeProfession, professionMatches, pickBestTrade } from './bedrock-trading.mjs';
 import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, bobberVerdict, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
 import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
+// Il vocabolario degli oggetti nominati in chat ("diamanti" -> `diamond`) vive
+// in `human-questions.mjs`, con i pattern di tutte e cinque le lingue: l'ordine
+// umano "cattura <oggetto>" deve filtrare i drop con lo stesso vocabolario con
+// cui il controller ha capito l'ordine.
+import { matchesItemToken } from './human-questions.mjs';
 import { detectStructures } from './structures.mjs';
 import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, swimInputFlags, deepWaterColumns, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT, LAVA_CONTACT_RANGE } from './bedrock-fluids.mjs';
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
@@ -1249,8 +1254,13 @@ export class BedrockAdapter {
     this.inventory = { ...this.pickups };
     for (const item of this.inventorySlots) {
       if (!item?.network_id) continue;
+      // Uno slot a zero è uno slot vuoto: il `|| 1` copre i pacchetti che
+      // omettono il count, non le pile esaurite (altrimenti un drop fino a zero
+      // resterebbe contato come 1 e l'ordine "getta <oggetto>" non si chiuderebbe).
+      const amount = item.count == null ? 1 : item.count;
+      if (amount <= 0) continue;
       const name = item.name || this.world.registry?.items[item.network_id]?.name || `item_${item.network_id}`;
-      this.inventory[name] = (this.inventory[name] || 0) + (item.count || 1);
+      this.inventory[name] = (this.inventory[name] || 0) + amount;
     }
   }
 
@@ -3753,7 +3763,17 @@ export class BedrockAdapter {
       (Number.isFinite(this.plan.waypoint.y) && Math.abs(this.plan.waypoint.y - (this._feet?.y ?? p.y - 1.62)) > 1));
     // Solo drop raggiungibili: un item finito in una tasca sotto il pavimento
     // brucerebbe il budget di movimento senza poter essere raccolto.
-    const drop = this._nearestDrop({ reachableOnly: true });
+    // Un ordine umano "cattura <oggetto>" restringe l'insieme all'oggetto
+    // nominato: senza filtro si raccoglierebbe il primo drop qualunque, e la
+    // verifica (delta di inventario) non si chiuderebbe mai.
+    const drop = this._nearestDrop({ reachableOnly: true, names: this._plannedCollectNames() });
+    // Ordine umano "getta <oggetto>": l'azione e' deterministica lato
+    // controller, che la sceglie quando la vede offerta. Qui l'opzione esiste
+    // solo se l'oggetto del piano e' ancora in inventario.
+    const plannedDrop = this._plannedDrop();
+    if (plannedDrop) {
+      o.push({ key: 'drop_item', description: `Drop ${plannedDrop.names.join(', ')} from the inventory${plannedDrop.count ? ` (${plannedDrop.count})` : ''}` });
+    }
     // Un drop fresco e vicino va raccolto subito: lo si mette prima del waypoint
     // e lo si segnala nella descrizione.
     const fresh = drop && drop.spawnedAt && Date.now() - drop.spawnedAt < 15000 && drop.distance <= 8;
@@ -4595,7 +4615,9 @@ export class BedrockAdapter {
       } else if (key === 'seek_player' && this.plan?.follow) {
         result = await this._seekPlayer(this.plan.follow);
       } else if (key === 'collect_drop') {
-        result = await this._collectDrop();
+        result = await this._collectDrop(20000, { names: this._plannedCollectNames() });
+      } else if (key === 'drop_item') {
+        result = await this._dropItems(this._plannedDrop() ?? {});
       } else if (key === 'dig_down') {
         result = await this._digDown();
       } else if (key === 'dig_up') {
@@ -4843,11 +4865,15 @@ export class BedrockAdapter {
     return this._lavaCells.has(`${Math.floor(position.x)},${Math.floor(position.y)},${Math.floor(position.z)}`);
   }
 
-  _nearestDrop ({ reachableOnly = false } = {}) {
+  _nearestDrop ({ reachableOnly = false, names = null } = {}) {
     const filterReach = reachableOnly && this._reachabilityUsable();
+    // `names` restringe la ricerca agli item di un ordine umano "cattura
+    // <oggetto>" (un array vuoto significa "nessun drop di quell'oggetto adesso").
+    const wanted = names ? new Set(names) : null;
     return this.drops
       .filter(drop => !drop.failedAt || Date.now() - drop.failedAt > 10000)
       .filter(drop => !this._dropInLava(drop.position))
+      .filter(drop => !wanted || wanted.has(drop.item))
       .filter(drop => !filterReach || this.dropReachable(drop.position))
       .map(drop => ({ ...drop, distance: this._dropDistance(drop) }))
       .sort((a, b) => a.distance - b.distance)[0] || null;
@@ -4970,13 +4996,99 @@ export class BedrockAdapter {
     return picked;
   }
 
-  async _collectDrop (timeoutMs = 20000) {
+  // Gli oggetti nominati da un ordine umano "cattura <oggetto>": si filtra per
+  // token (non per l'elenco congelato al momento del piano), cosi' un drop
+  // arrivato a terra dopo il piano viene comunque raccolto. `null` = nessun
+  // ordine di raccolta, quindi nessun filtro sui drop.
+  _plannedCollectNames () {
+    const spec = this.plan?.collect;
+    if (!spec) return null;
+    if (spec.token) return this.drops.filter(drop => matchesItemToken(drop.item, spec.token)).map(drop => drop.item);
+    return Array.isArray(spec.items) && spec.items.length ? spec.items : [];
+  }
+
+  // L'oggetto di un ordine umano "getta <oggetto>": le voci sono gia' risolte
+  // dal controller (`plan.drop.items`), qui si controlla solo che siano ancora
+  // in inventario. `null` = non c'e' niente da buttare, e l'opzione `drop_item`
+  // non viene nemmeno offerta (il controller lo legge come "non ce l'ho").
+  _plannedDrop () {
+    const spec = this.plan?.drop;
+    if (!spec) return null;
+    const listed = Array.isArray(spec.items) ? spec.items : [];
+    const names = listed.filter(name => (this.inventory[name] || 0) > 0);
+    if (!names.length) return null;
+    return {
+      names,
+      count: Number.isFinite(spec.count) && spec.count > 0 ? Math.floor(spec.count) : null,
+      token: spec.token ?? null,
+    };
+  }
+
+  // Ordine umano "getta <oggetto>" (M9): l'azione `drop` dell'item_stack_request
+  // sposta una pila dall'inventario al mondo, senza passare dal cursore (a
+  // differenza di `take`+`place`). Serve una finestra inventario aperta, come
+  // per ogni stack request. `count` null = tutto quello che c'e' dell'oggetto.
+  async _dropItems ({ names = [], count = null } = {}) {
+    const wanted = (Array.isArray(names) ? names : []).filter(name => (this.inventory[name] || 0) > 0);
+    if (!wanted.length) return { ok: false, error: 'nothing_to_drop', inventory: this.inventory };
+    let remaining = Number.isFinite(count) && count > 0 ? Math.floor(count) : null;
+    const dropped = [];
+    try {
+      await this._ensureInventoryOpen();
+      for (const name of wanted) {
+        while (remaining == null || remaining > 0) {
+          // Lo slot si rilegge a ogni giro: `_applyStackResponse` aggiorna il
+          // mirror e una pila puo' esaurirsi o cambiare indice.
+          const index = this.inventorySlots.findIndex(slot => this._slotItemName(slot) === name && (slot.count || 0) > 0);
+          if (index < 0) break;
+          const slot = this.inventorySlots[index];
+          const before = slot.count || 0;
+          const chunk = Math.min(before, remaining ?? Infinity, 255);
+          const info = this._invSlotAsSource(index);
+          let response;
+          try {
+            response = await this._sendStackRequest([{
+              type_id: 'drop', legacy_type_id: 3, count: chunk,
+              source: this._slotInfo(info.container, info.slot, slot.stack_id || 0),
+              randomly: false,
+            }]);
+          } catch (error) {
+            response = { status: error.message };
+          }
+          if (String(response.status) !== 'ok' && response.status !== 0) {
+            this.log('drop_item_failed', { item: name, slot: index, count: chunk, status: response.status });
+            if (!dropped.length) return { ok: false, error: `drop_failed_${response.status}`, item: name, inventory: this.inventory };
+            return { ok: true, dropped, count: dropped.reduce((sum, entry) => sum + entry.count, 0), partial: true, inventory: this.inventory };
+          }
+          this._applyStackResponse(response, { networkId: slot.network_id });
+          const after = this.inventorySlots[index]?.count || 0;
+          if (after >= before) {
+            // Il server ha risposto ok ma il mirror non si e' mosso: fermarsi
+            // invece di insistere sullo stesso slot per sempre.
+            this.log('drop_item_no_progress', { item: name, slot: index, count: chunk });
+            if (!dropped.length) return { ok: false, error: 'drop_no_progress', item: name, inventory: this.inventory };
+            return { ok: true, dropped, count: dropped.reduce((sum, entry) => sum + entry.count, 0), partial: true, inventory: this.inventory };
+          }
+          dropped.push({ item: name, count: chunk });
+          if (remaining != null) remaining -= chunk;
+        }
+      }
+    } finally {
+      this._refreshInventory();
+    }
+    if (!dropped.length) return { ok: false, error: 'nothing_to_drop', inventory: this.inventory };
+    const total = dropped.reduce((sum, entry) => sum + entry.count, 0);
+    this.log('drop_item', { items: dropped, count: total });
+    return { ok: true, dropped, count: total, inventory: this.inventory };
+  }
+
+  async _collectDrop (timeoutMs = 20000, { names = null } = {}) {
     // Guardia di respiro (M2): recuperare un drop sott'acqua costa una discesa.
     const breath = this._underwaterWorkAllowed();
     if (!breath.allowed) {
       return { ok: false, error: breath.reason, depth: breath.depth ?? null, air: Number.isFinite(this.air) ? this.air : null };
     }
-    const tracked = this._nearestDrop();
+    const tracked = this._nearestDrop({ names });
     if (tracked && this._reachabilityUsable() && !this.dropReachable(tracked.position)) {
       // Drop in una tasca irraggiungibile (sotto il pavimento, dietro un muro):
       // fallisci subito e marchia il drop, invece di bruciare il budget di move.
@@ -4989,7 +5101,7 @@ export class BedrockAdapter {
     const inventoryBefore = { ...this.inventory };
     let moved = false;
     while (Date.now() < deadline) {
-      const drop = this._nearestDrop();
+      const drop = this._nearestDrop({ names });
       if (!drop) {
         if (!moved) return { ok: false, error: 'no_drop_nearby' };
         return { ok: true, picked: 1, inventory: this.inventory };
@@ -5013,7 +5125,7 @@ export class BedrockAdapter {
     const gained = Object.entries(this.inventory).some(([name, count]) => count > (inventoryBefore[name] || 0));
     if (gained) return { ok: true, picked: 1, inventory: this.inventory };
     // Non insistere su un drop irraggiungibile (es. su una chioma): verrà ritentato più tardi.
-    const failed = this._nearestDrop();
+    const failed = this._nearestDrop({ names });
     if (failed) {
       const entry = this.drops.find(d => String(d.id) === String(failed.id));
       if (entry) entry.failedAt = Date.now();

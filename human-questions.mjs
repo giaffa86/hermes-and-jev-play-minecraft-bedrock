@@ -81,6 +81,10 @@ export const needLabel = (id, lang = DEFAULT_LANG) => (hasMessage(DEFAULT_LANG, 
 export function planPhrase (plan, { lang = DEFAULT_LANG } = {}) {
   if (!plan || typeof plan !== 'object') return null;
   if (plan.equip) return t(lang, 'phrase.equip');
+  // Ordine "getta <oggetto>" / "cattura <oggetto>": la parola dell'umano
+  // (`word`) rende la frase riconoscibile in chat, il token Minecraft no.
+  if (plan.drop) return t(lang, 'phrase.drop', { word: plan.drop.word ?? plan.drop.token ?? '' });
+  if (plan.collect) return t(lang, 'phrase.collect', { word: plan.collect.word ?? plan.collect.token ?? '' });
   if (plan.recover) return t(lang, 'phrase.recover');
   if (plan.chore && hasMessage(DEFAULT_LANG, `chore.${plan.chore}`)) return t(lang, `chore.${plan.chore}`);
   if (plan.need && hasMessage(DEFAULT_LANG, `need.${plan.need}`)) return t(lang, `need.${plan.need}`);
@@ -160,14 +164,34 @@ function matchMaterial (message) {
 
 const ARMOR_SUFFIX = /_(helmet|chestplate|leggings|boots)$/;
 
-function matchItemWord (message) {
+// Un nome di item (dell'inventario o di un drop a terra) corrisponde al token
+// dell'ordine? `armor` e' un gruppo — nessun item si chiama "armor" — quindi
+// vale per i quattro pezzi elmo/corazza/gambali/stivali. Serve agli ordini
+// "getta/cattura <oggetto>", dove si cerca il nome reale dell'item (la risposta
+// in chat, invece, parla la lingua dell'umano).
+export function matchesItemToken (name, token) {
+  const value = String(name || '').toLowerCase();
+  const needle = String(token || '').toLowerCase();
+  if (!value || !needle) return false;
+  if (needle === 'armor') return ARMOR_SUFFIX.test(value);
+  return value.includes(needle);
+}
+
+// La parola con cui l'umano ha nominato l'oggetto, accanto al token Minecraft:
+// "getta i diamanti" -> `{token: 'diamond', word: 'diamanti'}`. Serve agli
+// ordini di gettare/raccogliere, che devono *parlare* la lingua dell'umano
+// (`word`) ma *cercare* il nome dell'item (`token`).
+export function matchItemWordText (message) {
   const text = normalizeForMatching(message);
   if (!text) return null;
   for (const [pattern, token] of ITEM_WORDS) {
-    if (pattern.test(text)) return token;
+    const hit = pattern.exec(text);
+    if (hit) return { token, word: hit[0].trim() };
   }
   return null;
 }
+
+export const matchItemWord = (message) => matchItemWordText(message)?.token ?? null;
 
 function inventoryAnswer (obs, { message = null, limit = 4, lang = DEFAULT_LANG } = {}) {
   const inventory = obs?.inventory && typeof obs.inventory === 'object' ? obs.inventory : {};
@@ -439,4 +463,23 @@ export const NO_ARMOR_TEMPLATE = t(DEFAULT_LANG, 'no_armor');
 
 export function renderNoArmor ({ from, lang = DEFAULT_LANG, template = t(lang, 'no_armor'), maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
   return renderAnswer({ from, answer: template, lang, maxLength });
+}
+
+// Un ordine "getta <oggetto>" che nomina un oggetto che il bot non ha: si dice
+// all'umano e il goal finisce, invece di lasciare il modello libero dentro un
+// ordine impossibile (stessa regola dell'equipaggiamento senza armatura).
+export const NO_ITEM_TEMPLATE = t(DEFAULT_LANG, 'no_item');
+
+export function renderNoItem ({ from, item = '', lang = DEFAULT_LANG, template = t(lang, 'no_item'), maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
+  const answer = renderReply(template, { word: item });
+  return renderAnswer({ from, answer, lang, maxLength });
+}
+
+// Un ordine "cattura <oggetto>" senza quell'oggetto a terra (fuori dal raggio in
+// cui il bot vede i drop): non si mina al posto suo, si dice che non si vede.
+export const NO_DROP_TEMPLATE = t(DEFAULT_LANG, 'no_drop');
+
+export function renderNoDrop ({ from, item = '', lang = DEFAULT_LANG, template = t(lang, 'no_drop'), maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
+  const answer = renderReply(template, { word: item });
+  return renderAnswer({ from, answer, lang, maxLength });
 }

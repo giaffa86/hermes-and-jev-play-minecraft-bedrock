@@ -1,5 +1,95 @@
 # Log
 
+## [2026-10-05] refactor | One chat catalogue file per language
+
+The owner's suggestion: *"ti consiglio di dividere le etichette in file dedicati di
+lang, uno per lingua"*. `chat-i18n.mjs` was 763 lines — the five language tables
+inline (114 keys each) plus the API — so a translator had to scroll past four
+languages to touch one, and a merge on a different language was a conflict in the
+same file.
+
+- **New layout**: `chat-lang/it.mjs`, `chat-lang/en.mjs`, `chat-lang/fr.mjs`,
+  `chat-lang/es.mjs`, `chat-lang/de.mjs`, each `export default Object.freeze({…})`
+  with its own header, keys and placeholders. `chat-lang/it.mjs` is the reference
+  and the only file with the section comments (lifecycle / questions / greeting /
+  fallbacks / phrases / chores / needs / narration).
+- **`chat-i18n.mjs` is now the API** (138 lines): it imports the five tables into
+  `MESSAGES` (`const CATALOGUES = { it, en, fr, es, de }`) and keeps `t`,
+  `hasMessage`, `messageKeys`, `listAnd`, `LANG_NAMES`, `LANG_NATIVE_NAMES` and the
+  `CHAT_LANG` resolution. No caller changed: the public surface is identical, so
+  `human-replies.mjs`, `human-questions.mjs`, `human-greeting.mjs`,
+  `chat-llm.mjs`, `chat-narration.mjs` and the controller are untouched.
+- **The parity guarantee is unchanged and is now per-file**: `MESSAGES` is
+  assembled from the imports, so `tests/chat-i18n.test.mjs` still proves every
+  language defines every key with identical placeholders — adding a language
+  means adding one file and its code to `LANGS`/`LANG_NAMES`/`LANG_NATIVE_NAMES`.
+- **Verified**: `node --test tests/*.test.mjs` → **1499/1499** (the i18n/reply/
+  question/greeting/llm/narration subset was 81/81 on its own);
+  `npm run wiki:lint` clean; `node --check chat-i18n.mjs` and the five new files
+  clean. `node_modules` still carries `chat-i18n.mjs`'s old shape nowhere — no
+  runtime consumer reads the catalogue file directly.
+
+## [2026-10-05] verify | "@bot che fai?" is answered, in every language
+
+The owner asked that the bot also answer `@bot che fai?`. The capability was
+already there — `q_activity` in `human-questions.mjs` (`che fai`, `cosa stai
+facendo`, `what are you doing`, `que fais-tu`, `que haces`, `was machst du`,
+with or without the `?`) is served by the **regex fast path**, so no model and
+no key are needed, and `answerIntent('q_activity', …)` reads `observe().plan`:
+`sto facendo: <phrase>` via `planPhrase` (drop/collect/equip/chore/need/
+curriculum/opportunity), or `non ho un obiettivo: sono in attesa di ordini` when
+no plan is active. Nothing in the order path can swallow it: `resolveQuestion`
+runs **before** the order detectors, and in both IDLE and the goal loop.
+
+What was missing was the **evidence**, so two integration cases now pin it in
+`tests/controller-chat-ack.test.mjs`: an active plan is echoed from
+`observe().plan` (`q_activity`, `via: 'regex'`, one `/say`, no `chat_command`,
+no `human_order`) and the idle bot admits it has no objective instead of
+inventing one. The M6 section of `docs/wiki/human-command.md` now names `che
+fai?` as the canonical `q_activity` phrase and lists both cases.
+
+## [2026-10-05] feat | Chat M9: getta e cattura
+
+Two inventory orders the owner asked for, both planned **deterministically** — the
+one state the bot can verify exactly is its own pack, so no model is needed to
+know whether the diamonds left it:
+
+- **`@bot getta i diamanti`** empties the named item out of the inventory
+  (`drop_item`): `orderItem` reuses the chat item vocabulary (`ITEM_WORDS`, five
+  languages), `inventoryMatchingToken` resolves "diamanti"/"ferro" into the
+  concrete stacks (exact name wins, tools and armour are not what you throw
+  away), the plan carries the baseline (`drop: {token, word, count, items,
+  before}`) and `_dropItems` sends one `item_stack_request` with the protocol's
+  own `drop` action per stack — no cursor, no fake `place`. `dropFulfilled`
+  closes the order on the *accounting* (all of it, or exactly the quota).
+- **`@bot cattura i diamanti` / `cattura spada`** picks the dropped item
+  back up (`collect_drop`): the search is *filtered* to the token
+  (`_nearestDrop({names})`, `_plannedCollectNames()`), so a coal drop next to the
+  diamond is not swept up "while we're there"; `collectFulfilled` closes it when
+  the token's total grew, so a drop that landed after the plan still counts.
+- **A refusal, not a hopeless goal.** If the harness does not offer the action
+  (item missing / nothing on the ground) the order is closed immediately with
+  `drop_order {error:'item_not_in_inventory'}` or
+  `collect_order {error:'no_matching_drop'}`, the human is told (`no_item`,
+  `no_drop`) and the run ends with that reason — no mining detour, no exhausted
+  budget. A verb with no item from the catalogue is not an inventory order
+  (`@bot raccogli 4 terra` stays a planner gather quota).
+- **The emergency filter respects the order.** `humanOrderProtectedKeys(plan)` in
+  `survival/resolver.mjs` keeps `drop_item`/`collect_drop` alongside the
+  follower of "seguimi", so one policy drives both the `/options` route and the
+  governor.
+- **A defect the tests forced, fixed.** `_refreshInventory` counted a zeroed slot
+  as `1` (`item.count || 1`), so a stack dropped to zero stayed "1" and
+  `dropFulfilled` could never close — now a slot with `amount <= 0` is skipped.
+- **Evidence.** `tests/controller-drop-order.test.mjs` (vocabulary, verbs, the
+  `raccogli 4 terra` non-case, quotas, item-tuple preferences, both criteria),
+  `tests/bedrock-drop.test.mjs` (request shape, quota/multi-stack, the
+  failure/no-progress/empty paths, `_plannedDrop`, `_plannedCollectNames`, the
+  filtered `collect_drop`) and four integration cases in
+  `tests/controller-chat-ack.test.mjs` (drop success/refusal, collect
+  success/refusal). The `drop` action has **not** been sent to a live BDS yet —
+  same standing as M6.4.
+
 ## [2026-10-05] feat | The work comes home (M3c)
 
 The last piece of the economic cycle the user asked for (*"a fine task scarica"*):

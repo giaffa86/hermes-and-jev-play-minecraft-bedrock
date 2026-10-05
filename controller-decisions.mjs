@@ -8,6 +8,7 @@
 
 import { keyMatchesIntents } from './survival/intents.mjs';
 import { oreValue, ORE_OPTION_PRIORITY_MIN_VALUE } from './ore-value.mjs';
+import { matchItemWordText, matchesItemToken } from './human-questions.mjs';
 
 export const DEFAULT_MAX_OPTIONS = 12;
 export const DEFAULT_ANTI_LOOP_THRESHOLD = 3;
@@ -130,6 +131,103 @@ export function isEquipOrder (message) {
   const text = String(message || '').toLowerCase();
   if (/\bequip\w*\b/.test(text)) return true;
   return /\b(mettiti|mettiamoci|indossa|indossare|wear|put on)\b/.test(text) && EQUIP_NOUN.test(text);
+}
+
+// Ordini di inventario via chat (M9). "getta <oggetto>" butta via
+// dall'inventario, "cattura <oggetto>" raccoglie da terra un drop. Sono ordini
+// *deterministici* come l'equipaggiamento: senza di essi il planner tradurrebbe
+// "getta i diamanti" in un target e "cattura" in un mining, due
+// fraintendimenti. Il verbo da solo non basta: serve un oggetto del catalogo
+// `ITEM_WORDS` (`human-questions.mjs`), cosi' "mettiti a lavorare" o "getta
+// l'occhio" restano ordini normali.
+const DROP_VERB = /\b(getta|gettare|gettali|butta|buttare|buttali|droppa|droppare|scarica|scaricare|toss|drop|throw)\b/;
+const COLLECT_VERB = /\b(cattura|catturare|catturali|raccogli|raccogliere|raccoglili|pick up|pickup|collect|grab)\b/;
+// "raccogli 4 terra" e' una quota di *raccolta* (il vecchio significato: andare
+// a prenderne quattro), non un pickup: il numero lo lascia al planner.
+// "cattura 5 diamanti" accetta la quota: catturare e' sempre un pickup da terra.
+const COLLECT_GATHER_VERB = /\b(raccogli|raccogliere|raccoglili|collect)\b/;
+const ANY_NUMBER = /\b\d+\b/;
+
+// L'oggetto nominato, o null: `{token, word}` dal catalogo.
+export function orderItem (message) {
+  return matchItemWordText(message);
+}
+
+// Quanti pezzi buttare: il primo numero del messaggio ("getta 5 diamanti"),
+// altrimenti null = tutto quello che l'oggetto nomina. Le cifre interne a una
+// parola ("@bot123") non contano: `\b` non ha confine fra lettera e cifra.
+export function dropCountFromText (message) {
+  const hit = /\b(\d{1,3})\b/.exec(String(message || ''));
+  if (!hit) return null;
+  const count = Number(hit[1]);
+  return count > 0 ? count : null;
+}
+
+// Attrezzi e armatura: "getta i diamanti" vuole i diamanti, non il piccone di
+// diamante (che invece si nomina: "getta il piccone").
+const TOOL_ARMOR_SUFFIX = /_(sword|pickaxe|axe|shovel|hoe|helmet|chestplate|leggings|boots)$/;
+
+// Le voci dell'inventario che l'ordine nomina, con quantita' > 0: il piano
+// dichiara *cosa* deve uscire, e la verifica confronta quel solo insieme con lo
+// snapshot iniziale (`before`). Il nome esatto vince sul resto ("diamond" >
+// "diamond_sword"); per un materiale si preferiscono lingotti e grezzi.
+export function inventoryMatchingToken (inventory, token) {
+  const names = Object.keys(inventory || {})
+    .filter(name => Number(inventory[name]) > 0 && matchesItemToken(name, token))
+    .sort();
+  if (!names.length) return [];
+  const exact = names.filter(name => name === String(token || '').toLowerCase());
+  if (exact.length) return exact;
+  const plain = names.filter(name => !TOOL_ARMOR_SUFFIX.test(name));
+  return plain.length ? plain : names;
+}
+
+// Quanti pezzi dell'oggetto nominato ci sono in inventario (token 'armor' ->
+// i quattro pezzi). E' la base di un ordine "cattura": si confronta il totale,
+// non un singolo nome, cosi' un drop arrivato dopo il piano conta comunque.
+export function tokenInventoryTotal (inventory, token) {
+  return Object.keys(inventory || {}).reduce((sum, name) => sum + (matchesItemToken(name, token) ? Number(inventory[name]) || 0 : 0), 0);
+}
+
+export { matchesItemToken };
+
+export function isDropOrder (message) {
+  const text = String(message || '').toLowerCase();
+  if (!DROP_VERB.test(text)) return false;
+  return orderItem(text) != null;
+}
+
+export function isCollectOrder (message) {
+  const text = String(message || '').toLowerCase();
+  if (!COLLECT_VERB.test(text)) return false;
+  if (COLLECT_GATHER_VERB.test(text) && ANY_NUMBER.test(text)) return false;
+  return orderItem(text) != null;
+}
+
+// Un ordine "getta <oggetto>" e' chiuso quando l'oggetto e' uscito
+// dall'inventario. Senza una quantita' esplicita l'ordine e' "butta tutto
+// quello che hai di questo oggetto": la verifica e' che non ne resti nessuno.
+// Con una quantita' si contano i pezzi persi rispetto allo snapshot iniziale
+// (`before`), cosi' un drop parziale non chiude l'ordine.
+export function dropFulfilled (drop, obs) {
+  const inv = obs?.inventory || {};
+  const items = Array.isArray(drop?.items) ? drop.items : [];
+  if (!items.length) return false;
+  const target = Number.isFinite(drop?.count) && drop.count > 0 ? Math.floor(drop.count) : null;
+  if (target == null) return items.every(item => Number(inv[item] || 0) === 0);
+  const lost = items.reduce((sum, item) => sum + Math.max(0, Number(drop?.before?.[item] || 0) - Number(inv[item] || 0)), 0);
+  return lost >= target;
+}
+
+// Un ordine "cattura <oggetto>" e' chiuso quando l'inventario ha guadagnato
+// almeno un pezzo dell'oggetto nominato rispetto allo snapshot iniziale: la
+// raccolta e' del mondo (`observe().drops`), non un target da minare. Il
+// confronto e' sul totale del token, non su un elenco di nomi congelato al
+// momento del piano: un drop che atterra dopo si chiama comunque cosi'.
+export function collectFulfilled (collect, obs) {
+  const token = collect?.token ?? null;
+  if (!token) return false;
+  return tokenInventoryTotal(obs?.inventory, token) > Number(collect?.beforeTotal || 0);
 }
 
 // Consecutive trailing executions of `key` without progress. A successful

@@ -7,8 +7,7 @@
 // sopravviveva tornavano tutte le opzioni, inseguimento compreso).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { filterOptionsForGovernor } from '../survival/resolver.mjs';
+import { filterOptionsForGovernor, humanOrderProtectedKeys } from '../survival/resolver.mjs';
 import { optionIntents } from '../survival/intents.mjs';
 
 const EMERGENCY = { mode: 'emergency', allowedIntents: ['heal', 'eat', 'escape', 'shelter'], needs: ['survive', 'heal'] };
@@ -69,8 +68,30 @@ test('il fail-open resta: se nulla è ammesso tornano tutte le opzioni', () => {
   assert.equal(result.options.length, offered().length);
 });
 
+test('humanOrderProtectedKeys copre inseguimento, drop e raccolta richiesti dall\'umano', () => {
+  assert.deepEqual(humanOrderProtectedKeys(null), []);
+  assert.deepEqual(humanOrderProtectedKeys({ follow: 'Ale' }), ['follow_player', 'seek_player']);
+  assert.deepEqual(humanOrderProtectedKeys({ drop: { token: 'diamond' } }), ['drop_item']);
+  assert.deepEqual(humanOrderProtectedKeys({ collect: { token: 'diamond' } }), ['collect_drop']);
+  assert.deepEqual(
+    humanOrderProtectedKeys({ follow: 'Ale', drop: { token: 'diamond' }, collect: { token: 'iron' } }),
+    ['follow_player', 'seek_player', 'drop_item', 'collect_drop']);
+});
+
 test('la rotta /options del harness protegge le key dell\'ordine umano', () => {
-  const source = readFileSync(new URL('../bedrock-harness.mjs', import.meta.url), 'utf8');
-  assert.match(source, /const humanOrderKeys = obs\.plan\?\.follow \? \['follow_player', 'seek_player'\] : \[\];/);
-  assert.match(source, /filterOptionsForGovernor\(offered, survival, \{ protectedKeys: humanOrderKeys \}\)/);
+  // Le key protette restano nel set ammesso anche in emergenza: e' la stessa
+  // funzione che la rotta passa a `filterOptionsForGovernor`.
+  for (const plan of [{ follow: 'Ale' }, { drop: { token: 'diamond' } }, { collect: { token: 'diamond' } }]) {
+    const protectedKeys = humanOrderProtectedKeys(plan);
+    const options = [
+      { key: protectedKeys[0], description: 'ordine umano' },
+      { key: 'sleep', description: 'bisogno urgente' },
+      { key: 'mine_dirt', description: 'altro' },
+    ];
+    const result = filterOptionsForGovernor(options, EMERGENCY, { protectedKeys });
+    const keys = keysOf(result);
+    assert.equal(keys.includes(protectedKeys[0]), true, `${protectedKeys[0]} deve sopravvivere all'emergenza`);
+    assert.equal(keys.includes('sleep'), true, 'il bisogno urgente resta disponibile');
+    assert.equal(keys.includes('mine_dirt'), false, 'le altre key restano filtrate');
+  }
 });

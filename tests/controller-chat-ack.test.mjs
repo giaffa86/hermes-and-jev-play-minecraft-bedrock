@@ -722,3 +722,230 @@ test("un ordine di equipaggiamento senza armatura lo dice all'umano e fallisce, 
     rmSync(fake.dir, { recursive: true, force: true });
   }
 });
+
+// Harness scriptato per gli ordini sull'inventario (M9). L'oggetto nominato
+// decide se `drop_item`/`collect_drop` esistono, esattamente come `_plannedDrop`
+// e `_plannedCollectNames` nell'adapter: senza l'oggetto nello zaino o a terra
+// l'opzione non c'è e l'ordine deve incontrare il rifiuto, non un'azione che
+// fallisce.
+async function startInventoryHarness ({ chatMessage, inv = {}, drops = [], token }) {
+  let inventory = { ...inv };
+  let ground = drops.map((item, index) => ({ id: `d${index}`, item, count: 1, position: { x: 2, y: 63, z: 0 } }));
+  const matches = name => (token === 'armor'
+    ? /_(helmet|chestplate|leggings|boots)$/.test(name)
+    : String(name).includes(token));
+  const harness = await startChatHarness({
+    chatMessage,
+    extra: () => ({ inventory: { ...inventory }, drops: ground, dropped: ground }),
+    options: () => {
+      const offered = [];
+      if (Object.entries(inventory).some(([name, count]) => count > 0 && matches(name))) {
+        offered.push({ key: 'drop_item', description: `Drop ${token} from the inventory` });
+      }
+      if (ground.some(drop => matches(drop.item))) {
+        offered.push({ key: 'collect_drop', description: `Pick up ${token} (2.0 blocks away)` });
+      }
+      return offered.length ? offered : [{ key: 'wait', description: 'Wait' }];
+    },
+    act: key => {
+      if (key === 'drop_item') inventory = {};
+      else if (key === 'collect_drop') {
+        for (const drop of ground) inventory[drop.item] = (inventory[drop.item] || 0) + drop.count;
+        ground = [];
+      }
+      return { ok: true, ms: 5 };
+    },
+  });
+  return { ...harness, inventory: () => ({ ...inventory }), ground: () => [...ground] };
+}
+
+test("un ordine \"getta i diamanti\" è deterministico: drop_item scelto dal controller, non dal modello", async () => {
+  const harness = await startInventoryHarness({
+    chatMessage: '@bot getta i diamanti',
+    inv: { dirt: 1, diamond: 3 },
+    token: 'diamond',
+  });
+  const fake = fakeHermesQueue([]);
+  const runId = `test-chat-drop-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, harness.port, fake.dir),
+      GOAL_CONTRACT: '', TARGETS: '{"dirt":1}', GOAL: 'wait for orders',
+    });
+    assert.equal(code, 0, `controller exited with ${code}\n${stdout}`);
+    assert.match(stdout, /DROP ORDER: drop_item deterministico/, stdout);
+    assert.deepEqual(harness.inventory(), {}, "i diamanti sono usciti dall'inventario");
+
+    const events = readEvents(runId);
+    const plan = events.find(e => e.type === 'plan' && e.deterministic === 'drop');
+    assert.equal(plan?.plan?.drop?.token, 'diamond');
+    assert.equal(plan?.plan?.drop?.count, null, 'nessun numero: si butta tutto');
+    assert.equal(plan?.plan?.follow, null, 'un ordine di gettare non è un `follow`');
+    assert.equal(events.some(e => e.type === 'plan_fallback'), false, 'Hermes non è mai interrogato');
+
+    const acts = harness.calls.filter(c => c.path === '/act');
+    assert.deepEqual(acts.map(c => c.payload.key), ['drop_item'], 'una sola azione, nessun ripensamento');
+    assert.equal(events.find(e => e.type === 'goal_end')?.status, 'completed');
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.match(says[0], /^@Ale ok: /, 'ack immediato');
+    assert.match(says[1], /^@Ale fatto: /, 'esito positivo');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+test("un ordine di gettare senza l'oggetto in inventario lo dice all'umano e non agisce", async () => {
+  const harness = await startInventoryHarness({
+    chatMessage: '@bot getta i diamanti',
+    inv: { dirt: 1 },
+    token: 'diamond',
+  });
+  const fake = fakeHermesQueue([]);
+  const runId = `test-chat-drop-none-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, harness.port, fake.dir),
+      GOAL_CONTRACT: '', TARGETS: '{"dirt":1}', GOAL: 'wait for orders',
+    });
+    assert.equal(code, 0, `controller exited with ${code}\n${stdout}`);
+    assert.match(stdout, /DROP ORDER: oggetto non in inventario/, stdout);
+
+    const events = readEvents(runId);
+    const order = events.find(e => e.type === 'drop_order');
+    assert.equal(order?.error, 'item_not_in_inventory', `${stdout}\n${JSON.stringify(events)}`);
+    assert.equal(events.find(e => e.type === 'goal_end' && e.status === 'failed')?.reason, 'item_not_in_inventory');
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.ok(says.some(m => /non ho diamanti in inventario/.test(m)), `manca il rifiuto: ${JSON.stringify(says)}`);
+    assert.equal(harness.calls.some(c => c.path === '/act'), false, 'nessuna azione: non c\'è nulla da buttare');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+test("un ordine \"cattura i diamanti\" è deterministico: collect_drop cerca solo l'oggetto nominato", async () => {
+  const harness = await startInventoryHarness({
+    chatMessage: '@bot cattura i diamanti',
+    inv: { dirt: 1 },
+    drops: ['diamond'],
+    token: 'diamond',
+  });
+  const fake = fakeHermesQueue([]);
+  const runId = `test-chat-collect-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, harness.port, fake.dir),
+      GOAL_CONTRACT: '', TARGETS: '{"dirt":1}', GOAL: 'wait for orders',
+    });
+    assert.equal(code, 0, `controller exited with ${code}\n${stdout}`);
+    assert.match(stdout, /COLLECT ORDER: collect_drop deterministico/, stdout);
+    assert.equal(harness.inventory().diamond, 1, 'il diamante è finito in inventario');
+    assert.equal(harness.ground().length, 0, 'non c\'è più niente a terra');
+
+    const events = readEvents(runId);
+    const plan = events.find(e => e.type === 'plan' && e.deterministic === 'collect');
+    assert.equal(plan?.plan?.collect?.token, 'diamond');
+    assert.deepEqual(plan?.plan?.collect?.items, ['diamond']);
+    assert.equal(events.some(e => e.type === 'plan_fallback'), false, 'Hermes non è mai interrogato');
+    assert.deepEqual(harness.calls.filter(c => c.path === '/act').map(c => c.payload.key), ['collect_drop']);
+    assert.equal(events.find(e => e.type === 'goal_end')?.status, 'completed');
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.match(says[0], /^@Ale ok: /);
+    assert.match(says[1], /^@Ale fatto: /);
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+test("un ordine di catturare senza l'oggetto a terra lo dice all'umano e non agisce", async () => {
+  const harness = await startInventoryHarness({
+    chatMessage: '@bot cattura i diamanti',
+    inv: { dirt: 1 },
+    drops: [],
+    token: 'diamond',
+  });
+  const fake = fakeHermesQueue([]);
+  const runId = `test-chat-collect-none-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, harness.port, fake.dir),
+      GOAL_CONTRACT: '', TARGETS: '{"dirt":1}', GOAL: 'wait for orders',
+    });
+    assert.equal(code, 0, `controller exited with ${code}\n${stdout}`);
+    assert.match(stdout, /COLLECT ORDER: nessun oggetto a terra/, stdout);
+
+    const events = readEvents(runId);
+    const order = events.find(e => e.type === 'collect_order');
+    assert.equal(order?.error, 'no_matching_drop', `${stdout}\n${JSON.stringify(events)}`);
+    assert.equal(events.find(e => e.type === 'goal_end' && e.status === 'failed')?.reason, 'no_matching_drop');
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.ok(says.some(m => /non vedo diamanti a terra/.test(m)), `manca il rifiuto: ${JSON.stringify(says)}`);
+    assert.equal(harness.calls.some(c => c.path === '/act'), false, 'nessuna azione: non c\'è nulla da raccogliere');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+// "che fai?" è la domanda sull'attività corrente: il fast path regex la
+// riconosce (`q_activity`), la risposta cita quello che il bot sta facendo
+// davvero (`observe().plan`) e non nasce alcun goal. Vale anche senza `?`
+// grazie al pattern, e in tutte e cinque le lingue.
+test('"@bot che fai?" is answered with the current activity and creates no goal', async () => {
+  const harness = await startChatHarness({
+    chatFrom: 'Ale',
+    chatMessage: '@bot che fai?',
+    // Il piano attivo è la fonte della frase: la risposta non inventa nulla.
+    extra: () => ({ plan: { objective: 'mine 4 dirt' } }),
+  });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-activity-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController(baseEnv(runId, harness.port, fake.dir));
+    assert.equal(code, 0, `controller exited with ${code}\n${stdout}`);
+    assert.equal(stdout.includes('from Ale'), false, 'una domanda non diventa un goal');
+
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.equal(says.length, 1, `una sola risposta (got ${JSON.stringify(says)})`);
+    assert.match(says[0], /^@Ale /, 'la risposta è indirizzata a chi ha chiesto');
+    assert.match(says[0], /mine 4 dirt/, `la risposta cita l'attività corrente (got ${says[0]})`);
+
+    const events = readEvents(runId);
+    const question = events.find(e => e.type === 'chat_question');
+    assert.equal(question?.intent, 'q_activity', JSON.stringify(events));
+    assert.equal(question?.via, 'regex', 'il fast path risponde senza chiave');
+    assert.equal(events.some(e => e.type === 'chat_command'), false, 'non è un ordine');
+    assert.equal(events.filter(e => e.type === 'chat_reply').length, 1, 'si risponde una volta sola');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+// Il caso senza piano attivo: nessun obiettivo inventato, solo lo stato vero.
+test('"che fai?" with no active goal answers the idle state, never a made-up objective', async () => {
+  const harness = await startChatHarness({ chatFrom: 'Ale', chatMessage: '@bot che fai' });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-activity-idle-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController(baseEnv(runId, harness.port, fake.dir));
+    assert.equal(code, 0, `controller exited with ${code}\n${stdout}`);
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.equal(says.length, 1, `una sola risposta (got ${JSON.stringify(says)})`);
+    assert.match(says[0], /in attesa di ordini/, `nessun obiettivo inventato (got ${says[0]})`);
+    const events = readEvents(runId);
+    assert.equal(events.find(e => e.type === 'chat_question')?.intent, 'q_activity');
+    assert.equal(events.some(e => e.type === 'chat_command'), false);
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});

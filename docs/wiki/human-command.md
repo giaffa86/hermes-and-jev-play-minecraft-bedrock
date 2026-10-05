@@ -113,6 +113,14 @@ human chat message
   objective; a greeting/small talk is answered conversationally instead of
   becoming a goal. The model never decides anything and every failure falls back
   to the template.
+- **M9 — inventory orders** ✅ "getta i diamanti" throws the named item out of
+  the inventory, "cattura i diamanti" / "cattura spada" picks the dropped item
+  back up: both are planned **deterministically** (no Hermes call), executed with
+  the `drop` action of the `item_stack_request` and by hunting the matching drop,
+  and closed by a criterion the harness can verify (`dropFulfilled` /
+  `collectFulfilled`). When the item is missing the bot says so
+  (`item_not_in_inventory`, `no_matching_drop`) instead of mining it or
+  wandering off.
 
 ## Live evidence (2026-10-03, BDS 1.26.52 via CT 108, VM 100 container)
 
@@ -282,7 +290,9 @@ answering nothing. M6 inserts a question path **before** the order path:
 - **Fast path (free, offline)**: `human-questions.mjs` holds a catalogue of
   seven intents (`q_position`, `q_health`, `q_activity`, `q_inventory`, `q_time`,
   `q_identity`, `q_armor`), each with a regex. A message that matches is answered
-  without any model call.
+  without any model call — `q_activity` is `@bot che fai?` /
+  `@bot cosa stai facendo?` / `@bot what are you doing?`, in all five languages
+  and with or without the `?`.
 - **Router (System One = Jev)**: a message that matches nothing is classified by
   the decisions endpoint over a **closed option list** — the seven intents plus
   the sentinel `q_none`. The model picks an option; it never writes the answer.
@@ -310,8 +320,11 @@ answering nothing. M6 inserts a question path **before** the order path:
   the missing-fact policy, `intentFromChoice`), `tests/chat-intent.test.mjs`
   (routing over a stubbed endpoint: threshold, `q_none`, out-of-range choice,
   transport errors) and `tests/controller-chat-ack.test.mjs` (a regex question is
-  answered and creates no goal; a free-form question is routed by System One and
-  still answered from the facts).
+  answered and creates no goal — including `@bot che fai?`, answered from the
+  active `observe().plan`, and the idle case answered
+  `non ho un obiettivo: sono in attesa di ordini` instead of a made-up objective;
+  a free-form question is routed by System One and still answered from the
+  facts).
 
 ### M6.1 — a router failure is not an order
 
@@ -585,9 +598,15 @@ iniziare"*. The risk of a translation layer in a chat path is drift — one stri
 updated in Italian and forgotten in German — so the rule is stricter than "add a
 lookup": **a user-facing sentence exists only in the catalogue**.
 
-- **`chat-i18n.mjs`** is the catalogue: `MESSAGES` (one entry per key, per
-  language), `t(lang, key, vars)`, `listAnd`, and the `CHAT_LANG` resolution
-  (`chatLangConfig`, `normalizeLang`, `isSupportedLang`). Languages: `it`
+- **One file per language.** The catalogue is five dedicated modules —
+  `chat-lang/it.mjs`, `chat-lang/en.mjs`, `chat-lang/fr.mjs`,
+  `chat-lang/es.mjs`, `chat-lang/de.mjs`, each `export default Object.freeze({…})`
+  — and **`chat-i18n.mjs` is only the API**: it imports the five tables into
+  `MESSAGES`, and owns `t(lang, key, vars)`, `hasMessage`, `messageKeys`,
+  `listAnd` and the `CHAT_LANG` resolution (`chatLangConfig`, `normalizeLang`,
+  `isSupportedLang`). The four non-default files carry the keys and nothing
+  else; `chat-lang/it.mjs` is the reference and the only one with the section
+  comments (which group of keys belongs to which renderer). Languages: `it`
   (default — it is the historical behaviour of this server), `en`, `fr`, `es`,
   `de`. `LANG_NAMES` (English names) feeds the prompts, `LANG_NATIVE_NAMES`
   (`italiano`, `English`, `français`, `español`, `Deutsch`) is what the model is
@@ -642,10 +661,12 @@ viens …`. Detecting the message language to pick the ack template as well woul
 make the two mechanisms fight (the planner already answers in the sender's
 language), so the split is deliberate — but it is visible in the log and worth a
 second look. Also open: the catalogue is flat and small on purpose, but a sixth
-language is a
-full pass over `chat-i18n.mjs` plus the intent patterns, not a config change; the
-`chat.*` keys are English-named while most of the values were born Italian, so
-the `it` column is the reference one; and the German *"wie gehts"* is both small
+language is a new file in `chat-lang/` (keys and placeholders copied from
+`it.mjs`), its code in `LANGS`/`LANG_NAMES`/`LANG_NATIVE_NAMES`, and a pass over
+the intent patterns — the tests enforce the *shape*, so the risk of drift is in
+the content only; the `chat.*` keys are English-named while most of the values
+were born Italian, so the `it` file is the reference one; and the German
+*"wie gehts"* is both small
 talk and a health question — the question-shape pre-filter wins, which is
 deliberate (the bot answers with its hearts) but it is the kind of overlap that
 a new language can reintroduce.
@@ -700,6 +721,83 @@ goals is also easier to audit.
 *Numbering*: the label follows the wording of the request that authorised it
 (M8); it is a slice of milestone 3/4 — autonomy plus social behaviour — not the
 `M8 Character` row of `ai-player-roadmap.md`.
+
+## Inventory orders (M9): getta / cattura
+
+Two orders the bot must get right without a model, because both are about its
+**own inventory** — the one state it can verify exactly:
+
+| Order | Meaning | Action | Success criterion |
+|---|---|---|---|
+| `@bot getta i diamanti` | empty the named item out of the inventory | `drop_item` (one `drop` action per stack) | `dropFulfilled` |
+| `@bot cattura i diamanti` | go and pick the named dropped item back up | `collect_drop` (filtered by token) | `collectFulfilled` |
+
+The two are not symmetric, and that asymmetry is the design: **dropping** is an
+accounting problem (what left the inventory), **catching** is a search problem
+(what is on the ground).
+
+- **Reading the order is deterministic.** `orderItem(message)` reuses the same
+  item vocabulary as the questions (`ITEM_WORDS` in `human-questions.mjs`, five
+  languages): `getta i diamanti` → token `diamond`, word *diamanti*. A *verb*
+  decides the direction (`DROP_VERB`: getta/butta via/droppa/scarica/lascia a
+  terra/toss/drop/throw; `COLLECT_VERB`: cattura/raccogli/preleva/take/pick
+  up…), and a verb with no item from the catalogue is *not* an inventory order —
+  "seguimi" stays a follow order. `@bot raccogli 4 terra` deliberately stays a
+  **planner gather quota** (verb + number = go and get four), so the old meaning
+  is not stolen.
+- **The plan carries the baseline, not just the intent.**
+  `humanCommandPlan` resolves the token against `obs.inventory` at plan time and
+  stores `drop: {token, word, count, items, before}` (`before` = the count of
+  each matching stack) and `collect: {token, word, items, beforeTotal}`. This is
+  what makes success verifiable *by the harness later*, instead of by the
+  model's opinion: `dropFulfilled` asks that the count actually fell (all of it
+  when no number was given, exactly `count` pieces otherwise), `collectFulfilled`
+  that the total of that token *grew*. Because the collect plan is anchored to
+  the **token**, a drop that lands on the ground after the plan (a second order,
+  another player, the bot's own `drop_item`) still counts.
+- **A tuple of items, not a name.** `inventoryMatchingToken` decides what
+  "diamanti"/"ferro" means in the current inventory: the exact item name wins
+  (`diamond`), otherwise the non-tool/armor entries (`iron_ingot`, `raw_iron` for
+  "ferro" — a *sword* is not what you throw away), otherwise everything matching
+  (`oak_planks`, `spruce_planks`). `matchesItemToken` is the same rule for a
+  single name and is shared with the adapter, so the bot's option and the
+  controller's expectation can never disagree about what "armor" is.
+- **The action is the protocol's own `drop`.** `_dropItems` opens the inventory
+  window (the same guard all stack requests need) and sends one
+  `item_stack_request` per stack with `{type_id: 'drop', legacy_type_id: 3,
+  count, source: {slot_type: {container_id}, slot, stack_id}, randomly: false}` —
+  no cursor, no fake `place` into the world. After each response the local mirror
+  is updated and re-read, so a stack that empties or an index that moves cannot
+  desync the loop; if the server says `ok` but nothing changed locally, the action
+  stops with `drop_no_progress` instead of spinning on the same slot. A
+  quota (`getta 5 diamanti`) is split across stacks and stops exactly at the
+  requested count.
+- **Collecting filters the search, it does not widen it.**
+  `_nearestDrop({names})` only considers drops of the named token (an empty list
+  means *no drop*), and `options()` passes `_plannedCollectNames()` — so a coal
+  drop lying next to the diamond is not picked up "while we're there", and
+  `collect_drop` is simply not offered when nothing matches.
+- **Refusal instead of a hopeless goal.** The controller only chooses the action
+  if the harness offers it (`canDrop`/`canCollect`); otherwise the order is
+  closed immediately with `drop_order {error:'item_not_in_inventory'}` /
+  `collect_order {error:'no_matching_drop'}`, the human is told (`no_item`,
+  `no_drop`) and the run ends with the same reason — no mining detour, no
+  exhausted budget, no "maybe it worked".
+- **An open human order survives the emergency filter.** `drop_item` and
+  `collect_drop` are protected keys alongside the follower of "seguimi", via
+  `humanOrderProtectedKeys(plan)` in `survival/resolver.mjs` — the policy lives
+  in one place, so the harness route and the filter cannot drift apart.
+- **Evidence.** `tests/controller-drop-order.test.mjs` (vocabulary, verbs, the
+  `raccogli 4 terra` non-case, quotas, exact-name/tool preferences, both success
+  criteria), `tests/bedrock-drop.test.mjs` (the request shape of `drop`, quota
+  and multi-stack drops, the failure/no-progress/empty paths, `_plannedDrop`,
+  `_plannedCollectNames`, the filtered `collect_drop`) and four integration cases
+  in `tests/controller-chat-ack.test.mjs` (drop success/refusal, collect
+  success/refusal, each asserting no Hermes call and the exact action list).
+  The `drop` action is not exercised against a live BDS yet.
+
+*Numbering*: M9 is the slice of milestone 3/4 the owner asked for after M8; the
+label is about the *inventory* orders, not the `M9` row of another roadmap.
 
 ## Proactive greeting (§6 Attention System)
 
@@ -763,8 +861,13 @@ quieter hello is preferred (still an open question).
   `controller.mjs`, so a controller restart re-greets the same human
   immediately: the cooldown does not survive the process and is not stored in
   `runs/<RUN_ID>/`.
-- **Live round**: open — the greeting and `POST /say` have never been exercised
-  against the deployed BDS (unit tests + offline wire-format check only).
+- **Inventory orders (M9)**: open — `getta`/`cattura` are deterministic and
+  unit-tested, but the `drop` action of the `item_stack_request` has never been
+  sent to a live BDS (the offline check only proves the request shape and the
+  local accounting). Also open: a bare material that matches several items by
+  design ("getta il ferro" → `iron_ingot` + `raw_iron`, not the sword) and the
+  interaction with a chest offer in `_depositState` (an inventory drop is not a
+  storage order).
 
 ## Sources
 
@@ -776,9 +879,24 @@ quieter hello is preferred (still an open question).
 - `human-greeting.mjs` — pure greeting policy (`planGreetings`, `renderGreeting`).
 - `human-replies.mjs` / `human-questions.mjs` — trigger matching and the
   ack/outcome templates; the seven question intents, `planPhrase` and the
-  refusals.
-- `chat-i18n.mjs` — the message catalogue (`MESSAGES`, `t`, `chatLangConfig`): the
-  only place a chat sentence is written (M7.2, `CHAT_LANG`).
+  refusals. `human-questions.mjs` also owns the item vocabulary
+  (`ITEM_WORDS`/`matchItemWordText`/`matchesItemToken`) the inventory orders
+  (M9) and the adapter share.
+- `controller-decisions.mjs` — the deterministic order detectors (`isDropOrder`,
+  `isCollectOrder`, `dropCountFromText`) and their success criteria
+  (`inventoryMatchingToken`, `tokenInventoryTotal`, `dropFulfilled`,
+  `collectFulfilled`).
+- `survival/resolver.mjs` — `humanOrderProtectedKeys(plan)`: the keys an open
+  human order keeps even under the emergency filter (`follow_player`/
+  `seek_player`, `drop_item`, `collect_drop`).
+- `bedrock-adapter.mjs` — `_dropItems` (the protocol `drop` action),
+  `_plannedDrop`/`_plannedCollectNames`, `_nearestDrop({names})` and the
+  `drop_item`/`collect_drop` options; `_refreshInventory` counts a zeroed slot as
+  empty (M9: a drop that reaches zero must verify).
+- `chat-i18n.mjs` — the chat **API** (`MESSAGES`, `t`, `hasMessage`,
+  `messageKeys`, `listAnd`, `chatLangConfig`): the only place a chat sentence is
+  *looked up* (M7.2, `CHAT_LANG`). The sentences themselves live one file per
+  language in `chat-lang/{lang}.mjs`.
 - `chat-narration.mjs` — the autonomy narration (M8): `narrateGoal`/
   `narrateChore`/`narrateNeed`/`targetWord` compose "In autonomia: sto
   raccogliendo le patate" from the catalogue; `village-labor.mjs` reports the

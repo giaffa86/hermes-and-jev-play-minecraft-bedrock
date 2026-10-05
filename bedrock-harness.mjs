@@ -23,7 +23,7 @@ import { createWorldMemory } from './world-memory.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   evaluateSurvival, summarizeSurvival, loadSurvivalRules,
-  filterOptionsForGovernor, loadGameplaySkills, loadProgression, resolveMilestone, resolveActiveSkill,
+  filterOptionsForGovernor, humanOrderProtectedKeys, loadGameplaySkills, loadProgression, resolveMilestone, resolveActiveSkill,
 } from './survival/index.mjs';
 import { resolveBiomeTarget, planExplorationStep, chunkKey, SUPPORTED_BIOMES, replayRouteFromMission, replayRouteFromPlace, planReplayStep, buildReplayReport, resolveSearchTarget, SUPPORTED_SEARCH_TARGETS, planSearchStep } from './exploration.mjs';
 
@@ -275,9 +275,10 @@ server = createServer(async (req, res) => {
       const obs = adapter.observe();
       const survival = evaluateSurvival(obs, { rules: survivalRules });
       const offered = adapter.options();
-      // Un ordine umano aperto ("seguimi") resta valido anche in emergenza:
-      // il governor non puo' togliere l'inseguitore che l'utente ha chiesto.
-      const humanOrderKeys = obs.plan?.follow ? ['follow_player', 'seek_player'] : [];
+      // Un ordine umano aperto resta valido anche in emergenza: il governor non
+      // puo' togliere l'inseguitore che l'utente ha chiesto, ne' l'azione con
+      // cui ha ordinato di buttare via o raccogliere qualcosa.
+      const humanOrderKeys = humanOrderProtectedKeys(obs.plan);
       const restricted = filterOptionsForGovernor(offered, survival, { protectedKeys: humanOrderKeys });
       response = [200, {
         options: restricted.options,

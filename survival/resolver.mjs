@@ -136,6 +136,19 @@ export function filterOptionsForGovernor (options = [], governor = null, { prote
   };
 }
 
+// Key che un ordine umano aperto mette al riparo dal filtro di emergenza:
+// l'inseguitore di "seguimi", l'azione con cui ha chiesto di buttare via un
+// oggetto e quella con cui ha chiesto di raccoglierlo. Una lista sola, cosi'
+// la rotta /options del harness e il filtro restano d'accordo su cosa l'ordine
+// umano copre.
+export function humanOrderProtectedKeys (plan = null) {
+  return [
+    ...(plan?.follow ? ['follow_player', 'seek_player'] : []),
+    ...(plan?.drop ? ['drop_item'] : []),
+    ...(plan?.collect ? ['collect_drop'] : []),
+  ];
+}
+
 export function skillApplicable (skill, observation) {
   if (!skill) return false;
   if (!skill.preconditions) return true;
