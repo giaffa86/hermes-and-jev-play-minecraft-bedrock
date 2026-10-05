@@ -36,6 +36,19 @@ function motion (overrides = {}) {
   return { active: true, forward: true, yaw: 0, jumpQueued: false, jumpHeldTicks: 0, jumpStart: false, ...overrides };
 }
 
+test('goto_waypoint preserves an explicit elevation instead of targeting a cave at the current height', async () => {
+  const adapter = physicsAdapter(fakeWorld());
+  adapter.position = { x: 0, y: 63.62, z: 0 };
+  const targets = [];
+  adapter._moveTo = async target => { targets.push(target); return { ok: true }; };
+  adapter.plan = { waypoint: { x: 155, y: 80, z: 261 } };
+  await adapter._runAction('goto_waypoint');
+  assert.deepEqual(targets[0], { x: 155, y: 80, z: 261 });
+  adapter.plan = { waypoint: { x: 155, z: 261 } };
+  await adapter._runAction('goto_waypoint');
+  assert.deepEqual(targets[1], { x: 155, y: 63.62, z: 261 });
+});
+
 test('walking on flat ground advances at walk speed and stays grounded', () => {
   const world = fakeWorld(); world.fillFloor(-5, 5, -5, 5);
   const adapter = physicsAdapter(world);

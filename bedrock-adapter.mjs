@@ -4511,7 +4511,7 @@ export class BedrockAdapter {
         result = await this.resourceSites.navigate(this.resourceSites.pending, context);
       } else if (key === 'goto_waypoint' && this.plan?.waypoint) {
         const w = this.plan.waypoint;
-        const target = { x: w.x, y: this.position?.y ?? 70, z: w.z };
+        const target = { x: w.x, y: Number.isFinite(w.y) ? w.y : (this.position?.y ?? 70), z: w.z };
         if (this.riding) {
           result = await this._rideToward(target, 3, 45000);
         } else {

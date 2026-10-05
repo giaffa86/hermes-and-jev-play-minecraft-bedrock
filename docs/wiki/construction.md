@@ -174,3 +174,8 @@ placement or completion.
 Targeted food/material withdrawals on 2026-10-05 were confirmed by the live
 server. A follow-up inventory fix prevents unlabelled chest/workbench window
 updates from creating phantom player items when the server reuses window 2.
+
+A waypoint may include an explicit `y` coordinate. The Bedrock action preserves
+that elevation when selecting its approach, avoiding a nearby cave destination
+when the requested construction site is on the surface. Existing `{x,z}`
+waypoints retain their previous height inference.
