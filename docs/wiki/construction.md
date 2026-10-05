@@ -205,8 +205,12 @@ with two traversable storeys, an upstairs bed, a ground-floor crafting table,
 glass windows and a decorative brick chimney, in the declared stage order. The
 server boundary was simulated. A separate controller/HTTP test passed an actual
 natural-language planning path with a model stub, preview and a custom platform.
-A real Hermes CLI design probe timed out without a usable plan; this is not
-evidence of successful model generation or live execution of a custom house.
+The initial rich-house Hermes probes timed out. A later real Hermes CLI probe
+returned a custom platform with invalid IDs and paraphrased requirement coverage.
+After feedback and an explicit schema reminder, Hermes repaired both issues; the
+read-only preview accepted its own geometry and the real executor completed the
+12-block platform in the simulated world. This proves real model generation and
+repair on that small project, not live BDS construction or autonomous house completion.
 
 ## Sources
 

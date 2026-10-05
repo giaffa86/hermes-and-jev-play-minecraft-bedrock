@@ -2613,3 +2613,12 @@ for model repair without granting new chest permissions or replacing the brief
 with a prefab. Offline custom-house and controller/HTTP acceptance passed; the
 real Hermes probe timed out. The live house remains partial at 18 confirmed floor
 blocks, paused, with the harness off. See [construction](wiki/construction.md).
+
+## [2026-10-05] ingest | Real architect repair confirmed offline
+
+A real Hermes CLI response designed a 3 × 4 cobblestone platform. Feedback and
+explicit ID/requirement constraints produced a corrected plan accepted by the
+preview and completed by the real executor with 12 confirmed simulated placements.
+The model chose the geometry; no prefab substitution or manual geometry repair
+was used. Rich-house generation and live BDS construction remain separate checks.
+See [construction](wiki/construction.md).

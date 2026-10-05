@@ -47,6 +47,7 @@ export function constructionDesignInstructions () {
     'Include walk routes from an outside retreat point into every storey and requested room. Declare terrain support and all required headroom/aisles as clearance; never flatten terrain or adopt existing player builds. Include container checks for chests and approach checks for beds/workstations/campfires.',
     'A lit campfire needs a nonflammable hearth and no planned wood or bed within two blocks. No lava/fire blocks, no explosive or command blocks. A decorative chimney is distinct from a working fireplace: record which you designed.',
     'Explain coverage of every user requirement using existing part ids. Code validates support, collisions, material counts and reachability; it does not make aesthetic decisions. If preview rejects the design, revise the geometry using its errors while preserving the brief. Never declare success before server verification.',
+    'Each coverage.requirement must be copied EXACTLY from intent.requirements, with one coverage entry for every listed requirement. List physical/user design requirements there; keep procedural notes such as offline testing in the request or plan notes.',
     'An active project is immutable: resume its projectId. Do not replace its design during a replan. Explicit structured template requests remain supported for compatibility.',
   ].join('\n');
 }
