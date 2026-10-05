@@ -258,6 +258,12 @@ integrated suite (**1425/1425**). These include real physics while approaching
 under a short movement budget, subsequent construction completion, stationary
 timeouts and exhausted retries. Strict wiki lint and `git diff --check` passed.
 
+After integration with the current inventory/deposit updates, the supply-trip
+update passed **1470/1470** offline tests. The five focused cases also passed,
+including a remote approved chest, no withdrawal before arrival, subsequent
+construction completion, cooldown handling and trip-budget exhaustion. This
+does not prove live withdrawal or completion of the existing BDS house.
+
 ## Sources
 
 - [Geometry and validation](../../construction.mjs)

@@ -2917,3 +2917,8 @@ open-failure cooldown are skipped. Real-physics offline acceptance covers an
 approved remote chest, an ignored nearer unauthorized chest, actual approach,
 withdrawal and subsequent construction completion. Live verification awaits the
 user-confirmed server maintenance. See [construction](wiki/construction.md).
+
+Validation: all five focused cases passed. After rebasing onto the current
+inventory/deposit changes, the complete offline suite passed **1470/1470** tests
+with exit status 0. Strict wiki lint and `git diff --check` passed. The live house
+remains paused at 18 placements; merge/deploy await the other active session.
