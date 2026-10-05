@@ -1,5 +1,58 @@
 # Log
 
+## [2026-10-05] ingest | The raw potato is safe food, not a poison: safe meals first, harmful ones only when starving
+
+The previous entry (commit `552b562`) put the raw potato in `LAST_RESORT_FOODS`
+with the other items that have a side effect. That was wrong, and the wiki says
+so explicitly: `minecraft.wiki/w/Poison` lists **only the poisonous potato**
+among the Poison sources (I, 0:05, 60% chance), and `minecraft.wiki/w/Potato`
+gives *"Eating a potato restores 1 hunger and 0.6 saturation"* with no status
+effect at all. The poisonous potato is the risky one *"2 hunger and 1.2 hunger
+saturation and has a 60% chance of applying 5 seconds of Poison I"*, identical
+in Java and Bedrock. So the policy has two levels and one boundary: a **safe**
+meal (cooked food, bread, carrots, apples … and the raw potato last of all),
+then — only below `STARVING_FOOD = 4` hunger — `rotten_flesh`, raw `chicken`,
+`poisonous_potato` and `spider_eye`. Since `potato` now sits in `FOOD_PRIORITY`,
+`perceive().hasFood` is true with a lone raw potato at hunger 12, so the governor
+asks for `eat` instead of `obtain_food`, and the `eat` option appears from hunger
+18 with nothing better in the inventory. `FOODS` (the "safe food" item tag)
+inherits the change. Suite **1287 pass / 0 fail**; commit `17f39b0`.
+
+## [2026-10-05] ingest | An order with an empty plan is no longer "done" at zero actions
+
+Live, the order *"eat the potatoes you have"* closed with `GOAL MET after 0
+actions`: `goalMet` treats `targets: {}` as vacuously satisfied, so a chat order
+whose plan declares no terminal criterion (no targets, waypoint, follow, need or
+skill) was reported as done before the bot touched anything. `controller.mjs`
+now requires at least one **successful** action before such an order can close
+(`(!humanOrder || !openPlan || hasWorked) && goalMet(...)`, with `lastResult`
+kept from the previous step); an order that never succeeds ends on the step
+budget. Covered by `tests/controller-chat-open-plan.test.mjs` (order picked up
+from IDLE as a `chat` goal, and mid-goal). Same round: the branch
+`wip-live-20261005` (`f3c8d46`, 1287 tests) was deployed to the live containers —
+the sourcing ladder, the last-resort food rule, the survival ladder with its
+rule-order policy and the chat-order guard all run there now, and the
+diagnostic env vars (`MOVE_DEBUG`, `PACKET_DEBUG`, `BEDROCK_META_LOG`) were
+removed.
+
+## [2026-10-04] ingest | Material sourcing: the inventory first, then the chests, never a building
+
+A human order to build something declares it in `plan.targets`; the harness now
+derives the recipe, what is missing and *where* each missing ingredient can be
+taken — a craftable intermediate already held (`craft_oak_planks`), a known
+chest (`take_oak_planks`), or a natural block only if that option is already
+offered. `observe().craft` exposes `{rule, targets, needs, next}` and the
+controller runs that step deterministically (`CRAFT SOURCE …`, `craft_source`
+event, anti-loop exonerated), so the model is not consulted again. Buildings are
+not a source structurally: the mining census is a whitelist of natural blocks
+and `DIG_PROTECTED` covers the dig paths. Same round: food corrections — eggs
+are not food (cake/pumpkin-pie ingredient) and a raw potato counts only below
+`STARVING_FOOD = 4`, so a hurt bot eats instead of going to gather. Tests:
+`tests/bedrock-craft-source.test.mjs` (11), `tests/controller-craft-source.test.mjs`
+(2), suite **1285 pass / 0 fail**. New page: [crafting](wiki/crafting.md); the
+survival ladder (need → intent → action, `surface` for drowning) is documented in
+[survival-intelligence](wiki/survival-intelligence.md). Not deployed yet.
+
 ## [2026-10-04] feat | Chat M6.2: the bot answers to its own name (`CHAT_SELF_NAME`)
 
 `CHAT_PREFIXES` is static; the bot's **own name** is not, and it is the most

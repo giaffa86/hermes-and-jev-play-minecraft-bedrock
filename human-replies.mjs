@@ -80,6 +80,16 @@ export const DEFAULT_DONE_TEMPLATE = '@{name} fatto: {objective} ({steps} azioni
 export const DEFAULT_FAILED_TEMPLATE = "@{name} non ce l'ho fatta: {reason}";
 export const DEFAULT_STOPPED_TEMPLATE = '@{name} mi fermo qui: {reason}';
 
+// Ultima risorsa del "wolf recovery": l'harness non offre piu' ne'
+// `follow_player` ne' `seek_player`, quindi la ricerca autonoma e' fallita. Il
+// messaggio non inizia mai con il trigger (il prefisso e' citato fra
+// virgolette) e il controller lo manda una volta per episodio, non a ogni passo.
+export const DEFAULT_LOST_TEMPLATE = "@{name} non ti vedo piu': ti aspetto qui. Se ti allontani troppo scrivimi \"{prefix} seguimi\".";
+
+export function lostNotice ({ from, prefix = '@bot', template = DEFAULT_LOST_TEMPLATE, maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
+  return renderReply(template, { name: from ?? '?', prefix }, maxLength);
+}
+
 // One chat line: no newlines, collapsed spaces, bounded length. Truncation
 // happens on the rendered text (after placeholders), so a long objective can
 // never push the message over the packet limit.

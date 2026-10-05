@@ -40,6 +40,16 @@ const KEY_INTENTS = {
   feed_bee: ['collect'],
   breed_bee: ['collect'],
   goto_waypoint: ['travel'],
+  // `follow_player` e' l'ordine umano "seguimi": movimento verso la persona
+  // che ha chiamato il bot. Come per `seek_player` conta come `travel`; a
+  // differenza sua e' un inseguimento di un bersaglio mobile, quindi il
+  // filtro di emergenza lo protegge quando l'ordine e' aperto (resolver.mjs).
+  follow_player: ['travel'],
+  // `seek_player` e' il recupero autonomo dell'umano perso: cammina verso
+  // l'ultima posizione nota senza inseguire un bersaglio mobile. Conta come
+  // movimento (`travel`), ma resta distinto da `follow_player` perche' puo'
+  // fallire con `found: false` invece di dichiarare un inseguimento riuscito.
+  seek_player: ['travel'],
   dig_down: ['mine', 'travel'],
   dig_up: ['mine', 'travel'],
   // Fluidi: allontanarsi dalla lava è una fuga, non un semplice spostamento.
@@ -98,6 +108,9 @@ const KEY_INTENTS = {
 
 const PREFIX_INTENTS = [
   [/^attack_/, ['fight']],
+  // Raccogliere una coltura matura e' un raccolto e, quando la coltura e'
+  // commestibile (carote, patate), anche un modo per procurarsi cibo.
+  [/^harvest_/, ['collect', 'mine']],
   [/^mine_/, ['mine']],
   [/^craft_/, ['craft']],
   [/^smelt_/, ['smelt']],

@@ -71,8 +71,13 @@ export function nextIdleGoal (observation, {
   attempts = new Map(),
   cooldownMs = DEFAULT_AUTONOMY_COOLDOWN_MS,
   now = Date.now(),
+  allow = () => true,
 } = {}) {
   for (const candidate of deriveIdleGoals(observation, { rules })) {
+    // `allow` sceglie quali candidati sono ammessi (il controller lo usa per
+    // distinguere i bisogni che il governor dichiara *adesso* dall'autonomia
+    // generale); il cooldown resta l'anti-loop.
+    if (!allow(candidate)) continue;
     const last = attempts.get(candidate.need);
     if (last != null && now - last < cooldownMs) continue;
     return candidate;

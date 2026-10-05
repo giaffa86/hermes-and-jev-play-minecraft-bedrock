@@ -97,8 +97,11 @@ test('progression objective is interrupted by an emergency and later resumes', (
   assert.ok(/escape immediate danger/i.test(danger.objective));
   assert.equal(danger.active.skill.id, 'escape_hostile');
   assert.equal(danger.active.source, 'governor');
-  // Il filtro emergenza toglie tutto ciò che non serve a sopravvivere.
-  assert.deepEqual(danger.restricted.options.map(o => o.key).sort(), ['eat', 'flee']);
+  // Il filtro emergenza toglie tutto ciò che non serve a sopravvivere. Il
+  // `collect_drop` resta perché in questo stato vale anche `no_food_available`
+  // (cibo 3 e niente di mangiabile addosso): raccogliere cibo è sopravvivenza,
+  // e la scala dei bisogni continua a mettere `flee` davanti a tutto.
+  assert.deepEqual(danger.restricted.options.map(o => o.key).sort(), ['collect_drop', 'eat', 'flee']);
   for (const option of danger.restricted.options) assert.ok(offered.includes(option), 'nessuna key inventata');
   // La progressione resta memorizzata: il milestone è ancora food_and_safety.
   assert.equal(danger.milestone.milestone, 'food_and_safety');

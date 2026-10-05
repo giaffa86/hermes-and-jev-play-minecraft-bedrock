@@ -99,6 +99,23 @@ export function progressFingerprint (obs, plan) {
   });
 }
 
+// Un ordine "seguimi" e' un impegno aperto: qualunque piano arrivi (replan,
+// planner, governor) il goal resta un inseguimento della stessa persona finche'
+// non arriva un altro ordine. Il follow e' quindi un attributo del *goal*, non
+// del piano che il modello puo' riscrivere a ogni passo.
+export function withStickyFollow (plan, follow) {
+  if (!follow) return plan;
+  if (plan && plan.follow === follow) return plan;
+  return { ...(plan || {}), follow };
+}
+
+// Un ordine di stop ("fermati", "aspetta", "stop") deve chiudere un
+// inseguimento aperto: il fallback deterministico del traduttore di ordini
+// ("segui chi ti ha scritto") non deve mai trasformarlo in un follow.
+export function isStopOrder (message) {
+  return /\b(fermati|fermo|stop|basta|aspett\w*|resta|rimani|smettila|non seguirmi|stay|wait|stand still)\b/i.test(String(message || ''));
+}
+
 // Consecutive trailing executions of `key` without progress. A successful
 // action (stagnant: false) or a different key resets the streak.
 export function detectRepeatedAction (history = [], key, { threshold = DEFAULT_ANTI_LOOP_THRESHOLD } = {}) {

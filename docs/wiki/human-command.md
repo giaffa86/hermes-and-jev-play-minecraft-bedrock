@@ -4,13 +4,11 @@ Topic: let a human player on the same BDS command the bot **live via in-game
 chat**, in natural language, as if talking to Hermes — e.g. *"@bot seguimi,
 andiamo a cercare ferro"* or *"@bot aiutami a liberare la miniera dai mob"*.
 
-Status: **M1–M3 implemented, not verified live with a human sender**. M4 works
-indirectly (follow + existing `mine_*`). M5 is implemented *and live-verified on
-the real BDS*: the bot acks an order it received through the server and sends an
-outcome line when the goal closes (see *Live evidence* below). Since no human
-player is connected to the BDS (open question), the sender used for the live run
-was a real client account (the bot's own, through `POST /say` → server → bot),
-not a human. This page records both the plan and what is wired.
+Status: **M1–M5 implemented and verified live with a real human sender**
+(2026-10-04: the human's `@bot …` order moved the bot, ack and outcome landed in
+chat). The met contract of an order with an empty plan was fixed on 2026-10-05
+(see *The met contract of a chat order* below). The live containers carry the
+branch `wip-live-20261005` at `f3c8d46`.
 
 ## Why this fits the existing architecture
 
@@ -133,6 +131,23 @@ messages, so a restarted controller re-executed orders it had already served
 missing) and a `chat_stale` event; the rejection telemetry is also emitted once
 per message instead of once per poll (live: 122 identical `chat_ignored` events
 in 25 s → now 1).
+
+### The met contract of a chat order (2026-10-05)
+
+An order whose plan declares **no terminal criterion** — no `targets`, no
+`waypoint`, no `follow`, no `need`, no `skill` — used to be "met" at step 0: the
+order *"eat the potatoes you have"* (`g21`) closed with
+`GOAL MET after 0 actions`, the bot never ate and the human still got the
+`fatto:` line. `goalMet` treats an empty target map as vacuously satisfied
+(`Object.entries({}).every(...)`), which is right for a plan that has some other
+criterion and wrong for a plan that has none.
+
+The met check in `controller.mjs` now refuses to close a **human order** built on
+an empty plan until at least one action has **succeeded**
+(`(!humanOrder || !openPlan || hasWorked) && goalMet(...)`); an order that never
+succeeds ends on the step budget (`budget_exhausted`) instead of a fake success.
+Covered by `tests/controller-chat-open-plan.test.mjs` (order taken from IDLE and
+mid-goal).
 
 ### Limits
 

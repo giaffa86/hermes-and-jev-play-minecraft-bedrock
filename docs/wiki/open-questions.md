@@ -1018,3 +1018,35 @@ Two open design questions follow from that framing:
   `next` (DFS first-hit) — no OR/alternative-path semantics. To support copper /
   iron / exploration paths the graph needs branch nodes and a Hermes scoring
   hook, while Jev stays one-action-at-a-time.
+
+## Material sourcing, the survival ladder and the chat orders (04/10/2026)
+
+- **The material rule is deployed** (05/10/2026). The sourcing ladder
+  (`observe().craft`, the `craft_source` controller stage) and the food
+  correction (`LAST_RESORT_FOODS`, `STARVING_FOOD`) are on the live containers
+  (`bedrock-adapter.mjs` `25b33d50…`, `controller.mjs` `1def6142…`); the branch is
+  `wip-live-20261005` at `f3c8d46` with 1287 passing tests. Live round still to
+  run: ask in chat for a wooden pickaxe with a chest nearby and no logs held,
+  then watch for `CRAFT SOURCE take_oak_planks`.
+- **The `surface` branch is unit-tested but never exercised live.** The census
+  knows only a two-cell-deep pool, so a real drowning round (head under water,
+  air below `DROWNING_AIR = 60`, `surface` offered) still has to happen.
+- **The chat-order contract is fixed** (05/10/2026). An order whose plan declares
+  no terminal criterion (no targets, waypoint, follow, need or skill) used to
+  close at once: *"eat the potatoes you have"* (`g21`) ended with
+  `GOAL MET after 0 actions` and the chat got a "done" that never happened. The
+  met check now requires at least one **successful** action before such an order
+  can close, and an order that never succeeds ends on the step budget instead of
+  a fake success (`tests/controller-chat-open-plan.test.mjs`).
+- **Eggs, and why the bot was stuck at 2 hearts.** Eggs are an ingredient, never
+  a meal; the bot had only 34 eggs and 4 raw potatoes, so `bestFood` returned
+  `null` and the governor kept asking for `obtain_food`. The raw potato was put
+  in the last-resort list first, then moved where it belongs (05/10/2026): it is
+  **safe** — only the *poisonous* potato applies Poison (60%, 5 s) — so it is the
+  last entry of `FOOD_PRIORITY`, a meal the bot eats whenever hunger drops below
+  18, while `rotten_flesh`, raw `chicken`, `poisonous_potato` and `spider_eye`
+  stay behind the `STARVING_FOOD = 4` gate. Worth remembering for any live
+  round: a plain potato is never a risk, it is just a poor meal.
+- **The `AUTONOMY=off` invariant holds**: the needs-driven idle autonomy is still
+  opt-in; what runs by default is only the *rule-driven* ladder plus the
+  survival needs the governor declares right now.
