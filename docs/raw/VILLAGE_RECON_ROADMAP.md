@@ -225,6 +225,74 @@ acceptance case for V0/V2: it exercises the register, the memory read path, the
 `stale` discipline and the deposit/take symmetry without involving a single
 farming mechanic.
 
+## Discovery and inspection are two different facts
+
+The chest search above collapses two different kinds of knowledge into the one
+word *knows*. They are separate facts, they cost different things, and the
+register must keep them apart:
+
+| Fact | Question it answers | Written by | Goes stale |
+|---|---|---|---|
+| **discovery** — `discoveredAt` | *is there a container here?* | the sweep, from the block census (`_findNearbyStorageBlocks`) | slowly — a chest does not move (`CONTAINER_DISCOVERY_STALE_MS`, 6 h) |
+| **inspection** — `inspectedAt`, `contents`, `contentsKnown: true` | *what is inside it?* | `read_container` → `_setContainerContents:7057` | quickly — other players move things (`CONTAINER_INSPECTED_STALE_MS`, 5 min) |
+
+A container row is therefore valid in three states, never two:
+
+| `contentsKnown` | `inspectedAt` | What the row means |
+|---|---|---|
+| `false` | `null` | a chest is here; the inside is unknown |
+| `true` | set, fresh | these were the contents at `inspectedAt` |
+| `true` | set, old | these *were* the contents — verify before depending |
+
+### The escalation ladder (cheapest knowledge first)
+
+The rule this whole design serves: **the cheapest source of knowledge is used
+first**. For an order that needs an item (“find the iron in the chests”):
+
+| Rung | Source | Cost | Where it is today |
+|---|---|---|---|
+| 1 | a container whose **contents are known** to hold the item | a lookup plus a walk, re-verified on arrival | `containersWithItem:226` / `_rememberedStorage:7183` |
+| 2 | a **discovered** container never inspected, nearest first | a lookup plus a walk plus one open | **missing** — nothing writes a discovery row |
+| 3 | new storage in the already-loaded/perceived area | one local block scan, no walking beyond `radius` | `_findNearbyStorageBlocks:7029` (runtime only, never persisted) |
+| 4 | real reconnaissance: leave the area, sweep new cells | minutes, budgeted by `VILLAGE_SURVEY_CELLS` | `find_structure` / the V1 sweep |
+
+Rungs 1–3 are lookups and local scans; **only rung 4 is exploration**, and it is
+the fallback, never the first move. The ladder is part of the planner contract:
+**Hermes must not order exploration to Jev while the register can still answer at
+rung 1 or 2**, and the register’s job is to make the answer visible
+(`observe().village` lists the rungs, so “I don’t know” is *proved* by an empty
+list instead of assumed).
+
+### Acceptance test for the ladder: “cerca del ferro nei bauli”
+
+| If the register … | Expected behaviour | Evidence |
+|---|---|---|
+| knows a chest holding iron | go straight there, re-read, take | `source: 'memory'`, no scan, no sweep |
+| knows only unopened chests in the area | inspect those, nearest first, then answer | rung 2 used before rung 3; `inspectedAt` written |
+| knows nothing in the area | local discovery (rung 3) within the loaded radius | one `_findNearbyStorageBlocks` pass, rows persisted |
+| finds nothing locally either | only then reconnaissance (rung 4) | a bounded sweep, and its new rows are the reward |
+
+The order of these four rows *is* the test: a run that jumps to rung 4 while
+rung 1 or 2 could have answered is a failure, and the ledger says so (a sweep is
+a bounded action with its own cost, `runs/<run>/actions.jsonl`).
+
+### What separates them today, and what does not (verified from the code)
+
+| Piece | Verdict |
+|---|---|
+| ids and timestamps | **ready**: `containerId:169` is spatial (`container_x_y_z`, so a re-write upserts in place) and `rememberContainer:174` already preserves `discoveredAt` across upserts (`existing?.discoveredAt ?? now`) |
+| writing a discovery | **missing**: the only writer is post-open (`_setContainerContents:7057`, reached from `read_container`); a merely-seen chest is not remembered at all, not even by position |
+| expressing “seen, unknown” | **missing**: `contents = {}` is overloaded (it means both *unknown* and *opened and empty*) and the write unconditionally sets `status: KNOWN`, `confidence: 1`, `lastSeenAt: now`; `source` is free text (`'discovered'` vs `'read_container'`), not a state field |
+| a discovery write that does not damage inspection | **must be fixed first**: `_materializeContains:204` invalidates **every** `contains` edge of the id and rebuilds them from the contents it is given, so a naive discovery write with `contents: {}` would **erase** the “13 iron_ingot” learned earlier; `contentsKnown: false` must *skip* materialization, never empty it |
+| querying rung 2 | **missing**: `containersWithItem:226` filters on `contents?.[item] > 0` (rung 1 only) and no `findContainers:213` parameter carries `contentsKnown` — “discovered, never inspected, near me” has no query |
+| stale refresh | **partial**: `refreshStatuses:1398` is called only by `hydrate:1405` and has no timer, so a long session never promotes anything to `stale`; `findContainers:213` defaults `includeStale: true` while `_rememberedStorage:7183` filters only on “contents > 0” plus reachability. Per-depth TTLs need either a periodic `refreshStatuses()` or a status computed per read from `observedAt`/`inspectedAt` |
+| discovery coverage | **partial**: `STORAGE_BLOCKS:157` is an exact-name list (`chest`, `trapped_chest`, `barrel`, `shulker_box`), so dyed shulker boxes are invisible, and the scan is capped at radius 32 with `STORAGE_SCAN_PER_NAME = 24` per name |
+
+Consequence for the milestones: **V0** owns the two-depth record and the ladder
+read (including the non-destructive discovery write), **V1** *is* rung 4 (the
+sweep), **V2** makes the deposit path climb the ladder instead of asking only the
+5-minute runtime cache.
+
 ## Proposed vocabulary (closed loaders, per convention)
 
 ### New/changed `/options` action keys
@@ -261,7 +329,7 @@ already offers (`harvest_*`, `plant_*`, `deposit_*`, `dump_inventory`).
 
 | Record | Written by | Notes |
 |---|---|---|
-| `kind: container`, id `container_x_y_z` | `rememberContainer` (already exists) | the deposit side must start reading it, not just the take side; **the sweep must also write rows for unopened chests** (`contentsKnown: false`), which today is impossible — the only writer is `_setContainerContents:7057`, after an open |
+| `kind: container`, id `container_x_y_z` | `rememberContainer` (**extended**) | fields: `discoveredAt`, `contentsKnown`, `inspectedAt`, `contents`, `status`. A discovery write (`contentsKnown: false`, `contents: {}`, `source: 'discovered'`) must **skip `_materializeContains:204`** so it cannot erase contents learned earlier; only an inspection writes contents. The deposit side must also start reading it, not just the take side |
 | `kind: resource_site`, id `plot_<crop>_x_y_z` | new, via `rememberResourceSite` | a plot is a *site*, so it is a vector-indexable target |
 | `kind: entity`, id `entity_<uniqueId>` | `rememberEntity` (already exists) | pens reference the remembered animals, not a live census |
 | observations `contains` / `is_a` | `observe` (already exists) | the evidence trail, never overwritten |
@@ -285,6 +353,8 @@ harness still decides which of the three steps is legal *now*.
 | `VILLAGE_HOUSE_RADIUS` | `8` | Radius that clusters beds/containers into one house. |
 | `VILLAGE_PLOT_MIN_CELLS` | `4` | Below this a crop cluster is not a plot. |
 | `VILLAGE_MEMORY_TTL_MS` | `86400000` | After this a village fact is `stale` and must be re-read before it is depended on. |
+| `CONTAINER_DISCOVERY_STALE_MS` | `21600000` | A *discovery* (a chest that exists here) goes stale after 6 h: containers do not move, so a place outlives a census. |
+| `CONTAINER_INSPECTED_STALE_MS` | `300000` | An *inspection* (what is inside) goes stale after 5 min — today's `containerStaleMs`: other players move things. |
 
 ## Milestones
 
@@ -323,6 +393,16 @@ harness still decides which of the three steps is legal *now*.
     unknown inside instead of a missing fact.
   Each row keeps `status`, `observedAt` (`lastSeenAt`) and `verifiedAt`, so the
   payload can say "known, measured 3 minutes ago" instead of implying freshness.
+- **The ladder, and the two-depth record behind it.** The register must answer
+  "which chest should I check first?" in the order *contents known → discovered
+  but never inspected → local scan → sweep*. That needs three additions:
+  `rememberContainer` accepts `contentsKnown` and **skips `_materializeContains`**
+  when it is `false` (today a discovery write would erase the contents learned
+  earlier); a discovery writer persists the chests
+  `_findNearbyStorageBlocks:7029` already sees (today they are runtime-only); and
+  `findContainers` gains a `contentsKnown` filter, because rung 2 has no query
+  at all. The register exposes the ladder, so "nothing known here" is an empty
+  list rather than an assumption — and only then does exploration make sense.
 - Every detection writes `plot_<crop>_x_y_z` + the `is_a`/`contains`
   observations, and remembers the containers it saw with their contents — i.e.
   the same facts the read path above consumes, so the register is populated by
@@ -384,10 +464,12 @@ action in `runs/<run>/actions.jsonl` with its duration.
 **Deliverable**
 
 - `_depositTargetFor` consults `_rememberedStorage()` (memory) as well as the
-  runtime cache, in this order: a **known, non-stale** container that already
-  holds the item, then the nearest **reachable** one, then a live scan. A
-  remembered container is re-read on the spot before the deposit is claimed
-  (the same rule `_rememberedStorage` already documents for taking).
+  runtime cache, **climbing the same ladder**: a **known, non-stale** container
+  that already holds the item, then a discovered-but-uninspected one (one open is
+  cheaper than walking to an unknown area), then the nearest **reachable** one,
+  then a live scan. A remembered container is re-read on the spot before the
+  deposit is claimed (the same rule `_rememberedStorage` already documents for
+  taking).
 - **The status filter is explicit here, not inherited.** `findContainers`
   defaults to `includeStale: true` (`world-memory.mjs:213`) and
   `_rememberedStorage:7183` tolerates stale records — fine for an explicit
@@ -500,12 +582,15 @@ timestamp truthfully.
 |---|---|---|
 | pure | Clustering (houses, plots, pens), thresholds, `missing`, empty input | `tests/village-survey.test.mjs` |
 | unit | **Register read**: memory-first without a live survey, `source`/`status`/`observedAt`, live beats remembered, `findEntities` pens survive a restart | `tests/village-register.test.mjs` |
+| unit | **The ladder**: known-contents first, discovered-uninspected second, local scan third, sweep last; a discovery write never erases contents learned earlier | `tests/village-register.test.mjs` |
+| pure | Two-depth TTLs: a discovery row survives an inspection-TTL expiry; an inspection row is `stale` while its discovery is still fresh | `tests/village-register.test.mjs` |
 | pure | Sweep budget, second-pass idempotence, protected-block detour | `tests/village-sweep.test.mjs` |
 | unit | Deposit target from memory vs cache, stale re-read, fallback | `tests/bedrock-storage-memory.test.mjs` |
 | unit | Farm-order classification vs the collect path, chain closing on delta | `tests/controller-farm-order.test.mjs` |
 | unit | Reconciliation with `GET /observe.structures` and the chore layer | `tests/village-labor.test.mjs` (extension) |
 | unit | Protection: beds/farmland/fences/crops intact, no villager | `tests/village-honesty.test.mjs` |
 | live | One sweep > one shot; second sweep adds nothing; `deposit_carrot` after restart lands in the right chest; `@bot raccogli le carote` A/B | host, bounded round |
+| live | **The chest ladder**: an order for a known item goes straight to the known chest; with only unopened chests known it inspects them; with nothing known it scans locally; and only an empty local area triggers a sweep | host, bounded round |
 
 Operational constraints for the live rows: one bot account at a time, the base
 untouched (no borrowed or broken blocks), and no animal killed without an

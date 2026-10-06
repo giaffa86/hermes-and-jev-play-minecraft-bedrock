@@ -3456,3 +3456,47 @@ and tracked no weather at all.
   chests" is now the first V0/V2 acceptance case because it exercises register,
   memory read path, staleness discipline and the take/deposit symmetry without
   involving a single farming mechanic.
+
+## [2026-10-06] ingest | Discovery and inspection are separate facts, and the ladder orders them
+
+- Owner's refinement (m00302): formalise the difference between **discovery** and
+  **inspection**; persist chests that were merely *seen*; the register must
+  distinguish discovered position, `contentsKnown`, `inspectedAt`, known
+  contents and the stale/TTL; and Hermes must always choose the cheapest source
+  of knowledge *before* ordering exploration to Jev. Spec updated:
+  `docs/raw/VILLAGE_RECON_ROADMAP.md` ("Discovery and inspection are two
+  different facts" — state table, escalation ladder, the four-case acceptance
+  test and the code verification table), summarised in
+  [`docs/wiki/village-recon.md`](wiki/village-recon.md).
+- The ladder for an item order ("cerca del ferro nei bauli"): rung 1 a container
+  whose contents are *known* to hold it, rung 2 a container merely *discovered*,
+  rung 3 a local scan of the loaded area, rung 4 the sweep — **only rung 4 is
+  exploration**, and it is the fallback. Two clocks, because the two facts age
+  differently: `CONTAINER_DISCOVERY_STALE_MS` (6 h — containers do not move) and
+  `CONTAINER_INSPECTED_STALE_MS` (5 min — other players move things).
+- **Verification (asked for explicitly — can the current implementation separate
+these?): no, and here is what blocks it.**
+  - *Ready*: `containerId:169` is spatial so a re-write upserts in place, and
+    `rememberContainer:174` already preserves `discoveredAt` across upserts
+    (`existing?.discoveredAt ?? now`) — the discovery timestamp exists and is
+    never written by a discovery.
+  - *Blocking*: `_materializeContains:204` invalidates **every** `contains` edge
+    of the id before rebuilding them from the contents passed in, so a naive
+    discovery write with `contents: {}` would **erase** the "13 iron_ingot"
+    learned earlier; `contents = {}` is overloaded (
+    *unknown* vs *opened and empty*) and the write unconditionally stamps
+    `status: KNOWN`, `confidence: 1`; `source` is free text, not a state field.
+  - *Missing*: rung 2 has no query at all — `containersWithItem:226` filters on
+    known contents and no `findContainers:213` parameter carries `contentsKnown`.
+  - *Partial*: `refreshStatuses:1398` is called only by `hydrate:1405` (no
+    timer), so a long session never promotes anything to `stale` while
+    `findContainers` defaults to `includeStale: true`; and `STORAGE_BLOCKS:157`
+    is an exact-name list (`chest`, `trapped_chest`, `barrel`, `shulker_box`), so
+    dyed shulker boxes are invisible and the scan is capped at radius 32 with
+    `STORAGE_SCAN_PER_NAME = 24`.
+- Ownership assigned in the milestones: V0 the two-depth record + ladder read +
+  the non-destructive discovery write, V1 is rung 4, V2 makes the deposit path
+  climb the ladder instead of asking only the 5-minute runtime cache. New test
+  rows: the ladder ordering, a discovery write that never erases known contents,
+  a discovery row outliving an inspection TTL, and a live four-case chest test.
+

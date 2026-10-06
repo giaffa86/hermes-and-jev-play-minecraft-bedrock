@@ -137,6 +137,45 @@ missing fact. Today that row cannot exist at all — `rememberContainer` has
 exactly one call site, `_setContainerContents:7057`, so a chest that was never
 opened is not remembered, not even by position.
 
+### Discovery and inspection are two facts, and the ladder orders them
+
+*Is there a container here?* and *what is inside it?* are separate facts with
+separate lifetimes. A row is in one of three states — `contentsKnown: false` with
+no `inspectedAt`; contents known and fresh; contents known but old. A discovery
+(slow TTL, containers do not move) must outlive an inspection (fast TTL, other
+players move things): hence two clocks, `CONTAINER_DISCOVERY_STALE_MS` (6 h) and
+`CONTAINER_INSPECTED_STALE_MS` (5 min).
+
+The design rule is **the cheapest source of knowledge is used first**, and for an
+order that needs an item it is a four-rung ladder: (1) a container whose contents
+are *known* to hold it → (2) a container merely *discovered* → (3) a local scan of
+the already-loaded area → (4) real reconnaissance. Only rung 4 is exploration,
+and **Hermes must not order it while the register can still answer at rung 1 or
+2** — which is why the register must *expose* the ladder: an empty list proves "I
+don't know" instead of assuming it.
+
+What the code allows today, checked piece by piece:
+
+- **Ready**: `containerId:169` is spatial, so a re-write upserts in place, and
+  `rememberContainer:174` already preserves `discoveredAt` across upserts.
+- **Missing, and blocking**: nothing writes a discovery (the only writer is
+  post-open), `contents = {}` cannot say *unknown* (it means *empty*), and
+  `_materializeContains:204` invalidates every `contains` edge before rebuilding
+  them — so a naive discovery write would **erase** the contents learned
+  earlier. `contentsKnown: false` must skip materialization.
+- **Missing, cheap to add**: rung 2 has no query — `containersWithItem:226`
+  filters on known contents, and no `findContainers:213` parameter carries
+  `contentsKnown`.
+- **Partial**: stale promotion is startup-only (`refreshStatuses:1398` is called
+  only by `hydrate:1405`, no timer) while `findContainers` defaults to
+  `includeStale: true`; and `STORAGE_BLOCKS:157` is an exact-name list, so dyed
+  shulker boxes are invisible.
+
+The acceptance test is exactly the order the owner described: iron known in a
+chest → go there; only unopened chests known → inspect them; nothing known →
+local scan; only an empty local area → sweep. A run that jumps to the sweep is a
+failure, and `runs/<run>/actions.jsonl` shows it.
+
 ## The design in brief
 
 - **V0 — census.** A pure `village-survey.mjs` clusters houses (beds/containers
