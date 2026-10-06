@@ -3340,3 +3340,51 @@ and tracked no weather at all.
 - **Wiki**: the weather window and the new behaviour are recorded in
   [survival intelligence](wiki/survival-intelligence.md) and in row 10 of
   [verification](wiki/verification.md).
+
+## [2026-10-06] ingest | Village reconnaissance and the farm order
+
+- Added the raw spec
+  [`docs/raw/VILLAGE_RECON_ROADMAP.md`](raw/VILLAGE_RECON_ROADMAP.md) and the
+  wiki page [`wiki/village-recon.md`](wiki/village-recon.md) (V0–V5, **spec
+  only**), answering an operator question: should the bot be able to survey a
+  village (houses, free beds, pens, plots, storage) like a robot vacuum, so that
+  `raccogli le carote dal campo, rimpianta e metti il raccolto nel baule più
+  vicino` becomes one order?
+- **What already exists** (read from the code, not recalled): the histogram
+  survey `surveyBlocks` (`bedrock-world.mjs:294`) and the pure marker detector
+  `structures.mjs:150` with the village rule at `structures.mjs:35`
+  (`minScore: 5`); the live round in [exploration](wiki/exploration.md) —
+  village at (113, 73, 156), score 6, `bed: 30`, `villagers: 11`,
+  `missing: bell (0/1)`, with the declared limit that the survey is "an
+  histogram of names, not a map"; the memory record kinds and writers
+  (`world-memory.mjs:174/332/378/426/837`); the three steps of the order as
+  option keys (`harvest_<crop>` at `bedrock-adapter.mjs:4383`, which already
+  **replants**, `plant_<item>:4702`, `deposit_<item>:4689` / `dump_inventory:4681`);
+  the censuses `_findBeds:13211`, `_nearbyFarmAnimals:11581`,
+  `_cachedContainers:7041`; and the chore layer `village-labor.mjs:94`
+  (`harvest_crops`, verified by a state delta).
+- **Two gaps named**: (1) nothing aggregates a house, a plot or a pen — the
+  beds/animals/containers are recomputed on demand and never written as a
+  village fact; (2) the shortcut is ambiguous — `controller-decisions.mjs:173`
+  resolves the noun only against the inventory and the visible drops, so
+  `isCollectOrder:221` reads "raccogli le carote" as *pick up carrot items* when
+  the bot carries carrots (the empty case refuses with `no_drop`,
+  `chat-lang/it.mjs:60`) — and the deposit side has no memory:
+  `_depositTargetFor:7000` scores only the runtime cache
+  (`_cachedContainers:7041`, TTL 5 min), so after a restart the bot forgets
+  which chest holds the carrots although `rememberContainer` persisted it.
+- **Roadmap**: V0 pure census `village-survey.mjs` + `GET /observe.village`
+  (with `checked: true`), V1 a bounded read-only `survey_village` sweep (typed
+  refusals `village_too_far`/`survey_budget_exhausted`, throttled, idempotent,
+  never a dig and never a villager), V2 deposit target from memory with a
+  stale re-read, V3 the farm order as `plan.farm = {crop, replant, store,
+  field}` driving the chain against `GET /options` and closing on a state delta,
+  V4 confidence/evidence/`missing` plus protection, V5 the wiki wiring. New env
+  vars proposed: `VILLAGE_SURVEY_MS`, `VILLAGE_SURVEY_CELLS`,
+  `VILLAGE_HOUSE_RADIUS`, `VILLAGE_PLOT_MIN_CELLS`, `VILLAGE_MEMORY_TTL_MS`.
+- **Non-objectives**: voxel maps or room segmentation, renovating houses,
+  villager engineering, redstone farming, looting the village chests,
+  slaughtering the base's animals, and letting the model supply a village fact.
+- Recorded in [index](index.md) (wiki + raw tables) and
+  [sources](sources.md); the open questions from the spec go to
+  [open-questions](wiki/open-questions.md) when the implementation starts.

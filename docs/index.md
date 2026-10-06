@@ -42,6 +42,7 @@ question about the project.
 
 | [deep-dark.md](wiki/deep-dark.md) | Deep Dark stealth roadmap: sculk sensors (8-block vibration sphere), shrieker and Warden warning, sneak-walk verified from the server speed, vibration-cost stealth pathfinding with a mandatory return route, underground 3D navigation and `find_deep_dark` — **W0 (vibration awareness), W1 (sneak-walk verified from the measured speed) and W2 (vibration-cost stealth pathfinding with a re-planned return route) implemented and unit-tested (06/10/2026), never live**; W3–W6 spec, and the `ancient_city` marker rule has never fired live. | `docs/raw/DEEP_DARK_ROADMAP.md`, `bedrock-vibration.mjs`, `bedrock-adapter.mjs`, `bedrock-survival.mjs`, `bedrock-world.mjs`, `structures.mjs`, `exploration.mjs` |
 | [construction.md](wiki/construction.md) | Hermes-owned architectural designs plus explicit templates; persistent bounded construction, supply and functional verification. | `construction.mjs`, `bedrock-construction.mjs`, `structures/` |
+| [village-recon.md](wiki/village-recon.md) | Village reconnaissance and the farm order: a village inventory as a **site register** (houses, free beds, pens, plots with ripeness, storage contents) written to world memory by one bounded read-only sweep, and `raccogli le carote` as one intent expanding into `harvest_*` → `plant_*` → `deposit_*` verified by a state delta. **V0–V5 spec only**; states the two real gaps (nothing aggregates a house/plot/pen, and the deposit side ignores the container memory). | `docs/raw/VILLAGE_RECON_ROADMAP.md`, `bedrock-adapter.mjs`, `bedrock-world.mjs`, `structures.mjs`, `world-memory.mjs`, `village-labor.mjs`, `controller-decisions.mjs` |
 
 ## Raw sources (`raw/`)
 
@@ -57,6 +58,7 @@ question about the project.
 | [GOAL_ACHIEVEMENT_MINECRAFT.txt](raw/GOAL_ACHIEVEMENT_MINECRAFT.txt) | Proposal (Italian): goal-driven agentic gameplay — pipeline, Goal Contract, task graph/primitives, suspend/resume, semantic goals, 5 progressive benchmarks. |
 | [NETHER_ROADMAP.md](raw/NETHER_ROADMAP.md) | Nether/End roadmap (Italian): portal locate/build, Nether survival, ghast dodge, piglin bartering, enderman gaze, fortress/blaze, stronghold/End/dragon (N0–N7). |
 | [DEEP_DARK_ROADMAP.md](raw/DEEP_DARK_ROADMAP.md) | Deep Dark stealth roadmap (English): sculk vibration model, verified sneak-walk, vibration-cost pathfinding, shrieker/Warden warning and the escape tactic (W0–W6). |
+| [VILLAGE_RECON_ROADMAP.md](raw/VILLAGE_RECON_ROADMAP.md) | Village reconnaissance roadmap (English): bounded read-only census of houses/beds/pens/plots/storage into world memory, storage memory on the deposit side, and the farm order (`harvest`→`plant`→`deposit`) closed on a state delta (V0–V5). |
 | [evidence/](raw/evidence/) | JSONL evidence from early harness runs (`hermes-01`, `jev-03`). |
 
 ## Meta files

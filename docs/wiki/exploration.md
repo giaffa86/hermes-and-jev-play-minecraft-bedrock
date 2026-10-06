@@ -311,6 +311,11 @@ never on generic building blocks.
 - The Deep Dark/Ancient City rule is a marker rule (sculk family); it has **not**
   been observed live yet.
 
+What the histogram cannot answer — which house has a free bed, which plot is the
+carrot field and how much of it is ripe, which chest already holds carrots — is
+planned as an aggregated **village register** built from this same survey and
+written to world memory: see [village reconnaissance](village-recon.md).
+
 ### Hazards and rules (unchanged)
 
 - **Deep Dark / Warden**: shriekers summon the Warden. Default is **observe and

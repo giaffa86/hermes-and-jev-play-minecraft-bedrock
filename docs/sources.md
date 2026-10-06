@@ -20,6 +20,7 @@ never committed.
 | `docs/raw/GOAL_ACHIEVEMENT_MINECRAFT.txt` | `docs/raw/` | Proposal (Italian): goal-driven agentic gameplay — pipeline, Goal Contract, task graph + primitive skills, suspend/resume, semantic goals, 5 progressive benchmarks. |
 | `docs/raw/NETHER_ROADMAP.md` | `docs/raw/` | Nether/End roadmap (Italian): portal locate/build, Nether survival, ghast dodge, piglin bartering, enderman gaze, fortress/blaze, stronghold/End/dragon, N0–N7. |
 | `docs/raw/DEEP_DARK_ROADMAP.md` | `docs/raw/` | Deep Dark stealth roadmap (English): sculk sensor vibration model, verified sneak-walk, vibration-cost stealth pathfinding, shrieker/Warden warning, the escape tactic, underground 3D navigation and `find_deep_dark` (W0–W6). |
+| `docs/raw/VILLAGE_RECON_ROADMAP.md` | `docs/raw/` | Village reconnaissance roadmap (English): the village inventory as a site register in world memory (houses, free beds, pens with adults/babies, plots with ripeness, storage contents), the bounded read-only `survey_village` sweep, container memory on the deposit side, and the farm order as one intent expanding into `harvest_*` → `plant_*` → `deposit_*` verified by a state delta (V0–V5). |
 | `docs/raw/evidence/` | `docs/raw/evidence/` | JSONL evidence from early harness runs. |
 
 ## Source code (authoritative for behaviour)

@@ -162,6 +162,11 @@ so `goalMet` closes it on the same deterministic predicate the needs use. Tests:
 in `tests/controller-session.test.mjs` (integration: an offered `harvest_*`
 becomes a completed `village` goal).
 
+The chores are the bot's *own* initiative; making the **same chain** answer an
+ explicit order (`@bot raccogli le carote`, with the village register it reads
+the plot from) is the subject of
+[village reconnaissance](village-recon.md).
+
 ## Milestone 8 — Autonomy narration (implemented)
 
 *Numbering note: the label follows the wording of the request that authorised
