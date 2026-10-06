@@ -3456,3 +3456,38 @@ and tracked no weather at all.
   chests" is now the first V0/V2 acceptance case because it exercises register,
   memory read path, staleness discipline and the take/deposit symmetry without
   involving a single farming mechanic.
+
+## [2026-10-06] ingest | Boarding the human's vehicle: detect, decide, act
+
+- Question that started this (from the owner): *"if I tell the bot 'follow me' and
+  then get on a boat, does it sit behind me or does it stay on dry land?"* The
+  answer was "it stays ashore", for two independent reasons — `follow_player` is
+  a locomotion intent whose only primitive is `_moveTo` (`survival/intents.mjs`),
+  and its option disappears on deep water because the gate is
+  `entityApproachable(follow, {range: 3, dy: 2})`; the mount itself is blocked by
+  the server never sending `set_entity_link` for our `interact`. The owner then
+  asked for the mission: `follow_player → detect_mount_state →
+  join_same_mount_if_seat_available → resume_follow_on_dismount`, with three
+  adjustments — capacity per **entity** (`mountCapacity`/`seatInfo`) instead of
+  per type name, `human_mount_full` and `human_mount_unsupported` kept as
+  distinct typed refusals, and `join_human_mount` ranked above **every**
+  locomotion fallback (not only above `mount_*`), because chasing a boat is not
+  a way of reaching it.
+- Split implemented: **detect** (rider links kept for every rider in
+  `entityLinks`, `riding` flag read on non-self entities, `_humanMountView()` with
+  sources `link`/`proximity`), **decide** (`bedrock-mount-follow.mjs`: pure state
+  machine `FOLLOWING → HUMAN_MOUNT_DETECTED → JOINING_HUMAN_MOUNT →
+  RIDING_WITH_HUMAN → FOLLOWING`, exits to `WAITING_AT_SHORE` with typed reasons),
+  **act** (`join_human_mount` dispatched before `mount_boat`/`mount_*` and every
+  locomotion fallback, `optionPriority` 1.5, `_joinHumanMount` targeting the
+  human vehicle's `runtimeId`).
+- Boundary chosen: the real join is behind `BEDROCK_JOIN_HUMAN_MOUNT=1` (default
+  off), because the server does not confirm the interact — the capture described
+  in [open-questions](wiki/open-questions.md) §Mounting is still the unblocking
+  fact. What runs in production is the *refusal*: no 45 s of silent stalling, a
+  typed reason in the logs and a `mount_waiting_shore` line with coordinates, once
+  per episode.
+- Evidence: `tests/bedrock-mount-follow.test.mjs` (15 cases) and
+  `tests/controller-mount-follow.test.mjs` (2 scripted-harness cases); full suite
+  1602/1602. Synthesis in [companions](wiki/companions.md) (§2026-10-06) and
+  [open-questions](wiki/open-questions.md) §Mounting.

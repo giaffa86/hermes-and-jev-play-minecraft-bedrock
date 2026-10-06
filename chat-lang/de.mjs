@@ -12,6 +12,7 @@ export default Object.freeze({
   stopped: '@{name} ich höre hier auf: {reason}',
   lost: '@{name} ich sehe dich nicht mehr: ich warte hier. Wenn du zu weit weggehst, schreib mir "{prefix} folge mir".',
   escort_waiting: '@{name} ich warte hier: ich bin bei x {x}, y {y}, z {z}.',
+  mount_waiting_shore: '@{name} ich konnte nicht auf dein {mount} steigen: ich warte hier bei x {x}, y {y}, z {z}.',
   follow_suffix: ' — ich komme zu {from}',
   objective_received: 'Auftrag erhalten',
   objective_default: 'Auftrag',

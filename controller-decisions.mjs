@@ -23,9 +23,16 @@ export function parseDistance (description) {
 }
 
 // Lower = more relevant when the option set has to be capped.
-// 0 survival | 1 recover loot | 2 drop pickup | 3 skill intent | 4 target hit |
-// 4.5 valuable ore (opportunity) | 5 progression crafts/places |
-// 6 travel and digging | 7 generic mining | 10 wait.
+// 0 survival | 1 drop pickup | 1.5 boarding the human's mount | 2 following the
+// human | 3 skill intent | 4 target hit | 4.5 valuable ore (opportunity) |
+// 5 progression crafts/places | 6 travel and digging | 7 generic mining |
+// 10 wait.
+//
+// The 1.5 tier is the boat: while the human is under way, following on foot
+// cannot work, so boarding their spare seat outranks the follow order itself,
+// every generic `mount_*` (which boards *some* nearby vehicle, not theirs) and
+// every locomotion fallback (seek/swim/goto), which would chase the boat
+// instead of reaching it.
 //
 // The 4.5 tier is the option-level half of the opportunity layer: a diamond or
 // gold vein is worth taking even when the plan aims elsewhere, because the
@@ -35,6 +42,7 @@ export function optionPriority (option, { targets = {}, preferredIntents = [] } 
   const key = option?.key || '';
   if (SURVIVAL_KEYS.has(key) || key.startsWith('attack_')) return 0;
   if (key === 'collect_drop') return 1;
+  if (key === 'join_human_mount') return 1.5; // l'umano sta salpando senza di noi
   if (key === 'follow_player') return 2; // ordine umano "seguimi"
   if (key === 'construction_step' || key === 'construction_supply') return 3;
   if (preferredIntents.length && keyMatchesIntents(key, preferredIntents)) return 3;

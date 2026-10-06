@@ -35,7 +35,7 @@ import {
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
 import {planGreetings, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
-import {orderAck, orderOutcome, lostNotice, escortWaiting, isSelfTriggering, normalizePrefixes, matchChatPrefix, selfPrefixes, renderReply, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
+import {orderAck, orderOutcome, lostNotice, escortWaiting, mountWaitingShore, isSelfTriggering, normalizePrefixes, matchChatPrefix, selfPrefixes, renderReply, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
 import {answerIntent, renderAnswer, renderNoArmor, renderNoDrop, renderNoItem, renderUnrouted, looksLikeSmallTalk} from './human-questions.mjs';
 import {resolveQuestionIntent, DEFAULT_INTENT_TIMEOUT_MS, DEFAULT_INTENT_MIN_P} from './chat-intent.mjs';
 import {composeChatReply, chatLlmConfig, compactChatFacts, createChatMemory} from './chat-llm.mjs';
@@ -86,6 +86,11 @@ const LOST_NOTICE_COOLDOWN_MS = +(process.env.LOST_NOTICE_COOLDOWN_MS || 120000)
 // entrambi i casi (umano dietro, umano fuori vista), cosi' un'attesa lunga non
 // diventa una raffica di righe in chat.
 const ESCORT_WAITING_COOLDOWN_MS = +(process.env.ESCORT_WAITING_COOLDOWN_MS || 60000);
+// L'umano sta salpando e il bot e' rimasto a riva: qui il messaggio non dice
+// solo dove si trova (come la scorta), dice anche *cosa* non e' riuscito a fare.
+// Stesso schema: uno per episodio d'attesa, con cooldown, riarmato quando il
+// quadro cambia (l'umano sbarca, il mezzo si libera, il bot sale).
+const MOUNT_WAITING_COOLDOWN_MS = +(process.env.MOUNT_WAITING_COOLDOWN_MS || 60000);
 // Quanto si aspetta, a passi fermi, che l'umano perso torni: oltre questo tetto
 // l'ordine viene rilasciato (il bot non resta immobile per sempre).
 const LOST_HOLD_MAX_STEPS = +(process.env.LOST_HOLD_MAX_STEPS || 120);
@@ -810,6 +815,8 @@ async function replyChat (message, {to = null, context = null, prefixes = CHAT_P
 let escortWaitingSent = false;
 let escortHoldNoticeSent = false;
 let lastEscortWaitingAt = 0;
+let mountWaitingSent = false;
+let lastMountWaitingAt = 0;
 
 // La scorta si e' fermata ad aspettare: una riga con le proprie coordinate.
 // `episode` sceglie il flag da consumare — 'wait' e' "sei rimasto indietro",
@@ -826,6 +833,22 @@ async function noticeEscortWaiting (target, {reason, episode, obs, step}) {
   console.log(`ESCORT WAITING ${target}: dico dove aspetto (${reason})`);
   log('escort_waiting', {step, target: target ?? null, reason, episode, position: obs?.position ?? null, gap: obs?.escort?.gap ?? null});
   return replyChat(notice, {to: target ?? null, context: 'escort_waiting'});
+}
+
+// L'umano si e' imbarcato e il bot non e' salito: una riga con il mezzo e le
+// proprie coordinate, perche' chi sta salpando non puo' vedere ne' che il bot e'
+// rimasto a riva ne' da dove recuperarlo. Un messaggio per episodio, con
+// cooldown; l'episodio si chiude quando lo stato non e' piu' `WAITING_AT_SHORE`.
+// Best-effort come ogni altra risposta: se `/say` non riesce resta nei log.
+async function noticeMountWaiting (target, {reason, mount, obs, step}) {
+  if (mountWaitingSent || Date.now() - lastMountWaitingAt <= MOUNT_WAITING_COOLDOWN_MS) return null;
+  const notice = mountWaitingShore({from: target ?? null, position: obs?.position ?? null, mount: mount?.type ?? null, lang: CHAT_LANG});
+  if (!notice) return null; // nessuna posizione (o nessun mezzo): si tace, non si inventa
+  mountWaitingSent = true;
+  lastMountWaitingAt = Date.now();
+  console.log(`MOUNT WAITING ${target}: dico dove aspetto (${reason})`);
+  log('mount_waiting_shore', {step, target: target ?? null, reason, mount: mount?.type ?? null, mountId: mount?.runtimeId ?? null, free: mount?.free ?? null, seats: mount?.seats ?? null, source: mount?.source ?? null, position: obs?.position ?? null});
+  return replyChat(notice, {to: target ?? null, context: 'mount_waiting_shore'});
 }
 
 // Saluto proattivo: un umano fidato percepito vicino riceve una volta (con
@@ -1119,6 +1142,7 @@ let stepsUsed = 0;
 let prevObs = null;             // osservazione del passo precedente (eventi del mondo)
 let lastFollowTarget = null;    // ultimo ordine "seguimi" annunciato nei log
 let lastEscortTarget = null;    // ultima scorta annunciata nei log
+let lastMountTarget = null;     // ultimo ordine "sali sul mezzo dell'umano" annunciato nei log
 let lastNeedKey = null;         // ultimo bisogno di sopravvivenza annunciato nei log
 let lastCraftKey = null;        // ultimo passo di approvvigionamento annunciato nei log
 let lastEquipKey = null;        // ultimo ordine di equipaggiamento annunciato nei log
@@ -1369,6 +1393,28 @@ for (let step = 1; step <= maxSteps; step++) {
   } else if (obs.escort?.waiting !== true) {
     escortWaitingSent = false;
   }
+  // L'umano si e' imbarcato e c'e' un posto per il bot: salire *su quel mezzo* e'
+  // una scelta deterministica che sta prima della scorta e di ogni fallback di
+  // locomozione. Senza questa precedenza il bot inseguirebbe la barca a riva (o
+  // salirebbe su un'altra barca col ramo `mount_*` generico), che e' esattamente
+  // il comportamento da chiudere. Non e' stagnazione: l'attesa a riva e' il
+  // tempo che l'umano torni o liberi un posto.
+  const mountKey = !needKey && goal.follow && filtered.options.some(o => o.key === 'join_human_mount') ? 'join_human_mount' : null;
+  if (mountKey && lastMountTarget !== goal.follow) {
+    lastMountTarget = goal.follow ?? null;
+    console.log(`MOUNT ORDER ${goal.follow}: sale sul mezzo dell'umano (nessuna chiamata al modello)`);
+    log('join_human_mount_order', {step, key: mountKey, target: goal.follow ?? null, mount: obs.mountFollow?.mount?.type ?? null, free: obs.mountFollow?.mount?.free ?? null, source: obs.mountFollow?.mount?.source ?? null});
+  } else if (!mountKey) {
+    lastMountTarget = null;
+  }
+  // Non e' salito: lo dice una volta, con le coordinate. `mount` e' la vista del
+  // mezzo dell'umano; il motivo tipizzato (`human_mount_full`, `join_disabled`,
+  // `mount_not_confirmed`...) va nei log, non in chat.
+  if (goal.follow && obs.mountFollow?.state === 'WAITING_AT_SHORE') {
+    await noticeMountWaiting(goal.follow, {reason: obs.mountFollow?.reason ?? null, mount: obs.mountFollow?.mount ?? null, obs, step});
+  } else if (obs.mountFollow?.state !== 'WAITING_AT_SHORE') {
+    mountWaitingSent = false;
+  }
   const lostFollow = !!goal.follow && !needKey && !followKey;
   if (lostFollow) lostFollowSteps += 1; else lostFollowSteps = 0;
   if (needKey && lastNeedKey !== needKey) {
@@ -1543,6 +1589,8 @@ for (let step = 1; step <= maxSteps; step++) {
   }
   const decision = needKey
     ? {key: needKey, reason: 'survival_' + (needIntent || 'need') + ':' + needKey, source: 'survival_need'}
+    : mountKey
+    ? {key: mountKey, reason: `join_human_mount:${goal.follow}:${obs.mountFollow?.mount?.type ?? ''}`, source: 'join_human_mount'}
     : escortKey
     ? {key: escortKey, reason: `escort_order:${goal.escort?.from ?? ''}`, source: 'escort_order'}
     : followKey
@@ -1566,7 +1614,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // lo stato desiderato (l'umano e' li'), non un loop da punire con l'anti-loop.
   // Ne' una ricerca ne' un'attesa di recupero sono stagnazione: la prima ha un
   // bersaglio verificato dall'harness, la seconda e' il tempo che l'umano torni.
-  chosenFingerprint = pursuitKey || escortKey || lostWaitKey || craftKey || equipKey || dropKey || collectKey ? null : progressFingerprint(obs, plan);
+  chosenFingerprint = pursuitKey || escortKey || mountKey || lostWaitKey || craftKey || equipKey || dropKey || collectKey ? null : progressFingerprint(obs, plan);
   const actStarted = Date.now();
   let result = await api('POST', '/act', {key});
   // `busy` non è un verdetto sull'azione: il harness sta ancora eseguendo
@@ -1602,7 +1650,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // Un bisogno risolto in pochi ms (notte saltata) non deve far girare il loop
   // a vuoto; il fingerprint resta comunque contato per il bisogno, cosi' un
   // `sleep` che fallisce e si ripete finisce nell'anti-loop.
-  if ((pursuitKey || escortKey || needKey || lostWaitKey || equipKey || dropKey || collectKey || craftKey) && result?.ok && (result.ms ?? 0) < 250) await delay(FOLLOW_IDLE_POLL_MS);
+  if ((pursuitKey || escortKey || mountKey || needKey || lostWaitKey || equipKey || dropKey || collectKey || craftKey) && result?.ok && (result.ms ?? 0) < 250) await delay(FOLLOW_IDLE_POLL_MS);
   if ((goal.follow || goal.escort) && step >= maxSteps) {
     // Il budget si rinnova finche' l'ordine umano resta aperto: l'impegno
     // finisce con un altro ordine (o con un'emergenza che preempta il goal).

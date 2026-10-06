@@ -12,6 +12,7 @@ export default Object.freeze({
   stopped: '@{name} me paro aquí: {reason}',
   lost: '@{name} ya no te veo: te espero aquí. Si te alejas demasiado, escríbeme "{prefix} sígueme".',
   escort_waiting: '@{name} te espero aquí: estoy en x {x}, y {y}, z {z}.',
+  mount_waiting_shore: '@{name} no he podido subir a tu {mount}: te espero aquí en x {x}, y {y}, z {z}.',
   follow_suffix: ' — voy hacia {from}',
   objective_received: 'orden recibida',
   objective_default: 'orden',

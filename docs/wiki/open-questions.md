@@ -228,6 +228,20 @@ The optional conclusive live round for `6984ea8` is deferred.
   from the room, `no_boat_nearby` without a boat) instead of spending 20-26 s, and
   `ride`/`follow_player` answer `not_riding`/`no_player_target` with a hint
   instead of `unknown_action`.
+- Update 2026-10-06 — **the same missing link now blocks a second, narrower ask:
+sitting on the human's boat.** The chain around it is implemented and in
+  production (rider links kept for every rider, `riding` flag read on non-self
+  entities, `seatInfo`/`mountCapacity`, the pure state machine
+  `bedrock-mount-follow.mjs`, the `join_human_mount` option ranked above
+  `mount_*` and every locomotion fallback), and the *real* join is behind
+  `BEDROCK_JOIN_HUMAN_MOUNT=1` (default off) precisely because the server never
+  confirms our `interact`: with the flag on it would end `mount_not_confirmed`
+  like `mount_donkey`. The packet capture below is therefore still the one
+  unblocking fact for both. What no longer waits on it is the *refusal*: the bot
+  stops the silent chase, says where it is waiting (`mount_waiting_shore`, once
+  per episode) and logs a typed reason (`human_mount_full`,
+  `human_mount_unsupported`, `human_mount_unreachable`, `join_disabled`,
+  `human_mount_attempts_exhausted`).
 
 ## Containers outside the walkable component (2026-10-03)
 
