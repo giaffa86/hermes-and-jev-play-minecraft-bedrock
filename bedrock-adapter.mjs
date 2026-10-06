@@ -85,6 +85,17 @@ const MAX_CORRECTION_DRIFT = 0.75; // oltre questa distanza la correzione è aut
 // BDS 1.26.52: se il respawn non si completa entro questo tempo, si riconnette
 // (nuovo login = unico recovery noto dalla morte bloccata). Vedi _survivalTick.
 const RESPAWN_RECONNECT_MS = +(process.env.RESPAWN_RECONNECT_MS || 25000);
+// Rinfrescare lo specchio degli slot riconnettendosi è l'ultima spiaggia: il
+// BDS che non ha ancora rilasciato la sessione NetherNet risponde
+// `connecterror:9` (= `ErrorCode.InactivityTimeout` della negoziazione,
+// nethernet/src/signalling.js:18) e ogni tentativo in più peggiora la
+// situazione (live demo-r2: `[connect] attempt 5/6/8 failed` fino al restart
+// del container). Prima si chiede l'inventario alla finestra del giocatore,
+// che non tocca la sessione; fra disconnect e connect si lascia al server il
+// tempo di rilasciare; e due riconnessioni ravvicinate si rifiutano.
+const INVENTORY_RESYNC_SETTLE_MS = +(process.env.INVENTORY_RESYNC_SETTLE_MS || 1500);
+const INVENTORY_RESYNC_COOLDOWN_MS = +(process.env.INVENTORY_RESYNC_COOLDOWN_MS || 30000);
+const INVENTORY_REFRESH_TIMEOUT_MS = +(process.env.INVENTORY_REFRESH_TIMEOUT_MS || 4000);
 // Velocità degli utensili per materiale (vanilla, secondi-blocco/tick): il
 // registry Bedrock usa id diversi da quelli di rete, quindi la corrispondenza
 // utensile/materiale va dedotta dal nome.
@@ -597,6 +608,12 @@ export class BedrockAdapter {
     // standalone è seguita da un resync dell'inventario, che è il segnale con cui
     // il server rifiuta la transazione. Il contatore misura quel rifiuto.
     this._invResyncCount = 0;
+    // Snapshot dell'inventario del giocatore accettati: sono il segnale con cui
+    // un refresh in-place (`_refreshInventoryFromServer`) sa di aver ricevuto
+    // gli slot freschi senza essersi riconnesso.
+    this._playerSnapshotCount = 0;
+    this._playerSnapshotWaiters = [];
+    this._lastInventoryReconnectAt = 0;   // limite di frequenza delle riconnessioni da resync
     this._rxLog = [];                // anello dei nomi di pacchetto ricevuti (diagnostica)
     this.tradeTarget = null;           // { type, runtimeId, uniqueId, position, distance, profession? }
     this.tradeDisplayName = null;      // professione/descrizione mostrata nella UI di trading
@@ -1727,6 +1744,8 @@ export class BedrockAdapter {
     this.inventorySlots = slotList;
     if (isFullPlayerInventory) this._absorbPickups('inventory_snapshot');
     this._refreshInventory();
+    this._playerSnapshotCount++;
+    for (const waiter of this._playerSnapshotWaiters.splice(0)) waiter(this._playerSnapshotCount);
     return true;
   }
 
@@ -8224,15 +8243,87 @@ export class BedrockAdapter {
     });
   }
 
+  _waitForPlayerSnapshot (since, timeoutMs = INVENTORY_REFRESH_TIMEOUT_MS) {
+    if (this._playerSnapshotCount > since) return Promise.resolve(this._playerSnapshotCount);
+    return new Promise(resolve => {
+      const waiter = value => { clearTimeout(timer); resolve(value); };
+      const timer = setTimeout(() => {
+        this._playerSnapshotWaiters = this._playerSnapshotWaiters.filter(w => w !== waiter);
+        resolve(0);
+      }, timeoutMs);
+      this._playerSnapshotWaiters.push(waiter);
+    });
+  }
+
+  // Il resync in-place è lecito solo dove riaprire la finestra non distrugge
+  // lavoro in corso: un baule aperto si chiuderebbe, e una griglia di crafting
+  // con ingredienti dentro o uno stack sul cursore andrebbero persi.
+  _canRefreshInventoryInPlace () {
+    if (!this._openContainer) return true;
+    if (this._openContainer.type !== 'inventory') return false;
+    return !this._cursor && this._craftingGrid.size === 0;
+  }
+
+  // Rinfresca `inventorySlots` **senza** toccare la sessione: aprire la finestra
+  // del giocatore fa rispondere al server un `inventory_content` a 36 slot con
+  // stack id freschi, e la finestra si richiude subito dopo. Ritorna true solo
+  // quando lo snapshot è arrivato e stato accettato.
+  async _refreshInventoryFromServer ({ timeoutMs = INVENTORY_REFRESH_TIMEOUT_MS } = {}) {
+    if (!this.client || !this.spawned) return false;
+    if (!this._canRefreshInventoryInPlace()) return false;
+    const before = this._playerSnapshotCount;
+    const wait = this._waitForPlayerSnapshot(before, timeoutMs);
+    try {
+      if (this._openContainer) await this._closeContainer();
+      await this._ensureInventoryOpen();
+    } catch (error) {
+      this.log('inventory_refresh_failed', { message: error.message });
+      await this._closeContainer().catch(() => {});
+      return false;
+    }
+    const got = await wait;
+    await this._closeContainer().catch(() => {});
+    this.log('inventory_refresh', { ok: !!got, slots: this.inventorySlots.filter(s => s?.network_id).length });
+    return !!got;
+  }
+
   async _resyncByReconnect () {
     const signal = this._actionScope?.getStore()?.signal;
     if (signal?.aborted) throw new Error('action_cancelled');
     if (!this.client || !this.spawned) throw new Error('not_connected');
     this.log('inventory_resync', { reason: 'slot ids stale after pickups; reconnecting for fresh inventory_content' });
+    // 1) la strada che non tocca la sessione NetherNet: chiedere l'inventario.
+    const refreshed = await this._refreshInventoryFromServer({ timeoutMs: this._inventoryRefreshTimeoutMs ?? INVENTORY_REFRESH_TIMEOUT_MS });
+    if (refreshed) {
+      this.log('inventory_resync_done', { via: 'refresh', trackedSlots: this.inventorySlots.filter(s => s?.network_id).length });
+      return;
+    }
+    if (signal?.aborted) throw new Error('action_cancelled');
+    // 2) riconnessione, con un limite di frequenza: contro un BDS che non ha
+    //    rilasciato la sessione è l'unica via che resta, ma ripeterla la rompe.
+    const sinceLast = Date.now() - this._lastInventoryReconnectAt;
+    if (this._lastInventoryReconnectAt && sinceLast < INVENTORY_RESYNC_COOLDOWN_MS) {
+      this.log('inventory_resync_throttled', { sinceLastMs: sinceLast, cooldownMs: INVENTORY_RESYNC_COOLDOWN_MS });
+      throw new Error('inventory_resync_throttled');
+    }
+    this._lastInventoryReconnectAt = Date.now();
     await this.disconnect('inventory resync');
     if (signal?.aborted) throw new Error('action_cancelled');
-    await this.connect();
-    this.log('inventory_resync_done', { trackedSlots: this.inventorySlots.filter(s => s?.network_id).length });
+    await delay(this._resyncSettleMs ?? INVENTORY_RESYNC_SETTLE_MS);
+    try {
+      await this.connect();
+    } catch (error) {
+      this.log('inventory_resync_wedged', { message: error.message, connectError: this.connectError?.message ?? null });
+      throw new Error(`inventory_resync_wedged: ${error.message}`);
+    }
+    // Un `connect()` che risolve senza spawn lascia il bot senza inventario e
+    // senza poter agire: meglio dirlo che far credere al chiamante di avere
+    // stack id freschi.
+    if (!this.spawned || !this.client) {
+      this.log('inventory_resync_wedged', { message: 'no spawn after reconnect', connectError: this.connectError?.message ?? null });
+      throw new Error(`inventory_resync_wedged: ${this.connectError?.message || 'no spawn'}`);
+    }
+    this.log('inventory_resync_done', { via: 'reconnect', trackedSlots: this.inventorySlots.filter(s => s?.network_id).length });
   }
 
   async _craftAttempt (itemName, candidates) {

@@ -1,5 +1,49 @@
 # Log
 
+## [2026-10-06] fix | The inventory resync asks the window before it drops the session
+
+Run 2 of the diamond mission refreshed the inventory mirror the only way the
+adapter had — `_resyncByReconnect`: `disconnect` then `connect` — and the BDS
+answered `connecterror:9`, retrying `[connect] attempt 5/6/8` until the bot
+container was restarted. That code is nethernet's `ErrorCode.InactivityTimeout`
+(`node_modules/nethernet/src/signalling.js:18`, armed in `src/client.js:210`):
+the negotiation never completes because the server still holds the previous
+session, and every retry adds another half-open one. The reconnect existed for a
+single purpose — a fresh `inventory_content` with fresh stack ids — and the
+server sends exactly that when the player window is opened (`interact
+open_inventory`), without touching the session.
+
+`_resyncByReconnect` now:
+
+1. tries `_refreshInventoryFromServer(...)` first: close a **clean** player
+   window if one is open, `_ensureInventoryOpen()`, wait for an accepted 36-slot
+   snapshot (`_playerSnapshotCount`/`_waitForPlayerSnapshot`), close again;
+   logged `inventory_refresh` and `inventory_resync_done {via:'refresh'}`. It
+   refuses to touch a window an action is using — any other container (a chest),
+   a non-empty crafting grid or a stack on the cursor — and sends those paths to
+   the reconnect (`_canRefreshInventoryInPlace`);
+2. only then reconnects, after `INVENTORY_RESYNC_SETTLE_MS` (1500 ms) so the
+   server can release the old session, at most once every
+   `INVENTORY_RESYNC_COOLDOWN_MS` (30 s) — a second attempt inside the cooldown
+   throws `inventory_resync_throttled` instead of hammering a BDS that is
+   already refusing — and reports a reconnect that failed or never spawned as
+   `inventory_resync_wedged` (`connectError` included) rather than pretending the
+   slots are fresh.
+
+`tests/bedrock-resync.test.mjs` pins the eight behaviours (refresh without a
+reconnect, the fallback, the cooldown, a wedge on a failed connect, a wedge on a
+connect without spawn, an open chest left alone, `not_connected` up front, and a
+cursor item never dropped); the suite is 1773/1773.
+
+The other four items of that run's report are already fixed and documented:
+`recover_loot` duplicating the mirror and the short snapshot that wiped it
+(`7291278`, `f74e11d`), the torch craft that did not know what it had placed in
+its own grid (`5fa6f04`), the deposit verified on a prediction instead of on the
+chest (`f74e11d`), and `anvil_input`, which turned out not to be the wipe. Run 2
+itself ended with six ore blocks destroyed according to the run report and no
+deposit: the ledger with the coordinates lives in the harness container
+(`runs/demo-r2`), so this entry does not quote them.
+
 ## [2026-10-06] fix | The exploration drivers never imported the run resolver
 
 The `RUNS_DIR` plumbing replaced the hardcoded `runs/<id>` in every entry point

@@ -321,8 +321,11 @@ sitting on the human's boat.** The chain around it is implemented and in
   while spawned (`bedrock-adapter.mjs:589` → `_authTick`), so an earlier reading of this
   section ("the client stops producing traffic while the walk fails, and the server times
   the session out") no longer explains it. The only deliberate disconnect in the adapter
-  is `_resyncByReconnect` (`bedrock-adapter.mjs:5889`), which logs `inventory_resync`
-  first — that is not what happened in any of these drops.
+  is `_resyncByReconnect` in `bedrock-adapter.mjs`, which logs `inventory_resync`
+  first — and since 06/10 it no longer drops the session by default: it asks the
+  player window for a fresh `inventory_content` and reconnects only when that
+  fails (see *The resync wedged the server* below). That is not what happened in
+  any of these drops.
 - **Recovery is automatic**: `onDisconnect` → `startConnectionWorker(10000)` →
   `connectLoop` retries until the bot is spawned again (`bedrock-harness.mjs:124-138`).
   On 03/10 the bot came back **by itself** twice with its inventory intact, so a BDS
@@ -1239,6 +1242,34 @@ goal and both fixed with a regression test (see [log.md](../log.md), entry
   pins the three behaviours; a second hole (a **short** player snapshot wiping the
   mirror after a reconnect, now `inventory_snapshot_ignored`) is pinned in
   `tests/bedrock-inventory-mirror.test.mjs`.
+
+## The resync wedged the server (06/10/2026)
+
+Run 2's deposit loop ended with the server refusing every new session:
+`connecterror:9` on `[connect] attempt 5/6/8`, until the bot container was
+restarted. The cause was the only refresh path the adapter had: `_resyncByReconnect`
+dropped the session and reconnected immediately, purely to receive a fresh
+`inventory_content` with new stack ids. `connecterror:9` is nethernet's
+`ErrorCode.InactivityTimeout` (`node_modules/nethernet/src/signalling.js:18`,
+armed at `src/client.js:210`): the negotiation never completes because the BDS
+still holds the previous session, and the retry loop only piles up half-open ones.
+
+Fixed in three parts, all pinned by `tests/bedrock-resync.test.mjs`: ask the
+player window first (`_refreshInventoryFromServer` — `open_inventory` makes the
+server send the 36 slots, no session touched), let the server settle before a
+reconnect (`INVENTORY_RESYNC_SETTLE_MS`, 1500 ms), and refuse a second reconnect
+inside `INVENTORY_RESYNC_COOLDOWN_MS` (30 s) with a typed
+`inventory_resync_throttled`; a reconnect that fails or never spawns is reported
+as `inventory_resync_wedged` instead of leaving a stale mirror silently. The
+in-place refresh is skipped whenever it would destroy work in progress — any
+other container open (a chest), a non-empty crafting grid, or a stack on the
+cursor — so those paths still reconnect, after the settle delay.
+
+*Open*: no live run has exercised the new path yet. Two numbers to watch in the
+next round: whether the player-window refresh is enough for the deposit path
+(there the chest **is** open, so it falls back to the reconnect by design) and
+whether `INVENTORY_RESYNC_SETTLE_MS` = 1500 ms matches this world's session
+release time. Both are guesses, not measurements.
 
 ## The crafting grid and the torch the server refused (06/10/2026)
 

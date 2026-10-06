@@ -224,6 +224,18 @@ Item movement, crafting and smelting are `item_stack_request` transactions
   (`tests/bedrock-storage.test.mjs`). The live proof is still pending — both attempts ended
   with the server dropping the session at ~34 s (`container_read_failed` → `not_connected`),
   the transport failure of [row 47.34](verification.md), not a fault of the filter.
+- **Refreshing the mirror must not cost the session.** Fresh stack ids used to come
+  only from a reconnect (`disconnect` + `connect`), which against a BDS that has not
+  released the previous NetherNet session fails with `connecterror:9` (negotiation
+  `InactivityTimeout`) and gets worse with every retry. A player-window refresh is
+  enough: `interact open_inventory` makes the server send `inventory_content` with
+  the 36 slots. `_resyncByReconnect` tries that first (`_refreshInventoryFromServer`,
+  logged `inventory_refresh`, then `inventory_resync_done {via:'refresh'}`),
+  reconnects only as a fallback — after `INVENTORY_RESYNC_SETTLE_MS`, at most once per
+  `INVENTORY_RESYNC_COOLDOWN_MS` (`inventory_resync_throttled`, 30 s) — and reports
+  `inventory_resync_wedged` when the reconnect does not spawn. The in-place path
+  refuses to close a window an action is using: a chest, a non-empty crafting grid or
+  a stack on the cursor (`_canRefreshInventoryInPlace`).
 - `POST /debug/isr` (BEDROCK_DEBUG) drives one stack request by hand
   (`type_id`/`count`/`source`/`destination`/…), can open a container first (`container`) and,
   with `apply`, records the answer in the local model — the same bookkeeping a real action
