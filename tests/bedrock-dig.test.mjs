@@ -394,6 +394,22 @@ test('options offer craft_stone_pickaxe with materials and a nearby table', () =
   assert.equal(adapter.options().some(o => o.key === 'craft_stone_pickaxe'), false);
 });
 
+test('options offer craft_iron_pickaxe with materials and a nearby table', () => {
+  const { adapter } = digAdapter();
+  adapter.world.findBlocks = name => name === 'crafting_table' ? [{ position: { x: 93, y: 72, z: 146 }, distance: 2 }] : [];
+  adapter.drops = [];
+  adapter.nearbyBlocks = {};
+  adapter.inventory = { iron_ingot: 3, stick: 2 };
+  adapter.inventorySlots = [];
+  adapter.recipes = new Map([['iron_pickaxe', [{ kind: 'shaped', network_id: 1730 }]]]);
+  adapter.craftingData = { shaped_recipes: [], shapeless_recipes: [] };
+  assert.equal(adapter.options().some(o => o.key === 'craft_iron_pickaxe'), true);
+  adapter.inventory.iron_ingot = 2;
+  assert.equal(adapter.options().some(o => o.key === 'craft_iron_pickaxe'), false, 'three ingots are required');
+  adapter.inventory = { iron_ingot: 3, stick: 2, iron_pickaxe: 1 };
+  assert.equal(adapter.options().some(o => o.key === 'craft_iron_pickaxe'), false, 'do not craft a redundant iron-tier pickaxe');
+});
+
 // Il tier rame (The Copper Age, Bedrock 1.21.111+): spada, utensili e armatura.
 // "Bronzo" non esiste in vanilla, il materiale fra pietra e ferro è il rame.
 // L'opzione si offre solo se serve: nessun attrezzo dello stesso tipo con rango

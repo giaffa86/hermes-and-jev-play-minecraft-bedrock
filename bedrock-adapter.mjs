@@ -4187,6 +4187,11 @@ export class BedrockAdapter {
           this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
         o.push({ key: 'craft_stone_pickaxe', description: 'Craft a stone pickaxe at the crafting table (3 cobblestone + 2 sticks)' });
       }
+      if (this.recipes.has('iron_pickaxe') && (this.inventory.iron_ingot || 0) >= 3 && (this.inventory.stick || 0) >= 2 &&
+          this.world.findBlocks('crafting_table', this.position, 32, 1).length &&
+          !Object.entries(this.inventory).some(([name, count]) => count > 0 && /^(iron|diamond|netherite)_pickaxe$/.test(name))) {
+        o.push({ key: 'craft_iron_pickaxe', description: 'Craft an iron pickaxe at the crafting table (3 iron ingots + 2 sticks)' });
+      }
       if (this.recipes.has('wooden_sword') && planksHeld && (this.inventory[planksHeld] || 0) >= 2 && (this.inventory.stick || 0) >= 1 &&
           this.world.findBlocks('crafting_table', this.position, 32, 1).length) {
         o.push({ key: 'craft_wooden_sword', description: 'Craft a wooden sword at the crafting table (2 planks + 1 stick)' });
