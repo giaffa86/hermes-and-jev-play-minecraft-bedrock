@@ -11,6 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { BedrockWorld } from './bedrock-world.mjs';
 import { HIVE_BLOCKS, BEE_CRAFT_ITEMS, BEE_SCAN_RADIUS, BEE_SCAN_LIMIT, isBeeProtected, hiveVerdict, honeyLevel, beeFlower, beeFlowerCount } from './bedrock-bees.mjs';
 import { trackNethernetClient, closeBedrockClient } from './bedrock-lifecycle.mjs';
+import { tagCount } from './survival/item-tags.mjs';
 import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isMilkableType, isTameableType, isRideTameableType, isCompanionType, isRideableType, animalFeed, tameFeed, cropForSeed, cropMaturity, seedForCrop, isCropBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS, FOODS, LAST_RESORT_FOODS, BUCKET_INGREDIENTS, SHIELD_INGREDIENTS, STARVING_FOOD } from './bedrock-survival.mjs';
 import { professionName, normalizeProfession, professionMatches, pickBestTrade } from './bedrock-trading.mjs';
 import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, bobberVerdict, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
@@ -190,6 +191,13 @@ const DEPOSIT_KEEP_RESERVE = 16;
 // dentro il timeout e lascia al controller la possibilità di ripeterla.
 const DEPOSIT_MAX_STACKS = 8;
 const DEPOSIT_FOOD_ITEMS = new Set([...FOODS, ...LAST_RESORT_FOODS]);
+// Kit di partenza di una spedizione in grotta. I numeri stanno qui e la skill
+// `prep_cave_trip` dichiara gli stessi: un test li tiene allineati. Serve perché
+// il 06/10/2026 in chat il bot promise «porterei letto, torce e piccone di
+// riserva» mentre in zaino non c'era niente di tutto ciò: una promessa va
+// verificata sullo stato, non ripetuta a memoria.
+const TRIP_KIT_REQUIREMENTS = Object.freeze({ beds: 1, torches: 8, pickaxes: 2, food: 1 });
+export { TRIP_KIT_REQUIREMENTS };
 // TTL del «non si è aperto adesso»: un contenitore che non si apre costa fino a ~18 s
 // di tentativi (live 04/10/2026: la cassa ricordata a (93,72,160) non esiste più — in
 // quel punto il mondo ha il baule un blocco più in alto — e `take_egg` finiva in
@@ -3692,6 +3700,21 @@ export class BedrockAdapter {
     return { ok: false, error: 'baby_not_observed', type: 'bee', fed };
   }
 
+  // Stato reale del kit da spedizione, non il piano: letto, luce, un piccone di
+  // riserva e cibo. `missing` dice cosa manca e di quanto, così la risposta in
+  // chat può elencare ciò che c'è e ciò che non c'è senza ricostruirlo a memoria.
+  _tripKitView () {
+    const inventory = this.inventory ?? {};
+    const have = {};
+    for (const tag of Object.keys(TRIP_KIT_REQUIREMENTS)) have[tag] = tagCount(inventory, tag);
+    const missing = Object.entries(TRIP_KIT_REQUIREMENTS)
+      .filter(([tag, min]) => have[tag] < min)
+      .map(([tag, min]) => ({ tag, have: have[tag], need: min }));
+    // Un piccone di riserva è il secondo, non il primo: il conteggio del tag è
+    // «quanti ne ho», quindi il numero utile è quello meno l'arnese in mano.
+    return { ...have, sparePickaxe: Math.max(0, have.pickaxes - 1), missing, ready: missing.length === 0 };
+  }
+
   observe () {
     const heldSlot = this.inventorySlots[this.selectedHotbar];
     const heldInfo = heldSlot?.network_id ? this.world.registry?.items[heldSlot.network_id] : null;
@@ -3753,6 +3776,7 @@ export class BedrockAdapter {
       spawned: this.spawned,
       time: this._timeInfo(),
       bed: bed ? { position: bed.position, distance: bed.distance } : null,
+      kit: this._tripKitView(),
       sleeping: this.sleeping,
       dead: this.dead,
       deaths: this.deaths,

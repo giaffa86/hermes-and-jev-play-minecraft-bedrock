@@ -399,6 +399,15 @@ step budget on instant `busy` replies; `controller.mjs` now retries with
 `HARNESS_BUSY_MAX_WAIT_MS` / `HARNESS_BUSY_POLL_MS` and logs `harness_busy`
 (`tests/controller-busy.test.mjs`: three `busy` replies then the action runs, two
 real steps, `GOAL MET after 2 actions`).
+- **The trip kit is a state, not a promise (06/10/2026)**: `observe().kit`
+(`_tripKitView`, `TRIP_KIT_REQUIREMENTS` in `bedrock-adapter.mjs`) reports what
+the bot **carries now** for a cave trip — bed, torches, pickaxes, food, with
+`sparePickaxe`, `missing` and `ready` — and `skills/gameplay/survival/prep_cave_trip.json`
+declares the same numbers as success criteria (a test keeps the two aligned).
+`observe().travel` stays the *readiness* view (what could be crafted: coal+sticks
+counts as light), which is exactly how a plan gets read as state. The sentence
+that started this — *"porterei letto, torce e piccone di riserva"* — was said
+while the inventory held one pickaxe, no bed and no torch.
 
 See [open-questions](open-questions.md) and [verification](verification.md).
 

@@ -30,12 +30,18 @@ const TAG_PREDICATES = {
   ender_pearls: name => name === 'ender_pearl',
   eyes_of_ender: name => name === 'ender_eye',
   beds: name => /_bed$/.test(name),
+  // Luce portatile per una spedizione: le torce vere, non la torcia di redstone
+  // (che è un componente e sta in `redstone_parts`).
+  torches: name => name === 'torch' || name === 'soul_torch',
   // Cibo "sicuro": la stessa lista di priorità usata dall'adapter per `eat`.
   food: name => FOODS.includes(name),
   stone_tools: name => /^stone_(pickaxe|axe|shovel|sword|hoe)$/.test(name),
   iron_tools: name => /^iron_(pickaxe|axe|shovel|sword|hoe)$/.test(name),
   diamond_tools: name => /^diamond_(pickaxe|axe|shovel|sword|hoe)$/.test(name),
   picks: name => /_(pickaxe|axe|shovel|hoe)$/.test(name),
+  // Solo i picconi, distinti da `picks` (che include asce/pale/zappe): «piccone
+  // di riserva» significa un secondo piccone, non un'ascia.
+  pickaxes: name => /_pickaxe$/.test(name),
   swords: name => /_sword$/.test(name),
   axes: name => /_axe$/.test(name),
   swords_or_axes: name => /_(sword|axe)$/.test(name),

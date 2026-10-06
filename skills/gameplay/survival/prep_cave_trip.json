@@ -1,0 +1,17 @@
+{
+  "id": "prep_cave_trip",
+  "description": "Leave for a cave trip with the kit a plan promises: a bed, light, a spare pickaxe and food.",
+  "category": "survival",
+  "preconditions": { "inventoryTagGte": { "coal": 1, "sticks": 2 } },
+  "success": {
+    "allOf": [
+      { "inventoryTagGte": { "beds": 1 } },
+      { "inventoryTagGte": { "torches": 8 } },
+      { "inventoryTagGte": { "pickaxes": 2 } },
+      { "inventoryTagGte": { "food": 1 } }
+    ]
+  },
+  "intents": ["craft", "collect", "mine", "travel"],
+  "planTargets": {},
+  "notes": "Gli stessi numeri sono esposti da observe().kit (TRIP_KIT_REQUIREMENTS in bedrock-adapter.mjs): un test li tiene allineati. Il 06/10/2026 il bot promise in chat «porterei letto, torce e piccone di riserva» mentre non aveva né letto né torce; questa skill esiste perché quella frase sia una cosa da *fare e verificare*, non da dire. Oggi il kit live è incompleto: mancano lana e carbone, quindi craft_bed/craft_torch non compaiono in /options."
+}

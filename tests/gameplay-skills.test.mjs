@@ -18,7 +18,7 @@ const skills = loadGameplaySkills();
 test('the shipped gameplay skill library loads and validates', () => {
   for (const id of [
     'acquire_wood', 'acquire_crafting_table', 'stone_age', 'obtain_food',
-    'eat_available_food', 'escape_hostile', 'emergency_shelter', 'first_night',
+    'eat_available_food', 'escape_hostile', 'emergency_shelter', 'first_night', 'prep_cave_trip',
     'acquire_iron', 'acquire_diamonds', 'enter_nether',
     'nether_portal', 'nether_survival', 'piglin_barter', 'obtain_blaze_rods',
     'obtain_ender_pearls', 'craft_eyes_of_ender', 'find_stronghold', 'enter_end',

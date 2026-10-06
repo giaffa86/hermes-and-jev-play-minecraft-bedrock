@@ -30,7 +30,7 @@ The harness (`harness.mjs`) runs a pure-Node Minecraft 1.16.5 server and one Min
 - Mining options disappear once `plan.targets` are satisfied; keep `targets` accurate so the harness can do this.
 - Prefer `collect_drop` whenever a drop is listed; drops expire.
 - Use `Connection: close` on harness requests; long actions (pathfinding) outlive keep-alive sockets otherwise.
-- Never restate a capability as available because it is planned: check `GET /options` for the action key first (`escort_to`, `craft_bed`, `raise_shield` are offered only when their preconditions hold — a skill file or a roadmap page is not an offer).
+- Never restate a capability as available because it is planned: check `GET /options` for the action key first (`escort_to`, `craft_bed`, `raise_shield` are offered only when their preconditions hold — a skill file or a roadmap page is not an offer). For equipment, read `GET /observe`'s `kit` (what the bot carries now: bed, torches, pickaxes, food, with `missing`) instead of `travel` (what it could craft): saying "I would bring torches" while `kit.torches` is 0 is the 06/10 failure.
 
 ## Controller choice
 

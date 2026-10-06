@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { BedrockAdapter } from '../bedrock-adapter.mjs';
+import { BedrockAdapter, TRIP_KIT_REQUIREMENTS } from '../bedrock-adapter.mjs';
+import { loadGameplaySkills } from '../survival/index.mjs';
 
 // Un adapter "piatto": niente rete, un mondo a celle esplicite, i piedi dove
 // diciamo noi. Serve per esercitare il kit di viaggio (loadout, pillar-up,
@@ -32,6 +33,7 @@ function flatAdapter ({ inventory = {}, feet = { x: 0.5, y: 63, z: 0.5 } } = {})
     findBlocks: () => [],
     runtimeIdAt: () => 1,
     loaded: new Map(),
+    summary: () => ({}),
     set (x, y, z, name = 'stone') { cells.set(key(x, y, z), { name, boundingBox: 'block' }); },
   };
   adapter.world.set(Math.floor(feet.x), Math.floor(feet.y) - 1, Math.floor(feet.z));
@@ -157,6 +159,63 @@ test('_travelKit non ricrafta quello che c\'è già (idempotente)', async () => 
   const result = await adapter._travelKit();
   assert.deepEqual(result.crafted, []);
   assert.deepEqual(result.failed, []);
+});
+
+// ---- kit portato (_tripKitView / observe().kit) ------------------------------------
+
+// Finding 06/10/2026: in chat il bot promise «porterei letto, torce e piccone di
+// riserva» mentre in zaino non c'era nulla di tutto ciò. `kit` è lo stato
+// *portato adesso*; `travel` resta la vista di preparazione (cosa si potrebbe
+// craftare), quindi le due possono differire — ed è la differenza che va detta.
+
+test('observe().kit elenca ciò che manca, non ciò che si potrebbe craftare', () => {
+  const adapter = flatAdapter({ inventory: { iron_pickaxe: 1, baked_potato: 28, coal: 1, stick: 2 } });
+  const obs = adapter.observe();
+  assert.equal(obs.kit.ready, false);
+  assert.equal(obs.kit.beds, 0);
+  assert.equal(obs.kit.torches, 0);
+  assert.equal(obs.kit.pickaxes, 1);
+  assert.equal(obs.kit.sparePickaxe, 0, 'un piccone non è una riserva');
+  assert.deepEqual(obs.kit.missing, [
+    { tag: 'beds', have: 0, need: 1 },
+    { tag: 'torches', have: 0, need: 8 },
+    { tag: 'pickaxes', have: 1, need: 2 },
+  ]);
+  // `travel` dice che la luce è *ottenibile* (carbone + bastoncini): leggere
+  // quella come «ha le torce» è esattamente l'errore da non rifare.
+  assert.equal(obs.travel.items.light, true);
+  assert.equal(obs.kit.torches, 0);
+});
+
+test('observe().kit è pronto con letto, otto torce, due picconi e cibo', () => {
+  const adapter = flatAdapter({
+    inventory: { white_bed: 1, torch: 8, stone_pickaxe: 1, iron_pickaxe: 1, baked_potato: 3 },
+  });
+  const kit = adapter.observe().kit;
+  assert.equal(kit.ready, true);
+  assert.deepEqual(kit.missing, []);
+  assert.equal(kit.beds, 1);
+  assert.equal(kit.torches, 8);
+  assert.equal(kit.pickaxes, 2);
+  assert.equal(kit.sparePickaxe, 1);
+  assert.equal(kit.food, 3);
+});
+
+test('il tag torches non conta la torcia di redstone', () => {
+  const adapter = flatAdapter({ inventory: { redstone_torch: 4, torch: 1 } });
+  assert.equal(adapter.observe().kit.torches, 1);
+});
+
+// La skill `prep_cave_trip` e `TRIP_KIT_REQUIREMENTS` dicono la stessa cosa in due
+// posti (JSON + adapter): senza questo test i due numeri possono divergere e la
+// promessa in chat tornerebbe a essere una frase non verificabile.
+test('la skill prep_cave_trip e observe().kit chiedono gli stessi numeri', () => {
+  const skill = loadGameplaySkills().get('prep_cave_trip');
+  assert.ok(skill, 'la skill esiste');
+  const declared = Object.fromEntries(skill.success.allOf.map(entry => Object.entries(entry.inventoryTagGte)[0]));
+  assert.deepEqual(declared, { ...TRIP_KIT_REQUIREMENTS });
+  // I tag usati dalla skill devono essere gli stessi che `kit` sa contare.
+  assert.deepEqual(Object.keys(declared).sort(), Object.keys(TRIP_KIT_REQUIREMENTS).sort());
 });
 
 // ---- pillar-up ---------------------------------------------------------------------

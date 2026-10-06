@@ -198,7 +198,13 @@ utente (una *missione*) ai nodi del mondo **senza sporcarli**.
 - Containers: `rememberContainer`, `findContainers`, `containersWithItem`.
 - **Resource sites** (`kind: resource_site`): `rememberResourceSite`,
   `findResources({ contains })` — ores observed near the bot, deduped per chunk
-  (`observations: ['diamond_ore', 'iron_ore', ...]`).
+  (`observations: ['diamond_ore', 'iron_ore', ...]`). The site's `position` is the
+  **ore block the scan actually saw** (nearest first), not the chunk centre: the
+  centre is only the fallback when the block is in the palette but unreadable.
+  06/10/2026, before the fix: a site anchored on the centre sat 8 blocks from the
+  vein, and a `goto_waypoint` from the memory walked there instead of onto the
+  ore — see [observability](observability.md) and row 47.50 of
+  [verification](verification.md).
 - **Portals** (`kind: portal`): `rememberPortal`, `findPortals` — the `portal`
   block becomes a portal landmark that carries the nether-side coordinates once
   visited (relation between the two dimensions).

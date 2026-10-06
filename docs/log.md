@@ -1,5 +1,35 @@
 # Log
 
+## [2026-10-06] fix | The map points at the vein, and the kit is a state
+
+Two of the five gaps found in the 06/10 debrief (the diamond report was accurate
+in substance, off in detail).
+
+- **The ore position, not the chunk centre** (`bedrock-adapter.mjs`,
+  `_rememberDiscoveries`): every resource site was anchored on
+  `(cx*16+8, pos.y, cz*16+8)` — up to 8 blocks from the block that was seen — so a
+  `goto_waypoint` sourced from the memory walked to the chunk centre while the
+  vein sat one block away (reported z=231, vein at z=232). The scan now keeps the
+  nearest ore block's own position (`found.position`, distance from the block or
+  computed), and falls back to the centre only when the block is in the palette
+  but unreadable; an ore still counts as observed when its position cannot be
+  resolved, so no site disappears. Tests: 2 cases in
+  `tests/adapter-memory.test.mjs`; memory suite 101/101.
+- **`observe().kit`: what is carried, not what could be crafted**
+  (`_tripKitView` + `TRIP_KIT_REQUIREMENTS`): bed, torches, pickaxes and food with
+  `sparePickaxe`, `missing` and `ready`. `observe().travel` keeps its
+  preparation semantics (`light: true` for coal+sticks) — that is exactly how a
+  plan gets read as state, and the two now say different things on purpose. The
+  tags `torches` (torch/soul_torch, not the redstone torch) and `pickaxes`
+  (pickaxes only, unlike `picks`) were added to `survival/item-tags.mjs`.
+- **`prep_cave_trip`** (`skills/gameplay/survival/`): the same four numbers as
+  success criteria, so the sentence *"porterei letto, torce e piccone di riserva"*
+  becomes something to do and verify; a test asserts the skill's thresholds equal
+  `TRIP_KIT_REQUIREMENTS` so the promise and the state cannot drift apart.
+- **Wiki**: [survival intelligence](wiki/survival-intelligence.md) documents the
+  kit/plan distinction, [memory](wiki/memory.md) the ore position, rows 47.50 and
+  47.51 of [verification](wiki/verification.md).
+
 ## [2026-10-06] feat | A run leaves its own numbers
 
 The owner asked what the first-diamond run had cost. The diamond had been mined
