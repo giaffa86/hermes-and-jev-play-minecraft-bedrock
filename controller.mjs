@@ -35,7 +35,7 @@ import {
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
 import {planGreetings, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
-import {orderAck, orderOutcome, lostNotice, isSelfTriggering, normalizePrefixes, matchChatPrefix, selfPrefixes, renderReply, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
+import {orderAck, orderOutcome, lostNotice, escortWaiting, isSelfTriggering, normalizePrefixes, matchChatPrefix, selfPrefixes, renderReply, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
 import {answerIntent, renderAnswer, renderNoArmor, renderNoDrop, renderNoItem, renderUnrouted, looksLikeSmallTalk} from './human-questions.mjs';
 import {resolveQuestionIntent, DEFAULT_INTENT_TIMEOUT_MS, DEFAULT_INTENT_MIN_P} from './chat-intent.mjs';
 import {composeChatReply, chatLlmConfig, compactChatFacts, createChatMemory} from './chat-llm.mjs';
@@ -80,6 +80,12 @@ const FOLLOW_IDLE_POLL_MS = +(process.env.FOLLOW_IDLE_POLL_MS || 3000);
 // e' l'ultima risorsa, non la prima.
 const LOST_NOTICE_AFTER_STEPS = +(process.env.LOST_NOTICE_AFTER_STEPS || 2);
 const LOST_NOTICE_COOLDOWN_MS = +(process.env.LOST_NOTICE_COOLDOWN_MS || 120000);
+// Anche la scorta avvisa quando si ferma ad aspettare ("sono a x, y, z"): non e'
+// un annuncio di stato ma l'unica cosa che l'umano rimasto indietro non puo'
+// vedere da solo. Un messaggio per episodio d'attesa e lo stesso cooldown per
+// entrambi i casi (umano dietro, umano fuori vista), cosi' un'attesa lunga non
+// diventa una raffica di righe in chat.
+const ESCORT_WAITING_COOLDOWN_MS = +(process.env.ESCORT_WAITING_COOLDOWN_MS || 60000);
 // Quanto si aspetta, a passi fermi, che l'umano perso torni: oltre questo tetto
 // l'ordine viene rilasciato (il bot non resta immobile per sempre).
 const LOST_HOLD_MAX_STEPS = +(process.env.LOST_HOLD_MAX_STEPS || 120);
@@ -797,6 +803,31 @@ async function replyChat (message, {to = null, context = null, prefixes = CHAT_P
   return result;
 }
 
+// Stato dell'avviso di scorta: uno per episodio d'attesa, riarmato quando
+// l'umano torna a portata, con un cooldown condiviso fra i due casi ('wait' =
+// "sei rimasto indietro", 'hold' = "non ti vedo piu'"). Vive accanto
+// all'unica funzione che lo consuma, come il resto dello stato di chat.
+let escortWaitingSent = false;
+let escortHoldNoticeSent = false;
+let lastEscortWaitingAt = 0;
+
+// La scorta si e' fermata ad aspettare: una riga con le proprie coordinate.
+// `episode` sceglie il flag da consumare — 'wait' e' "sei rimasto indietro",
+// 'hold' e' "non ti vedo piu'" — e il cooldown e' condiviso: un episodio non
+// diventa una raffica, e un umano che torna a portata riarma il messaggio.
+// Best-effort come ogni altra risposta: se `/say` non riesce resta nei log.
+async function noticeEscortWaiting (target, {reason, episode, obs, step}) {
+  const sent = episode === 'hold' ? escortHoldNoticeSent : escortWaitingSent;
+  if (sent || Date.now() - lastEscortWaitingAt <= ESCORT_WAITING_COOLDOWN_MS) return null;
+  const notice = escortWaiting({from: target ?? null, position: obs?.position ?? null, lang: CHAT_LANG});
+  if (!notice) return null; // nessuna posizione leggibile: si tace, non si inventa
+  if (episode === 'hold') escortHoldNoticeSent = true; else escortWaitingSent = true;
+  lastEscortWaitingAt = Date.now();
+  console.log(`ESCORT WAITING ${target}: dico dove aspetto (${reason})`);
+  log('escort_waiting', {step, target: target ?? null, reason, episode, position: obs?.position ?? null, gap: obs?.escort?.gap ?? null});
+  return replyChat(notice, {to: target ?? null, context: 'escort_waiting'});
+}
+
 // Saluto proattivo: un umano fidato percepito vicino riceve una volta (con
 // cooldown) un messaggio che spiega come dare un ordine. Si prova solo a bot
 // spawnato; se `/say` non esiste (harness Java) la chiamata fallisce e resta nei
@@ -1330,6 +1361,14 @@ for (let step = 1; step <= maxSteps; step++) {
   } else if (!escortKey) {
     lastEscortTarget = null;
   }
+  // La scorta si e' fermata perche' l'umano e' rimasto indietro: gli dice una
+  // volta dove lo sta aspettando (`observe().position`), poi si riarma quando
+  // torna a portata. Il cooldown copre un'attesa che dura minuti.
+  if (goal.escort && obs.escort?.waiting === true) {
+    await noticeEscortWaiting(goal.escort?.from, {reason: 'gap', episode: 'wait', obs, step});
+  } else if (obs.escort?.waiting !== true) {
+    escortWaitingSent = false;
+  }
   const lostFollow = !!goal.follow && !needKey && !followKey;
   if (lostFollow) lostFollowSteps += 1; else lostFollowSteps = 0;
   if (needKey && lastNeedKey !== needKey) {
@@ -1408,6 +1447,9 @@ for (let step = 1; step <= maxSteps; step++) {
         console.log(`ESCORT HOLD ${goal.escort?.from}: aspetto dove ho perso le tracce`);
         log('escort_hold', {step, target: goal.escort?.from ?? null, tracked: obs.escort?.tracked === true, ready: obs.escort?.ready === true});
       }
+      // Una volta per episodio dice dove si e' fermata: chi non ha piu' il bot
+      // in vista non ha altre occasioni di saperlo.
+      await noticeEscortWaiting(goal.escort?.from, {reason: 'no_track', episode: 'hold', obs, step});
       lostEscortSteps += 1;
       await delay(FOLLOW_IDLE_POLL_MS);
       step -= 1; // un'attesa non consuma il budget: l'ordine deve restare aperto
@@ -1415,6 +1457,7 @@ for (let step = 1; step <= maxSteps; step++) {
     }
   } else {
     lostEscortSteps = 0;
+    escortHoldNoticeSent = false; // tracce ritrovate: un nuovo episodio puo' avvisare
   }
   // Ordine di equipaggiamento umano (`equipaggiati con l'elmo`): quando il
   // piano lo dichiara e l'harness offre davvero `equip_armor`, la scelta e'

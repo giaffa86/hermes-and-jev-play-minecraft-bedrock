@@ -853,9 +853,14 @@ quieter hello is preferred (still an open question).
   closes with `escort_left_behind` after `ESCORT_WAIT_MS` of waiting and
   `escort_lost` after `ESCORT_LOST_MS` without a trace; the controller chooses it
   deterministically while `goal.escort` is open and holds the order (without
-  spending budget) when the human is out of view — see
-  [exploration](exploration.md) M3 and [verification](verification.md) 47.52.
-  Still open: a real long escort with a human on the BDS, and an
+  spending budget) when the human is out of view; when the escort stops to wait —
+  the human beyond `ESCORT_MAX_GAP`, or out of view — it says so **once per
+  episode** in chat, with its own coordinates (`@<gamertag> ti aspetto qui: sono
+  a x 108, y 0, z 230.`, cooldown `ESCORT_WAITING_COOLDOWN_MS`), because a human
+  who fell behind cannot see where the bot is. The line comes from the catalogue
+  of the five languages, filled from `observe()`, never from the model — see
+  [exploration](exploration.md) M3 and [verification](verification.md) 47.52,
+  47.53. Still open: a real long escort with a human on the BDS, and an
   acknowledgement specific to the order.
 - **Priority vs autonomous plan**: settled to "human order overrides until
   superseded or budget end". Still open: an explicit "resume autonomy" command.

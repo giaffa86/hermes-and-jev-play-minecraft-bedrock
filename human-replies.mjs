@@ -95,6 +95,23 @@ export function lostNotice ({ from, prefix = '@bot', lang = DEFAULT_LANG, templa
   return renderReply(template, { name: from ?? '?', prefix }, maxLength);
 }
 
+// La scorta si e' fermata ad aspettare l'umano: qui il messaggio non chiede
+// niente, dice *dove* il bot si e' fermato. Chi e' rimasto indietro (o non ha
+// piu' il bot in vista) non ha altro modo di saperlo, quindi le coordinate sono
+// il contenuto del messaggio, non un dettaglio. Senza una posizione leggibile
+// si tace: un "sono a NaN" sarebbe peggio del silenzio, e questa e' l'unica
+// ragione per cui questa funzione puo' restituire null.
+export const DEFAULT_ESCORT_WAITING_TEMPLATE = t(DEFAULT_LANG, 'escort_waiting');
+
+export function escortWaiting ({ from, position = null, lang = DEFAULT_LANG, template = t(lang, 'escort_waiting'), maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
+  // `Number(null)` e' 0: una coordinata assente non deve diventare un numero
+  // vero, quindi si controlla anche il valore grezzo, non solo il parse.
+  const readable = value => value != null && value !== '' && Number.isFinite(Number(value));
+  if (!position || !readable(position.x) || !readable(position.z)) return null;
+  const num = value => (readable(value) ? Math.round(Number(value)) : '?');
+  return renderReply(template, { name: from ?? '?', x: num(position.x), y: num(position.y), z: num(position.z) }, maxLength);
+}
+
 // One chat line: no newlines, collapsed spaces, bounded length. Truncation
 // happens on the rendered text (after placeholders), so a long objective can
 // never push the message over the packet limit.
@@ -107,7 +124,7 @@ export function clampMessage (text, maxLength = DEFAULT_REPLY_MAX_LENGTH) {
 }
 
 export function renderReply (template, vars = {}, maxLength = DEFAULT_REPLY_MAX_LENGTH) {
-  const rendered = String(template ?? '').replace(/\{(\w+)\}/g, (match, key) => {
+  const rendered = String(template ?? '').replace(/\{(\w+)\}/g, (_match, key) => {
     const value = vars[key];
     return value == null ? '' : String(value);
   });

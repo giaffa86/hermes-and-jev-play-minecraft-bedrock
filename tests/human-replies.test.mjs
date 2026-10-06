@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import {
   orderAck, orderOutcome, clampMessage, renderReply, isSelfTriggering,
   normalizePrefixes, matchChatPrefix, selfPrefixes, DEFAULT_CHAT_PREFIX,
-  DEFAULT_REPLY_MAX_LENGTH,
+  DEFAULT_REPLY_MAX_LENGTH, escortWaiting,
 } from '../human-replies.mjs';
 
 test('an accepted order is acked with the understood objective', () => {
@@ -72,6 +72,29 @@ test('a reply is one line and never longer than the limit', () => {
 test('a missing objective still produces a usable ack', () => {
   assert.equal(orderAck({ from: 'Ale', plan: {} }), '@Ale ok: ordine ricevuto');
   assert.equal(orderAck({ plan: { objective: 'x' } }), '@? ok: x');
+});
+
+// La scorta che si ferma ad aspettare dice *dove*: è l'unico contenuto utile
+// del messaggio, e la posizione arriva da `observe()`, non dal modello.
+test('the waiting escort says where it is waiting, rounded and addressed', () => {
+  assert.equal(
+    escortWaiting({ from: 'Ale', position: { x: 108.34, y: -0.38, z: 230.47 } }),
+    '@Ale ti aspetto qui: sono a x 108, y 0, z 230.'
+  );
+  assert.equal(escortWaiting({ from: 'Ale', position: { x: 1, y: 64, z: 2 }, lang: 'en' }),
+    '@Ale I am waiting here: I am at x 1, y 64, z 2.');
+  assert.equal(isSelfTriggering(escortWaiting({ from: 'Ale', position: { x: 1, y: 64, z: 2 } }), '@bot'), false,
+    'la riga non comincia con il trigger: il bot non si dà ordini da solo');
+});
+
+test('without a readable position the escort says nothing at all', () => {
+  assert.equal(escortWaiting({ from: 'Ale', position: null }), null);
+  assert.equal(escortWaiting({ from: 'Ale' }), null);
+  assert.equal(escortWaiting({ from: 'Ale', position: { x: null, z: 3 } }), null,
+    'x/z non finiti: nessuna riga, mai una coordinata inventata');
+  // La quota può mancare senza perdere il messaggio: `?` invece di un numero falso.
+  assert.equal(escortWaiting({ from: 'Ale', position: { x: 1, z: 2 } }),
+    '@Ale ti aspetto qui: sono a x 1, y ?, z 2.');
 });
 
 test('the outcome line reports success with the action count', () => {

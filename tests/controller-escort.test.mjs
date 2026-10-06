@@ -41,7 +41,7 @@ const DESTINATION = { x: 8, z: 0 };
 // Scripted harness: the bot starts away from the vein, `escort_to` is the only
 // useful option while the order is open, and after two actions the human is at
 // the destination too — so the escort is fulfilled by the state, not by a claim.
-function startEscortHarness ({ from = 'Ale', message = '@bot guidami fino al filone', arriveAfterActs = 2 } = {}) {
+function startEscortHarness ({ from = 'Ale', message = '@bot guidami fino al filone', arriveAfterActs = 2, gapBehind = 4 } = {}) {
   return new Promise(resolve => {
     const calls = [];
     let observes = 0;
@@ -51,8 +51,8 @@ function startEscortHarness ({ from = 'Ale', message = '@bot guidami fino al fil
       name: from,
       target: { x: DESTINATION.x, y: 64, z: DESTINATION.z, source: 'escort.to' },
       tracked: true,
-      gap: 4,
-      waiting: false,
+      gap: acts >= arriveAfterActs ? 4 : gapBehind,
+      waiting: acts < arriveAfterActs && gapBehind > 12,
       ready: true,
       limits: { maxGap: 12, resumeGap: 5, waitMs: 60000, lostMs: 20000, timeoutMs: 150000, arriveDistance: 2 },
     });
@@ -169,6 +169,44 @@ test('an escort order leads, does not follow, and closes when both arrive', asyn
     assert.equal(events.some(e => e.type === 'anti_loop'), false, 'leading is not stagnation');
     assert.equal(events.some(e => e.type === 'replan'), false, 'no replan while the order is open');
     assert.equal(events.filter(e => e.type === 'goal_met').length, 1, 'the goal closes exactly once, when both have arrived');
+  } finally {
+    harness.server.close();
+  }
+});
+
+// La scorta che si ferma ad aspettare lo dice in chat, con le proprie
+// coordinate: è l'unica cosa che l'umano rimasto indietro non può vedere da
+// solo. Una riga per episodio — non a ogni passo — e il testo arriva dal
+// catalogo, mai dal modello.
+test('a waiting escort tells the human where it is waiting, once', async () => {
+  const harness = await startEscortHarness({ gapBehind: 40, arriveAfterActs: 4 });
+  const fake = fakeHermesQueue([INIT_PLAN, ESCORT_PLAN, INIT_PLAN]);
+  const runId = `test-escort-waiting-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({ ...baseEnv(runId, harness.port, fake.dir), MAX_STEPS: '5' });
+    assert.equal(code, 0, `the controller exits cleanly (stdout: ${stdout.slice(-400)})`);
+
+    const acts = harness.calls.filter(c => c.path === '/act').map(c => c.payload.key);
+    assert.equal(acts.filter(key => key === 'escort_to').length >= 2, true,
+      `the escort keeps leading while the human is behind (acts: ${JSON.stringify(acts)})`);
+
+    const events = readEvents(runId);
+    const notices = events.filter(e => e.type === 'escort_waiting');
+    assert.equal(notices.length, 1, `the waiting notice is one per episode, not per step (got ${notices.length})`);
+    assert.equal(notices[0].target, 'Ale');
+    assert.equal(notices[0].episode, 'wait');
+    assert.equal(notices[0].reason, 'gap');
+    assert.equal(notices[0].gap, 40, 'the notice is about the distance the harness measured');
+    assert.deepEqual(notices[0].position, { x: 0, y: 64, z: 0 }, 'the notice carries the bot position from observe()');
+
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    const waiting = says.filter(m => /ti aspetto qui/.test(m));
+    assert.equal(waiting.length, 1, `the bot says where it waits exactly once (got ${JSON.stringify(says)})`);
+    assert.equal(waiting[0], '@Ale ti aspetto qui: sono a x 0, y 64, z 0.', 'the line is the catalogue one, filled with the real coordinates');
+    assert.equal(says.every(m => m.startsWith('@Ale')), true, 'every line is addressed to the human, never to a trigger');
+
+    assert.match(stdout, /ESCORT WAITING Ale: dico dove aspetto \(gap\)/, 'the notice is visible in the log');
+    assert.equal(events.filter(e => e.type === 'goal_met').length, 1, 'the goal still closes when the human catches up');
   } finally {
     harness.server.close();
   }

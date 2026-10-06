@@ -1,5 +1,29 @@
 # Log
 
+## [2026-10-06] feat | The waiting escort says where it waits
+
+On 06/10 the user asked whether the bot tells them in chat "ti sto aspettando,
+sono alle coordinate x, y, z". The answer was no: `_escortTo`
+(`bedrock-adapter.mjs`) only logs `escort_wait_over`/`escort_lost`/…, and the only
+waiting line in the code was the follow `lost` notice
+(`human-replies.mjs:94` → `chat-lang/it.mjs:17`), which carries no coordinates.
+Now the escort tells the human where it is, **once per waiting episode**: new key
+`escort_waiting` in the five `chat-lang/*.mjs` catalogues (the phrase is data, not
+a string in the code), `escortWaiting` in `human-replies.mjs` (returns `null`
+without a readable `x`/`z` — `Number(null)` is `0`, so the raw value is checked —
+and `?` for a missing height), and `noticeEscortWaiting` in `controller.mjs` with
+`ESCORT_WAITING_COOLDOWN_MS` (60000 ms by default), wired at the two places where
+the escort stops: the human beyond `ESCORT_MAX_GAP` (`reason: 'gap'`) and out of
+view (`reason: 'no_track'`, inside `escortHold`). Both episodes re-arm when the
+human comes back, and the line is sent with the same `replyChat` used by the rest
+of the human channel. Tests: `tests/human-replies.test.mjs` (14 cases, the
+rounding and the silence among them) and `tests/controller-escort.test.mjs`
+(exactly one `/say` and one `escort_waiting` event while `escort_to` is
+re-issued). Docs:
+[human-command](wiki/human-command.md) "Follow semantics", [verification](wiki/verification.md)
+47.53 and the `ESCORT_*` bullet in `AGENTS.md`. Residual: the wording and the
+rate have never reached a real human on the BDS.
+
 ## [2026-10-06] ingest | Deep Dark stealth roadmap: sculk sensors, shriekers and the Warden
 
 Spec for crossing a Deep Dark / Ancient City sculk field without waking the
