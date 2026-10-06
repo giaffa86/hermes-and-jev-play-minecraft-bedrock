@@ -139,3 +139,43 @@ test('the crafting grid is never mistaken for the player inventory', () => {
   assert.deepEqual(adapter.pickups, { oak_planks: 4 });
   assert.equal(adapter.inventory.oak_planks, 4);
 });
+
+test('a short player-inventory snapshot does not wipe the mirror', () => {
+  const logs = [];
+  const adapter = mirrorAdapter({ logs });
+  adapter.inventorySlots = [{ network_id: 4, name: 'diamond', count: 2, stack_id: 9 }];
+  adapter._refreshInventory();
+  assert.equal(adapter.inventory.diamond, 2);
+
+  // Live 06/10, dopo una riconnessione: un `inventory_content` senza slot lascio'
+  // lo specchio a 0 e ogni `take_*` rispose `take_failed_49`. I cambi di un
+  // singolo slot arrivano da `inventory_slot`, quindi un contenuto corto non e'
+  // mai uno snapshot completo e non deve sostituire quello che sappiamo.
+  const applied = adapter._applyPlayerInventorySnapshot([], { containerId: 'inventory' });
+  const partial = adapter._applyPlayerInventorySnapshot(
+    [{ network_id: 5, name: 'cobblestone', count: 1, stack_id: 2 }],
+    { containerId: 'inventory' },
+  );
+
+  assert.equal(applied, false, 'il pacchetto vuoto viene scartato');
+  assert.equal(partial, false, 'e cosi\' anche quello parziale: azzererebbe gli altri 35 slot');
+  assert.equal(adapter.inventory.diamond, 2, 'lo specchio resta quello che sapevamo');
+  const ignored = logs.find(l => l.type === 'inventory_snapshot_ignored');
+  assert.ok(ignored, 'lo scarto finisce nel log del run');
+  assert.equal(ignored.container, 'inventory');
+  assert.equal(ignored.slots, 0);
+  assert.equal(ignored.mirror, 1);
+});
+
+test('an anvil_input packet neither wipes the mirror nor counts as inventory', () => {
+  const adapter = mirrorAdapter();
+  adapter.inventorySlots = [{ network_id: 4, name: 'diamond', count: 2, stack_id: 9 }];
+  adapter._refreshInventory();
+
+  // Un container diverso dal giocatore non e' l'inventario: ne' il pacchetto
+  // vuoto ne' quello a 36 slot nulli possono cancellare cio' che sappiamo.
+  assert.equal(adapter._applyPlayerInventorySnapshot([], { containerId: 'anvil_input' }), false);
+  assert.equal(adapter._applyPlayerInventorySnapshot(playerSlots([]), { containerId: 'anvil_input' }), false);
+  assert.equal(adapter.inventory.diamond, 2);
+  assert.equal(adapter.inventorySlots.length, 1, 'lo specchio non e\' stato toccato');
+});

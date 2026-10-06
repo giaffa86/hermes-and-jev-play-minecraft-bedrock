@@ -1,5 +1,64 @@
 # Log
 
+## [2026-10-06] fix | The deposit is a postcondition: read the chest back, not the response
+
+Run 2 of the diamond mission failed on the cheapest step it had (`deposit_diamond`,
+five `take_failed_49`) after doing the hard part, and run 1's success had been
+declared by `_depositStackInto` on the `ok` of two stack requests plus the
+adapter's own register, then checked by hand afterwards (two `read_container`
+calls showing `diamond: 21`). While making the check automatic the measurement
+itself broke: `dump_inventory` answered `deposit_unverified` with
+`before {held:64, stored:4}` → `after {held:0, stored:4}`, because a `place` of 64
+onto a pile of 4 fills a **second** slot and the packet does not name the item —
+the response cannot be the proof of anything.
+
+`deposit_<item>` is now a postconditioned operation. `_heldCount` counts the item
+in the player **slots** (never `this.inventory`, which still sums the estimated
+pickups — live: aggregate 5 diamonds against 2 in the slots), `_storageItemCountAfter`
+closes and reopens the container and counts the item in the fresh mirror
+(`container_reread`, `container_reread_failed`, `null` when unverifiable), and
+`_depositStackInto` returns `before/after {held, stored}`, `verified: true`,
+`heldDelta` and `storedDelta` only when the chest really grew by the deposited
+count. Otherwise: `deposit_unverified`, logged as `container_deposit_unverified`
+with `takeStatus`, `placeStatus`, `playerReported`, `expected` and the slot counts
+from the `place` response. A stale-mirror failure (`missing_item`,
+`take_failed_49/50`, `place_failed_49/50`) gets **one** retry after
+`_resyncByReconnect` (`retriedAfterResync`; a resync that fails is logged
+`inventory_resync_failed` and the original error is returned), and the cached
+container contents are written from the read-back, never from the prediction.
+
+`tests/bedrock-storage.test.mjs` (53 pass) now models the chest as **two
+registers** — the server's, which `place` mutates with 64-stack overflow, and the
+client mirror, which is rebuilt only when the window opens — and pins the new
+behaviours: the successful deposit carries `before {held:4, stored:0}` /
+`after {held:0, stored:4}`, a deposition the chest does not show is refused, and a
+stale mirror is resynced before `missing_item` is declared.
+`node --test tests/*.test.mjs` → 1759 pass in 184 s. Live residual: the read-back
+costs one close/open per deposited stack, and the postcondition has not yet run
+against the BDS.
+
+## [2026-10-06] fix | A short player snapshot no longer wipes the inventory mirror
+
+Reported from the run 2 session as "login `inventory_content` with
+`container_id: anvil_input` empties the mirror" (the empty mirror is what made
+`take_failed_49` survive every retry). Reading the code, the anvil packet is a
+witness, not the cause: the guard was `isPlayerContainer(containerId) ||
+isFullPlayerInventory(list) || (clearWhenEmpty && …)`, and `isPlayerContainer` is
+true for `null`, `hotbar`, `inventory` and `hotbar_and_inventory` — in that branch
+`this.inventorySlots = slotList` replaced the mirror with whatever arrived,
+including an empty or single-slot list, which is exactly the shape of the
+`inventory_content` a reconnecting client gets. With `container_id: 'anvil_input'`
+both other flags are false, so that packet on its own could not have done it.
+
+`_applyPlayerInventorySnapshot` (`bedrock-adapter.mjs:1704`) now accepts only a
+**36-slot** list as a snapshot; anything else logs `inventory_snapshot_ignored`
+with `{container, slots, mirror}` and is ignored. It is safe because single-slot
+changes arrive through `inventory_slot` (`bedrock-adapter.mjs:1021`,
+`_playerSlotIndex`, index bound to 0-35), so a wholesale replace can only be a
+full player inventory. Two new cases in `tests/bedrock-inventory-mirror.test.mjs`
+(9/9): a short list with `containerId 'inventory'` and an `anvil_input` packet
+neither wipe the mirror nor count as inventory.
+
 ## [2026-10-06] fix | The run ledger can live on the host (`RUNS_DIR`)
 
 The diamond mission's ledger was written inside the harness container

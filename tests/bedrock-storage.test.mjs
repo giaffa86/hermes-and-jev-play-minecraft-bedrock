@@ -265,16 +265,20 @@ test('deposit_<item> moves valuables into a container and verifies the delta', a
   const entry = seedContainer(adapter, { contents: {} });
   adapter.inventorySlots[10] = { network_id: 458, name: 'iron_ingot', count: 4, stack_id: 9 };
   adapter.inventory = { iron_ingot: 4 };
+  // Il registro del server: il `place` lo riempie e la rilettura del deposito lo
+  // vede; il mirror del client (una copia a ogni apertura) resta indietro.
+  const serverSlots = new Array(27); // baule singolo: 27 slot (vuote)
   adapter._ensureStorageOpen = async () => {
     adapter._openContainer = { id: 1, type: 'container' };
     adapter._openContainerBlock = { name: 'chest', position: entry.position };
-    adapter._openContainerSlots = new Array(27); // baule singolo: 27 slot (vuote)
+    adapter._openContainerSlots = serverSlots.map(s => (s ? { ...s } : s));
   };
   const requests = [];
   adapter._sendStackRequest = async actions => {
     const a = actions[0];
     requests.push(`${a.type_id}:${a.source.slot_type.container_id}@${a.source.slot}->${a.destination.slot_type.container_id}@${a.destination.slot}`);
     if (a.type_id === 'place') {
+      serverSlots[a.destination.slot] = { network_id: 458, name: 'iron_ingot', count: a.count, stack_id: 71 };
       return {
         status: 'ok',
         containers: [
@@ -284,18 +288,99 @@ test('deposit_<item> moves valuables into a container and verifies the delta', a
     }
     return {
       status: 'ok',
-      containers: [{ slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 4, item_stack_id: 70 }] }],
+      // Il take risponde anche sullo slot del giocatore (come fa BDS): è ciò che
+      // svuota lo specchio e rende misurabile il calo degli item tenuti.
+      containers: [
+        { slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 4, item_stack_id: 70 }] },
+        { slot_type: { container_id: 'hotbar_and_inventory' }, slots: [{ slot: a.source.slot, count: 0, item_stack_id: 0 }] },
+      ],
     };
   };
   adapter._returnCursorToInventory = async () => true;
   const result = await adapter._depositItem('iron_ingot');
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.verified, true);
   assert.equal(result.count, 4);
+  assert.deepEqual(result.before, { held: 4, stored: 0 }, 'il prima/dopo che la missione può controllare');
+  assert.deepEqual(result.after, { held: 0, stored: 4 });
   assert.equal(adapter.containers.get('2,64,0').contents.iron_ingot, 4, 'il baule registra il deposito');
   assert.deepEqual(requests, [
     'take:hotbar_and_inventory@10->cursor@0',
     'place:cursor@0->container@0',
   ]);
+});
+
+test('a deposit whose chest read-back shows nothing is not declared successful', async () => {
+  const logs = [];
+  const adapter = storageAdapter();
+  adapter.log = (event, payload) => logs.push({ event, ...payload });
+  const entry = seedContainer(adapter, { contents: {} });
+  adapter.inventorySlots[10] = { network_id: 458, name: 'iron_ingot', count: 4, stack_id: 9 };
+  adapter.inventory = { iron_ingot: 4 };
+  // Il baule resta vuoto: il server accetta le due richieste ma il mondo non
+  // mostra il deposito (live 06/10: `container_deposit ok` su una previsione).
+  adapter._ensureStorageOpen = async () => {
+    adapter._openContainer = { id: 1, type: 'container' };
+    adapter._openContainerBlock = { name: 'chest', position: entry.position };
+    adapter._openContainerSlots = new Array(27);
+  };
+  adapter._sendStackRequest = async actions => (actions[0].type_id === 'place'
+    ? { status: 'ok', containers: [{ slot_type: { container_id: 'container' }, slots: [{ slot: 0, count: 4, item_stack_id: 71 }] }] }
+    : {
+      status: 'ok',
+      containers: [
+        { slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 4, item_stack_id: 70 }] },
+        { slot_type: { container_id: 'hotbar_and_inventory' }, slots: [{ slot: actions[0].source.slot, count: 0, item_stack_id: 0 }] },
+      ],
+    });
+  adapter._returnCursorToInventory = async () => true;
+  const result = await adapter._depositItem('iron_ingot');
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'deposit_unverified');
+  assert.deepEqual(result.before, { held: 4, stored: 0 });
+  assert.deepEqual(result.after, { held: 0, stored: 0 }, 'il take c\'è stato, il deposito no');
+  assert.equal(adapter.containers.get('2,64,0').contents.iron_ingot, undefined, 'la cache non registra nulla');
+  assert.ok(logs.some(l => l.event === 'container_deposit_unverified'), `log: ${logs.map(l => l.event).join(', ')}`);
+  assert.ok(!logs.some(l => l.event === 'container_deposit'), 'nessun evento di successo');
+});
+
+test('a stale mirror is resynced before the deposit is declared missing', async () => {
+  const adapter = storageAdapter();
+  const entry = seedContainer(adapter, { contents: {} });
+  // Lo specchio è vuoto (riconnessione con l'inventario vecchio): il deposito
+  // non deve dichiarare `missing_item` senza prima rileggere il server.
+  adapter.inventorySlots = [];
+  adapter.inventory = { iron_ingot: 4 };
+  const serverSlots = new Array(27);
+  let resynced = 0;
+  adapter._resyncByReconnect = async () => {
+    resynced += 1;
+    adapter.inventorySlots[10] = { network_id: 458, name: 'iron_ingot', count: 4, stack_id: 9 };
+  };
+  adapter._ensureStorageOpen = async () => {
+    adapter._openContainer = { id: 1, type: 'container' };
+    adapter._openContainerBlock = { name: 'chest', position: entry.position };
+    adapter._openContainerSlots = serverSlots.map(s => (s ? { ...s } : s));
+  };
+  adapter._sendStackRequest = async actions => {
+    if (actions[0].type_id === 'place') {
+      serverSlots[actions[0].destination.slot] = { network_id: 458, name: 'iron_ingot', count: actions[0].count, stack_id: 71 };
+      return { status: 'ok', containers: [{ slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 0 }] }] };
+    }
+    return {
+      status: 'ok',
+      containers: [
+        { slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 4, item_stack_id: 70 }] },
+        { slot_type: { container_id: 'hotbar_and_inventory' }, slots: [{ slot: actions[0].source.slot, count: 0, item_stack_id: 0 }] },
+      ],
+    };
+  };
+  adapter._returnCursorToInventory = async () => true;
+  const result = await adapter._depositItem('iron_ingot');
+  assert.equal(resynced, 1, 'una sola riconnessione, poi il retry');
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.retriedAfterResync, true);
+  assert.equal(result.count, 4);
 });
 
 test('deposit_<item> without a container or item fails cleanly', async () => {
@@ -879,15 +964,36 @@ test('a container read skips a container that just failed to open', async () => 
 // inventario e contenuto (l'invariante di M3c: mai un successo dichiarato).
 function workingChest (adapter, entry) {
   const requests = [];
-  // Il mirror di una finestra di baule singolo (27 slot), come lo vede il client.
-  const slots = new Array(27);
+  // Due registri: quello del *server* (la verità del baule, che il `place`
+  // aggiorna) e il mirror del client, che si ricostruisce solo all'apertura —
+  // una risposta `place` non lo aggiorna. È la differenza che la rilettura del
+  // deposito deve saper misurare, invece di fidarsi della previsione.
+  const server = new Array(27);
   for (const [item, count] of Object.entries(entry.contents || {})) {
-    slots[slots.findIndex(s => !s)] = { network_id: 1, name: item, count, stack_id: 5 };
+    server[server.findIndex(s => !s)] = { network_id: 1, name: item, count, stack_id: 5 };
   }
+  let cursorItem = null;
+  // Uno stack da 64 non entra in una pila che ne ha già 4: il server riempie
+  // quella e apre lo slot successivo (l'overflow è il caso che la risposta
+  // `place` da sola non sa raccontare).
+  const placeInto = (from, count, item) => {
+    let left = count;
+    for (let i = from; i < server.length && left > 0; i++) {
+      const stack = server[i];
+      if (stack && stack.name !== item.name) continue;
+      const held = stack?.count || 0;
+      const room = 64 - held;
+      if (room <= 0) continue;
+      const moved = Math.min(room, left);
+      server[i] = { network_id: item.network_id, name: item.name, count: held + moved, stack_id: stack?.stack_id ?? item.stack_id };
+      left -= moved;
+    }
+    return count - left;
+  };
   adapter._ensureStorageOpen = async () => {
     adapter._openContainer = { id: 1, type: 'container' };
     adapter._openContainerBlock = { name: entry.type, position: entry.position };
-    adapter._openContainerSlots = slots;
+    adapter._openContainerSlots = server.map(s => (s ? { ...s } : s));
   };
   adapter._sendStackRequest = async actions => {
     const a = actions[0];
@@ -895,6 +1001,7 @@ function workingChest (adapter, entry) {
     if (a.type_id === 'take') {
       const source = adapter.inventorySlots[a.source.slot];
       const remaining = source ? Math.max(0, (source.count || 0) - a.count) : 0;
+      if (source) cursorItem = { network_id: source.network_id, name: source.name, stack_id: source.stack_id };
       if (source) source.count = remaining;
       if (source && remaining <= 0) adapter.inventorySlots[a.source.slot] = undefined;
       return {
@@ -905,8 +1012,12 @@ function workingChest (adapter, entry) {
         ],
       };
     }
-    // Il mirror degli slot non si aggiorna dalla risposta `place` (il client lo
-    // fa per conto suo): la verifica resta quella dell'adapter, sul suo registro.
+    if (cursorItem) {
+      placeInto(a.destination.slot, a.count, cursorItem);
+      cursorItem = null;
+    }
+    // Il mirror degli slot non si aggiorna dalla risposta `place`: il deposito lo
+    // verifica riaprendo il baule e leggendo il registro del server.
     return { status: 'ok', containers: [{ slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 0 }] }] };
   };
   return requests;

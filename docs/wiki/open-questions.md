@@ -1222,3 +1222,20 @@ goal and both fixed with a regression test (see [log.md](../log.md), entry
   *Left open*: nothing makes the bot leave the mob's reach on respawn, and a
   skeleton that camps a spawn point is still a death loop — that needs a
   "respawn, then immediately move and fight" policy, not another option filter.
+- **The deposit was declared successful on a prediction, not on the world.**
+  `deposit_<item>` trusted the `ok` of its two stack requests and the adapter's own
+  register, never the container — so it could log `container_deposit ok` while the
+  chest read-back showed nothing, and a stack of 64 placed on a pile of 4
+  overflows into a second slot that the `place` response does not even name. The
+  step is now a **postconditioned operation**: the return carries
+  `before/after {held, stored}` (`held` from the player slots, never the aggregate
+  that still contains the pickups; `stored` from `_storageItemCountAfter`, which
+  closes and reopens the container and counts the item in the fresh mirror, logged
+  as `container_reread`), it fails `deposit_unverified` — logged as
+  `container_deposit_unverified` with `takeStatus`, `placeStatus`, `playerReported`
+  and the expected numbers — when the chest did not grow, and a stale-mirror
+  failure (`missing_item`, `take_failed_49/50`, `place_failed_49/50`) is retried
+  once after `_resyncByReconnect` (`retriedAfterResync`). `tests/bedrock-storage.test.mjs`
+  pins the three behaviours; a second hole (a **short** player snapshot wiping the
+  mirror after a reconnect, now `inventory_snapshot_ignored`) is pinned in
+  `tests/bedrock-inventory-mirror.test.mjs`.

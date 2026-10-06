@@ -1708,7 +1708,22 @@ export class BedrockAdapter {
     // vanno applicati solo se non c'è nulla da perdere (altrimenti wipe).
     const isFullPlayerInventory = slotList.length === 36 && slotList.some(s => s?.network_id);
     const clearWhenEmpty = slotList.length === 36 && !this.inventorySlots.some(s => s?.network_id);
-    if (containerId === 'crafting_input' || !(isPlayerContainer || isFullPlayerInventory || clearWhenEmpty)) return false;
+    if (containerId === 'crafting_input') return false;
+    // Un contenuto *corto* non è mai uno snapshot dell'inventario: applicarlo
+    // azzera gli slot che non porta (live 06/10 dopo una riconnessione: uno
+    // `inventory_content` senza slot lasciò lo specchio a 0 e ogni `take_*`
+    // rispose `take_failed_49`). I cambi di un singolo slot arrivano da
+    // `inventory_slot`, quindi qui si accettano solo i 36 slot pieni; un
+    // contenuto corto viene ignorato e loggato invece di svuotare lo specchio.
+    if (slotList.length !== 36) {
+      this.log('inventory_snapshot_ignored', {
+        container: containerId ?? null,
+        slots: slotList.length,
+        mirror: this.inventorySlots.filter(s => s?.network_id).length,
+      });
+      return false;
+    }
+    if (!(isPlayerContainer || isFullPlayerInventory || clearWhenEmpty)) return false;
     this.inventorySlots = slotList;
     if (isFullPlayerInventory) this._absorbPickups('inventory_snapshot');
     this._refreshInventory();
@@ -7911,13 +7926,78 @@ export class BedrockAdapter {
     }
   }
 
+  // Quanto di un item gli slot del *server* dichiarano in mano al bot: è la
+  // verità del deposito, non `this.inventory` (che somma anche la stima dei
+  // pickup e può essere gonfiato — live 06/10: aggregato 5 diamanti, slot 2).
+  _heldCount (itemName) {
+    return this._slotsItemCount(this.inventorySlots, itemName);
+  }
+
+  _slotsItemCount (slots, itemName) {
+    let count = 0;
+    for (const slot of slots || []) {
+      if (!slot?.network_id) continue;
+      if (this._slotItemName(slot) === itemName) count += slot.count || 0;
+    }
+    return count;
+  }
+
+  // Conteggio di uno slot del contenitore *dal pacchetto di risposta* del server:
+  // `_applyStackResponse` ignora i contenitori non-giocatore, quindi la finestra
+  // aperta non si aggiorna da sola. Serve solo come indizio nel log: la prova del
+  // deposito è la rilettura del baule, perché uno stack può dividersi su più slot
+  // (un `place` di 64 su una pila da 4 riempie due slot) e il pacchetto non porta
+  // il nome dell'item.
+  _responseContainerSlotCounts (response) {
+    const counts = [];
+    for (const container of response?.containers || []) {
+      const cid = container.slot_type?.container_id;
+      if (!cid || cid === 'cursor' || cid === 'crafting_input') continue;
+      if (cid === 'hotbar' || cid === 'inventory' || cid === 'hotbar_and_inventory') continue;
+      for (const slot of container.slots || []) counts.push({ slot: Number(slot.slot), count: slot.count || 0 });
+    }
+    return counts;
+  }
+
+  // Rilettura del baule dopo il `place`: si riapre la finestra (l'`inventory_content`
+  // è la fotografia fresca del mondo) e si conta l'item. È la prova del deposito:
+  // `null` = non verificabile, e allora il deposito non si dichiara riuscito.
+  async _storageItemCountAfter (target, itemName) {
+    try {
+      await this._closeContainer();
+      await this._ensureStorageOpen(target);
+      const stored = this._slotsItemCount(this._openContainerSlots || [], itemName);
+      this.log('container_reread', { block: target.type, position: target.position, item: itemName, stored });
+      return stored;
+    } catch (error) {
+      this.log('container_reread_failed', { block: target.type, position: target.position, item: itemName, message: error.message });
+      return null;
+    }
+  }
+
   // Un bersaglio *ricordato* che non si apre non deve far fallire il deposito:
   // una sola rilettura dal mondo vivo, poi si riferisce l'errore vero della
   // destinazione scelta. L'apertura è la verifica della memoria stantia, quindi
   // "la verifica è fallita" e "non si è aperto" sono lo stesso caso.
   async _depositStackWithFallback (target, itemName, options = {}) {
     const result = await this._depositStackInto(target, itemName, options);
-    if (result.ok || target.remembered !== true || result.error === 'missing_item') return result;
+    if (result.ok) return result;
+    // Uno stack id stantio (un pickup si è fuso con lo stack, o lo specchio è
+    // vecchio dopo una riconnessione) fa rifiutare il take/place con 49/50 — e
+    // con lo specchio vuoto l'item sembra sparito. La riconnessione riporta
+    // l'`inventory_content` completo: un solo retry, poi l'errore vero.
+    if (/^(missing_item|take_failed_(49|50)|place_failed_(49|50))$/.test(String(result.error))) {
+      try {
+        await this._resyncByReconnect();
+      } catch (error) {
+        this.log('inventory_resync_failed', { message: error.message });
+        return result;
+      }
+      const retried = await this._depositStackInto(target, itemName, { ...options, base: null });
+      if (retried.ok) return { ...retried, retriedAfterResync: true };
+      return retried;
+    }
+    if (target.remembered !== true) return result;
     const fallback = this._depositTargetFor(itemName, { memory: false });
     if (!fallback || this._samePosition(fallback.position, target.position)) return result;
     // Il contenuto accumulato vale per il baule di prima: sul nuovo si riparte
@@ -7981,10 +8061,12 @@ export class BedrockAdapter {
     const index = this.inventorySlots.findIndex(s => this._slotItemName(s) === itemName && (s.count || 0) > 0);
     if (index < 0) return { ok: false, error: 'missing_item' };
     const before = this.inventory[itemName] || 0;
+    const beforeHeld = this._heldCount(itemName);
     const started = Date.now();
     try {
       await this._ensureStorageOpen(target);
       const slots = this._openContainerSlots || [];
+      const beforeStored = this._slotsItemCount(slots, itemName);
       const slotType = this._storageContainerSlotType(target.type);
       const stackSize = this._itemStackSize(this.inventorySlots[index].network_id);
       // Destinazione: uno slot già occupato dallo stesso item (se c'è spazio) oppure il primo vuoto.
@@ -8011,13 +8093,55 @@ export class BedrockAdapter {
       if (String(place.status) !== 'ok' && place.status !== 0) throw new Error(`place_failed_${place.status}`);
       this._applyStackResponse(place, { networkId: source.network_id });
       this._cursor = null;
-      // Base sul contenuto reale letto dal server (non sulla cache, che può essere stantia).
+      // Postcondizione sul mondo, non sulla previsione (M4): lo status `ok` delle
+      // due richieste non basta. Live 06/10 il deposito fu dichiarato su un
+      // contenuto previsto, con lo specchio gonfiato dai pickup e il baule mai
+      // riletto — e la missione non aveva un prima/dopo da confrontare.
+      const afterHeld = this._heldCount(itemName);
+      const afterStored = await this._storageItemCountAfter(target, itemName);
+      // Il baule è la prova del deposito e il calo degli slot del giocatore la
+      // conferma quando il server li riporta (altrimenti il pacchetto del take
+      // non ha parlato dell'inventario: lo specchio non fa testo).
+      const playerReported = (take.containers || []).some(container => {
+        const cid = container.slot_type?.container_id;
+        return cid === 'hotbar' || cid === 'inventory' || cid === 'hotbar_and_inventory';
+      });
+      const heldOk = afterHeld <= beforeHeld - count || (!playerReported && afterHeld === beforeHeld);
+      const storedOk = afterStored != null && afterStored >= beforeStored + count;
+      if (!heldOk || !storedOk) {
+        this.log('container_deposit_unverified', {
+          block: target.type, position: target.position, item: itemName, count,
+          before: { held: beforeHeld, stored: beforeStored },
+          after: { held: afterHeld, stored: afterStored },
+          expected: { held: beforeHeld - count, stored: beforeStored + count },
+          takeStatus: take.status, placeStatus: place.status, playerReported,
+          placeSlots: this._responseContainerSlotCounts(place),
+        });
+        return {
+          ok: false, error: 'deposit_unverified', item: itemName, count, into: target.type, position: target.position,
+          before: { held: beforeHeld, stored: beforeStored },
+          after: { held: afterHeld, stored: afterStored },
+          takeStatus: take.status, placeStatus: place.status,
+          hint: 'the server accepted the stack requests, but the chest read-back does not show the deposit',
+        };
+      }
+      // Contenuto del baule dal registro del server appena riletto (non dalla cache,
+      // che può essere stantia).
       const contents = base ? {...base} : this._storageContentsFromSlots(this._openContainerSlots);
-      contents[itemName] = (contents[itemName] || 0) + count;
+      contents[itemName] = afterStored;
       this._setContainerContents(target, contents);
       const after = this.inventory[itemName] || 0;
-      this.log('container_deposit', { block: target.type, position: target.position, item: itemName, count, inventoryDelta: after - before });
-      return { ok: true, item: itemName, count, into: target.type, position: target.position, inventoryDelta: after - before, ms: Date.now() - started, contents };
+      this.log('container_deposit', {
+        block: target.type, position: target.position, item: itemName, count,
+        inventoryDelta: after - before, verified: true, heldDelta: afterHeld - beforeHeld, storedDelta: afterStored - beforeStored,
+        before: { held: beforeHeld, stored: beforeStored }, after: { held: afterHeld, stored: afterStored },
+      });
+      return {
+        ok: true, verified: true, item: itemName, count, into: target.type, position: target.position,
+        inventoryDelta: after - before, heldDelta: afterHeld - beforeHeld, storedDelta: afterStored - beforeStored,
+        before: { held: beforeHeld, stored: beforeStored }, after: { held: afterHeld, stored: afterStored },
+        ms: Date.now() - started, contents,
+      };
     } catch (error) {
       return { ok: false, error: error.message };
     } finally {
