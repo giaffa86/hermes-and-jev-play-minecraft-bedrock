@@ -3755,3 +3755,33 @@ container kept running the image deployed at 11:19. Both are closed here.
   ladder — rung 2, `step: "inspect"`, `reason: "discovered_not_inspected"`.
   The four-case live row in [open-questions](wiki/open-questions.md) is now the
   next thing to watch.
+
+## [2026-10-06] spec | The sweep splits its budgets, and protection becomes a global invariant
+
+- Rung 4 (`survey_village`) had one cell budget and one throttle. The design now
+  separates **three** limits because a cell count is not a cost:
+  `VILLAGE_SURVEY_MS` (600000) is the **cooldown** between two sweeps and never
+  bounded one sweep, `VILLAGE_SURVEY_CELLS` (4096) is the **exploration** budget
+  and `VILLAGE_SURVEY_MAX_MS` (120000, first-pass value to be tuned by the first
+  live run) is the **execution** budget — pathfinding, detours, chunk loading and
+  obstacles make 4096 cells cost very different amounts of wall clock, so neither
+  budget implies the other. Termination is deterministic: the first limit reached
+  stops the sweep, which reports `stoppedBy` (`"cells"` / `"time"` /
+  `"distance"`) next to `truncated`.
+- **A refusal is not a truncation.** `truncated: true` describes the census that
+  *was* returned; `village_too_far` / `survey_budget_exhausted` are **action
+  results** meaning the mission could not proceed at all. Hermes reasons on
+  fields, never on strings.
+- **`DIG_PROTECTED` is a global invariant**, not survey logic: a sweep may detour
+  or fail but never modify the world to reach a cell — villages, beds, farmland,
+  fences and crops stay intact, and "just this one block" is not in the contract.
+  Villages and structures carry persistent state (beds, jobs, trades, mob
+  behaviour) that is not sacrificial terrain.
+- **The property that carries the milestone** is "a second sweep over an already
+  scanned ring plans zero movement": it proves persistence, `visitedChunks`,
+  frontier planning and idempotence at once. The test list now adds a **restart
+  between the first and the second sweep**, so that idempotence cannot come from
+  RAM state.
+- Scope frozen for the implementation: no biome heuristics, no "intelligent"
+  village search, no `/locate` — a command that hands over a position would skip
+  exactly the observation this roadmap exists to produce.

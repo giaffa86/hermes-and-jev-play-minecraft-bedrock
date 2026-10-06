@@ -222,9 +222,18 @@ failure, and `runs/<run>/actions.jsonl` shows it.
   the register first** (`villageRegister`, memory ∪ live, with `source`/`status`),
   and the survey writes back the facts it just measured.
 - **V1 — the sweep.** `survey_village` walks only the unscanned cells near the
-  anchor, throttled by `VILLAGE_SURVEY_MS` and bounded by `VILLAGE_SURVEY_CELLS`,
-  with typed refusals (`village_too_far`, `survey_budget_exhausted`); never a
-  dig, never an entity, never a villager. A second sweep must add no new facts.
+  anchor under **three independent limits**: `VILLAGE_SURVEY_MS` is the *cooldown*
+  between sweeps, `VILLAGE_SURVEY_CELLS` the *exploration* budget and
+  `VILLAGE_SURVEY_MAX_MS` the *execution* budget — cells are a poor proxy for
+  cost, so neither budget implies the other, and the sweep stops deterministically
+  at whichever is reached first, reporting `truncated: true` + `stoppedBy`. A
+  typed refusal (`village_too_far`, `survey_budget_exhausted`) is a different fact:
+  the mission could not proceed. `DIG_PROTECTED` is a **global invariant**, not
+  survey logic: the route may detour or refuse, never dig; villages, beds,
+  farmland, fences and crops stay intact. A second sweep must add no new facts —
+  and a **restart between the two sweeps** must not change that, or the
+  idempotence would be RAM state rather than persisted knowledge. No biome
+  heuristics, no "smart" village search, no `/locate`.
 - **V2 — storage memory on the deposit side.** `_depositTargetFor` consults the
   remembered containers, prefers a known non-stale chest that already holds the
   item, re-verifies it on the spot, and falls back to the live scan — with

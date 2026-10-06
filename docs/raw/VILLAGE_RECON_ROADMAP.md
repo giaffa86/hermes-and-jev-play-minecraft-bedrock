@@ -254,7 +254,7 @@ first**. For an order that needs an item (“find the iron in the chests”):
 | 1 | a container whose **contents are known** to hold the item | a lookup plus a walk, re-verified on arrival | `containersWithItem:226` / `_rememberedStorage:7183` |
 | 2 | a **discovered** container never inspected, nearest first | a lookup plus a walk plus one open | **missing** — nothing writes a discovery row |
 | 3 | new storage in the already-loaded/perceived area | one local block scan, no walking beyond `radius` | `_findNearbyStorageBlocks:7029` (runtime only, never persisted) |
-| 4 | real reconnaissance: leave the area, sweep new cells | minutes, budgeted by `VILLAGE_SURVEY_CELLS` | `find_structure` / the V1 sweep |
+| 4 | real reconnaissance: leave the area, sweep new cells | minutes, budgeted by `VILLAGE_SURVEY_CELLS` **and** `VILLAGE_SURVEY_MAX_MS` | `find_structure` / the V1 sweep |
 
 Rungs 1–3 are lookups and local scans; **only rung 4 is exploration**, and it is
 the fallback, never the first move. The ladder is part of the planner contract:
@@ -299,7 +299,7 @@ sweep), **V2** makes the deposit path climb the ladder instead of asking only th
 
 | Key | Meaning |
 |---|---|
-| `survey_village` | Bounded, read-only reconnaissance: walk the cells around the village anchor that were never scanned, count beds/plots/pens/containers, and write the facts to memory. Refuses `village_too_far`, `survey_budget_exhausted`; never digs, never touches an entity. |
+| `survey_village` | Bounded, read-only reconnaissance: walk the cells around the village anchor that were never scanned, count beds/plots/pens/containers, and write the facts to memory. Three independent limits (`VILLAGE_SURVEY_MS` cooldown, `VILLAGE_SURVEY_CELLS` exploration budget, `VILLAGE_SURVEY_MAX_MS` execution budget) stop it deterministically at whichever is reached first, and the census it returns says so with `truncated: true` + `stoppedBy`; when it cannot move at all it instead **refuses** with a typed code (`village_too_far`, `survey_budget_exhausted`). Never digs, never touches an entity — `DIG_PROTECTED` is a global invariant. |
 
 Everything else stays as it is: the chain is composed of keys the harness
 already offers (`harvest_*`, `plant_*`, `deposit_*`, `dump_inventory`).
@@ -320,10 +320,17 @@ already offers (`harvest_*`, `plant_*`, `deposit_*`, `dump_inventory`).
                "animals": [{ "type": "cow", "adults": 2, "babies": 1 }] }],
   "storage":[{ "position": {...}, "type": "chest", "contains": { "carrot": 12 },
                "rememberedAt": 0, "status": "known" }],
-  "survey": { "scanned": 0, "truncated": false, "at": 0 },
+  "survey": { "scanned": 0, "truncated": false, "stoppedBy": null, "elapsedMs": 0, "at": 0 },
   "missing": ["bell (0/1)"]
 }
 ```
+
+**Refusal and truncation are two different facts.** `truncated: true` (with
+`stoppedBy`: `"cells"` / `"time"` / `"distance"`) describes the census that *was*
+returned — the sweep ran out of one of its budgets and says which. A typed
+refusal (`village_too_far`, `survey_budget_exhausted`) is the *action result*: the
+mission could not proceed at all. Keeping them apart is what lets the controller
+reason without parsing strings.
 
 ### New memory records
 
@@ -348,8 +355,9 @@ harness still decides which of the three steps is legal *now*.
 
 | Var | Default | Meaning |
 |---|---|---|
-| `VILLAGE_SURVEY_MS` | `600000` | Throttle on `survey_village` (a sweep is expensive; 10 min). |
-| `VILLAGE_SURVEY_CELLS` | `4096` | Cell budget of one sweep. |
+| `VILLAGE_SURVEY_MS` | `600000` | **Cooldown** between two sweeps (a sweep is expensive; 10 min). It does *not* bound the duration of one sweep. |
+| `VILLAGE_SURVEY_CELLS` | `4096` | **Exploration budget**: how many new cells one sweep may scan. |
+| `VILLAGE_SURVEY_MAX_MS` | `120000` | **Execution budget**: wall-clock ceiling of one sweep. Pathfinding, detours, chunk loading and obstacles make the cell count a poor proxy for cost, so this limit is not derivable from `VILLAGE_SURVEY_CELLS` and vice versa; the first of the two reached wins (initial value, to be tuned by the first live sweep). |
 | `VILLAGE_HOUSE_RADIUS` | `8` | Radius that clusters beds/containers into one house. |
 | `VILLAGE_PLOT_MIN_CELLS` | `4` | Below this a crop cluster is not a plot. |
 | `VILLAGE_MEMORY_TTL_MS` | `86400000` | After this a village fact is `stale` and must be re-read before it is depended on. |
@@ -438,26 +446,51 @@ runtime cache is.
   `bedrock-harness.mjs:508`/`:609`) crossed with the register (V0) tells it what
   is unknown, and `unexploredFrontier` (`world-memory.mjs:512`, today with no
   production caller) gives the cells that were never scanned — so a second sweep
-  is cheap and a sweep after a restart is not a re-measure from zero. Typed
-  refusals `village_too_far` and `survey_budget_exhausted` instead of an
-  unbounded walk.
-- Hard bounds: `VILLAGE_SURVEY_MS` throttle, `VILLAGE_SURVEY_CELLS` budget, and
-  never a dig, never an entity interaction, never a villager. Respect
-  `DIG_PROTECTED` (beds, farmland, fences and crops stay intact) and the rule
-  that the family base is not ours to reshape.
+  is cheap and a sweep after a restart is not a re-measure from zero.
+- **Three independent limits, the first one reached wins.**
+  `VILLAGE_SURVEY_MS` is the *cooldown* between two sweeps (not a bound on one),
+  `VILLAGE_SURVEY_CELLS` is the *exploration* budget (how many new cells may be
+  scanned) and `VILLAGE_SURVEY_MAX_MS` is the *execution* budget (wall clock).
+  Cells are a poor proxy for cost: at 4096 cells pathfinding, detours, chunk
+  loading and obstacles can cost very different amounts of real time, so neither
+  budget implies the other. Termination is deterministic — the sweep stops at
+  whichever limit is reached first and reports `stoppedBy` (`"cells"`,
+  `"time"`, `"distance"`).
+- **A refusal is not a truncation.** `truncated: true` describes the census that
+  was returned; a typed refusal (`village_too_far`, `survey_budget_exhausted`) is
+  the action result and means the mission **could not proceed** (no anchor,
+  nothing unscanned left, budget already spent). Hermes reasons on fields, never
+  on strings.
+- **`DIG_PROTECTED` is a global invariant, not survey logic.** A sweep may detour
+  or fail, but it may never modify the world to reach a cell: villages, beds,
+  farmland, fences and crops stay intact, and "just this one block" is not in
+  the contract. Villages and structures carry persistent state (beds, jobs,
+  trades, mob behaviour) that is not sacrificial terrain — the same rule that
+  already protects chests, tables and stations in the base world.
 - The sweep result is a mission (`rememberStructure`/checkpoints already exist),
   so a run interrupted by death resumes instead of restarting.
 
 **Test**: `tests/village-sweep.test.mjs` — the cell budget stops the walk and
-reports `truncated`; a second sweep over a fully scanned ring plans zero
-movement; a protected block in the way is never broken (the route detours or
-refuses); a refusal carries its typed code.
+reports `truncated` with `stoppedBy: 'cells'`; the execution budget stops it with
+`stoppedBy: 'time'` while cells are still unscanned; a second sweep over a fully
+scanned ring plans zero movement; **a restart between the first and the second
+sweep still plans zero movement** (idempotence must come from `visitedChunks`
+plus the register, never from RAM alone); a protected block in the way is never
+broken (the route detours or refuses); a refusal carries its typed code and is
+distinguishable from a truncated census without parsing text.
 
 **Accettazione**: live — one sweep of the village produces a census strictly
 larger than the V0 single-shot one (more houses/plots/storage reachable), a
 second sweep adds **no new facts** (idempotent, inside the
 `OBSERVATION_DEDUPE_MS` window), and `node tools/run-facts.mjs <run>` shows the
 action in `runs/<run>/actions.jsonl` with its duration.
+
+**Scope freeze.** This milestone makes one bounded, memory-aware primitive work
+well: no biome heuristics, no "intelligent" village search, and no `/locate`. The
+anchor comes from the register and the sweep walks what the frontier says, in the
+cheapest order. Guessing where a village *might* be is a different problem, and a
+command that hands over knowledge would skip exactly the observation this
+roadmap exists to produce.
 
 ### V2 — Storage memory on the deposit side (symmetry with `take_*`)
 
@@ -584,7 +617,7 @@ timestamp truthfully.
 | unit | **Register read**: memory-first without a live survey, `source`/`status`/`observedAt`, live beats remembered, `findEntities` pens survive a restart | `tests/village-register.test.mjs` |
 | unit | **The ladder**: known-contents first, discovered-uninspected second, local scan third, sweep last; a discovery write never erases contents learned earlier | `tests/village-register.test.mjs` |
 | pure | Two-depth TTLs: a discovery row survives an inspection-TTL expiry; an inspection row is `stale` while its discovery is still fresh | `tests/village-register.test.mjs` |
-| pure | Sweep budget, second-pass idempotence, protected-block detour | `tests/village-sweep.test.mjs` |
+| pure | Sweep budget (**cells and time**, first limit wins), second-pass idempotence **including a restart between the two passes**, protected-block detour, refusal vs `truncated` | `tests/village-sweep.test.mjs` |
 | unit | Deposit target from memory vs cache, stale re-read, fallback | `tests/bedrock-storage-memory.test.mjs` |
 | unit | Farm-order classification vs the collect path, chain closing on delta | `tests/controller-farm-order.test.mjs` |
 | unit | Reconciliation with `GET /observe.structures` and the chore layer | `tests/village-labor.test.mjs` (extension) |
@@ -645,3 +678,7 @@ explicit operator decision.
 - Slaughtering the base's animals for food.
 - A full "village model" for the LLM to reason about: the model is a fallback
   here, never the source of a fact.
+- `/locate` or any command that hands over a position without observation: it
+  would bypass the frontier, `visitedChunks` and the register in one step.
+- Biome heuristics or a "smart" village search: rung 4 walks where the frontier
+  says, in the cheapest order; where a village *might* be is another problem.
