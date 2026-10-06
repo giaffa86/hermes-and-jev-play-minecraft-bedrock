@@ -1,5 +1,71 @@
 # Log
 
+## [2026-10-06] run | Diamond mission end to end: village recon, the village mine channel, two diamonds, the deposit
+
+The first full hand-driven mission against the live Bedrock world (CT 108),
+driven only through `POST /plan` + `POST /act` on the harness API, no controller and no
+model in the loop. Goal: village recon first, descend through a **pre-existing** village
+mine passage (never drill at random), mine at least two diamonds, deposit them in a chest
+by the closed pig pen, and never lose loot on death.
+
+- **Recon** — `survey_village` ran its whole 120 s budget (`{"ok":true,"ms":120188}`, the
+  only line in `runs/demo/actions.jsonl` for it): 9 houses, 4 plots, 16 storage blocks, 54
+  beds, 24 animals, 131 crops, `missing: ['bell (0/1)']`, `CONFIRMED` at confidence 0.6
+  (score 6 / minScore 5, evidence beds 54, workstations 159, villagers 10).
+- **The existing channel** — the descent used the walkable diagonal staircase at **z = 195**
+  (x 114 → 91, y 62 → 39, one block per level) opening into a chamber at y 33–38
+  (x 72–96, z 187–207). It was walked down with short waypoint hops (~5 blocks each); a
+  single deep waypoint fails (`movement timeout` / `target_not_found`).
+- **The diamonds** — from the chamber a staircase of `dig_down` steps reached y 15, where
+  four `mine_diamond_ore` calls succeeded against the server world
+  (`confirmedBy: server_world`, `destroyedEvent: true`, `tool: iron_pickaxe`):
+  **(90,11,191)**, **(90,10,190)**, **(91,10,190)**, **(90,10,191)** — i.e. the vein sits at
+  **y 10–11, x 90–91, z 190–191**, above the stone/deepslate boundary (deepslate ores start
+  at y ≤ 7 here; a second, unneeded `deepslate_diamond_ore` was seen at (78,2,181)).
+- **Kit** — the chest bank at (90–95, 72–73, 160–165) supplied iron ingots, coal, torches,
+  shield and golden leggings; **the 19 diamonds and the `diamond_pickaxe` already in those
+  chests were deliberately left alone** so the two mined diamonds are the run's own product.
+  `craft_iron_pickaxe` worked without placing a table (a reachable `crafting_table` within
+  32 blocks); `equip_armor` failed once with `armor_equip_failed` and was never retried.
+- **No deaths.** One night caught the bot on the surface (`phase night`, a phantom at 6.1
+  blocks, hp 15.8): the governor went to `caution` with `night_with_bed`, `eat` raised food
+  to 20 and `sleep` in the bed at (91,73,162) skipped the night (`{"ok":true,"slept":
+  "player_sleep_flag"}`); while asleep every `/act` correctly answers `sleeping`.
+- **The deposit** — `deposit_diamond` moved the 2 diamonds into the storage bank chest
+  **(91,73,160)**: `{"ok":true,"item":"diamond","count":2,"into":"chest",
+  "inventoryDelta":-2,"ms":21792}`. Run ledger (`GET /stats`, run `demo`): 682 attempts,
+  678 executed, 325 ok, 353 failed, 4 refused (2 `sleeping`, 2 `not_connected`),
+  `actionMs` 2815507 (~2816 s of action time).
+- **Eight harness gaps this round exposed** (all recorded in
+  [open-questions.md](wiki/open-questions.md)): no "dig straight up" action (`dig_up` needs
+  a solid step *in the facing direction*, so the bot twice stranded itself in its own
+  tunnel and only a facing-turn walk freed it); `go_home` fails from a deep shaft even when
+  the reachable set is surface-connected; `pillar_up` cannot start at `headroom: 1`;
+  `mine_<ore>` needs a *reachable* drop cell; fences decode as `unknown-` so every pen is
+  reported `fenced: false`; the `deposit_<item>` description names a different container
+  than the execution targets (and prints the type as a runtime id); `/debug/reach` caps
+  `cells` at 200 sorted by y; and `iron_age` is satisfied by any iron tool while the mine
+  options need an iron *pickaxe*.
+- **Which chest, and the deposit verified** — a fresh `observe().village.pens` (bot at the
+  workshop) returns exactly one pig pen, **anchor (83,72,152) with 16 adults**, plus the
+  chicken pen (93,74,183); the enclosure near the workshop at (105–113,140–145) is *not* a
+  pen any more (no animal in it, `entities` shows villagers, cats and a donkey). The closed
+  pig pen is therefore the fenced herd pen, and the nearest chest bank to it is the base
+  storehouse **(90–95, 72–73, 160–165)** — (90,72,160) 7.8 and (91,73,160) 8.6 blocks from
+  the pen centre, ≈6 from its fence, against ~7+ for the farm-shed bank (73,71,153). The
+  double chest at **(91,73,160)** was read back after the deposit: **`diamond` 21** (the 19
+  pre-existing + the 2 mined), `iron_ingot` 795 and `gold_ingot` 144 unchanged, and the bot's
+  own `diamond` count back to 0.
+- **The bot lost the server mid-verification** — `Server closed connection:
+  connecterror:9` on every retry (10 s → 60 s backoff) while `test-ping.mjs` still answered
+  `PING OK` (`playerCount: 0`, `acceptsOnlineAuth: true`, `acceptsSelfSignedAuth: false`) and
+  the Microsoft caches were being refreshed normally (`*_bed-cache.json` rewritten during the
+  retries): the documented fault class (NetherNet wedged, see the wiki page for CT 108, the
+  `-32 (Kelp)` / `-13` row) and not an auth problem. Fixed the documented way: the bot
+  container is stopped, the Bedrock service is restarted at zero players
+  (`proxmoxctl exec 108 --command "systemctl restart minecraft-bedrock"`, journal `Stopping…
+  17:50:47` / `Started 17:51:35`), then the container starts again and the mirror reconnects.
+
 ## [2026-10-06] feat | Deep Dark W2: a route that stays outside every sensor sphere
 
 The Deep Dark roadmap (`docs/raw/DEEP_DARK_ROADMAP.md`) got its third milestone.

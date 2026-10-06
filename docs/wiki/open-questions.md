@@ -1109,3 +1109,66 @@ Two open design questions follow from that framing:
 - **The `AUTONOMY=off` invariant holds**: the needs-driven idle autonomy is still
   opt-in; what runs by default is only the *rule-driven* ladder plus the
   survival needs the governor declares right now.
+
+## Mining, vertical escape and the deposit (06/10/2026)
+
+Observed in the hand-driven diamond mission (see [log.md](../log.md), entry
+*Diamond mission end to end*). All eight are harness behaviour seen live, not
+unit-test guesses.
+
+- **There is no "dig straight up" action.** `dig_up` (`_upTargets`,
+  `bedrock-adapter.mjs:14204`) builds the target list for all four directions
+  (`{"0"|"90"|"180"|"-90": "no_step_ahead" | ["ceiling","step","head"]}`) but the
+  option is pushed **only for the direction the bot is currently facing**
+  (`_digDirection()`); `dig_up` then mines `ownCeiling + step + head` and steps
+  1 forward + 1 up. A bot facing an open side gets `no_step_ahead` even when the
+  opposite direction is solid. Twice the bot stranded itself in the tunnel it had
+  just dug (at ~y 29.6 and ~y 48.6) with `dig_up`/`dig_down` both refused;
+  `pillar_up` was refused too (`{"ok":false,"error":"no_headroom","block":
+  "cobblestone","headroom":1}` — it needs 2) and `barricade` failed 24 times in a
+  row with `barricade_incomplete`. **The only fix that worked was turning the
+  bot**: a `goto_waypoint` to a waypoint 3 blocks away re-aims `_digDirection()`
+  and `dig_up` reappears. Worth a real `dig_straight_up` (or making the option
+  facing-independent) before any autonomous mining plan relies on making its own
+  shaft.
+- **`go_home` fails from a deep shaft.** From the mine bottom it answered
+  `go_home_failed: path_failed` eight times in a row (once `movement timeout`),
+  and later `go_home_failed: movement timeout` even after the reachable set had
+  grown to 1200 cells spanning the surface. The return worked only by walking
+  waypoint hops. Same family as the earlier "no real exploration / no long-path
+  planning" gap.
+- **`mine_<ore>` requires a *reachable* drop cell**, not just visibility:
+  `{"ok":false,"error":"no reachable diamond_ore found nearby"}` while `/options`
+  advertised `mine_diamond_ore at {"x":90,"y":11,"z":191} (11.7 blocks away,
+  opportunity)`. Digging closer first is mandatory. And a *distant* ore attempt is
+  actively harmful: 10 consecutive `mine_diamond_ore` calls returned
+  `block_still_present` while the bot walked to the ore and fell back down the
+  shaft.
+- **`deposit_<item>` names one container and uses another.** The offered key read
+  `deposit_diamond | Deposit 2 diamond into the 201 at {"x":105,"y":72,"z":138}`
+  but the action performed went to (91,73,160), because the description uses the
+  cached `depositTarget` while `_depositItem(itemName, {position})`
+  (`bedrock-adapter.mjs:~5380`) resolves through `_depositTargetFor(itemName)`,
+  which prefers a container that already holds the same item. The description also
+  prints the container type as the runtime id `201` instead of `chest`. A
+  count-limited deposit is impossible through the key alone (`take_<item>` accepts
+  `maxCount`, `deposit_<item>` does not): the only way to move exactly 2 is to hold
+  exactly 2 and pass an explicit `position` in the `/act` body
+  (`bedrock-harness.mjs:745-749` forwards both).
+- **Fences decode as `unknown-`**, so the village census reports
+  `fenced: false, missing: ['fence']` for **every** pen — including the pen whose
+  ring of unmapped cells is plainly visible in `/debug/geom`. Any "is the pen
+  closed?" decision made from `observe().village` is therefore unusable; the pen in
+  this mission had to be confirmed by reading the geometry by hand.
+- **`/debug/reach` caps `cells` at 200, sorted by y** — the default reads like "the
+  bot is in a 4-cell pocket" when `?limit=900` shows 1200 cells. Misleading
+  diagnostic; a `truncated` flag (like the census has) would settle it.
+- **`iron_age` and the iron pickaxe disagree**: progression's `iron_age` is
+  satisfied by any `iron_(pickaxe|axe|shovel|sword|hoe)`, so a carried
+  `iron_sword` closes it, while the adapter offers `mine_diamond_ore` only with a
+  real iron **pickaxe**. The engine therefore believes the tier is done and never
+  steers the bot to craft the pickaxe — the diamond milestone has no live path
+  unless a chest happens to hold one.
+- **`equip_armor` failed once** with `armor_equip_failed` while the bot held
+  `golden_leggings` and `observe().armor` stayed empty. Only one attempt was made;
+  not reproduced.
