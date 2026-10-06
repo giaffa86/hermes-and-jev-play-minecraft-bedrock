@@ -180,6 +180,51 @@ Rule for the whole roadmap: **the memory is the register, the survey is the
 sensor.** A village fact never comes from the model; it comes either from a
 record with a status, or from a fresh measurement that immediately becomes one.
 
+## The chest search: reconnaissance in two depths
+
+"Find the iron in the chests" is the smallest order that shows what the register
+is for, and the honest answer is *it depends on what was already measured*:
+
+| What the bot did before | What memory can answer | What the order costs |
+|---|---|---|
+| opened that chest at some point | its contents, the last time it looked (`lastSeenAt`), and whether the record is `stale` | a lookup plus a walk: `_rememberedStorage:7183` → `_rememberedContainerFor:7207`, and `take_*` re-verifies on arrival |
+| opened it in the last 5 minutes | the same, from the runtime cache (`_cachedContainers:7041`, `CONTAINER_TTL_MS:182`) | a lookup plus a walk |
+| only walked past it | **nothing**: `rememberContainer` has exactly one call site, `_setContainerContents:7057`, i.e. *only after an open* | walk there and open it (`read_container:4595`), one open per container |
+
+A chest is **opaque from outside**: its contents only become visible when it is
+opened, so no amount of reasoning and no block survey can substitute for that
+one interaction. But the two halves of the question have very different costs:
+
+- **Where are the containers?** — cheap and needs no interaction at all:
+  `_findNearbyStorageBlocks:7029` finds `STORAGE_BLOCKS` in the loaded palette
+  (`findBlocks`, radius 32, `STORAGE_SCAN_PER_NAME = 24` at `:159`). It is purely
+  runtime today (nothing persists it), which is exactly what the register must
+  fix.
+- **What is inside them?** — an open per container, batched at
+  `STORAGE_READ_LIMIT = 8` per `read_container` (`:164`), and only for the ones
+  that are reachable.
+
+Three design consequences:
+
+1. **A container row may be positional-only.** The register needs
+   `contentsKnown: false` alongside the contents: knowing *there is a chest here*
+   is a navigation fact even when the inside is unknown. Today that row cannot
+   exist at all — a chest that was merely seen is not remembered, not even by
+   position (the only writer is the post-open one).
+2. **A sweep is paid once, a lookup is paid forever.** The reconnaissance is not
+   a per-order cost: after the first pass, "find the iron" is answered from the
+   memory, and only a `stale` record buys a re-check.
+3. **The register says where to look, not what you will find.** A remembered
+   "13 iron_ingot" may already be gone (other players move things), which is why
+   `take_*` re-reads on arrival and why a `stale` record is a *candidate to
+   verify*, never a promise. The cost of being wrong is one wasted walk, paid
+   only when someone else emptied the chest.
+
+This is the reason "cerca ferro nei bauli" — not the farm chain — is the first
+acceptance case for V0/V2: it exercises the register, the memory read path, the
+`stale` discipline and the deposit/take symmetry without involving a single
+farming mechanic.
+
 ## Proposed vocabulary (closed loaders, per convention)
 
 ### New/changed `/options` action keys
@@ -216,7 +261,7 @@ already offers (`harvest_*`, `plant_*`, `deposit_*`, `dump_inventory`).
 
 | Record | Written by | Notes |
 |---|---|---|
-| `kind: container`, id `container_x_y_z` | `rememberContainer` (already exists) | the deposit side must start reading it, not just the take side |
+| `kind: container`, id `container_x_y_z` | `rememberContainer` (already exists) | the deposit side must start reading it, not just the take side; **the sweep must also write rows for unopened chests** (`contentsKnown: false`), which today is impossible — the only writer is `_setContainerContents:7057`, after an open |
 | `kind: resource_site`, id `plot_<crop>_x_y_z` | new, via `rememberResourceSite` | a plot is a *site*, so it is a vector-indexable target |
 | `kind: entity`, id `entity_<uniqueId>` | `rememberEntity` (already exists) | pens reference the remembered animals, not a live census |
 | observations `contains` / `is_a` | `observe` (already exists) | the evidence trail, never overwritten |
@@ -273,7 +318,9 @@ harness still decides which of the three steps is legal *now*.
   - storage ← `findContainers:213` / `containersWithItem:226`, plus the runtime
     `_cachedContainers:7041` — and **never with the `includeStale: true`
     default** (`world-memory.mjs:213`): the register carries `status` and the
-    caller decides what it tolerates.
+    caller decides what it tolerates. Each storage row also carries
+    `contentsKnown`, so a chest the sweep only *saw* is a known place with an
+    unknown inside instead of a missing fact.
   Each row keeps `status`, `observedAt` (`lastSeenAt`) and `verifiedAt`, so the
   payload can say "known, measured 3 minutes ago" instead of implying freshness.
 - Every detection writes `plot_<crop>_x_y_z` + the `is_a`/`contains`

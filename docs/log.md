@@ -3428,3 +3428,31 @@ and tracked no weather at all.
 - Rule recorded for the whole roadmap: **the memory is the register, the survey
   is the sensor** — a village fact comes from a record with a status or from a
   fresh measurement that immediately becomes one, never from the model.
+
+## [2026-10-06] ingest | A chest search costs a sweep once, a lookup forever
+
+- Question that produced this (from the owner): *if I ask the bot to find iron
+  in the chests, does it still have to do reconnaissance?* Answer recorded in
+  the spec as a new section, `docs/raw/VILLAGE_RECON_ROADMAP.md`
+  ("The chest search: reconnaissance in two depths") and summarised in
+  [`docs/wiki/village-recon.md`](wiki/village-recon.md).
+- The two depths: **where** the containers are is cheap and interaction-free
+  (`_findNearbyStorageBlocks:7029`, `STORAGE_BLOCKS` in the loaded palette,
+  radius 32, `STORAGE_SCAN_PER_NAME = 24` at `bedrock-adapter.mjs:159`), while
+  **what is inside** costs one open per chest (`read_container:4595`, batched at
+  `STORAGE_READ_LIMIT = 8` at `:164`). A chest is opaque from outside, so the
+  sweep is unavoidable the first time — and never again for the same chest:
+  `_rememberedStorage:7183` → `_rememberedContainerFor:7207` answers from the
+  record, with `take_*` re-verifying on arrival.
+- Design consequence added to V0: the register needs `contentsKnown` next to the
+  contents, so a chest the sweep only *saw* is a known place with an unknown
+  inside instead of a missing fact. Today that row is impossible:
+  `rememberContainer` has exactly one call site, `_setContainerContents:7057`,
+  i.e. it only fires **after an open**, so a merely-seen chest is not remembered
+  at all — not even by position.
+- Honest bound kept: the register says *where to look*, not *what you will
+  find* — a remembered "13 iron_ingot" may already be gone, which is why a
+  `stale` row is a candidate to verify and not a promise. "Find the iron in the
+  chests" is now the first V0/V2 acceptance case because it exercises register,
+  memory read path, staleness discipline and the take/deposit symmetry without
+  involving a single farming mechanic.

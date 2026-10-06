@@ -111,6 +111,32 @@ dies halfway leaves some cells renewed and others old, so the register must be
 readable at cell granularity and report `truncated` — never one village-wide
 "last scanned at" that would make an old plot look fresh.
 
+### The chest search: two depths of reconnaissance
+
+"Find the iron in the chests" is the smallest order that shows what the register
+is for, and it splits cleanly into two questions with very different costs:
+
+- **Where are the containers?** Cheap, needs no interaction: chest blocks are
+  blocks, and `_findNearbyStorageBlocks:7029` already finds them in the loaded
+  palette (`STORAGE_SCAN_PER_NAME = 24` at `:159`, radius 32). Purely runtime
+  today — nothing persists them.
+- **What is inside them?** One open per container, batched at
+  `STORAGE_READ_LIMIT = 8` per `read_container` (`:164`). A chest is opaque from
+  outside, so no survey and no reasoning can substitute for that interaction.
+
+So the reconnaissance is paid **once, not per order**, and only for chests that
+were never opened: after a first pass "find the iron" is a lookup in the memory
+(`_rememberedStorage:7183` → `_rememberedContainerFor:7207`) plus a walk, and
+`take_*` re-verifies on arrival. A remembered "13 iron_ingot" may already be gone
+— **the register says where to look, not what you will find**, and the cost of
+being wrong is one wasted walk.
+
+This also fixes what a container row must contain: `contentsKnown`, so a chest
+the sweep only *saw* is a known place with an unknown inside instead of a
+missing fact. Today that row cannot exist at all — `rememberContainer` has
+exactly one call site, `_setContainerContents:7057`, so a chest that was never
+opened is not remembered, not even by position.
+
 ## The design in brief
 
 - **V0 — census.** A pure `village-survey.mjs` clusters houses (beds/containers
