@@ -27,7 +27,11 @@ import { matchesItemToken } from './human-questions.mjs';
 import { detectStructures } from './structures.mjs';
 // Il censimento del sito è una funzione pura (`village-survey.mjs`): l'adapter
 // raccoglie i fatti (celle, letti, contenitori, entità) e non decide nulla.
-import { surveyVillage, villageCensusNames } from './village-survey.mjs';
+import { surveyVillage, villageCensusNames, villageSweepConfig, VILLAGE_SURVEY_RADIUS } from './village-survey.mjs';
+// V1 — la passata riusa il planner d'esplorazione ancorato (`planExplorationSweep`)
+// invece di avere una geometria propria: il piano è funzione di
+// `(anchor, visited, config)`, quindi la stessa area dà sempre la stessa spirale.
+import { planExplorationSweep, chunkKey } from './exploration.mjs';
 import { planStorageSearch, STORAGE_RUNG, STORAGE_STEP } from './storage-ladder.mjs';
 import { storageBlockNames, isStorageBlock } from './storage-blocks.mjs';
 import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, swimInputFlags, deepWaterColumns, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT, LAVA_CONTACT_RANGE } from './bedrock-fluids.mjs';
@@ -203,6 +207,22 @@ const CONTAINER_TTL_MS = 5 * 60 * 1000;
 // `observe()` la legge a ogni passo del controller.
 const VILLAGE_RESCAN_MS = +(process.env.VILLAGE_RESCAN_MS || 60000);
 const VILLAGE_CELL_CAP = +(process.env.VILLAGE_CELL_CAP || 64);
+// V1 — i tre limiti della passata, indipendenti: il primo raggiunto vince.
+//   * VILLAGE_SURVEY_MS    = cooldown fra due passate (non un tetto a una passata);
+//   * VILLAGE_SURVEY_CELLS = budget di *esplorazione*: quante celle la passata può
+//     censire in totale prima di dichiararsi troncata;
+//   * VILLAGE_SURVEY_MAX_MS = budget di *esecuzione*: quanto a lungo può camminare.
+// Un rifiuto (`village_too_far`, `survey_cooldown`) non è un troncamento: dice che
+// la missione non è partita. Il troncamento dice che il censimento è incompleto.
+const VILLAGE_SURVEY_MS = +(process.env.VILLAGE_SURVEY_MS || 600000);
+const VILLAGE_SURVEY_CELLS = +(process.env.VILLAGE_SURVEY_CELLS || 4096);
+const VILLAGE_SURVEY_MAX_MS = +(process.env.VILLAGE_SURVEY_MAX_MS || 120000);
+// Oltre questa distanza la passata si rifiuta: raggiungere il sito è un viaggio,
+// non una ricognizione, e chi chiama deve deciderlo esplicitamente.
+const VILLAGE_SURVEY_MAX_DISTANCE = +(process.env.VILLAGE_SURVEY_MAX_DISTANCE || 256);
+// Raggio entro cui un record di censimento appartiene *a questo* sito: due
+// villaggi a poche decine di blocchi non si scambiano le celle censite.
+const VILLAGE_MEMORY_RADIUS = 8;
 // M3c — cosa non finisce mai nello scrigno: gli strumenti e l'equipaggiamento con
 // cui il bot lavora, torce e stazioni portatili, le sementi, e una riserva di
 // cibo. `_depositableItems()` è la politica unica, letta sia da `dump_inventory`
@@ -411,6 +431,7 @@ export class BedrockAdapter {
     this._structureSurvey = null;  // riassunto dell'ultima ricognizione (per /observe)
     this._structureSurveyAt = 0;
     this._villageCache = null;     // ultima vista del sito (V0): memoizzata, vedi _villageView()
+    this._villageSweep = null;     // ultima passata (V1): cooldown + celle censite in RAM
     this._fluidScan = null;        // censimento acqua/lava nell'area caricata (M0)
     this._fluidScanAt = 0;
     // W0: censimento sculk (sensori, shrieker, celle della famiglia) e livello di
@@ -1444,6 +1465,168 @@ export class BedrockAdapter {
     };
     this._villageCache = { at: now, payload };
     return payload;
+  }
+
+  // ── V1: la passata sul villaggio ───────────────────────────────────────────
+  //
+  // `survey_village` non è un secondo motore d'esplorazione: la geometria la
+  // decide `planExplorationSweep` con la configurazione di `villageSweepConfig`,
+  // quindi il piano è funzione di `(anchor, visited, config)` e sopravvive alla
+  // serializzazione. Qui restano le tre cose che un planner puro non può
+  // conoscere — l'orologio, il mondo caricato e gli inciampi del pathfinding —
+  // più i rifiuti tipizzati.
+
+  // L'ancora del sito: la struttura rilevata, o (se la ricognizione strutture non
+  // è ancora passata) la vista censimento. Mai la posizione del bot: inventare un
+  // centro quando il villaggio non è identificato sarebbe esplorare, non censire.
+  _villageAnchor () {
+    let detected = this.structures?.find(found => found.type === 'village');
+    if (!detected && this.spawned && this.position) {
+      detected = this._surveyStructures()?.find(found => found.type === 'village');
+    }
+    return detected?.position ?? this._villageCache?.payload?.anchor ?? null;
+  }
+
+  _villageSweepRemaining () {
+    if (!this._villageSweep) return 0;
+    return Math.max(0, VILLAGE_SURVEY_MS - (Date.now() - this._villageSweep.at));
+  }
+
+  // Le celle già censite per *questo* sito: dal registro (sopravvive al riavvio) e,
+  // se la passata in RAM riguarda la stessa ancora, anche da lì. Sono chiavi di
+  // chunk, la forma che il planner riceve in `visited`.
+  _villageVisited (anchor) {
+    const keys = new Set();
+    const recorded = this.memory?.villageSurvey?.({ near: anchor, radius: VILLAGE_MEMORY_RADIUS, dimension: this.dimension }) ?? null;
+    if (recorded && Math.hypot(recorded.position.x - anchor.x, recorded.position.z - anchor.z) <= VILLAGE_MEMORY_RADIUS) {
+      for (const key of recorded.cells ?? []) keys.add(key);
+    }
+    const last = this._villageSweep;
+    if (last?.anchor && Math.hypot(last.anchor.x - anchor.x, last.anchor.z - anchor.z) <= VILLAGE_MEMORY_RADIUS) {
+      for (const key of last.cells ?? []) keys.add(key);
+    }
+    return [...keys];
+  }
+
+  // `limits` è una presa di prova (come `_villageView`): l'azione nelle mani di un
+  // client usa sempre i tre limiti dalle costanti, i test devono poter
+  // raggiungere un tetto senza camminare per migliaia di celle.
+  async _surveyVillage ({ signal = null, limits: overrides = {} } = {}) {
+    const started = Date.now();
+    const cooldownMs = overrides.cooldownMs ?? VILLAGE_SURVEY_MS;
+    const cellsBudget = overrides.cells ?? VILLAGE_SURVEY_CELLS;
+    const maxMs = overrides.maxMs ?? VILLAGE_SURVEY_MAX_MS;
+    const maxDistance = overrides.maxDistance ?? VILLAGE_SURVEY_MAX_DISTANCE;
+    const limits = { cooldownMs, cells: cellsBudget, maxMs, maxDistance };
+    const view = this._villageView({ force: true });
+    const anchor = view.anchor ?? this._villageAnchor();
+    if (!anchor) {
+      return { ok: false, error: 'village_unknown', action: 'survey_village', hint: 'nessun villaggio identificato: la passata non inventa un centro' };
+    }
+    const distance = this.position ? Math.hypot(anchor.x - this.position.x, anchor.z - this.position.z) : Infinity;
+    if (distance > maxDistance) {
+      return { ok: false, error: 'village_too_far', action: 'survey_village', anchor, distance: Math.round(distance), maxDistance, hint: 'la missione non è partita: raggiungere il sito è un viaggio, non una ricognizione' };
+    }
+    const remainingMs = this._villageSweepRemaining();
+    if (remainingMs > 0) {
+      return { ok: false, error: 'survey_cooldown', action: 'survey_village', anchor, remainingMs, cooldownMs, hint: 'una passata è già stata fatta da poco: il cooldown è un rifiuto, non un troncamento' };
+    }
+    const visited = this._villageVisited(anchor);
+    const plan = planExplorationSweep(villageSweepConfig({ anchor, visited }));
+    if (!plan.ok) return { ok: false, error: plan.error ?? 'no_anchor', action: 'survey_village', anchor };
+
+    const cells = new Set(visited);
+    // Il censimento è una scansione di raggio `VILLAGE_SURVEY_RADIUS` intorno al
+    // bot: il chunk dove si trova *all'inizio della passata* è già stato guardato,
+    // ma solo se si trova dentro l'area assegnata.
+    if (this.position && Math.hypot(this.position.x - anchor.x, this.position.z - anchor.z) <= VILLAGE_SURVEY_RADIUS) {
+      cells.add(chunkKey(this.position.x, this.position.z));
+    }
+    const steps = [];
+    const censuses = [];
+    let budget = cellsBudget;
+    let stoppedBy = plan.stoppedBy;
+    let truncated = plan.truncated;
+    let blocked = false;
+    let lastView = view;
+
+    for (const waypoint of plan.waypoints) {
+      const spent = Date.now() - started;
+      if (spent >= maxMs) { stoppedBy = 'time'; truncated = true; break; }
+      if (budget <= 0) { stoppedBy = 'cells'; truncated = true; break; }
+      const target = { x: waypoint.x, y: this.position?.y ?? 70, z: waypoint.z };
+      let reached = true;
+      let error = null;
+      try {
+        await this._moveTo(target, 2, Math.max(1000, maxMs - spent), { signal });
+      } catch (caught) {
+        reached = false;
+        error = caught?.message ?? String(caught);
+      }
+      // Solo un waypoint *raggiunto* è una cella censita: il censimento avviene
+      // dove il bot si trova, quindi segnare la cella di un waypoint fallito
+      // farebbe saltare per sempre un'area che nessuno ha guardato.
+      if (reached) cells.add(chunkKey(waypoint.x, waypoint.z));
+      this.memory?.markChunkVisited?.({
+        x: Math.floor(waypoint.x / 16),
+        z: Math.floor(waypoint.z / 16),
+        dimension: this.dimension,
+        biome: typeof this.world?.biomeAt === 'function' ? this.world.biomeAt(this.position) : null,
+        y: this.position?.y ?? 64,
+      });
+      steps.push({ x: waypoint.x, z: waypoint.z, distance: waypoint.distance, ok: reached, error, ms: Date.now() - started - spent });
+      const census = this._villageView({ force: true, limits: { maxCells: budget } });
+      lastView = census;
+      const scanned = census.survey?.cells ?? 0;
+      budget -= scanned;
+      censuses.push({
+        x: waypoint.x,
+        z: waypoint.z,
+        cells: scanned,
+        dropped: census.survey?.dropped ?? 0,
+        truncated: census.survey?.truncated === true,
+        detection: census.detection?.state ?? null,
+        counts: census.counts ?? null,
+      });
+      if (census.survey?.truncated) { stoppedBy = 'cells'; truncated = true; break; }
+      if (error) { blocked = true; break; }
+    }
+
+    // Il registro contiene solo le celle *effettivamente* censite — quelle
+    // raggiunte — quindi resta vero anche quando la passata è troncata: il giro
+    // successivo riparte da dove questo si è fermato. Una passata interrotta da un
+    // waypoint non raggiungibile non ha guardato il resto del piano, ma quello che
+    // ha guardato lo ha guardato davvero.
+    const record = this.memory?.rememberVillageSurvey?.({
+      position: anchor,
+      dimension: this.dimension,
+      cells: [...cells],
+      radius: VILLAGE_SURVEY_RADIUS,
+      source: 'survey_village',
+    }) ?? null;
+    this._villageSweep = { at: Date.now(), anchor, cells: [...cells], stoppedBy, truncated, blocked };
+
+    return {
+      ok: true,
+      action: 'survey_village',
+      anchor,
+      config: plan.config,
+      planned: plan.planned,
+      walked: steps.length,
+      blocked,
+      visited: cells.size,
+      stoppedBy,
+      truncated,
+      complete: !truncated && !blocked,
+      boundary: plan.boundary,
+      budget: { cells: cellsBudget, remaining: Math.max(0, budget) },
+      limits,
+      steps,
+      censuses,
+      survey: record ? { id: record.id, censuses: record.censuses, cells: record.cells.length } : null,
+      view: lastView ? { checked: lastView.checked, anchor: lastView.anchor, detection: lastView.detection, counts: lastView.counts, survey: lastView.survey, blocks: lastView.blocks } : null,
+      ms: Date.now() - started,
+    };
   }
 
   _refreshInventory () {
@@ -4461,6 +4644,15 @@ export class BedrockAdapter {
       const d = Math.hypot(p.x - this.position.x, p.z - this.position.z);
       o.push({ key: 'recover_loot', description: `Walk back to the death site at ${JSON.stringify(p)} (${d.toFixed(1)} blocks) to recover the dropped items and XP orbs` });
     }
+    // V1: passata di ricognizione sul villaggio. Si offre solo con un'ancora
+    // identificata (senza, la passata si rifiuta) e fuori dal cooldown: una passata
+    // è costosa, e scegliere fra due passate ravvicinate non è una decisione di chi
+    // chiama — mentre *quale* area percorrere lo è, e resta a chi legge l'offerta.
+    const villageAnchor = this._villageAnchor();
+    if (villageAnchor && this._villageSweepRemaining() <= 0) {
+      const reach = this.position ? Math.round(Math.hypot(villageAnchor.x - this.position.x, villageAnchor.z - this.position.z)) : null;
+      o.push({ key: 'survey_village', description: `Walk the village around ${JSON.stringify(villageAnchor)}${reach != null ? ` (${reach} blocks away)` : ''} and census its houses, beds, plots, pens and chests (read-only, bounded)` });
+    }
     // Commercio: apri la finestra su un trader vicino, oppure offri ogni scambio
     // eseguibile con l'inventario corrente. La scelta economica resta a Jev.
     const trader = this._nearestTrader();
@@ -5266,6 +5458,8 @@ export class BedrockAdapter {
       } else if (key === 'teardown_circuit' || key.startsWith('teardown_circuit_')) {
         const id = key === 'teardown_circuit' ? null : key.slice('teardown_circuit_'.length);
         result = await this._teardownCircuit(id);
+      } else if (key === 'survey_village') {
+        result = await this._surveyVillage({ signal: context.signal });
       } else if (key === 'cast_rod') {
         result = await this._castRod();
       } else if (key === 'reel_in') {

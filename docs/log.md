@@ -3939,3 +3939,43 @@ container kept running the image deployed at 11:19. Both are closed here.
 - Still open: the `survey_village` action (rung 4) and the four-case live row, the
   memory-first read (`villageRegister`) and the `VILLAGE_PLOT_MIN_CELLS`
   threshold.
+
+## [2026-10-06] feat | The village sweep becomes an action, and remembers what it censused
+
+- `survey_village` lands in `bedrock-adapter.mjs` as a *configuration* of the
+  general planner, never a second engine: `_surveyVillage` (`:1514`) plans with
+  `planExplorationSweep(villageSweepConfig({ anchor, visited }))`, walks each
+  waypoint with `_moveTo` and re-reads the census at every stop with
+  `_villageView({ force: true, limits: { maxCells: budget } })`, debiting the cell
+  budget by what each look actually read. Offered in `options()` (`:4654`, guarded
+  by a known anchor and an expired cooldown) and dispatched at `:5461`.
+- Three independent limits, the first one reached wins: `VILLAGE_SURVEY_MS`
+  (600000) cooldown, `VILLAGE_SURVEY_CELLS` (4096) exploration budget,
+  `VILLAGE_SURVEY_MAX_MS` (120000) execution budget, `VILLAGE_SURVEY_MAX_DISTANCE`
+  (256). Running out returns `ok: true` with `truncated: true` and `stoppedBy:
+  'cells' | 'time' | 'exhausted'`; a mission that cannot start refuses with a
+  typed code (`village_unknown`, `village_too_far`, `survey_cooldown`) and writes
+  nothing. `DIG_PROTECTED` remains an invariant: the sweep may detour or fail,
+  never modify the world.
+- Idempotence is the register's, not the RAM's: `world-memory.mjs` gains
+  `villageSurveyId`, `rememberVillageSurvey` (`kind: village_survey`, `cells` =
+  censused chunk keys, `censuses` counter) and `villageSurvey`, and
+  `_villageVisited` (`:1498`) reads it back only when the record sits within
+  `VILLAGE_MEMORY_RADIUS` (8) blocks of this anchor. `visitedChunks` is
+  deliberately **not** the sweep's `visited` — the chunk index records travel, and
+  a village is detected by walking through it, so travel-keyed idempotence would
+  make the first pass plan nothing.
+- Only a *reached* waypoint is marked censused: the register may under-claim,
+  never over-claim, so a truncated or blocked pass still records what it reached
+  and the next pass resumes there.
+- `tests/village-sweep-action.test.mjs` (9 cases, no server) replaces `_moveTo`
+  with a logging walk: completed pass, cell budget, time budget, blocked waypoint,
+  second pass planning zero, restart with fresh RAM, another village's cells, the
+  three refusals, the option's guards. Full suite **1703/1703**.
+- `docs/raw/VILLAGE_RECON_ROADMAP.md` V1 records the landed codes, the
+  `village_survey` record, `VILLAGE_SURVEY_MAX_DISTANCE` and the `visitedChunks`
+  deviation with its reason; `docs/wiki/village-recon.md` gains "the V1 sweep
+  action — a census on legs".
+- Still open: the farm-order classifier (V3), the memory-first read
+  (`villageRegister`), the `VILLAGE_PLOT_MIN_CELLS` threshold and the four-case
+  live row.

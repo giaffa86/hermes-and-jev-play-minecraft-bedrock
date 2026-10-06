@@ -332,7 +332,7 @@ That mechanism already exists and must stay the only one:
 
 | Key | Meaning |
 |---|---|
-| `survey_village` | Bounded, read-only reconnaissance: walk the cells around the village anchor that were never scanned, count beds/plots/pens/containers, and write the facts to memory. Three independent limits (`VILLAGE_SURVEY_MS` cooldown, `VILLAGE_SURVEY_CELLS` exploration budget, `VILLAGE_SURVEY_MAX_MS` execution budget) stop it deterministically at whichever is reached first, and the census it returns says so with `truncated: true` + `stoppedBy`; when it cannot move at all it instead **refuses** with a typed code (`village_too_far`, `survey_budget_exhausted`). Never digs, never touches an entity — `DIG_PROTECTED` is a global invariant. |
+| `survey_village` | Bounded, read-only reconnaissance: walk the cells around the village anchor that were never scanned, count beds/plots/pens/containers, and write the facts to memory. Three independent limits (`VILLAGE_SURVEY_MS` cooldown, `VILLAGE_SURVEY_CELLS` exploration budget, `VILLAGE_SURVEY_MAX_MS` execution budget) stop it deterministically at whichever is reached first, and the census it returns says so with `truncated: true` + `stoppedBy`; when the mission cannot start at all it instead **refuses** with a typed code. Landed codes: `village_unknown` (no village identified: the sweep does not invent a centre), `village_too_far` (beyond `VILLAGE_SURVEY_MAX_DISTANCE`), `survey_cooldown` (another pass inside `VILLAGE_SURVEY_MS`). Never digs, never touches an entity — `DIG_PROTECTED` is a global invariant. |
 
 Everything else stays as it is: the chain is composed of keys the harness
 already offers (`harvest_*`, `plant_*`, `deposit_*`, `dump_inventory`).
@@ -352,10 +352,11 @@ already offers (`harvest_*`, `plant_*`, `deposit_*`, `dump_inventory`).
   "pens":   [{ "anchor": {...}, "fenced": true,
                "animals": [{ "type": "cow", "adults": 2, "babies": 1 }] }],
   "storage":[{ "position": {...}, "type": "chest", "contains": { "carrot": 12 },
-               "rememberedAt": 0, "status": "known" }],
-  "survey": { "scanned": 0, "truncated": false, "elapsedMs": 0, "at": 0,
-              // "cells" | "radius" | "time" | "exhausted"; null when there was no sweep
-              "stoppedBy": null },
+               "contentsKnown": true, "status": "known", "rememberedAt": 0 }],
+  "survey": { "scanned": 4000, "cells": 8, "dropped": 0, "truncated": false },
+  "blocks":  { "distinct": 12, "truncated": false, "capped": false, "cappedNames": [] },
+  "origin": { "x": 113, "y": 73, "z": 156 },   // where the census was taken
+  "at": 0,
   "missing": ["bell (0/1)"],
   "detection": { "state": "CONFIRMED",   // NOT_FOUND | CANDIDATE | CONFIRMED
                  "evidence": ["beds 2/2", "workstations 1/1", "villagers 3/2"] }
@@ -371,13 +372,14 @@ observation, which is why `/locate` stays out of scope.
 
 **Refusal and truncation are two different facts.** `truncated: true` describes
 the census that *was* returned — the sweep stopped before the spiral was walked
-out, and `stoppedBy` says which cause fired: `"cells"` (the exploration budget),
-`"radius"` (the bound was reached with unvisited cells still outside it),
-`"time"` (the executor's wall-clock budget). A spiral walked out to its end is
-`"exhausted"` with `truncated: false`. A typed refusal (`village_too_far`,
-`survey_budget_exhausted`) is the *action result*: the mission could not proceed
+out, and the **action result** carries `stoppedBy` with the cause that fired:
+`"cells"` (the exploration budget), `"radius"` (the bound was reached with
+unvisited cells still outside it), `"time"` (the executor's wall-clock budget); a
+spiral walked out to its end is `"exhausted"` with `truncated: false`. A typed
+refusal is the *action result* instead of a census: the mission could not proceed
 at all. Keeping them apart is what lets the controller reason without parsing
-strings.
+strings. The view's own `survey` block is smaller and purely descriptive
+(`scanned`, `cells`, `dropped`, `truncated`): a *look* is not a *mission*.
 
 **The bound is anchored; the clock is not part of the plan.** The geometric limit
 is a pure function of `(anchor, visited, config)`: the distance is measured from
@@ -393,6 +395,7 @@ clock-free, and `"time"` is stamped by whoever walks.
 |---|---|---|
 | `kind: container`, id `container_x_y_z` | `rememberContainer` (**extended**) | fields: `discoveredAt`, `contentsKnown`, `inspectedAt`, `contents`, `status`. A discovery write (`contentsKnown: false`, `contents: {}`, `source: 'discovered'`) must **skip `_materializeContains:204`** so it cannot erase contents learned earlier; only an inspection writes contents. The deposit side must also start reading it, not just the take side |
 | `kind: resource_site`, id `plot_<crop>_x_y_z` | new, via `rememberResourceSite` | a plot is a *site*, so it is a vector-indexable target |
+| `kind: village_survey`, id `village_survey_x_y_z` | new, `rememberVillageSurvey` | the sweep register: `cells` = the chunk keys actually censused, `censuses` counter, `radius`, `surveyedAt`. It is what makes a later sweep cheap and a restart non-repeating, and it records *looking*, not *passing* (`kind: explored_chunk` records travel) |
 | `kind: entity`, id `entity_<uniqueId>` | `rememberEntity` (already exists) | pens reference the remembered animals, not a live census |
 | observations `contains` / `is_a` | `observe` (already exists) | the evidence trail, never overwritten |
 
@@ -415,6 +418,7 @@ harness still decides which of the three steps is legal *now*.
 | `VILLAGE_SURVEY_RADIUS` | `48` | Block bound of one village sweep, measured from the anchor (same reach as `STRUCTURE_RADIUS`). |
 | `VILLAGE_SURVEY_SPACING` | `24` | Side of one spiral cell of the walk: finer than the bound, so a village is a handful of waypoints. The planner's ring count is derived from these two (`floor(radius / (spacing * √2))`), never set by hand. |
 | `VILLAGE_SURVEY_MAX_MS` | `120000` | **Execution budget**: wall-clock ceiling of one sweep. Pathfinding, detours, chunk loading and obstacles make the cell count a poor proxy for cost, so this limit is not derivable from `VILLAGE_SURVEY_CELLS` and vice versa; the first of the two reached wins (initial value, to be tuned by the first live sweep). |
+| `VILLAGE_SURVEY_MAX_DISTANCE` | `256` | Beyond this the sweep **refuses** with `village_too_far` instead of travelling: reaching the site is a journey, and a journey budget belongs to whoever calls, not to the reconnaissance. |
 | `VILLAGE_RESCAN_MS` | `60000` | **Throttle of the view** (`GET /observe.village`, `observe().village`): the census is a fact of a *site*, not of an instant, so it is read once and reused. It is not the sweep cooldown (`VILLAGE_SURVEY_MS`), which bounds a whole mission. |
 | `VILLAGE_CELL_CAP` | `64` | Cell cap **per block name** of the view's scan (`findBlocks` returns at most N). A name that hits it is reported in `blocks.cappedNames`: its count is a lower bound, never a measurement. |
 | `VILLAGE_HOUSE_RADIUS` | `8` | Radius that clusters beds/containers into one house. |
@@ -573,7 +577,7 @@ runtime cache is.
 | `maxRadius` | **derived**: `floor(radius / (spacing * √2))` | the rings that fit *inside* the bound, so no waypoint is ever planned outside it and the assigned area closes with `stoppedBy: 'exhausted'`, `truncated: false` |
 | `radius` | `VILLAGE_SURVEY_RADIUS` (48) | the anchored block bound, the same reach as `STRUCTURE_RADIUS` |
 | `cells` | always `null` | the *waypoint* budget is the spiral itself; `VILLAGE_SURVEY_CELLS` bounds the *blocks* censused per waypoint — two different budgets, never conflated |
-| `visited` | `visitedChunks` ∪ the register's already-censused cells, passed as an **array** | the config must survive `JSON.stringify`, so it is never a `Set` (the planner accepts both) |
+| `visited` | the register's already-censused cells (∪ the last sweep's, in RAM), passed as an **array** | the config must survive `JSON.stringify`, so it is never a `Set` (the planner accepts both). **Not `visitedChunks`** — the deviation is explained in the landed note below |
 
   `tests/village-sweep.test.mjs` (7 offline cases) pins the contract: the key set
   the planner receives, the anchor as the first waypoint, the same `(anchor,
@@ -581,6 +585,36 @@ runtime cache is.
   same plan, `visited` shrinking the plan instead of moving it, no waypoint
   beyond the bound, the `no_anchor` refusal, and the two budgets staying two
   distinct facts.
+- **Landed — the action, not a second engine** (`_surveyVillage` in
+  `bedrock-adapter.mjs`): the three limits above, the typed refusals, the walk
+  through `_moveTo` and the register write. `_villageVisited()` reads the sweep's
+  cells from `memory.villageSurvey({near: anchor, radius: VILLAGE_MEMORY_RADIUS})`,
+  checks that the record belongs to *this* site (≤ 8 blocks from the anchor: two
+  villages a few dozen blocks apart never share cells) and unions the last
+  sweep's cells only when they are the same site. **Only a reached waypoint is
+  marked censused**: the census is a scan around where the bot *is*, so recording
+  a failed waypoint's cell would make a later sweep skip an area nobody ever
+  looked at — the register may under-claim, never over-claim. A truncated or
+  blocked pass still writes the cells it did reach, which is exactly what lets the
+  next pass resume where this one stopped. `tests/village-sweep-action.test.mjs`
+  (9 offline cases).
+- **`visitedChunks` is deliberately *not* the sweep's `visited`** (a documented
+  deviation from the earlier draft of this milestone, and the reason is the point
+  of it): the chunk index records *travel* (`markChunkVisited`, `source:
+  'travel'`), and a village is normally detected by walking through it — so a
+  sweep keyed on travel would find its whole assignment already "censused" and
+  would never scan anything. The index still receives its own writes (the walk is
+  a journey, and each reached cell is marked), but idempotence comes from the
+  register, which records *looking*. "A restart between the first and the second
+  sweep plans zero movement" is therefore a statement about
+  `kind: village_survey`, not about the chunk index.
+- **The radius bound cannot fire from this action, and that is deliberate**:
+  `villageSweepConfig` derives `maxRadius` from `radius`, so every planned
+  waypoint is *inside* the bound and the assigned area closes with
+  `stoppedBy: 'exhausted'`, `truncated: false`. `'radius'` stays the planner's own
+  guard for a caller that sets `maxRadius` by hand
+  (`tests/exploration-sweep.test.mjs`), and the action propagates
+  `stoppedBy`/`boundary` verbatim when it does appear.
 - **Three independent limits, the first one reached wins.**
   `VILLAGE_SURVEY_MS` is the *cooldown* between two sweeps (not a bound on one),
   `VILLAGE_SURVEY_CELLS` is the *exploration* budget (how many new cells may be
@@ -598,10 +632,10 @@ runtime cache is.
   waypoint and the same stop cause after a restart. **Landed**:
   `tests/exploration-sweep.test.mjs` (9 offline cases).
 - **A refusal is not a truncation.** `truncated: true` describes the census that
-  was returned; a typed refusal (`village_too_far`, `survey_budget_exhausted`) is
-  the action result and means the mission **could not proceed** (no anchor,
-  nothing unscanned left, budget already spent). Hermes reasons on fields, never
-  on strings.
+  was returned; a typed refusal (`village_unknown`, `village_too_far`,
+  `survey_cooldown`) is the action result and means the mission **could not
+  proceed** (no anchor, too far to be reconnaissance, budget already spent).
+  Hermes reasons on fields, never on strings.
 - **`DIG_PROTECTED` is a global invariant, not survey logic.** A sweep may detour
   or fail, but it may never modify the world to reach a cell: villages, beds,
   farmland, fences and crops stay intact, and "just this one block" is not in
@@ -612,18 +646,23 @@ runtime cache is.
   so a run interrupted by death resumes instead of restarting.
 
 **Test**: the planner half is landed and offline in
-`tests/exploration-sweep.test.mjs` — the same `(anchor, visited, config)` gives
-the same plan and the same stop cause, including through a JSON
-serialise/reload, and an anchor-relative bound never depends on the bot.
-`tests/village-sweep.test.mjs` adds the action half — the cell budget stops the
-walk and reports `truncated` with `stoppedBy: 'cells'`; the geometric bound stops
-it with `stoppedBy: 'radius'` while unvisited cells remain outside; the execution
-budget stops it with `stoppedBy: 'time'` while cells are still unscanned; a second sweep over a fully
-scanned ring plans zero movement; **a restart between the first and the second
-sweep still plans zero movement** (idempotence must come from `visitedChunks`
-plus the register, never from RAM alone); a protected block in the way is never
-broken (the route detours or refuses); a refusal carries its typed code and is
-distinguishable from a truncated census without parsing text.
+`tests/exploration-sweep.test.mjs`; **the action half is landed too**, in
+`tests/village-sweep-action.test.mjs`: a completed sweep walks the planner's
+waypoints and writes the register (anchor first, the config identical to
+`planExplorationSweep`'s, the `busy` lock released, the walk marked in the chunk
+index); the cell budget truncates the walk with `stoppedBy: 'cells'` while the
+action itself stays `ok: true`; the execution budget truncates with
+`stoppedBy: 'time'` while cells are still unscanned; the geometric bound is the
+planner's (the assigned area closes with `'exhausted'`); a waypoint that cannot
+be reached stops the pass with `blocked: true` and only the reached cells are
+recorded; a second sweep over a fully scanned ring plans zero movement; **a
+restart between the first and the second sweep still plans zero movement** (RAM
+fresh, register loaded — the idempotence is the register's, never the RAM's); the
+censused cells of another village are never reused; the three refusals are typed
+and start no mission; the option is offered only with an anchor and outside the
+cooldown. A protected block in the way is never broken (the route detours or
+fails — the sweep never digs), and the typed code makes a refusal distinguishable
+from a truncated census without parsing text.
 
 **Accettazione**: live — one sweep of the village produces a census strictly
 larger than the V0 single-shot one (more houses/plots/storage reachable), a

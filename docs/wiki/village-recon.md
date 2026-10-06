@@ -12,8 +12,8 @@ consulted as a lookup — and the one spoken order it exists to serve:
 The analogy is a robot vacuum: the map is drawn on a slow pass, and every later
 task is a route over known cells rather than a new exploration.
 
-Status: **V0 model + census + read path + V1/V2 storage path landed
-(2026-10-06); the sweep action and the farm order are still spec.** `world-memory.mjs` keeps discovery and inspection as
+Status: **V0 model + census + read path + V1/V2 storage path + the V1 sweep action
+landed (2026-10-06); the farm order is still spec.** `world-memory.mjs` keeps discovery and inspection as
 two facts with two clocks, the rung-2 query exists, and the storage matcher is a
 family match instead of a name whitelist (`0650877`); the adapter now **writes** a
 discovery while the bot walks (`_surveyStorage`, `_rememberStorageDiscovery`) and
@@ -25,9 +25,12 @@ that calls the detector's own rule instead of a copy, and the sweep is wired as 
 **configuration** of the general planner (`villageSweepConfig` →
 `planExplorationSweep`, 7 offline cases). The **read path** followed: the adapter
 gathers the census's own bounded cell scan and publishes it as
-`observe().village` / `GET /observe.village?force=1`. What is still missing is the
-bounded sweep itself (`survey_village`, rung 4), the farm-order classifier (V3)
-and the live four-case round. Everything else on this roadmap is spec.
+`observe().village` / `GET /observe.village?force=1`. The **sweep action**
+followed: `survey_village` walks the general planner's plan (no second engine),
+keeps three independent limits and writes a register that makes the next pass —
+and a pass after a restart — cheap. What is still missing is the farm-order
+classifier (V3) and the live four-case round. Everything else on this roadmap is
+spec.
 Everything it builds on (the histogram survey, the marker detector, the container
 memory, the harvest/plant/deposit actions, the village chores) already exists and
 is listed below as the baseline; the two real gaps are the aggregation and the
@@ -148,7 +151,8 @@ Four things stopped being spec and became code:
   waypoint budget is the spiral itself.
 
 Tests: `tests/village-survey.test.mjs` (16 cases), `tests/village-sweep.test.mjs`
-(7 offline cases) and `tests/village-view.test.mjs` (6 cases, the read path).
+(7 offline cases), `tests/village-view.test.mjs` (6 cases, the read path) and
+`tests/village-sweep-action.test.mjs` (9 cases, the action below).
 Still open in this milestone: the memory-first read (`villageRegister`), the
 `VILLAGE_PLOT_MIN_CELLS` threshold (a cluster is reported with its count, the
 threshold is left to the caller), and the live rows.
@@ -183,6 +187,59 @@ is a pen, the per-name cap is declared (70 beds in the world ⇒ `cappedNames:
 ['bed']`, `counts.beds: 64`), the register arrives with both states and ordered
 from the anchor, and an adapter with nothing to read answers `checked: false,
 state: null` — *not looked* is not *looked and empty*.
+
+### What landed (2026-10-06): the V1 sweep action — a census on legs
+
+`survey_village` is not a second engine: it calls the general planner
+(`planExplorationSweep(villageSweepConfig({anchor, visited}))`), walks the
+waypoints it returns with `_moveTo`, and censuses at each one. The bounded scan
+of the read path is the sensor; the action is only the legs that carry it.
+
+Three limits, three different facts, the first one reached wins:
+`VILLAGE_SURVEY_MS` (600 s) is the **cooldown** between two passes,
+`VILLAGE_SURVEY_CELLS` (4096) is the **exploration** budget, `VILLAGE_SURVEY_MAX_MS`
+(120 s) is the **execution** budget. A pass that runs out returns `ok: true` — the
+census exists, it is partial — with `truncated: true` and `stoppedBy:
+'cells' | 'time' | 'radius' | 'exhausted'`. A mission that cannot start
+**refuses** instead, with a typed code: `village_unknown` (no village identified:
+the sweep never invents a centre), `village_too_far` (beyond
+`VILLAGE_SURVEY_MAX_DISTANCE`, 256 — reaching the site is a journey, and a journey
+budget belongs to the caller), `survey_cooldown`. A refusal starts no mission and
+writes nothing. `DIG_PROTECTED` stays a global invariant: a pass may detour or
+fail, never modify the world.
+
+**Idempotence lives in the register, not in the RAM.** A pass writes
+`kind: village_survey` through `rememberVillageSurvey` (`cells` = the chunk keys
+it actually censused, plus a `censuses` counter), and `_villageVisited()` reads it
+back — after checking that the record is within `VILLAGE_MEMORY_RADIUS` (8) blocks
+of *this* anchor, so two villages a few dozen blocks apart never share cells. This
+is a deliberate deviation from the roadmap's first draft: `visitedChunks` is **not**
+the sweep's `visited`. The chunk index records *travel* (`markChunkVisited`,
+`source: 'travel'`), and a village is normally detected by walking through it, so a
+sweep keyed on travel would find its whole assignment already "censused" and scan
+nothing. The walk still marks its own chunks — a sweep is also a journey — but
+"a restart between the first and the second sweep plans zero movement" is a
+statement about the register.
+
+**Only a reached waypoint is marked censused.** The census is a scan around where
+the bot actually *is*, so recording a failed waypoint's cell would make the next
+pass skip an area nobody ever looked at: the register may under-claim, never
+over-claim. A truncated or blocked pass still records the cells it reached, which
+is exactly what lets the next pass resume where this one stopped.
+
+`tests/village-sweep-action.test.mjs` covers it offline by replacing `_moveTo`
+with a logging walk: a completed pass walks the planner's waypoints and writes the
+register with the `busy` lock released; the cell budget truncates with `stoppedBy:
+'cells'` while the action stays `ok: true`, the execution budget with `'time'`
+while cells are still unscanned; an unreachable waypoint stops the pass with
+`blocked: true` and records only what it reached; a second pass over a censused
+ring plans zero movement, and so does one after a restart (fresh RAM, register
+loaded from disk); another village's cells are never reused; the three refusals
+are typed and start no mission; the option appears only with an anchor and outside
+the cooldown. The `'radius'` stop remains the *planner's* own guard
+(`tests/exploration-sweep.test.mjs`): `villageSweepConfig` derives the ring count
+from the bound, so the assigned area closes with `'exhausted'` rather than being
+truncated by construction.
 
 ## Register or sensor?
 

@@ -353,6 +353,56 @@ export class WorldMemory {
     return this.repo.remove(id);
   }
 
+  // ---- village survey (V1) ---------------------------------------------------------
+  //
+  // La memoria dei chunk registra che ci si è *passati* (`kind: explored_chunk`),
+  // non che si è *guardato*: un villaggio si scopre camminandoci dentro, quindi
+  // usare l'indice dei chunk come "già censito" farebbe risultare completa la
+  // prima passata, che non ha censito niente. La passata scrive quindi le proprie
+  // celle qui — è questo record (e non la RAM) a rendere idempotente il giro
+  // successivo, anche dopo un riavvio dell'harness.
+
+  villageSurveyId (position, dimension = 'overworld') {
+    const base = this._spatialId('village_survey', position);
+    return dimension === 'overworld' ? base : `${base}_${dimension}`;
+  }
+
+  rememberVillageSurvey ({ position, dimension = 'overworld', cells = [], radius = null, at = Date.now(), source = 'survey_village', id = null }) {
+    if (!position) throw new Error('rememberVillageSurvey: position required');
+    const key = id || this.villageSurveyId(position, dimension);
+    const existing = this.repo.get(key);
+    const record = {
+      id: key,
+      kind: 'village_survey',
+      type: 'village',
+      label: 'village censused by a bounded sweep',
+      dimension,
+      position: round(position),
+      discoveredAt: existing?.discoveredAt ?? at,
+      lastSeenAt: at,
+      confidence: 1,
+      status: MEMORY_STATUS.KNOWN,
+      surveyedAt: at,
+      censuses: (existing?.censuses ?? 0) + 1,
+      radius: radius ?? existing?.radius ?? null,
+      // Le celle censite, come chiavi di chunk: è la forma che il planner riceve
+      // in `visited`, quindi non serve nessuna conversione al momento dell'uso.
+      cells: [...new Set([...(existing?.cells ?? []), ...cells])],
+      source,
+    };
+    this.repo.upsert(record);
+    return record;
+  }
+
+  // Il censimento più vicino a `near` (lo stesso sito: chi chiama verifica la
+  // distanza dall'ancora, perché due villaggi possono stare a poche decine di
+  // blocchi e le loro celle non sono interscambiabili).
+  villageSurvey ({ near = null, radius = null, dimension = 'overworld' } = {}) {
+    const rows = this.repo.find({ kind: 'village_survey', dimension, near, radius });
+    if (near) rows.sort((a, b) => distance3d(a.position, near) - distance3d(b.position, near));
+    return rows[0] ?? null;
+  }
+
   // ---- placements (R4) -------------------------------------------------------------
   //
   // Il registro dei blocchi che il bot ha piazzato *lui*: è l'unico titolo che
