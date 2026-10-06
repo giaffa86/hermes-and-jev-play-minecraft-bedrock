@@ -14294,12 +14294,36 @@ export class BedrockAdapter {
   // Specchio di _digTargets: il blocco davanti ai piedi è il gradino, le due celle
   // sopra (piedi e testa) vanno aperte per poterci salire; se la volta sopra il
   // bot è chiusa va aperta prima, altrimenti il salto non parte.
+  // Il gradino si cerca nella direzione in cui il bot guarda (o imposta dal
+  // waypoint), ma una scalinata sale anche di lato o alle spalle: se la direzione
+  // primaria non ha un gradino (`no_step_ahead`, il caso che ha incastrato il bot
+  // due volte nel tunnel che aveva appena scavato, a ~y 29.6 e ~y 48.6) si provano
+  // le altre tre. L'errore riportato resta quello della direzione primaria e
+  // `tried` elenca le direzioni provate; la primaria vince sempre quando è valida,
+  // così la scalinata resta dritta.
   _upTargets () {
+    if (!this.position || !this._feet) return { error: 'no_position' };
+    const primary = this._digDirection();
+    const dirs = [{ dx: 1, dz: 0 }, { dx: 0, dz: 1 }, { dx: -1, dz: 0 }, { dx: 0, dz: -1 }]
+      .filter(c => c.dx !== primary.dx || c.dz !== primary.dz);
+    dirs.unshift(primary);
+    let firstError = null;
+    const tried = [];
+    for (const d of dirs) {
+      const plan = this._upTargetsFor(d);
+      if (!plan.error) return plan;
+      tried.push({ direction: { dx: d.dx, dz: d.dz }, error: plan.error });
+      if (!firstError) firstError = plan;
+    }
+    return { ...firstError, tried };
+  }
+
+  // Il piano di risalita per una direzione cardinale: è il corpo di _upTargets.
+  _upTargetsFor (d) {
     if (!this.position || !this._feet) return { error: 'no_position' };
     const feet = this._feet;
     const fy = Math.floor(feet.y + 0.1);
     const fx = Math.floor(feet.x), fz = Math.floor(feet.z);
-    const d = this._digDirection();
     const front = { x: fx + d.dx, y: fy, z: fz + d.dz };
     const step = { x: front.x, y: fy + 1, z: front.z };
     const head = { x: front.x, y: fy + 2, z: front.z };

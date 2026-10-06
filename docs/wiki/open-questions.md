@@ -1130,7 +1130,15 @@ unit-test guesses.
   bot**: a `goto_waypoint` to a waypoint 3 blocks away re-aims `_digDirection()`
   and `dig_up` reappears. Worth a real `dig_straight_up` (or making the option
   facing-independent) before any autonomous mining plan relies on making its own
-  shaft.
+  shaft. **Fixed (06/10/2026)**: `_upTargets()` tries the facing direction first
+  and then the other three cardinals (`_upTargetsFor(d)` holds the unchanged body,
+  `bedrock-adapter.mjs`), so a bot whose front is open climbs the opposite way; a
+  direction that can climb still wins over a detour, so the stair stays straight,
+  and when none of the four works the error is still the facing one with `tried`
+  listing the four attempts. `dig_down` was left alone: no `_digTargets` refusal
+  was ever recorded, only the stranding — and `dig_up` coming back is what
+  unblocks it. `tests/bedrock-dig-up.test.mjs` (the tunnel case, the
+  straight-stair preference, the all-four-fail error).
 - **`go_home` fails from a deep shaft.** From the mine bottom it answered
   `go_home_failed: path_failed` eight times in a row (once `movement timeout`),
   and later `go_home_failed: movement timeout` even after the reachable set had

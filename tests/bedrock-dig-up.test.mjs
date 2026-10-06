@@ -172,3 +172,42 @@ test('the pit blocks the climb until the ceiling is opened, then the step is cli
   assert.ok(adapter._feet.y >= GROUND_Y + 2 - 1e-6, 'con la volta aperta sale sul gradino');
   assert.ok(adapter._feet.z > 1, 'supera il gradino');
 });
+
+// ---- direzione: la scalinata sale anche alle spalle ------------------------------------
+
+test('an open side does not strand the bot: the stair climbs the opposite way', () => {
+  const { adapter } = upAdapter({
+    '92,68,149': air,
+    '92,68,147': solid('stone'),
+    '92,69,147': solid('dirt', { material: 'mineable/shovel' }),
+    '92,70,147': solid('grass_block', { material: 'mineable/shovel', hardness: 0.6 }),
+  });
+  adapter.drops = [];
+  adapter.nearbyBlocks = {};
+  const plan = adapter._upTargets();
+  assert.equal(plan.error, undefined, 'la direzione di sguardo è aperta, quella alle spalle è solida');
+  assert.deepEqual(plan.direction, { dx: 0, dz: -1 });
+  assert.deepEqual(plan.front, { x: 92, y: 68, z: 147 });
+  assert.deepEqual(plan.targets.map(t => `${t.label}:${t.block.name}`), ['step:dirt', 'head:grass_block']);
+  assert.equal(adapter.options().some(o => o.key === 'dig_up'), true, 'dig_up torna nell\'elenco');
+});
+
+test('the facing direction still wins when it can climb too (the stair stays straight)', () => {
+  const { adapter } = upAdapter({
+    '92,68,147': solid('stone'),
+    '92,69,147': solid('dirt', { material: 'mineable/shovel' }),
+    '92,70,147': solid('grass_block', { material: 'mineable/shovel', hardness: 0.6 }),
+  });
+  const plan = adapter._upTargets();
+  assert.deepEqual(plan.direction, { dx: 0, dz: 1 });
+  assert.deepEqual(plan.front, { x: 92, y: 68, z: 149 });
+});
+
+test('when no direction can climb, the error is the facing one and every direction is listed', () => {
+  const { adapter } = upAdapter({ '92,68,149': air });
+  const plan = adapter._upTargets();
+  assert.equal(plan.error, 'no_step_ahead');
+  assert.equal(plan.tried.length, 4);
+  assert.deepEqual(plan.tried[0].direction, { dx: 0, dz: 1 });
+  assert.equal(plan.tried[0].error, 'no_step_ahead');
+});

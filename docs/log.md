@@ -1,5 +1,29 @@
 # Log
 
+## [2026-10-06] fix | `dig_up` stops depending on where the bot happens to look
+
+The first of the eight gaps the diamond mission exposed is the one that stranded
+the bot twice in the tunnel it had just dug (at ~y 29.6 and ~y 48.6):
+`_upTargets()` computed the stair only in `_digDirection()` (the yaw, or the
+planner waypoint), so a bot facing an open side got `no_step_ahead` while the wall
+behind it was solid, and `dig_up` disappeared from `/options`.
+`pillar_up` was out too (`no_headroom`, it needs 2) and `barricade` failed 24 times
+in a row (`barricade_incomplete`); live, the only thing that worked was turning the
+bot with a 3-block `goto_waypoint` hop — which only the human driving it knew.
+
+`_upTargets()` now tries the facing direction first and then the other three
+cardinals, with the unchanged body in `_upTargetsFor(d)`. The first climbable
+direction wins, so a bot that can climb forward still climbs straight (no
+zig-zag), and when none of the four works the error is the facing one with `tried`
+listing all four attempts. `dig_down` was left as it was: no `_digTargets` refusal
+was recorded, only the stranding, and `dig_up` returning is what unblocks it.
+
+`node --test tests/*.test.mjs` → 1747 pass; the three new cases in
+`tests/bedrock-dig-up.test.mjs` cover the tunnel (open side, solid wall behind),
+the straight-stair preference and the all-four-fail error, and the three tests
+that pinned the old behaviour (open step, water step, protected chest, sensor
+radius) still pass unchanged.
+
 ## [2026-10-06] fix | Three defects from the diamond mission: the inventory mirror, the mining reach, the emergency fight
 
 The audit of the diamond goal returned `verdict: disapproved`, and the two hours
