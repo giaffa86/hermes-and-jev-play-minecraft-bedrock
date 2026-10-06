@@ -147,7 +147,7 @@ export const STRUCTURE_DEFS = [
 
 // `survey` è la forma di `BedrockWorld.surveyBlocks`: Map(nome → {count, first}).
 // `entities` è una lista `[{ type, position }]` (dal registro percepito).
-export function detectStructures ({ survey = new Map(), entities = [], position = null, dimension = 'overworld', defs = STRUCTURE_DEFS } = {}) {
+export function structureRows ({ survey = new Map(), entities = [] } = {}) {
   const blockRows = survey instanceof Map ? survey : new Map(Object.entries(survey).map(([name, row]) => [name, { count: row.count ?? row, first: row.first ?? null }]));
   const entityRows = new Map();
   for (const entity of entities) {
@@ -157,26 +157,60 @@ export function detectStructures ({ survey = new Map(), entities = [], position 
     if (row) row.count++;
     else entityRows.set(type, { count: 1, first: entity.position ? { x: entity.position.x, y: entity.position.y, z: entity.position.z } : null });
   }
+  return { blockRows, entityRows };
+}
+
+// Il punteggio di *una* regola, con la soglia nel verdetto ma non applicata:
+// `detectStructures` scarta di proposito i tipi sotto soglia, mentre il
+// censimento del villaggio deve poter distinguere "guardato e vuoto"
+// (NOT_FOUND) da "marker parziali" (CANDIDATE) — e per questo ha bisogno del
+// punteggio parziale, non di una seconda implementazione della regola.
+export function scoreStructure (def, { blockRows = new Map(), entityRows = new Map(), dimension = 'overworld' } = {}) {
+  let score = 0;
+  const matched = [], missing = [], blocks = {}, entitiesSeen = {};
+  for (const rule of def.blocks) {
+    const { count, keys } = countOf(blockRows, rule.matcher);
+    blocks[rule.label] = count;
+    for (const key of keys) blocks[key] = blockRows.get(key).count;
+    if (count >= rule.min) { score += rule.score; matched.push(rule.label); }
+    else missing.push(`${rule.label} (${count}/${rule.min})`);
+  }
+  for (const rule of def.entities) {
+    const { count } = countOf(entityRows, rule.matcher);
+    entitiesSeen[rule.label] = count;
+    if (count >= rule.min) { score += rule.score; matched.push(rule.label); }
+    else missing.push(`${rule.label} (${count}/${rule.min})`);
+  }
+  return {
+    type: def.type,
+    label: def.label,
+    dimension,
+    score,
+    minScore: def.minScore,
+    confirmed: score >= def.minScore,
+    matched,
+    missing,
+    blocks,
+    entities: entitiesSeen,
+  };
+}
+
+// Tutti i verdetti nell'ordine delle def, compresi quelli non confermati.
+export function scoreStructures ({ survey = new Map(), entities = [], dimension = 'overworld', defs = STRUCTURE_DEFS } = {}) {
+  const { blockRows, entityRows } = structureRows({ survey, entities });
+  return defs
+    .filter(def => !def.dimension || def.dimension === dimension)
+    .map(def => scoreStructure(def, { blockRows, entityRows, dimension }));
+}
+
+export function detectStructures ({ survey = new Map(), entities = [], position = null, dimension = 'overworld', defs = STRUCTURE_DEFS } = {}) {
+  const { blockRows, entityRows } = structureRows({ survey, entities });
 
   const found = [];
   for (const def of defs) {
     if (def.dimension && def.dimension !== dimension) continue;
-    let score = 0;
-    const matched = [], missing = [], blocks = {}, entitiesSeen = {};
-    for (const rule of def.blocks) {
-      const { count, keys } = countOf(blockRows, rule.matcher);
-      blocks[rule.label] = count;
-      for (const key of keys) blocks[key] = blockRows.get(key).count;
-      if (count >= rule.min) { score += rule.score; matched.push(rule.label); }
-      else missing.push(`${rule.label} (${count}/${rule.min})`);
-    }
-    for (const rule of def.entities) {
-      const { count } = countOf(entityRows, rule.matcher);
-      entitiesSeen[rule.label] = count;
-      if (count >= rule.min) { score += rule.score; matched.push(rule.label); }
-      else missing.push(`${rule.label} (${count}/${rule.min})`);
-    }
-    if (score < def.minScore) continue;
+    const verdict = scoreStructure(def, { blockRows, entityRows, dimension });
+    if (!verdict.confirmed) continue;
 
     let anchor = null;
     for (const candidate of def.anchors ?? []) {
@@ -189,8 +223,8 @@ export function detectStructures ({ survey = new Map(), entities = [], position 
       label: def.label,
       dimension,
       position: anchor ?? (position ? { x: position.x, y: position.y, z: position.z } : null),
-      confidence: Math.min(1, +(score / (def.minScore * 2)).toFixed(2)),
-      evidence: { score, minScore: def.minScore, matched, missing, blocks, entities: entitiesSeen },
+      confidence: Math.min(1, +(verdict.score / (def.minScore * 2)).toFixed(2)),
+      evidence: { score: verdict.score, minScore: def.minScore, matched: verdict.matched, missing: verdict.missing, blocks: verdict.blocks, entities: verdict.entities },
     });
   }
   return found.sort((a, b) => b.evidence.score - a.evidence.score);

@@ -411,7 +411,9 @@ harness still decides which of the three steps is legal *now*.
 | Var | Default | Meaning |
 |---|---|---|
 | `VILLAGE_SURVEY_MS` | `600000` | **Cooldown** between two sweeps (a sweep is expensive; 10 min). It does *not* bound the duration of one sweep. |
-| `VILLAGE_SURVEY_CELLS` | `4096` | **Exploration budget**: how many new cells one sweep may scan. |
+| `VILLAGE_SURVEY_CELLS` | `4096` | **Census budget**: how many block cells one waypoint's census may scan (the `limits.maxCells` of `surveyVillage`). It is *not* the planner's waypoint budget, which is the spiral itself. |
+| `VILLAGE_SURVEY_RADIUS` | `48` | Block bound of one village sweep, measured from the anchor (same reach as `STRUCTURE_RADIUS`). |
+| `VILLAGE_SURVEY_SPACING` | `24` | Side of one spiral cell of the walk: finer than the bound, so a village is a handful of waypoints. The planner's ring count is derived from these two (`floor(radius / (spacing * √2))`), never set by hand. |
 | `VILLAGE_SURVEY_MAX_MS` | `120000` | **Execution budget**: wall-clock ceiling of one sweep. Pathfinding, detours, chunk loading and obstacles make the cell count a poor proxy for cost, so this limit is not derivable from `VILLAGE_SURVEY_CELLS` and vice versa; the first of the two reached wins (initial value, to be tuned by the first live sweep). |
 | `VILLAGE_HOUSE_RADIUS` | `8` | Radius that clusters beds/containers into one house. |
 | `VILLAGE_PLOT_MIN_CELLS` | `4` | Below this a crop cluster is not a plot. |
@@ -425,10 +427,20 @@ harness still decides which of the three steps is legal *now*.
 
 **Deliverable**
 
-- New pure module `village-survey.mjs`: `surveyVillage({blocks, entities,
-  containers, anchor, dimension, limits})` → the payload above. Deterministic,
-  no I/O, no clock, no LLM (the shape of `structures.mjs`, which is already pure
-  and evidence-carrying).
+- New pure module `village-survey.mjs`: `surveyVillage({nearby, farmAnimals,
+  beds, containers, anchor, dimension, scanned, limits})` → the payload above.
+  Deterministic, no I/O, no clock, no LLM. **Landed**: the signature consumes the
+  observation shape the adapter already produces (`nearby` cells with `mature`,
+  `farmAnimals`, `bed`, the storage register) and it does not reimplement the
+  detector — `structures.mjs` was split (behaviour unchanged,
+  `tests/structures.test.mjs` 6/6) into `structureRows({survey, entities})`,
+  `scoreStructure(def, {blockRows, entityRows, dimension})` and
+  `scoreStructures(...)`, and the census calls the same rule, so
+  `NOT_FOUND`/`CANDIDATE`/`CONFIRMED` can never drift from
+  `GET /observe.structures`. `tests/village-survey.test.mjs` (13 cases) covers
+  the pure half. Still open here: the `VILLAGE_PLOT_MIN_CELLS` threshold is not
+  applied (a cluster is reported with its count and the threshold stays the
+  caller's decision), and everything below is not landed.
 - Clustering rules, each with its own `evidence` and threshold: house = a bed or
   a container plus its reachable surroundings within `VILLAGE_HOUSE_RADIUS`;
   plot = ≥ `VILLAGE_PLOT_MIN_CELLS` cells of the same crop family with a shared
@@ -476,11 +488,21 @@ three rooms yields three houses, not one blob; 4 cells of carrots are a plot and
 3 are not; an enclosure with two adult cows and a calf is one pen with
 `adults: 2, babies: 1`; a village with no bell still passes `minScore`
 (the existing rule) and reports `missing: bell (0/1)`; an empty input returns
-empty arrays and `checked: true`. Plus the memory half of the same file — a
-**populated memory with no live survey** still yields the houses/plots/pens
-(`source: 'memory'`, `status: 'known'`), an old record is reported `stale`
-rather than dropped, a live fact wins over a remembered one at the same position,
-and `findEntities` is genuinely exercised (the pen survives a restart).
+empty arrays and `checked: true`. **Landed (13 cases)**: empty input ⇒
+`checked: false, state: null`; looked-and-empty ⇒ `NOT_FOUND` with its `missing`
+list; two beds ⇒ `CANDIDATE` with `evidence: ['beds 2']` and already one house;
+a full site ⇒ `CONFIRMED` anchored on the bell, not on the beds; two bed clusters
+20 blocks apart ⇒ two houses, each with its own container; `observe().bed`
+enriching `occupied` without doubling a bed; a plot with
+`{crop, seed, cells, ready, immature, unknown, center}`; unreadable maturity ⇒
+`unknown`, never guessed; different crops never merging; pens fenced/unfenced
+with villagers excluded from the animals; storage ordered from the anchor with
+`contains: null` for `contentsKnown: false`; the cell budget reporting
+`dropped`/`truncated`; and a shuffled input giving the identical census. Still
+open in this file: the **memory half** of the same file (a populated memory with
+no live survey, `source: 'memory'`, an old record reported `stale` rather than
+dropped, a live fact winning over a remembered one, `findEntities` genuinely
+exercised).
 
 **Accettazione**: live `GET /observe.village?force=1` in the known village
 returns ≥ 1 house that contains the beds the detector already counted (30), at
@@ -506,7 +528,26 @@ runtime cache is.
   not a re-measure from zero. The route stays
   `exploration.mjs` (`nextExplorationWaypoint`/`planExplorationStep`), the
   mission/checkpoint persistence is the existing one, and the village adds an
-  anchor, a radius and a census.
+  anchor, a radius and a census. **Landed (the wiring, not a second engine)**:
+  `villageSweepConfig({anchor, radius = VILLAGE_SURVEY_RADIUS, spacing =
+  VILLAGE_SURVEY_SPACING, visited = []})` in `village-survey.mjs` builds exactly
+  the planner's input — a function, not a planner:
+
+| Planner input | Where it comes from | Notes |
+|---|---|---|
+| `anchor` | the detector's anchor (bell → bed → composter) | the geometric origin; `null` or non-finite ⇒ `planExplorationSweep` refuses with `no_anchor` |
+| `spacing` | `VILLAGE_SURVEY_SPACING` (24) | the side of one spiral cell: a village is a handful of cells, not a region |
+| `maxRadius` | **derived**: `floor(radius / (spacing * √2))` | the rings that fit *inside* the bound, so no waypoint is ever planned outside it and the assigned area closes with `stoppedBy: 'exhausted'`, `truncated: false` |
+| `radius` | `VILLAGE_SURVEY_RADIUS` (48) | the anchored block bound, the same reach as `STRUCTURE_RADIUS` |
+| `cells` | always `null` | the *waypoint* budget is the spiral itself; `VILLAGE_SURVEY_CELLS` bounds the *blocks* censused per waypoint — two different budgets, never conflated |
+| `visited` | `visitedChunks` ∪ the register's already-censused cells, passed as an **array** | the config must survive `JSON.stringify`, so it is never a `Set` (the planner accepts both) |
+
+  `tests/village-sweep.test.mjs` (7 offline cases) pins the contract: the key set
+  the planner receives, the anchor as the first waypoint, the same `(anchor,
+  visited, config)` through a JSON serialise/reload, `array` and `Set` giving the
+  same plan, `visited` shrinking the plan instead of moving it, no waypoint
+  beyond the bound, the `no_anchor` refusal, and the two budgets staying two
+  distinct facts.
 - **Three independent limits, the first one reached wins.**
   `VILLAGE_SURVEY_MS` is the *cooldown* between two sweeps (not a bound on one),
   `VILLAGE_SURVEY_CELLS` is the *exploration* budget (how many new cells may be
@@ -689,7 +730,8 @@ timestamp truthfully.
 | unit | **Register read**: memory-first without a live survey, `source`/`status`/`observedAt`, live beats remembered, `findEntities` pens survive a restart | `tests/village-register.test.mjs` |
 | unit | **The ladder**: known-contents first, discovered-uninspected second, local scan third, sweep last; a discovery write never erases contents learned earlier | `tests/village-register.test.mjs` |
 | pure | Two-depth TTLs: a discovery row survives an inspection-TTL expiry; an inspection row is `stale` while its discovery is still fresh | `tests/village-register.test.mjs` |
-| pure | Sweep budget (**cells and time**, first limit wins), second-pass idempotence **including a restart between the two passes**, protected-block detour, refusal vs `truncated` | `tests/village-sweep.test.mjs` |
+| pure | **Landed**: `villageSweepConfig` → `planExplorationSweep` (anchor first, derived rings, JSON serialise/reload, `visited` shrinks the plan, `no_anchor`), waypoint budget ≠ census budget | `tests/village-sweep.test.mjs` |
+| unit | Sweep budget (**cells and time**, first limit wins), second-pass idempotence **including a restart between the two passes**, protected-block detour, refusal vs `truncated` | `tests/village-sweep.test.mjs` (action half, open) |
 | unit | Deposit target from memory vs cache, stale re-read, fallback | `tests/bedrock-storage-memory.test.mjs` |
 | unit | Farm-order classification vs the collect path, chain closing on delta | `tests/controller-farm-order.test.mjs` |
 | unit | Reconciliation with `GET /observe.structures` and the chore layer | `tests/village-labor.test.mjs` (extension) |

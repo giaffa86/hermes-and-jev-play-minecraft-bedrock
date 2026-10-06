@@ -12,17 +12,20 @@ consulted as a lookup — and the one spoken order it exists to serve:
 The analogy is a robot vacuum: the map is drawn on a slow pass, and every later
 task is a route over known cells rather than a new exploration.
 
-Status: **V0 model + V1/V2 storage path landed (2026-10-06); the sweep and the
-farm order are still spec.** `world-memory.mjs` keeps discovery and inspection as
+Status: **V0 model + census + V1/V2 storage path landed (2026-10-06); the sweep
+action and the farm order are still spec.** `world-memory.mjs` keeps discovery and inspection as
 two facts with two clocks, the rung-2 query exists, and the storage matcher is a
 family match instead of a name whitelist (`0650877`); the adapter now **writes** a
 discovery while the bot walks (`_surveyStorage`, `_rememberStorageDiscovery`) and
 the **deposit** decision climbs the ladder before looking at the world
 (`_storageSearchPlan` → `storage-ladder.mjs`, `c897399`), with
 `observe().storage` exposing the register and the chosen rung visible in
-`observe().deposit`. What is still missing is the bounded sweep
-(`survey_village`, rung 4), the farm-order classifier (V3) and the live
-four-case round. Everything else on this roadmap is spec.
+`observe().deposit`. The **census** is now a pure module (`village-survey.mjs`)
+that calls the detector's own rule instead of a copy, and the sweep is wired as a
+**configuration** of the general planner (`villageSweepConfig` →
+`planExplorationSweep`, 7 offline cases). What is still missing is the bounded
+sweep itself (`survey_village`, rung 4), the farm-order classifier (V3) and the
+live four-case round. Everything else on this roadmap is spec.
 Everything it builds on (the histogram survey, the marker detector, the container
 memory, the harvest/plant/deposit actions, the village chores) already exists and
 is listed below as the baseline; the two real gaps are the aggregation and the
@@ -96,6 +99,46 @@ no way to ask "what do we know about the village?". The storage half now has
 its reader — `_storageSearchPlan` consults the register before the world, and
 `observe().storage` publishes it — while the village half (houses, plots, pens)
 is still rebuilt from the loaded radius on every call.
+
+### What landed (2026-10-06): a pure census, and the sweep as a configuration
+
+Three things stopped being spec and became code:
+
+- **The census is pure.** `village-survey.mjs` exports
+  `surveyVillage({nearby, farmAnimals, beds, containers, anchor, dimension,
+  scanned, limits})`, consuming the observation the adapter already produces and
+  returning `{checked, anchor, houses, plots, pens, storage, missing, detection,
+  counts, survey}`. Deterministic, clock-free, I/O-free: the same observation
+  yields the same census, even through a shuffled input. Houses are bed clusters
+  (planar distance — two beds on different floors are one building) with their
+  own containers and doors; plots are crop clusters carrying `{crop, seed, cells,
+  ready, immature, unknown, center}`; pens are animal clusters that say whether a
+  fence stands within `VILLAGE_PEN_RADIUS`; storage is ordered from the anchor
+  and keeps `contentsKnown`, so an unopened chest is a *known place with an
+  unknown inside* (`contains: null`) instead of a missing fact.
+- **It never re-implements the detector.** `structures.mjs` was split (behaviour
+  unchanged) into `structureRows` / `scoreStructure` / `scoreStructures`, and the
+  census feeds the same rule — so `NOT_FOUND`/`CANDIDATE`/`CONFIRMED`, the score
+  and the `missing` list cannot drift from `GET /observe.structures`. `checked`
+  is the honest half: `false` with `detection.state: null` means *nobody looked*,
+  which is a different fact from `NOT_FOUND` (*looked and empty*).
+- **The sweep is a configuration, not a second engine.**
+  `villageSweepConfig({anchor, radius, spacing, visited})` returns exactly the
+  input of `planExplorationSweep` (`exploration.mjs`): the anchor from the
+  detector, `spacing` 24, a ring count **derived** as
+  `floor(radius / (spacing * √2))` so that no waypoint ever falls outside
+  `VILLAGE_SURVEY_RADIUS` (48), `cells: null`, and `visited` as an array so the
+  config survives `JSON.stringify`. The same `(anchor, visited, config)` gives
+  the same plan after a reload, and a visited cell *shrinks* the plan instead of
+  moving it. The two budgets stay distinct facts: `VILLAGE_SURVEY_CELLS` (4096)
+  counts the **blocks** one waypoint's census may scan, while the planner's
+  waypoint budget is the spiral itself.
+
+Tests: `tests/village-survey.test.mjs` (13 cases) and
+`tests/village-sweep.test.mjs` (7 offline cases). Still open in this milestone:
+`GET /observe.village`, the memory-first read (`villageRegister`), the
+`VILLAGE_PLOT_MIN_CELLS` threshold (a cluster is reported with its count, the
+threshold is left to the caller), and the live rows.
 
 ## Register or sensor?
 

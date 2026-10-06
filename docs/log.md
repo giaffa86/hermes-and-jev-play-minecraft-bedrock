@@ -3845,3 +3845,48 @@ container kept running the image deployed at 11:19. Both are closed here.
   tests and the live row. The spec now uses `radius` where it used to say
   `distance` (the old name was ambiguous: travelled distance, or from the bot?),
   and says explicitly that `time` is stamped by the executor.
+
+## [2026-10-06] feat | The village census is pure, and the sweep is a configuration of the planner
+
+- New `village-survey.mjs`: `surveyVillage({nearby, farmAnimals, beds,
+  containers, anchor, dimension, scanned, limits})` → `{checked, anchor, houses,
+  plots, pens, storage, missing, detection, counts, survey}`. Pure and
+  deterministic (no I/O, no clock): the same observation gives the same census,
+  including through a shuffled input. Houses are bed clusters with their own
+  containers and doors; plots carry `{crop, seed, cells, ready, immature,
+  unknown, center}`; pens count adults/babies and say whether a fence stands
+  within `VILLAGE_PEN_RADIUS` (12); storage is ordered from the anchor and keeps
+  `contentsKnown`, so an unopened chest reads `contains: null` — *a known place
+  with an unknown inside* — instead of a missing fact.
+- **The detector is reused, not copied.** `structures.mjs` splits into
+  `structureRows({survey, entities})`, `scoreStructure(def, {blockRows,
+  entityRows, dimension})` and `scoreStructures({survey, entities, dimension,
+  defs})` (every verdict, including the sub-threshold ones) with
+  `detectStructures` keeping its exact output (`tests/structures.test.mjs` 6/6
+  before and after). `village-survey.mjs` feeds that same rule, so
+  `NOT_FOUND`/`CANDIDATE`/`CONFIRMED` and the `missing` list cannot drift from
+  `GET /observe.structures`. `checked: false` with `detection.state: null` says
+  *nobody looked*, which is not `NOT_FOUND` (*looked and empty*).
+- **`survey_village` is a configuration of the general sweep, not a second
+  engine.** `villageSweepConfig({anchor, radius = 48, spacing = 24, visited})`
+  (in `village-survey.mjs`) returns exactly the input of
+  `planExplorationSweep`: the detector's anchor, `maxRadius` **derived** as
+  `floor(radius / (spacing * √2))` (so no waypoint is ever planned outside the
+  bound and the assigned area closes with `stoppedBy: 'exhausted'`), `cells:
+  null`, and `visited` as an **array** so the configuration survives
+  `JSON.stringify`. `VILLAGE_SURVEY_CELLS` bounds the *blocks* one waypoint's
+  census may scan (`surveyVillage`'s `limits.maxCells`), while the planner's
+  waypoint budget is the spiral itself: two budgets, two facts, pinned by a
+  test.
+- `tests/village-survey.test.mjs` (13 cases) and `tests/village-sweep.test.mjs`
+  (7 offline cases): the key set the planner receives, the anchor as the first
+  waypoint, a JSON serialise/reload giving the identical plan, array vs `Set`,
+  `visited` shrinking the plan instead of moving it, no waypoint beyond the
+  bound, the `no_anchor` refusal — plus empty input vs looked-and-empty,
+  candidate vs confirmed, two houses each with its own container, occupancy
+  enrichment without double-counting, `unknown` maturity never guessed, crops
+  that never merge, and determinism under a shuffled input.
+- Still open on V0/V1: `GET /observe.village`, the memory-first read
+  (`villageRegister`), the `VILLAGE_PLOT_MIN_CELLS` threshold (cells are
+  reported now, the threshold is not applied), the `survey_village` action and
+  the four-case live row.
