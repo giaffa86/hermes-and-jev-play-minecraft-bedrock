@@ -3515,3 +3515,57 @@ and tracked no weather at all.
   offered while carried; nothing acted, one `mount_ride_hold`, no `follow_lost`,
   then `follow_player` resumed) — 3/3; synthesis updated in
   [companions](wiki/companions.md) §2026-10-06.
+
+## [2026-10-06] feat | A human order suspends the running goal; the parent resumes revalidated
+
+- Gap: a human `@bot` order arriving while another goal was running used to
+  **reorient** it — `controller.mjs` replaced `goal.plan` in place, set
+  `goal.humanOrder` and cleared `skillRun`, so the parent's objective/plan no
+  longer matched its record and the outcome of a *second* human's order went to
+  the first human (the sender was read from `goal.parameters.from`, i.e. the
+  goal's original `from`).
+- Fix (`controller.mjs`): the order now **suspends** the parent and runs as a
+  child goal. `runGoal` returns `{status:'preempted', human:{plan, entry}}`;
+  `main` calls `goalManager.preempt('human_order:<from>')`, enqueues
+  `{type:'chat', source:CHAT, plan, parameters:{from, message}, parentGoal}`,
+  prints `HUMAN ORDER <from>: suspend <parent> -> run <child>` and logs
+  `human_preempt {from, parentGoalId, goalId}`. Kept as reorientations: a **stop**
+  order (`isStopOrder`), an order from the same requester, an `EMERGENCY` parent,
+  and a chain already `MAX_GOAL_DEPTH` deep (default 3, logs
+  `human_order_override`).
+- Resume: the post-goal parent block moved **before** the `outcome.error` /
+  `!SESSION` exits (a failed, cancelled or errored child still hands the parent
+  back) and revalidates first — `goalAlreadySatisfied(parent, obs)`
+  (`goalMet(obs, plan, null) && !planIsOpen(plan)`, the same `planIsOpen` guard
+  `runGoal` uses for a human order) completes the parent with zero actions and
+  logs `goal_resume_satisfied`, else `goalManager.resume(parent.id)` +
+  `RESUME <id> (suspended while <child> ran)` + `goal_resumed`. Resume is a
+  re-plan from a fresh `observ()`, never a mid-action resume.
+- Requester attribution: `reportHumanOutcome(goal, {status, steps, reason})`
+  resolves the sender as `goal.humanOrder?.from ?? (source === CHAT ?
+  goal.parameters?.from : null)`, so ack and outcome reach the human who sent
+  the order that just closed.
+- Goal Manager (`goal-manager.mjs`): added `ancestors(id)` / `depth(id)`
+  (nearest-first, orphan-safe, cycle-safe) over the existing `parentGoal` field;
+  no new status, no second scheduler.
+- Evidence: new `tests/controller-goal-stack.test.mjs` (scripted harness) —
+  autonomous A → human B (done / failed) → resume A; an emergency inside the
+  human order unwinds `RESUME B` then `RESUME A` with the persisted chain
+  `E.parentGoal = B`, `B.parentGoal = A`; a parent already satisfied while
+  suspended (0 actions, `goal_resume_satisfied`); two consecutive humans each
+  with their own outcome; a restart with two suspended goals (child before
+  parent); the same-requester revision. 7/7 green.
+  `tests/goal-manager.test.mjs` ancestry unit test (13/13). The pre-existing run
+  `node --test tests/controller-*.test.mjs tests/goal-manager.test.mjs` stayed at
+  112 pass before the new file; the only test touched
+  (`tests/controller-chat-ack.test.mjs`, the `chatFromObserve` knob) now lands the
+  drop-order case in IDLE, because `drop_item` empties the harness inventory.
+- Docs: new [goal-stack](wiki/goal-stack.md) (plus `index.md`/`sources.md` rows
+  and cross-links in emergency/human-command/ai-player-roadmap/goal-achievement),
+  verification row 63, the open-questions lifecycle bullet, and `MAX_GOAL_DEPTH`
+  in `AGENTS.md`.
+- Open: startup resume stays flat (no world revalidation — `goalAlreadySatisfied`
+  needs a live observation the startup path does not fetch, and
+  `tests/controller-session.test.mjs` asserts the current ordering); a
+  depth-capped order silently degrades to the old reorientation; no live round
+  with a real human yet.

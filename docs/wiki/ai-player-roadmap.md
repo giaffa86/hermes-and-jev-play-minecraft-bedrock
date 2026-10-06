@@ -89,7 +89,9 @@ The **Goal Manager** (`goal-manager.mjs`) is the pure Agent Core behind it:
   with default priorities (emergency > chat > curriculum > autonomous);
 - statuses `PENDING → RUNNING → (SUSPENDED) → COMPLETED/FAILED` plus
   `CANCELLED`; at most one goal `RUNNING` at a time;
-- `pull()` by priority then FIFO; `preempt()` suspends the running goal;
+- `pull()` by priority then FIFO; `preempt()` suspends the running goal, and
+  `ancestors()`/`depth()` walk the `parentGoal` chain so a suspension can nest
+  and unwind (a human order or an emergency, bounded by `MAX_GOAL_DEPTH`);
 - `snapshot()/restore()` and persistence through a repository
   (`kind: 'goal'`, file `runs/<RUN_ID>/goals/world.json`).
 
@@ -104,8 +106,9 @@ queue was persisted (`runs/<RUN>/goals/world.json`) and the process stayed alive
 until `IDLE_TIMEOUT_MS`.
 
 Still missing (later milestones): the rest of the needs-driven menu
-(inventory-full → store, else explore), a Goal Manager API on the harness HTTP
-surface, and nested preemption. Cross-session **resume** is implemented, and the
+(inventory-full → store, else explore) and a Goal Manager API on the harness HTTP
+surface. Nested suspension exists for human orders ([goal-stack](goal-stack.md))
+and emergencies, bounded by `MAX_GOAL_DEPTH`. Cross-session **resume** is implemented, and the
 first **emergency producer** (`PLAYER_DIED → recover_loot`, which suspends the
 running goal and resumes it afterwards) is implemented — see
 [emergency](emergency.md). The autonomy slice below is implemented.

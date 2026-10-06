@@ -799,6 +799,25 @@ accounting problem (what left the inventory), **catching** is a search problem
 *Numbering*: M9 is the slice of milestone 3/4 the owner asked for after M8; the
 label is about the *inventory* orders, not the `M9` row of another roadmap.
 
+## An order arriving mid-goal suspends the running goal
+
+Until 2026-10-06 an order that landed while another goal was running
+*reoriented* it: `plan` was replaced in place and the goal kept its old
+`objective` and requester, so a second human's order was executed but the
+outcome went to the first. Now the order **suspends** the running goal and runs
+as a **child goal** (`parentGoal`, source `CHAT`, the order's own
+`parameters.from`); when the child closes the parent is revalidated and resumed
+(`HUMAN ORDER <from>: suspend <parent> -> run <child>`,
+`RESUME <parent> (suspended while <child> ran)`, or
+`GOAL <parent> COMPLETED (already satisfied while suspended)`).
+
+Two deliberate exceptions: a **stop** order (`fermati`, `basta`, `stay`, …)
+still closes the running follow/escort goal instead of parking it, and an order
+from the **same** requester is still a revision of their own goal. Ack and
+outcome are rendered from the child's own `from`, so two humans asking in a row
+each get their own pair of lines (in their own objective). Rules, the depth cap
+(`MAX_GOAL_DEPTH`) and the six verified cases: [goal-stack](goal-stack.md).
+
 ## Proactive greeting (§6 Attention System)
 
 A human should not have to guess how to command the bot. When the bot perceives a
@@ -863,7 +882,10 @@ quieter hello is preferred (still an open question).
   47.53. Still open: a real long escort with a human on the BDS, and an
   acknowledgement specific to the order.
 - **Priority vs autonomous plan**: settled to "human order overrides until
-  superseded or budget end". Still open: an explicit "resume autonomy" command.
+  superseded or budget end". A mid-goal order now *suspends* the running goal
+  and resumes it afterwards ([goal-stack](goal-stack.md)) instead of replacing
+  its plan; still open: an explicit "resume autonomy" and a "cancel the
+  suspended goal" command.
 - **Acknowledgement**: still open — the bot can speak (`POST /say`) and greets a
   nearby human with the order syntax, but it does **not** ack a specific order
   ("received, on my way").

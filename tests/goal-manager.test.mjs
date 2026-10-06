@@ -106,6 +106,23 @@ test('preempt suspends the running goal and returns it', () => {
   assert.equal(a.reason, 'chat arrived');
 });
 
+test('ancestors/depth walk the parent chain, nearest first and cycle-safe', () => {
+  const gm = createGoalManager();
+  assert.equal(gm.depth('missing'), 0);
+  const a = gm.enqueue({ objective: 'a', source: GOAL_SOURCE.AUTONOMOUS });
+  const b = gm.enqueue({ objective: 'b', source: GOAL_SOURCE.CHAT, parentGoal: a.id });
+  const c = gm.enqueue({ objective: 'c', source: GOAL_SOURCE.CHAT, parentGoal: b.id });
+  assert.deepEqual(gm.ancestors(c.id).map(goal => goal.id), [b.id, a.id]);
+  assert.equal(gm.depth(c.id), 2);
+  assert.equal(gm.depth(a.id), 0);
+  // Un padre che non esiste piu' chiude la catena invece di lanciare.
+  const orphan = gm.enqueue({ objective: 'orphan', parentGoal: 'g999' });
+  assert.deepEqual(gm.ancestors(orphan.id), []);
+  // Un ciclo (store modificato a mano) non fa girare all'infinito.
+  a.parentGoal = c.id;
+  assert.deepEqual(gm.ancestors(a.id).map(goal => goal.id), [c.id, b.id]);
+});
+
 test('counts and list filter by status/source', () => {
   const gm = createGoalManager();
   const a = gm.enqueue({ objective: 'a', source: GOAL_SOURCE.CHAT });

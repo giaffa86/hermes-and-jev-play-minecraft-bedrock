@@ -81,7 +81,10 @@ missing (the controller stops on `GOAL MET`, a step budget, or an LLM judgement)
   `sleep`, `eat`, `escape_danger`.
 - **Interrupt / suspend / resume**: night falls during `BuildHouse` →
   `suspend(BuildHouse)` → `SurviveNight` → `resume(BuildHouse)`; on death →
-  locate death → respawn → recover inventory → resume the original goal.
+  locate death → respawn → recover inventory → resume the original goal. The
+  mechanism is implemented for the two producers that exist today — an emergency
+  (death) and a human chat order ([goal-stack](goal-stack.md)) — with the parent
+  revalidated before it resumes.
 - **Semantic goals**: "a decent starter base" is translated by the LLM into a
   capability list (shelter, bed, crafting table, furnace, chest, food source,
   lighting, basic tools) and executed deterministically.
@@ -191,7 +194,8 @@ The shortest path is to **wrap**, not rewrite:
    `preserveItems`; on failure mark the contract `FAILED` and replan; the
    governor keeps preempting (it already does).
 6. **G6 — Persistence.** The Goal Manager itself is AI-player milestone 1
-   (queue + `IDLE`/`GOAL_RUNNING`/`SUSPENDED`). Until then, benchmarks run as
+   (queue + `IDLE`/`GOAL_RUNNING`/`SUSPENDED`, now with a real `parentGoal`
+   chain — [goal-stack](goal-stack.md)). Until then, benchmarks run as
    one-shot `CURRICULUM` rounds — which is enough to *measure* capability.
 
 ## How to execute the unexecuted benchmarks

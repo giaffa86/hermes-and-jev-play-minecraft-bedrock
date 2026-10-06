@@ -804,7 +804,10 @@ Still missing (the rest of the original gap):
   milestone 3 first slice); cross-session **resume** re-queues suspended goals
   on startup (`RESUME`, default in session mode); an **emergency producer**
   suspends a running goal and starts a higher-priority one on a world event
-  (`PLAYER_DIED → recover_loot`, [emergency](emergency.md)). Still missing: the
+  (`PLAYER_DIED → recover_loot`, [emergency](emergency.md)); since 2026-10-06 a
+  **human order** does the same — it suspends the running goal, runs as a child
+  goal with its own requester and hands the parent back revalidated after
+  `goalAlreadySatisfied` ([goal-stack](goal-stack.md)). Still missing: the
   remaining needs-driven goals (inventory-full → store, else explore), the
   loot-priority executor and the fluid/fire-dependent events. Full analysis in
   [ai-player-roadmap](ai-player-roadmap.md).

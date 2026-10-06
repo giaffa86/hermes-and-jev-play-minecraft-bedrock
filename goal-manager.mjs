@@ -11,7 +11,12 @@
 // Invariants:
 //   - at most one goal is RUNNING at a time;
 //   - a goal can be terminal (COMPLETED/FAILED/CANCELLED) only once;
-//   - PENDING goals are pulled by priority (desc), then FIFO (createdAt asc).
+//   - PENDING goals are pulled by priority (desc), then FIFO (createdAt asc);
+//   - a goal can be SUSPENDED and later re-queued as PENDING (resume);
+//   - a goal can name another goal as its `parentGoal`: the parent is suspended
+//     while the child runs and is resumed when the child ends. Two flows use it:
+//     an emergency that preempts a goal, and a human order that arrives while a
+//     goal is running (the order never reorients the running goal).
 //
 // Statuses mirror the roadmap: PENDING → RUNNING → (SUSPENDED) → COMPLETED /
 // FAILED, plus CANCELLED for an explicit human "stop" (an extension of the
@@ -122,6 +127,27 @@ export class GoalManager {
     for (const g of this.goals.values()) out[g.status] += 1;
     return out;
   }
+
+  // ---- hierarchy -------------------------------------------------------------------
+  // Chain of parents above `id` (nearest first). Cycle-safe: a corrupted store
+  // must not hang the controller. Used to read the resume stack and to bound its
+  // depth.
+  ancestors (id) {
+    const chain = [];
+    const seen = new Set([id]);
+    let current = this.goals.get(id) ?? null;
+    while (current?.parentGoal && !seen.has(current.parentGoal)) {
+      const parent = this.goals.get(current.parentGoal);
+      if (!parent) break;
+      seen.add(parent.id);
+      chain.push(parent);
+      current = parent;
+    }
+    return chain;
+  }
+
+  // How many goals are stacked above this one (0 = root).
+  depth (id) { return this.ancestors(id).length; }
 
   // ---- transitions -----------------------------------------------------------------
   // Pick the next goal to run: highest priority PENDING, then oldest. Does not

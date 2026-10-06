@@ -69,6 +69,13 @@ const CONSTRUCTION = envJson('CONSTRUCTION', null);
 const CONSTRUCTION_AUTHORIZED_CONTAINERS = envJson('CONSTRUCTION_AUTHORIZED_CONTAINERS', []);
 const CONSTRUCTION_DESIGN_TIMEOUT = +(process.env.CONSTRUCTION_DESIGN_TIMEOUT_MS || 300000);
 const MAX_STEPS = +(process.env.MAX_STEPS || 20);
+// Un ordine umano che arriva mentre un goal gira non lo riorienta: il goal va in
+// SUSPENDED e l'ordine diventa un goal figlio a priorità CHAT, che al termine lo
+// riprende. Questo è il tetto della pila (un ordine dentro un ordine dentro un
+// ordine): oltre il tetto l'ordine riorienta il goal in corso invece di
+// annidarsi, così una raffica di ordini non costruisce una catena illimitata di
+// goal sospesi.
+const MAX_GOAL_DEPTH = +(process.env.MAX_GOAL_DEPTH || 3);
 // Un ordine "seguimi" aperto non deve girare a vuoto: se `follow_player` riesce
 // all'istante (l'umano e' gia' li') il passo successivo attende questo intervallo
 // invece di interrogare l'harness in un ciclo stretto.
@@ -1053,6 +1060,29 @@ const goalMet = (obs, plan, skillStatus) => {
   return targets && at;
 };
 
+// Un piano "aperto" (nessun criterio terminale: né target, né waypoint, né
+// bisogno, né ordine, né skill) non si chiude prima di aver lavorato: lo
+// stesso guardiano vale nel loop del goal e quando un goal sospeso viene
+// rivalutato prima della ripresa.
+const planIsOpen = (plan) => !plan.follow && !plan.need && !plan.recover && !plan.skill &&
+  !plan.drop && !plan.collect &&
+  !Object.keys(plan.targets || {}).length && !Object.keys(TARGETS).length &&
+  !plan.waypoint && !WAYPOINT;
+
+// Rivalutazione di un goal sospeso prima di rimetterlo in coda: lo stesso
+// predicato di successo del loop, sulla osservazione attuale. Il resume non
+// riprende un'azione a metà: se il criterio è già soddisfatto (l'ordine umano
+// che ha sospeso il goal ha fatto il lavoro, o il mondo è cambiato) il goal si
+// chiude senza rieseguirlo; altrimenti riparte dal primo passo del suo piano,
+// rivalutato sul mondo di adesso. Una skill sospesa non è "riuscita": senza
+// osservazione skill il piano ricade sui target.
+function goalAlreadySatisfied (goal, obs) {
+  const sticky = withStickyEscort(withStickyFollow(goal.plan ?? {}, goal.follow), goal.escort);
+  const humanOrdered = goal.source === GOAL_SOURCE.CHAT || !!goal.humanOrder;
+  if (humanOrdered && planIsOpen(sticky)) return false;
+  return goalMet(obs, sticky, null);
+}
+
 // Esegue UN goal fino a un esito terminale e restituisce l'esito senza uscire
 // dal processo: la persistenza del goal e le transizioni di stato sono
 // responsabilità del session loop (main).
@@ -1197,6 +1227,29 @@ for (let step = 1; step <= maxSteps; step++) {
   // un nuovo ordine. Il governor resta comunque l'ultima parola sulle opzioni.
   const humanCmd = await maybeHumanCommand(obs);
   if (humanCmd) {
+    // Un ordine umano che arriva mentre un altro lavoro è in corso non lo
+    // riorienta: il goal in corso va in SUSPENDED e l'ordine diventa un goal
+    // figlio (priorità CHAT) che, al termine, lo riprende — la stessa meccanica
+    // dell'emergenza (`SUSPENDED -> PENDING` nel session loop). Riorientano
+    // ancora il goal in corso solo due casi: l'ordine di stop, che per
+    // definizione chiude quello che sta girando, e la correzione dello stesso
+    // richiedente (un secondo ordine dello stesso umano sostituisce il suo
+    // precedente: un solo esito, non due). Un goal di emergenza non si sospende
+    // per un ordine: prima finisce l'emergenza. L'ack è già partito in
+    // `maybeHumanCommand`.
+    const stopOrder = isStopOrder(humanCmd.entry.message);
+    const requester = goal.source === GOAL_SOURCE.CHAT ? (goal.parameters?.from ?? null) : (goal.humanOrder?.from ?? null);
+    const sameRequester = requester != null && String(requester).toLowerCase() === String(humanCmd.entry.from ?? '').toLowerCase();
+    const delegated = !stopOrder && !sameRequester && goal.source !== GOAL_SOURCE.EMERGENCY &&
+      goalManager.depth(goal.id) < MAX_GOAL_DEPTH;
+    if (delegated) {
+      // Il figlio nasce in `main` (è lì che si conosce l'esito del preempt): qui
+      // si restituisce solo l'ordine da accodare.
+      return {status: 'preempted', human: {plan: humanCmd.plan, entry: humanCmd.entry}, steps: stepsUsed, totalCost};
+    }
+    if (!stopOrder && !sameRequester && goal.source !== GOAL_SOURCE.EMERGENCY) {
+      log('human_order_override', {goalId: goal.id, from: humanCmd.entry.from, depth: goalManager.depth(goal.id), maxDepth: MAX_GOAL_DEPTH, reason: 'max_goal_depth'});
+    }
     plan = humanCmd.plan;
     // Un nuovo ordine riorienta l'impegno: "seguimi" apre il follow, qualsiasi
     // altro ordine lo chiude (altrimenti resterebbe appeso per sempre).
@@ -1262,10 +1315,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // (visto live il 04/10). Un ordine del genere si chiude dopo almeno una
   // azione riuscita.
   const humanOrder = goal.source === GOAL_SOURCE.CHAT || !!goal.humanOrder;
-  const openPlan = !stickyPlan.follow && !stickyPlan.need && !stickyPlan.recover && !stickyPlan.skill &&
-    !stickyPlan.drop && !stickyPlan.collect &&
-    !Object.keys(stickyPlan.targets || {}).length && !Object.keys(TARGETS).length &&
-    !stickyPlan.waypoint && !WAYPOINT;
+  const openPlan = planIsOpen(stickyPlan);
   const hasWorked = step > 1 && lastResult?.ok === true;
   if ((!humanOrder || !openPlan || hasWorked) && goalMet(obs, stickyPlan, skillStatus)) {
     console.log(`GOAL MET after ${step - 1} actions`, JSON.stringify({position: obs.position, inventory: obs.inventory}));
@@ -1816,6 +1866,30 @@ async function waitForGoal () {
   }
 }
 
+// M5: l'ordine umano riceve l'esito in chat (goal nato da un ordine, oppure goal
+// riorientato da un ordine di stop). Il destinatario è chi ha impartito l'*ultimo*
+// ordine su questo goal: un secondo umano che interrompe il lavoro lo sospende
+// (non lo riorienta) e apre un goal suo, quindi un goal resta di chi l'ha ordinato
+// e l'esito non può finire al primo della lista. Best-effort, mai bloccante.
+async function reportHumanOutcome (goal, { status, steps = null, reason = null } = {}) {
+  const humanFrom = goal.humanOrder?.from ?? (goal.source === GOAL_SOURCE.CHAT ? (goal.parameters?.from ?? null) : null);
+  if (!humanFrom) return null;
+  const objective = goal.humanOrder?.objective ?? goal.objective;
+  const text = orderOutcome({
+    from: humanFrom, status, objective, steps, reason,
+    maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG,
+  });
+  // Qui `obs` non è in scope: l'LLM riceve almeno l'obiettivo e i passi veri dal
+  // `grounding`, così può riformulare senza inventare.
+  await saySmart('outcome', {
+    from: humanFrom,
+    plan: {objective, follow: goal.humanOrder?.follow ?? null},
+    grounding: text,
+    fallback: text,
+  });
+  return text;
+}
+
 async function main () {
   // Un goal rimasto RUNNING in un run precedente viene sospeso (non sappiamo a
   // che punto dell'azione fosse); poi, se RESUME è attivo, tutti i goal
@@ -1867,6 +1941,22 @@ async function main () {
       outcome = {status: 'failed', reason: `controller_error: ${error.message}`, exitCode: 1, steps: null, totalCost: null, error: true};
     }
     if (outcome.status === 'preempted') {
+      if (outcome.human) {
+        // Un ordine umano ha sospeso il goal in corso: l'ordine diventa un goal
+        // figlio (priorità CHAT) e il padre riprenderà quando il figlio termina.
+        // Il richiedente resta quello dell'ordine (`parameters.from`), quindi
+        // l'esito del figlio va a chi l'ha ordinato.
+        const suspended = goalManager.preempt(`human_order:${outcome.human.entry.from}`);
+        const child = goalManager.enqueue({
+          type: 'chat', source: GOAL_SOURCE.CHAT, objective: outcome.human.plan.objective,
+          plan: outcome.human.plan,
+          parameters: {from: outcome.human.entry.from, message: outcome.human.entry.message},
+          parentGoal: goal.id,
+        });
+        console.log(`HUMAN ORDER ${outcome.human.entry.from}: suspend ${goal.id} -> run ${child.id}`);
+        log('human_preempt', {parentGoalId: goal.id, goalId: child.id, from: outcome.human.entry.from, xuid: outcome.human.entry.xuid ?? null, plan: outcome.human.plan, suspended: suspended?.id ?? null});
+        continue;
+      }
       // Sospende il goal in corso e accoda l'emergenza (priorità più alta):
       // verrà eseguita al prossimo giro e, al termine, il padre riprenderà.
       const suspended = goalManager.preempt(`emergency:${outcome.emergency.type}`);
@@ -1882,27 +1972,8 @@ async function main () {
     console.log(`GOAL ${goal.id} ${final.status.toUpperCase()}${final.reason ? ` (${final.reason})` : ''} after ${outcome.steps ?? '?'} actions`);
     log('goal_end', {goalId: goal.id, status: final.status, reason: final.reason, steps: outcome.steps, totalCost: outcome.totalCost});
     // M5: l'ordine umano riceve l'esito in chat (goal nato da un ordine, oppure
-    // goal autonomo riorientato da un ordine). Best-effort, mai bloccante.
-    const humanFrom = goal.source === GOAL_SOURCE.CHAT ? (goal.parameters?.from ?? null) : (goal.humanOrder?.from ?? null);
-    if (humanFrom) {
-      const outcomeText = orderOutcome({
-        from: humanFrom,
-        status: outcome.status,
-        objective: goal.humanOrder?.objective ?? goal.objective,
-        steps: outcome.steps ?? null,
-        reason: final.reason ?? outcome.reason ?? null,
-        maxLength: CHAT_REPLY_MAX_LENGTH,
-        lang: CHAT_LANG,
-      });
-      // Qui `obs` non è in scope: l'LLM riceve almeno l'obiettivo e i passi veri
-      // dal `grounding`, così può riformulare senza inventare.
-      await saySmart('outcome', {
-        from: humanFrom,
-        plan: {objective: goal.humanOrder?.objective ?? goal.objective, follow: goal.humanOrder?.follow ?? null},
-        grounding: outcomeText,
-        fallback: outcomeText,
-      });
-    }
+    // goal riorientato da un ordine). Il destinatario è l'ultimo richiedente.
+    await reportHumanOutcome(goal, {status: outcome.status, steps: outcome.steps ?? null, reason: final.reason ?? outcome.reason ?? null});
     // Chiusura della missione episodica con esito e successo (best-effort).
     if (goal.missionId) {
       const finish = outcome.status === 'success'
@@ -1920,14 +1991,40 @@ async function main () {
     // M3c: chi ha raccolto adesso riporta, prima di tornare in IDLE.
     await maybeStoreEpilogue(goal, outcome);
     enterState('GOAL_COMPLETED', {goalId: goal.id, status: final.status});
+    // La pila dei goal si scioglie prima di ogni uscita: se questo goal aveva
+    // sospeso un padre, il padre torna in coda (o si chiude, se nel frattempo è
+    // già soddisfatto). Anche in one-shot: il padre resta PENDING e la prossima
+    // sessione lo raccoglie, invece di lasciarlo orfano in SUSPENDED.
+    if (goal.parentGoal) {
+      const parent = goalManager.get(goal.parentGoal);
+      if (parent?.status === GOAL_STATUS.SUSPENDED) {
+        // Prima di rimettere in coda il goal sospeso si rilegge il mondo: se il
+        // suo criterio di successo è già soddisfatto (il figlio ha fatto il
+        // lavoro, o il mondo è cambiato) si chiude senza rieseguirlo. La ripresa
+        // non riprende un'azione a metà: `runGoal` riparte dal primo passo con
+        // il piano rivalutato sul mondo attuale.
+        const obs = await api('GET', '/observe').catch(() => null);
+        let satisfied = false;
+        if (obs) {
+          try { satisfied = goalAlreadySatisfied(parent, obs); }
+          catch (error) { log('goal_resume_check_failed', {goalId: parent.id, error: error.message}); }
+        }
+        if (satisfied) {
+          goalManager.complete(parent.id, {resumed: false, alreadySatisfied: true});
+          console.log(`GOAL ${parent.id} COMPLETED (already satisfied while suspended)`);
+          log('goal_resume_satisfied', {goalId: parent.id, after: goal.id, suspendedBy: parent.reason ?? null, steps: 0, totalCost: 0});
+          await reportHumanOutcome(parent, {status: 'success', steps: 0, reason: null});
+        } else {
+          goalManager.resume(parent.id);
+          console.log(`RESUME ${parent.id} (suspended while ${goal.id} ran)`);
+          log('goal_resumed', {goalId: parent.id, after: goal.id, attempts: parent.attempts, suspendedBy: parent.reason ?? null});
+        }
+      }
+    }
     // Un errore fatale chiude il run (dopo aver chiuso la missione): niente
     // cicli di retry silenziosi in session mode.
     if (outcome.error) { exitCode = outcome.exitCode ?? 1; break; }
     if (!SESSION) { exitCode = outcome.exitCode; break; }
-    if (goal.parentGoal) {
-      const parent = goalManager.get(goal.parentGoal);
-      if (parent?.status === GOAL_STATUS.SUSPENDED) goalManager.resume(parent.id);
-    }
   }
   goalManager.flush();
   // Le connessioni keep-alive di fetch tengono vivo il processo: esci esplicitamente.
