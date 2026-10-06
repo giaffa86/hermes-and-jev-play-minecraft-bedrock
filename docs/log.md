@@ -3492,6 +3492,49 @@ and tracked no weather at all.
   1602/1602. Synthesis in [companions](wiki/companions.md) (§2026-10-06) and
   [open-questions](wiki/open-questions.md) §Mounting.
 
+## [2026-10-06] ingest | Discovery and inspection are separate facts, and the ladder orders them
+
+- Owner's refinement (m00302): formalise the difference between **discovery** and
+  **inspection**; persist chests that were merely *seen*; the register must
+  distinguish discovered position, `contentsKnown`, `inspectedAt`, known
+  contents and the stale/TTL; and Hermes must always choose the cheapest source
+  of knowledge *before* ordering exploration to Jev. Spec updated:
+  `docs/raw/VILLAGE_RECON_ROADMAP.md` ("Discovery and inspection are two
+  different facts" — state table, escalation ladder, the four-case acceptance
+  test and the code verification table), summarised in
+  [`docs/wiki/village-recon.md`](wiki/village-recon.md).
+- The ladder for an item order ("cerca del ferro nei bauli"): rung 1 a container
+  whose contents are *known* to hold it, rung 2 a container merely *discovered*,
+  rung 3 a local scan of the loaded area, rung 4 the sweep — **only rung 4 is
+  exploration**, and it is the fallback. Two clocks, because the two facts age
+  differently: `CONTAINER_DISCOVERY_STALE_MS` (6 h — containers do not move) and
+  `CONTAINER_INSPECTED_STALE_MS` (5 min — other players move things).
+- **Verification (asked for explicitly — can the current implementation separate
+these?): no, and here is what blocks it.**
+  - *Ready*: `containerId:169` is spatial so a re-write upserts in place, and
+    `rememberContainer:174` already preserves `discoveredAt` across upserts
+    (`existing?.discoveredAt ?? now`) — the discovery timestamp exists and is
+    never written by a discovery.
+  - *Blocking*: `_materializeContains:204` invalidates **every** `contains` edge
+    of the id before rebuilding them from the contents passed in, so a naive
+    discovery write with `contents: {}` would **erase** the "13 iron_ingot"
+    learned earlier; `contents = {}` is overloaded (
+    *unknown* vs *opened and empty*) and the write unconditionally stamps
+    `status: KNOWN`, `confidence: 1`; `source` is free text, not a state field.
+  - *Missing*: rung 2 has no query at all — `containersWithItem:226` filters on
+    known contents and no `findContainers:213` parameter carries `contentsKnown`.
+  - *Partial*: `refreshStatuses:1398` is called only by `hydrate:1405` (no
+    timer), so a long session never promotes anything to `stale` while
+    `findContainers` defaults to `includeStale: true`; and `STORAGE_BLOCKS:157`
+    is an exact-name list (`chest`, `trapped_chest`, `barrel`, `shulker_box`), so
+    dyed shulker boxes are invisible and the scan is capped at radius 32 with
+    `STORAGE_SCAN_PER_NAME = 24`.
+- Ownership assigned in the milestones: V0 the two-depth record + ladder read +
+  the non-destructive discovery write, V1 is rung 4, V2 makes the deposit path
+  climb the ladder instead of asking only the 5-minute runtime cache. New test
+  rows: the ladder ordering, a discovery write that never erases known contents,
+  a discovery row outliving an inspection TTL, and a live four-case chest test.
+
 ## [2026-10-06] feat | Riding as a passenger holds the follow order and resumes it
 
 - Gap closed after the mount-join commit: while the bot was a passenger with a
@@ -3515,6 +3558,47 @@ and tracked no weather at all.
   offered while carried; nothing acted, one `mount_ride_hold`, no `follow_lost`,
   then `follow_player` resumed) — 3/3; synthesis updated in
   [companions](wiki/companions.md) §2026-10-06.
+
+## [2026-10-06] feat | Discovery and inspection are two facts in the data model (V0)
+
+- `world-memory.mjs`: `rememberContainer` now takes a *write kind*. Without a
+  `contents` payload (or with `contentsKnown: false`) it is a **discovery**: it
+  updates `type`/`position`/`discoveredAt`/`lastSeenAt` and never touches
+  `contents`, `inspectedAt` or the `contains` edges. With a payload it is an
+  **inspection**, the only write that stores contents and re-materializes the
+  edges. The old default `contents = {}` conflated the two, so a discovery would
+  have erased the contents learned earlier via `_materializeContains` (which
+  invalidates every `contains` edge before rebuilding them).
+- `contents: null` = *not measured*, `{}` = *measured and empty*: four states are
+  now distinguishable (`describeContainer`, `CONTAINER_INSPECTION_STATE`:
+  `never_inspected` / `empty` / `contents` / `stale`).
+- Staleness is **computed on read** from `inspectedAt`/`discoveredAt`
+  (`containerStaleMs` 5 min, new `containerDiscoveryStaleMs` 6 h), so no timer and
+  no `hydrate` are needed for a container to stop being trusted;
+  `findContainers({ includeStale })` answers with the derived value and a status
+  already marked stale stays stale (staleness is monotone). `refreshStatuses`
+  remains for landmarks and as a convenience write.
+- New rung-2 query `containersToInspect({ from, limit, includeDiscoveryStale })`:
+  never inspected or inspection expired, ordered by distance.
+  `findContainers` also accepts `contentsKnown` and `needsInspection`.
+- `storage-blocks.mjs` replaces the adapter's exact-name whitelist with a matcher:
+  exact names plus families (`*_shulker_box`, so every dye colour) and the
+  extension points `addStorageBlockName` / `addStorageBlockFamily`.
+- `storage-ladder.mjs` holds the four-rung order (`known item` → `inspect
+  discovered` → `local scan` → `recon sweep`) as a pure decision with a `reason`
+  and a `blocked` list, so a caller that jumps to the sweep while a remembered
+  container could have answered is visible instead of implicit.
+- Tests: `tests/world-memory-container-facts.test.mjs` (json + sqlite) closes V0
+  with *"a later discovery never erases known contents"* and *"a stale inspection
+  never makes the discovery disappear"*; `tests/storage-ladder.test.mjs` (13
+  cases) and `tests/storage-blocks.test.mjs` cover the ladder and the matcher.
+  Full suite: 1621 pass, 0 fail.
+- Not yet wired (next step, deliberately after the model): nothing in the live
+  path *writes* a discovery (the only writer is still post-open in
+  `_setContainerContents:7052`), and `_depositTargetFor:7000` still reads only the
+  runtime cache instead of climbing the ladder.
+- Commit `0650877` on `docs/village-recon-roadmap`; wiki status updated in
+  [`docs/wiki/village-recon.md`](wiki/village-recon.md).
 
 ## [2026-10-06] feat | A human order suspends the running goal; the parent resumes revalidated
 
