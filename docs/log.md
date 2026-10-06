@@ -4082,3 +4082,34 @@ in the payload it is indistinguishable from a measurement.
   protection and the limits of the map".
 - Still open: the live rounds — the farm-order A/B and the four-case chest
   ladder — plus the memory-first read (`villageRegister`).
+
+## [2026-10-06] docs | Document the village recon end to end, from the bedrock notes to the collaudo
+
+- `BEDROCK.md` gains the `survey_village` row in the "Bedrock action status"
+  table (a bounded read-only sweep whose geometry is a configuration of the
+  general planner, three independent limits, three typed refusals distinct from
+  `truncated: true` + `stoppedBy`, a `village_survey` register for idempotence,
+  never digging and never touching an entity, `DIG_PROTECTED` as a global
+  invariant) and a new section "Village reconnaissance and the farm order
+  (update 06/10/2026)" that explains the two census inputs, why villagers are the
+  detector's evidence while livestock belongs to the pens, the memoised read
+  (`VILLAGE_RESCAN_MS`, `?force=1`), the honesty fields, the `plan.farm` chain
+  and the open live rows. The "Crop cycle" and "Still not implemented" bullets
+  were corrected: ripeness is read per cell (`cropMaturity`) and `milk_<animal>`
+  is implemented (only a *scheduled growth estimate* is still unmodelled).
+- [verification](wiki/verification.md) rows **47.54–47.57** add the collaudo for
+  the four landed slices (the village register, `survey_village`, the farm-order
+  chain, honesty + the `bed` protection bug), each with its offline evidence and
+  its residual live round.
+- [memory](wiki/memory.md) documents the two-fact container model
+  (`discoveredAt` vs `inspectedAt`/`contentsKnown`, the four states derived by
+  `describeContainer`, the stale verdicts computed on read with no periodic
+  `refreshStatuses()`, the throttled discovery pass `_surveyStorage` /
+  `_rememberStorageDiscovery`) and the `kind: village_survey` register
+  (`rememberVillageSurvey` / `villageSurvey`, chunk keys merged across passes,
+  the caller verifying the distance from the anchor).
+- [roadmap](wiki/roadmap.md) item 10 now records that the village side of M5/M6
+  grew into its own spec (V0–V5 landed, offline-tested) and that only the live
+  rows are open; [open questions](wiki/open-questions.md) no longer describes
+  `survey_village` as spec — it lists what the first live rows must show, for the
+  sweep, the census read and the farm order alike.

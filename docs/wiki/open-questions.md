@@ -521,8 +521,15 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
   walks there from memory with no scan, (2) only unopened chests known → it
   inspects the nearest, (3) nothing known in the area → a local scan that
   *persists* the rows, (4) only an empty local area → the sweep. It needs a
-  read-only round near the village (113, 73, 156) with no controller running; the
-  `survey_village` action (rung 4, `VILLAGE_SURVEY_*`) is still spec. See
+  read-only round near the village (113, 73, 156) with no controller running.
+  The rung-4 action is no longer spec: `survey_village` landed on 06/10
+  (`_surveyVillage`, three independent limits `VILLAGE_SURVEY_MS` /
+  `VILLAGE_SURVEY_CELLS` / `VILLAGE_SURVEY_MAX_MS`, a refusal distinct from a
+  truncation, and the `kind: village_survey` register for idempotence — 9 offline
+  cases), and so did the farm order (`@bot raccogli le carote` → `plan.farm`, a
+  chain that closes on a state delta — 10 offline cases). Both are waiting for
+  their first live row, and so is the census itself: `GET /observe.village` has
+  never been read against the real village. See
   [village-recon](village-recon.md).
 
 - **Deep Dark W0–W2: the model is offline, the world has nothing to test it

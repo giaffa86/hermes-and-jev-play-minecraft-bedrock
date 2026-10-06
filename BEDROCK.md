@@ -427,6 +427,7 @@ sudo docker cp hermes:/opt/data/runs /home/<ssh-user>/hermes-jev-bedrock/runs-fr
 | `craft_shears` | ⚠️ Needs live verification | Crafts `shears` from 2 iron ingots at the crafting table (offered when the recipe is present and a table is nearby). Not tested live on 03/10. |
 | `mount_<vehicle>` | ⚠️ Needs live verification | Mounts the nearest rideable of the requested type (boats, minecarts, `horse`/`donkey`/`mule`/`llama`/`nautilus`): selects an empty hand and sends `item_use_on_entity` `interact`; confirmed by the rider→vehicle link (`set_entity_link`, `Link.type` 1). |
 | `dismount` | ⚠️ Needs live verification | Dismounts the current vehicle via `player_action` `start_sneak`; confirmed by the link removal (`Link.type` 0). |
+| `survey_village` | ⚠️ Needs live verification | Bounded, read-only reconnaissance of the village around its detected anchor: walks the general exploration planner's spiral (`planExplorationSweep`, no second engine), censuses houses, plots, pens and containers, and writes the cells it actually walked into the `village_survey` register so the next pass — including one after a restart — skips them. Three independent limits (cooldown `VILLAGE_SURVEY_MS`, exploration budget `VILLAGE_SURVEY_CELLS`, execution budget `VILLAGE_SURVEY_MAX_MS`), first one reached wins; a mission that cannot start **refuses** with a typed code (`village_unknown`, `village_too_far`, `survey_cooldown`), while a mission that stops early reports `truncated: true` + `stoppedBy`. Never digs and never touches an entity (`DIG_PROTECTED` is a global invariant). The census itself is exposed by `/observe.village`; see the section below. |
 
 ### Riding and vehicles (update 03/10/2026)
 
@@ -475,8 +476,11 @@ unit-tested.
   `wheat`, `carrot`→`carrots`, `potato`→`potatoes`, `beetroot_seeds`→`beetroot`,
   `melon_seeds`/`pumpkin_seeds`→stems, `sweet_berries`, `nether_wart`) lives in
   `bedrock-survival.mjs` (`SEED_TO_CROP`). Crop blocks use the **server** names,
-  which are not always the Java ones (`beetroot`, singular, has no `beetroots`). Maturity (`growth` metadata) is not
-  yet distinguished: `mine_*` harvests whatever crop is present.
+  which are not always the Java ones (`beetroot`, singular, has no `beetroots`).
+  Maturity (`growth` metadata) is read per cell (`cropMaturity`): `harvest_<crop>`
+  offers itself only for a ripe, reachable crop, replants it from the seed in the
+  inventory, and a crop that would drop out of reach is refused whole
+  (`crop_not_mature`, `harvest_drop_unreachable`) instead of being broken.
 - **Farm animals**: `add_entity`/`set_entity_data` track passive animals; the
   flags metadata now exposes `baby`/`tempted`/`inlove` (bits 11/6/7),
   `tamed` (bit 28), `sheared` (bit 31) and `owner_eid` (key 5), exposed in
@@ -494,8 +498,53 @@ unit-tested.
   `tamed`/`trusting` flag, so no `tame_axolotl` action). `tame_<companion>`
   covers both food- and ride-based taming; `owner_eid` (key 5), `tamed` (flags
   bit 28) and `trusting` (flags_extended bit 1) are the confirmation signals.
-- **Still not implemented**: milk (bucket + cow), and mature-crop growth
-  detection. See `docs/wiki/roadmap.md`.
+- **Still not implemented**: mature-crop growth detection beyond the per-cell
+  read above (a *scheduled* growth estimate — "this plot is ripe in N minutes" —
+  is not modelled). Milk is implemented (`milk_<animal>`, bucket + cow). See
+  `docs/wiki/roadmap.md`.
+
+### Village reconnaissance and the farm order (update 06/10/2026)
+
+A village is a **site**, so it is worth reading once and remembering instead of
+re-deriving at every step. Two inputs reach the census: the bounded cell scan the
+adapter runs for this purpose (one `surveyBlocks` pass for the names that exist —
+the fence family is discovered there, never from a whitelist — plus a capped
+`findBlocks` per name: `bed`, the crop blocks and fences) and the general marker
+detector, so the verdict (`NOT_FOUND`/`CANDIDATE`/`CONFIRMED`), the evidence and
+the anchor cannot drift from `/observe.structures`. Villagers are the detector's
+evidence while livestock belongs to the pens: the two lists are different, and
+feeding the wrong one to the detector was why a real village could never be
+confirmed before 06/10.
+
+- **`/observe.village`** (and `observe().village`, memoized for
+  `VILLAGE_RESCAN_MS`, `?force=1` to re-read) exposes houses (beds with their
+  `occupied` bit, own containers, nearby doors), plots per crop family with
+  `ready`/`immature`/`unknown`, pens with adults/babies and a `fenced` flag, and
+the storage rows with what is known about each container.
+- **Every fact says how much of it was read**: `confidence` (the share of the
+  fact actually measured, never an estimate), `evidence` (the numbers behind it)
+  and `missing` (the named holes: `occupancy`, `door`, `container`, `ripeness`,
+  `fence`, `contents`). What is below a threshold does not vanish: it is counted
+  in `ignored` (`plots`, `animals`, `containers`), and `thresholds` + `limits`
+  travel in the payload so a reader never has to guess the rules.
+- **The farm order**: `@bot raccogli le carote` (or "mieti il grano e
+  rimpiantalo") is classified as `plan.farm = {crop, block, seed, word, replant,
+  store, field, before}` — crop family plus a farm verb, no LLM — and the
+  controller drives it against `/options` one bounded step at a time:
+  `collect_drop` → `harvest_<block>` (cap 8) → `plant_<seed>` (only if the
+  harvest did not replant) → `deposit_<crop>` (or `dump_inventory` for "il baule
+  più vicino"). The goal closes on a **state delta**: the container must have
+  grown *and* the backpack must not have (carrots already in the bag are not a
+  harvest). An order naming the crop while the bot holds it and no drop is on
+  the ground is a farm order, not the old pick-up order; a number ("raccogli 4
+  carote") still goes to the planner. See
+  [village reconnaissance](docs/wiki/village-recon.md) and
+  [human command](docs/wiki/human-command.md).
+- Offline: `tests/village-survey.test.mjs`, `tests/village-view.test.mjs`,
+  `tests/village-sweep.test.mjs`, `tests/village-sweep-action.test.mjs`,
+  `tests/village-honesty.test.mjs`, `tests/controller-farm-order.test.mjs`.
+  The live rounds (a sweep with a bed and farmland deliberately in the route,
+  the farm-order A/B, the four-case chest ladder) are still open.
 
 ### Trading (update 03/10/2026)
 

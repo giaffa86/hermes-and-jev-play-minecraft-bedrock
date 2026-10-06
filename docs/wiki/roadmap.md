@@ -455,7 +455,16 @@ companion, trade, social and fishing remain declared live-only gaps in the
     [world memory](memory.md)). M4 (block/entity search) and M5/M6 (structure and
     cavity detector, `GET /observe.structures`, `find_structure` searches) are
     done and live-verified (a real village at (113,73,156), the cavity at
-    (112,71,144)). Next: run M1 end-to-end on the BDS once the bot can travel
+    (112,71,144)). The village side of M5/M6 has since grown into its own spec
+    ([village recon](village-recon.md), V0–V5, code landed and offline-tested
+    06/10): a bounded census register (`observe().village` / `GET
+    /observe.village`, the `survey_village` sweep whose geometry is a
+    *configuration* of the general spiral planner and whose idempotence comes
+    from a `kind: village_survey` record), the two-fact container model with the
+    storage ladder, and the farm order (`plan.farm`) as a chain that closes on a
+    state delta — plus the honesty rule that every village fact carries its
+    `confidence`/`evidence`/`missing`. Only the live rows are still open. Next:
+    run M1 end-to-end on the BDS once the bot can travel
     (today the spiral waypoint is 96 blocks away and unreachable; M4, M2 and the
     detector work from where the bot stands), then the *deep* side of M6 (following
     a cave system beyond the loaded radius; the Deep Dark rule has never been

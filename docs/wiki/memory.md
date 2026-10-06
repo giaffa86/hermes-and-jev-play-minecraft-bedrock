@@ -73,7 +73,7 @@ world_memory (
 ```jsonc
 {
   "id": "sheep_farm_123_64_-87",
-  "kind": "landmark",          // landmark | structure | resource_site | portal | entity | container | home
+  "kind": "landmark",          // landmark | structure | resource_site | portal | entity | container | home | village_survey
   "type": "sheep_farm",        // the specific kind (village, ancient_city, nether_portal, chest, ...)
   "dimension": "overworld",
   "position": { "x": 123, "y": 64, "z": -87 },
@@ -195,7 +195,36 @@ utente (una *missione*) ai nodi del mondo **senza sporcarli**.
 > resource:coal_ore`) materialized in SQLite.
 
 - Landmarks: `rememberLandmark`, `findLandmarks`, `nearestLandmark`, `hasLandmark`.
-- Containers: `rememberContainer`, `findContainers`, `containersWithItem`.
+- Containers: `rememberContainer`, `findContainers`, `containersWithItem`,
+  `containersToInspect`. Since V0 (06/10/2026) a container carries **two
+  separate facts**: `discoveredAt` (the position is real) and `inspectedAt` +
+  `contentsKnown` (what is inside was actually read). `rememberContainer` is an
+  *inspection* when it is given a payload and a *discovery* otherwise; a
+  discovery only refreshes `type`/`position`/`discoveredAt`/`lastSeenAt` and
+  never touches `contents`, `inspectedAt` or the `contains` edges, so walking
+  past a chest cannot erase what an earlier read learned (before, `{}` and
+  "never opened" looked the same and the only writer was the read itself).
+  `describeContainer(record, {...})` derives the four states — never inspected /
+  inspected and empty / inspected with contents / contents stale — and the stale
+  verdicts (`inspectionStale`, `discoveryStale`) are computed **on read** from
+  the timestamps: there is no periodic `refreshStatuses()` job whose clock could
+  disagree with the query. The adapter publishes a throttled discovery pass
+  (`_surveyStorage`, `_rememberStorageDiscovery`, `STORAGE_DISCOVERY_RESCAN_MS`
+  60000 / `STORAGE_DISCOVERY_RADIUS` 32) that records the storage blocks it
+  walks past with `contentsKnown: false`; that is what gives rung 2 of the
+  storage ladder (`containersToInspect`, `planStorageSearch` in
+  `storage-ladder.mjs`) something to answer — see
+  [village recon](village-recon.md).
+- **Village surveys** (`kind: village_survey`): `rememberVillageSurvey`,
+  `villageSurvey({ near, radius, dimension })` — one record per censused site
+  (spatial id `village_survey_x_y_z`) holding the **chunk keys** the bounded
+  sweep actually reached (`cells`, deduplicated and merged with the previous
+  pass) plus a `censuses` counter. The register, not the chunk index, is what
+  makes `survey_village` idempotent: `visitedChunks` logs a one-block-wide trail
+  and would make a first pass over a 48-block radius look complete. The caller
+  verifies the distance from the anchor before reusing a record, because two
+  villages can sit a few dozen blocks apart and their cells are not
+  interchangeable — see [village recon](village-recon.md).
 - **Resource sites** (`kind: resource_site`): `rememberResourceSite`,
   `findResources({ contains })` — ores observed near the bot, deduped per chunk
   (`observations: ['diamond_ore', 'iron_ore', ...]`). The site's `position` is the
