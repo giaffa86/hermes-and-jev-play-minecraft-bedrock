@@ -23,6 +23,7 @@ import { farmOptionKeys } from './bedrock-survival.mjs';
 import { constructionResponse } from './construction-api.mjs';
 import { createWorldMemory } from './world-memory.mjs';
 import { createRunLedger } from './run-ledger.mjs';
+import { runDir, runsRoot } from './run-paths.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   evaluateSurvival, summarizeSurvival, loadSurvivalRules,
@@ -34,6 +35,9 @@ console.log('BEDROCK HARNESS VERSION 2');
 const API_PORT = +(process.env.API_PORT || 3077);
 const API_HOST = process.env.API_HOST || '127.0.0.1';
 const RUN = process.env.RUN_ID || 'run';
+// Il ledger di un run deve essere leggibile dall'host anche quando il harness
+// gira in un container: `RUNS_DIR` punta al volume montato (run-paths.mjs).
+const RUN_DIR = runDir(RUN);
 
 // Survival Intelligence Layer: regole, skill e grafo di progressione caricati
 // una sola volta e validati subito (un file rotto deve fallire all'avvio).
@@ -43,24 +47,24 @@ const progressionGraph = await loadProgression(new URL('./knowledge/progression.
 const PROGRESSION_GOAL = process.env.PROGRESSION_GOAL || null;
 console.log(`survival layer ready: rules=${survivalRules.length} skills=${gameplaySkills.size} milestones=${Object.keys(progressionGraph.milestones).length}`);
 
-mkdirSync(`runs/${RUN}`, { recursive: true });
+mkdirSync(RUN_DIR, { recursive: true });
 // Il nome dell'evento resta in `type`: il payload può portare un `type` (tipo
 // dell'entità, canale chat) che altrimenti lo sovrascriverebbe.
 // Un payload può contenere BigInt (metadata, runtime id): JSON.stringify li rifiuta
 // e l'eccezione, sollevata dentro l'handler di un pacchetto, uccideva il processo
 // (live 04/10 con BEDROCK_META_LOG=1). Il replacer li serializza come stringhe.
 const bigintSafe = (key, value) => (typeof value === 'bigint' ? value.toString() : value);
-const eventLog = (type, data) => appendFileSync(`runs/${RUN}/events.jsonl`, JSON.stringify({ t: Date.now(), ...data, type }, bigintSafe) + '\n');
+const eventLog = (type, data) => appendFileSync(`${RUN_DIR}/events.jsonl`, JSON.stringify({ t: Date.now(), ...data, type }, bigintSafe) + '\n');
 // Ledger della run (06/10): un driver che guida `/act` a mano non lasciava nessun
 // numero — "7 minuti e 17 secondi di lavoro attivo" non era verificabile su nessun
 // file. Una riga append-only per tentativo sopravvive a un kill; gli aggregati
 // finiscono in `summary.json` allo shutdown e su `GET /stats`.
-const ledger = createRunLedger(`runs/${RUN}`);
+const ledger = createRunLedger(RUN_DIR);
 // R3: un cantiere redstone lascia un record per run, come le skill verificabili
 // (`skills.jsonl`): l'esito di un circuito si legge dal file e non dalla memoria
 // di chi lo ha lanciato.
 const circuitLog = (key, report) => {
-  appendFileSync(`runs/${RUN}/circuits.jsonl`, JSON.stringify({ t: Date.now(), action: key, ...report }) + '\n');
+  appendFileSync(`${RUN_DIR}/circuits.jsonl`, JSON.stringify({ t: Date.now(), action: key, ...report }) + '\n');
   eventLog('circuit', { action: key, id: report.id, ok: report.ok, error: report.error ?? null });
 };
 
@@ -118,7 +122,7 @@ let shuttingDown = false;
 const shutdownSignal = new AbortController();
 let connectionWorker = null;
 
-const MEMORY_DIR = process.env.MEMORY_DIR || 'runs/memory';
+const MEMORY_DIR = process.env.MEMORY_DIR || `${runsRoot()}/memory`;
 // Il censimento rilegge gli stessi blocchi a ogni giro: senza finestra di
 // deduplica il log delle osservazioni cresce di ~280 righe al minuto
 // (misurato live il 03/10: 5523 letture identiche su 5654).
@@ -748,7 +752,7 @@ server = createServer(async (req, res) => {
       const started = Date.now();
       const result = await adapter.executeAction(key, { position, maxCount });
       ledger.record({ key, ok: result?.ok === true, ms: Date.now() - started, error: result?.error ?? null });
-      if (key?.startsWith('construction_')) appendFileSync(`runs/${RUN}/construction.jsonl`, JSON.stringify({ at: Date.now(), action: key, result, construction: adapter.construction.view() }) + '\n');
+      if (key?.startsWith('construction_')) appendFileSync(`${RUN_DIR}/construction.jsonl`, JSON.stringify({ at: Date.now(), action: key, result, construction: adapter.construction.view() }) + '\n');
       // Ogni tentativo finisce nel registro: anche i rifiuti prima del cantiere
       // (materiali mancanti, sito occupato) servono a leggere la run dopo.
       if (result?.circuit) circuitLog(key, result.circuit);

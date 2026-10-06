@@ -11,13 +11,16 @@ import mineflayer from 'mineflayer';
 import pf from 'mineflayer-pathfinder';
 import {Vec3} from 'vec3';
 import flyingSquid from 'flying-squid';
+import { runDir } from './run-paths.mjs';
 
 const {pathfinder, Movements, goals} = pf;
 const VERSION = '1.16.5', MC_PORT = +(process.env.MC_PORT || 25599), API_PORT = +(process.env.API_PORT || 3077), RUN = process.env.RUN_ID || 'run';
-mkdirSync(`runs/${RUN}`, {recursive: true});
+// `RUNS_DIR` per consegnare il ledger all'host (run-paths.mjs).
+const RUN_DIR = runDir(RUN);
+mkdirSync(RUN_DIR, {recursive: true});
 // Il nome dell'evento resta in `type`: il payload può portare un `type` che
 // altrimenti lo sovrascriverebbe.
-const log = (type, data) => appendFileSync(`runs/${RUN}/events.jsonl`, JSON.stringify({t: Date.now(), ...data, type}) + '\n');
+const log = (type, data) => appendFileSync(`${RUN_DIR}/events.jsonl`, JSON.stringify({t: Date.now(), ...data, type}) + '\n');
 
 // ---- server -------------------------------------------------------------------------------
 import {readFileSync} from 'node:fs';
@@ -30,7 +33,7 @@ try {
 }
 const serv = flyingSquid.createMCServer({
   ...defaults, 'online-mode': false, port: MC_PORT, version: VERSION, gameMode: 0, difficulty: 0, logging: false,
-  'view-distance': 6, worldFolder: `runs/${RUN}/world`, generation: {name: 'diamond_square', options: {worldHeight: 80, seed: 424242}},
+  'view-distance': 6, worldFolder: `${RUN_DIR}/world`, generation: {name: 'diamond_square', options: {worldHeight: 80, seed: 424242}},
 });
 await new Promise(r => serv.on('listening', r));
 console.log('server listening', MC_PORT);

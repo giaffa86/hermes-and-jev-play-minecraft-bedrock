@@ -5,8 +5,8 @@ it cost** without asking anybody's memory. Every number a human is told about a
 run (`"circa 7 minuti"`, `"25 azioni"`, a cost in dollars) must come from a file
 read in the same turn, or from `GET /stats` on the live harness.
 
-Sources: `run-ledger.mjs`, `bedrock-harness.mjs`, `controller.mjs`,
-`tools/run-facts.mjs`, `tests/run-ledger.test.mjs`.
+Sources: `run-ledger.mjs`, `run-paths.mjs`, `bedrock-harness.mjs`, `controller.mjs`,
+`tools/run-facts.mjs`, `tests/run-ledger.test.mjs`, `tests/run-paths.test.mjs`.
 
 ## Why this exists
 
@@ -48,6 +48,29 @@ component every driver must pass through.
   06/10 diamond controller run has no `cost` field, so its `totalCost` stayed 0);
   an agent session driving the API by hand spends tokens outside the harness
   entirely, and those must be read from that agent's own session log.
+
+## Where the files land: `RUNS_DIR`
+
+The harness writes under `runs/<RUN_ID>` **relative to its own working
+directory**, and in the deployed setup that directory is inside the harness
+container (`hermes-jev-bedrock`, `/app/runs`) — a place nobody on the host can
+read. `run-paths.mjs` resolves the path instead: `RUNS_DIR` (default `runs`) is
+the root, `RUN_ID` the subdirectory (`runDir()`), and every entry point uses it
+(`bedrock-harness.mjs`, `controller.mjs`, `harness.mjs`, the `explore-*.mjs`
+drivers).
+
+Mount a host directory on `RUNS_DIR` and the ledger of a run is on the host the
+moment it is written; without the mount the numbers still exist, but only inside
+the container that produced them — which is the whole failure mode this page is
+about. The controller runs on the host and reads the same variable, so a run and
+its ledger stay in one directory even when the harness is elsewhere.
+
+```bash
+# host (the controller side), the same root the container has mounted
+RUNS_DIR=/srv/hermes-runs node tools/run-facts.mjs diamond-20261006-4
+# container
+RUN_ID=diamond-20261006-4 RUNS_DIR=/app/runs node bedrock-harness.mjs
+```
 
 ## Using it
 

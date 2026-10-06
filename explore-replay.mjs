@@ -18,8 +18,9 @@ const X = process.env.X != null ? Number(process.env.X) : null;
 const Z = process.env.Z != null ? Number(process.env.Z) : null;
 const MAX_STEPS = +(process.env.MAX_STEPS || 200);
 
-mkdirSync(`runs/${RUN}`, { recursive: true });
-const log = (type, data) => appendFileSync(`runs/${RUN}/explore-replay.jsonl`, JSON.stringify({ t: Date.now(), type, ...data }) + '\n');
+const RUN_DIR = runDir(RUN);
+mkdirSync(RUN_DIR, { recursive: true });
+const log = (type, data) => appendFileSync(`${RUN_DIR}/explore-replay.jsonl`, JSON.stringify({ t: Date.now(), type, ...data }) + '\n');
 
 const post = async (path, payload) => (await fetch(`${HARNESS}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload ?? {}) })).json();
 const get = async (path) => (await fetch(`${HARNESS}${path}`)).json();

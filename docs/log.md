@@ -1,5 +1,27 @@
 # Log
 
+## [2026-10-06] fix | The run ledger can live on the host (`RUNS_DIR`)
+
+The diamond mission's ledger was written inside the harness container
+(`/app/runs/demo`), so the evidence of the run existed only where the run had
+happened: `runs/demo` on the host holds test fixtures, and the numbers could be
+checked only by reading a copy of the container's files. `runs/<RUN_ID>` was
+hardcoded in every entry point (`bedrock-harness.mjs`, `controller.mjs`,
+`harness.mjs`, the three `explore-*.mjs` drivers).
+
+`run-paths.mjs` now resolves it: `RUNS_DIR` (default `runs`) plus `RUN_ID`, with
+`runsRoot()` feeding `MEMORY_DIR`'s default (`<root>/memory`). Mount a host
+directory on `RUNS_DIR` and a run's `actions.jsonl`/`summary.json` are readable
+from the host as they are written; the controller reads the same variable, so the
+harness ledger and `controller.jsonl` land in one directory even though the
+harness runs in a container. Defaults are unchanged when `RUNS_DIR` is unset.
+
+`node --test tests/*.test.mjs` → 1755 pass; `tests/run-paths.test.mjs` has two
+cases (the root and the run directory follow `RUNS_DIR`; a ledger written through
+it reads back with `readRunFacts` → `verifiable: true`, `busy` counted as a
+refusal) and the existing ledger tests are untouched. Documented in
+[observability](wiki/observability.md).
+
 ## [2026-10-06] fix | `go_home` returns in hops when no direct path exists
 
 The second of the eight gaps the diamond mission exposed: from the mine bottom

@@ -42,6 +42,7 @@ import {resolveQuestionIntent, DEFAULT_INTENT_TIMEOUT_MS, DEFAULT_INTENT_MIN_P} 
 import {composeChatReply, chatLlmConfig, compactChatFacts, createChatMemory} from './chat-llm.mjs';
 import {chatLangConfig, t, languageName, LANGS} from './chat-i18n.mjs';
 import {narrateGoal, DEFAULT_NARRATE_COOLDOWN_MS} from './chat-narration.mjs';
+import {runDir} from './run-paths.mjs';
 import {systemOneDecide} from './system-one.mjs';
 import {
   evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
@@ -266,9 +267,13 @@ const SURVIVAL_IDLE_COOLDOWN_MS = +(process.env.SURVIVAL_IDLE_COOLDOWN_MS || 300
 const EMERGENCY = process.env.EMERGENCY == null ? SESSION : /^(1|on|true|yes)$/i.test(process.env.EMERGENCY);
 const EMERGENCY_COOLDOWN_MS = +(process.env.EMERGENCY_COOLDOWN_MS || DEFAULT_EMERGENCY_COOLDOWN_MS);
 
-mkdirSync(`runs/${RUN}`, {recursive: true});
-const SKILLS_LOG = `runs/${RUN}/skills.jsonl`;
-const log = (type, data) => appendFileSync(`runs/${RUN}/controller.jsonl`, JSON.stringify({t: Date.now(), type, ...data}) + '\n');
+// `RUNS_DIR` per consegnare il ledger all'host anche quando il harness gira in un
+// container (run-paths.mjs): il controller gira sull'host e legge la stessa
+// variabile, così run e ledger restano nella stessa cartella.
+const RUN_DIR = runDir(RUN);
+mkdirSync(RUN_DIR, {recursive: true});
+const SKILLS_LOG = `${RUN_DIR}/skills.jsonl`;
+const log = (type, data) => appendFileSync(`${RUN_DIR}/controller.jsonl`, JSON.stringify({t: Date.now(), type, ...data}) + '\n');
 const api = async (method, path, body) => {
   const r = await fetch(HARNESS + path, {method, body: body ? JSON.stringify(body) : undefined, headers: {'Content-Type': 'application/json', Connection: 'close'}});
   return r.json();
@@ -290,7 +295,7 @@ const publishPlan = async plan => {
 // nello stesso formato dei repository della world memory (kind: 'goal') in una
 // directory separata da quella dell'harness, così i due processi non competono
 // sullo stesso file.
-const goalStore = new JsonMemoryRepository({dir: `runs/${RUN}/goals`, logger: null}).load();
+const goalStore = new JsonMemoryRepository({dir: `${RUN_DIR}/goals`, logger: null}).load();
 const goalManager = createGoalManager({store: goalStore}).hydrate();
 const enterState = (state, extra = {}) => {
   log('session_state', {state, runningGoal: goalManager.current?.id ?? null, ...extra});

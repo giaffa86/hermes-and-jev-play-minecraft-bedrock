@@ -13,8 +13,9 @@ const RUN = process.env.RUN_ID || 'explore';
 const TARGET = process.env.TARGET || process.env.GOAL || 'cherry grove';
 const MAX_STEPS = +(process.env.MAX_STEPS || 200);
 
-mkdirSync(`runs/${RUN}`, { recursive: true });
-const log = (type, data) => appendFileSync(`runs/${RUN}/explore.jsonl`, JSON.stringify({ t: Date.now(), type, ...data }) + '\n');
+const RUN_DIR = runDir(RUN);
+mkdirSync(RUN_DIR, { recursive: true });
+const log = (type, data) => appendFileSync(`${RUN_DIR}/explore.jsonl`, JSON.stringify({ t: Date.now(), type, ...data }) + '\n');
 
 const post = async (path, payload) => (await fetch(`${HARNESS}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload ?? {}) })).json();
 const get = async (path) => (await fetch(`${HARNESS}${path}`)).json();
