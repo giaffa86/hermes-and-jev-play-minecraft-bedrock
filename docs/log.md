@@ -3388,3 +3388,43 @@ and tracked no weather at all.
 - Recorded in [index](index.md) (wiki + raw tables) and
   [sources](sources.md); the open questions from the spec go to
   [open-questions](wiki/open-questions.md) when the implementation starts.
+
+## [2026-10-06] ingest | Village census reads the world memory, not only the radius
+
+- Operator question on the V0–V5 spec: *"sfrutta la memory per il censimento?"*
+  Answer: in the baseline, no — the memory is written and then not read, and the
+  spec was sensor-first. Fixed in
+  [`raw/VILLAGE_RECON_ROADMAP.md`](raw/VILLAGE_RECON_ROADMAP.md) (new section
+  "Register vs sensor (the memory contract)") and in
+  [`wiki/village-recon.md`](wiki/village-recon.md) (new **Gap 3** + section
+  "Register or sensor?").
+- **What the code actually does** (verified): writers are all called —
+  `rememberStructure` (`bedrock-adapter.mjs:1306`, inside `_surveyStructures`),
+  `rememberContainer:7057` (on every open), `rememberEntity:1251`,
+  `rememberResourceSite:1237`, `rememberLandmark:749`/`:12223`,
+  `markChunkVisited` (~`:1257`) — while readers with a production caller are only
+  three: `scanStructureTarget` (`bedrock-harness.mjs:78`, live survey ∪
+  `findLandmarks({kind:'structure'})`, explicitly so a landmark survives a
+  restart, but only on the `find_structure` path), `_rememberedStorage:7183` +
+  `_rememberedContainerFor:7207` for `take_*`, and `visitedChunks`
+  (`bedrock-harness.mjs:508`/`:609`, the explore route). `findEntities:449` is
+  read by tests only; `unexploredFrontier` (`world-memory.mjs:512`) has **no**
+  production caller; `observe()` publishes a runtime field
+  (`this.structures`, 60 s TTL `STRUCTURE_RESCAN_MS:233`) instead of the memory.
+- **Spec changes**: V0's deliverable is now the read path —
+  `villageRegister({near, dimension, includeStale})` merging remembered facts
+  (`findLandmarks` for houses, `resource_site` for plots, `findEntities` for pens
+  — the first production reader of `rememberEntity` — `findContainers`/
+  `containersWithItem` for storage) with the live radius, each row carrying
+  `source: 'memory' | 'live'`, `status`, `observedAt`, `verifiedAt`; the restart
+  check is an explicit acceptance criterion (a just-restarted harness must still
+  name the village and its plots from memory). V1 plans its route from
+  `visitedChunks` + `unexploredFrontier` instead of a blind ring. V2 asks for
+  `known` records only, because `findContainers` defaults to
+  `includeStale: true` (`world-memory.mjs:213`) and `_rememberedStorage` tolerates
+  stale rows — acceptable for an explicit `take_*`, not for a deposit target.
+  New test row `tests/village-register.test.mjs`; new risk 9 (freshness is per
+  fact, so a half-finished sweep must not look like one village-wide rescan).
+- Rule recorded for the whole roadmap: **the memory is the register, the survey
+  is the sensor** — a village fact comes from a record with a status or from a
+  fresh measurement that immediately becomes one, never from the model.

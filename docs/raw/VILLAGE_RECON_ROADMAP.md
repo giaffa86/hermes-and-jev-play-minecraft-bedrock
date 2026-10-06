@@ -53,14 +53,17 @@ one **order semantic**. Everything below was read from the code, not recalled.
    around the bot (radius 48, budgeted), throttled by `STRUCTURE_RESCAN_MS`
    (`bedrock-adapter.mjs:233`, default 60 s), `STRUCTURE_RADIUS:234` (48) and
    `STRUCTURE_SURVEY_LIMIT:235` (20000).
-4. **Memory already has the record kinds.** `world-memory.mjs:19`
-   `MEMORY_STATUS` (`known`/`stale`/`invalid`), `:29` `VECTOR_KINDS` already
-   includes `container`, `entity`, `resource_site`, `:36`
-   `OBSERVATION_CONCEPT_KINDS` maps `contains → resource` and `is_a →
-   structure`. Writers exist: `rememberStructure:378`, `rememberResourceSite:332`,
-   `rememberEntity:426`, `rememberContainer:174`, `observe:837`, and the read side
-   `findContainers:213` / `containersWithItem:226` (ordered by distance from a
-   point, with `includeStale` left to the caller).
+4. **Memory already has the record kinds — but the census does not read them
+   back.** `world-memory.mjs:19` `MEMORY_STATUS` (`known`/`stale`/`invalid`),
+   `:29` `VECTOR_KINDS` already includes `container`, `entity`, `resource_site`,
+   `:36` `OBSERVATION_CONCEPT_KINDS` maps `contains → resource` and `is_a →
+   structure`. The writers all exist (`rememberStructure:378`,
+   `rememberResourceSite:332`, `rememberEntity:426`, `rememberContainer:174`,
+   `observe:837`) and are called from the adapter, and the read side
+   (`findLandmarks:146`, `findContainers:213`, `containersWithItem:226`,
+   `findEntities:449`, `findResources:363`) exists too — but, as §"Register vs
+   sensor" shows, almost nobody reads it: the *published* census is rebuilt from
+   the loaded radius every time.
 5. **Container contents survive restarts, but only for taking.** Opening a
    container persists the contents through
    `bedrock-adapter.mjs:7056` → `rememberContainer`, and `_rememberedStorage`
@@ -106,6 +109,13 @@ one **order semantic**. Everything below was read from the code, not recalled.
     with carrots is at (x,y,z)". `_findBeds` and `_nearbyFarmAnimals` are
     point-in-time views of the loaded radius, recomputed on demand, and never
     written as a village fact.
+11. **There is no village read path.** `observe()` publishes `structures` (a
+    runtime field, 60 s TTL), `bed`/`farmAnimals` (recomputed on demand) and the
+    container cache — never the memory. The nearest thing to a village query is
+    `scanStructureTarget` (`bedrock-harness.mjs:78`), which merges the live
+    survey with `findLandmarks({kind: 'structure', type})` so a landmark
+    survives a restart — but only on the `find_structure` mission path. There is
+    no `villageRegister(...)` to ask "what do we know about the village?".
 
 ### Game facts this roadmap must model
 
@@ -122,6 +132,53 @@ the deployed Bedrock build before it is trusted.
   purpose, and they are **not** ours to break.
 - Animals breed in pairs of adult, fed, same species, ~1 min cooldown; the
   census must therefore report **adults vs babies**, not just counts.
+
+## Register vs sensor (the memory contract)
+
+The baseline **writes to the memory more than it reads from it**: every writer
+is called, and almost every reader has no production caller. The census this
+roadmap builds must be published **from the memory**, with the survey acting as
+the sensor that renews it. Today, precisely:
+
+| Fact | Written by | Read back by |
+|---|---|---|
+| structure (incl. `village`) | `bedrock-adapter.mjs:1306`, inside `_surveyStructures` | `bedrock-harness.mjs:78` `scanStructureTarget` — live survey ∪ `memory.findLandmarks({kind:'structure', type})`, **explicitly so a landmark survives a restart**, but only on the `find_structure` mission path |
+| container contents | `bedrock-adapter.mjs:7057` on every open | `_rememberedStorage:7183` + `_rememberedContainerFor:7207` for `take_*` (each row carries `rememberedAt`) |
+| visited chunks (+ biome) | `markChunkVisited` at the end of a scan, `bedrock-adapter.mjs:~1257` | `bedrock-harness.mjs:508` and `:609` via `visitedChunks` (the explore route); `unexploredFrontier:512` is the API for the same job and has **no production caller** |
+| resource site (ore / gather) | `bedrock-adapter.mjs:1237` | `remembered-resource-sites.mjs:52`/`:99` (`findResources`) → the remembered gather route |
+| rideable entity | `bedrock-adapter.mjs:1251` | **nothing**: `findEntities:449` is read by tests only |
+| home / spawn landmark | `bedrock-adapter.mjs:749` / `:12223` | `nearestLandmark`, plus the home and exploration paths |
+
+Two consequences are part of the design, not tuning:
+
+1. **The read path is the deliverable, not the write path.** The bot writes down
+   what it sees and then forgets to consult it: a village detection from
+   yesterday is in the database and the census still re-derives everything from
+   the loaded radius (`STRUCTURE_RESCAN_MS` = 60 s, `bedrock-adapter.mjs:233`).
+   V0 therefore adds `villageRegister({near, dimension, includeStale})`, the
+   **memory-first** read that merges remembered facts with the live view and
+   says which is which (`source: 'memory' | 'live'`, `status`, `observedAt`,
+   `verifiedAt`); the sweep (V1) renews what is `stale` instead of re-measuring
+   what is already `known`.
+   - the pen census is the first production reader of `findEntities`
+     (`rememberEntity:426` already records rideables, `:1251`): a pen stored as
+     an entity record survives a restart, a live `_nearbyFarmAnimals` census does
+     not;
+   - the plot is a `resource_site` (`rememberResourceSite:332`, id
+     `plot_<crop>_x_y_z`), which is the *same* record kind
+     `remembered-resource-sites.mjs` already turns into a gather route — so a
+     plot census feeds the existing chore path instead of duplicating it.
+2. **The staleness default is a trap.** `findContainers` defaults to
+   `includeStale: true` (`world-memory.mjs:213`) and `_rememberedStorage:7183`
+   filters only on “contents > 0” plus reachability — so a **stale** chest is
+   already good enough to be taken from. That is defensible for an explicit
+   `take_*` (the bot walks there and the read re-verifies), but it must never be
+   inherited by a deposit target (V2) or by a plot census (V0/V4): the register
+   carries the status, and the tolerance stays an explicit caller decision.
+
+Rule for the whole roadmap: **the memory is the register, the survey is the
+sensor.** A village fact never comes from the model; it comes either from a
+record with a status, or from a fresh measurement that immediately becomes one.
 
 ## Proposed vocabulary (closed loaders, per convention)
 
@@ -202,30 +259,61 @@ harness still decides which of the three steps is legal *now*.
   view and expose `GET /observe.village` (additive; `observe().village`), always
   with `checked: true` when a survey ran, so an empty village is not confused
   with "not looked".
+- **Memory-first read (the actual deliverable).** A `villageRegister({near,
+  dimension, includeStale, limit})` read that answers from WorldMemory first and
+  falls back to the live radius, merging the two with an explicit `source`:
+  - houses ← `findLandmarks({kind: 'structure', type: 'village'})` + the live
+    survey, the same union `scanStructureTarget` (`bedrock-harness.mjs:78`)
+    already performs for `find_structure`;
+  - plots ← `findResources({type: 'plot'})` / `resource_site` records (the kind
+    `remembered-resource-sites.mjs:52` already routes to a gather step);
+  - pens ← `findEntities:449` (**the first production reader** of the records
+    `rememberEntity:426` already writes at `bedrock-adapter.mjs:1251`) plus the
+    live `_nearbyFarmAnimals:11581`;
+  - storage ← `findContainers:213` / `containersWithItem:226`, plus the runtime
+    `_cachedContainers:7041` — and **never with the `includeStale: true`
+    default** (`world-memory.mjs:213`): the register carries `status` and the
+    caller decides what it tolerates.
+  Each row keeps `status`, `observedAt` (`lastSeenAt`) and `verifiedAt`, so the
+  payload can say "known, measured 3 minutes ago" instead of implying freshness.
 - Every detection writes `plot_<crop>_x_y_z` + the `is_a`/`contains`
-  observations, and remembers the containers it saw with their contents.
+  observations, and remembers the containers it saw with their contents — i.e.
+  the same facts the read path above consumes, so the register is populated by
+  the very sweep that measures it.
 
 **Test**: `tests/village-survey.test.mjs` — a synthetic histogram with 30 beds in
 three rooms yields three houses, not one blob; 4 cells of carrots are a plot and
 3 are not; an enclosure with two adult cows and a calf is one pen with
 `adults: 2, babies: 1`; a village with no bell still passes `minScore`
 (the existing rule) and reports `missing: bell (0/1)`; an empty input returns
-empty arrays and `checked: true`.
+empty arrays and `checked: true`. Plus the memory half of the same file — a
+**populated memory with no live survey** still yields the houses/plots/pens
+(`source: 'memory'`, `status: 'known'`), an old record is reported `stale`
+rather than dropped, a live fact wins over a remembered one at the same position,
+and `findEntities` is genuinely exercised (the pen survives a restart).
 
 **Accettazione**: live `GET /observe.village?force=1` in the known village
 returns ≥ 1 house that contains the beds the detector already counted (30), at
 least one plot per crop actually visible in `/observe.nearby`, and at least one
 storage entry with a position; the payload never contradicts
-`GET /observe.structures` on the same survey.
+`GET /observe.structures` on the same survey. Then the **restart check**: with
+`STRUCTURE_RESCAN_MS` at its default and the harness just restarted,
+`GET /observe.village` (no `force`) still names the village and its plots from
+memory with `source: 'memory'` — the census must not be empty just because the
+runtime cache is.
 
 ### V1 — The sweep (bounded, read-only reconnaissance)
 
 **Deliverable**
 
-- `survey_village` action: a bounded route that visits the **unscanned** cells
-  near the anchor (reusing `markChunkVisited`/the chunk index so a second sweep
-  is cheap), scanning per cell and writing facts, with typed refusals
-  `village_too_far` and `survey_budget_exhausted` instead of an unbounded walk.
+- `survey_village` action: a bounded route over the cells that are **not already
+  known**: the visited-chunk index (`visitedChunks`, read in production at
+  `bedrock-harness.mjs:508`/`:609`) crossed with the register (V0) tells it what
+  is unknown, and `unexploredFrontier` (`world-memory.mjs:512`, today with no
+  production caller) gives the cells that were never scanned — so a second sweep
+  is cheap and a sweep after a restart is not a re-measure from zero. Typed
+  refusals `village_too_far` and `survey_budget_exhausted` instead of an
+  unbounded walk.
 - Hard bounds: `VILLAGE_SURVEY_MS` throttle, `VILLAGE_SURVEY_CELLS` budget, and
   never a dig, never an entity interaction, never a villager. Respect
   `DIG_PROTECTED` (beds, farmland, fences and crops stay intact) and the rule
@@ -253,6 +341,12 @@ action in `runs/<run>/actions.jsonl` with its duration.
   holds the item, then the nearest **reachable** one, then a live scan. A
   remembered container is re-read on the spot before the deposit is claimed
   (the same rule `_rememberedStorage` already documents for taking).
+- **The status filter is explicit here, not inherited.** `findContainers`
+  defaults to `includeStale: true` (`world-memory.mjs:213`) and
+  `_rememberedStorage:7183` tolerates stale records — fine for an explicit
+  `take_*`, wrong for a deposit target. The deposit path asks for `known`
+  records only, treats a `stale` one as a *candidate to verify*, and never walks
+  to a chest on the strength of an old row alone.
 - Staleness is honest: a fact older than `VILLAGE_MEMORY_TTL_MS` is `stale`, and
   a `stale` target is verified (`read_container`) before it is used; if the
   verification fails the deposit falls back to the nearest live container.
@@ -317,7 +411,10 @@ stored and nothing ripe closes as "nothing to do" instead of looping.
   behind an operator decision).
 - Documented limits in the payload and in the wiki: the map is a **histogram
   plus clusters over the loaded radius**, not a voxel map; the sweep only sees
-  what was walked; a village the bot has never visited has no facts at all.
+  what was walked; a village the bot has never visited has no facts at all. And
+  the register is a **cache of a changing world**, so every row states when it
+  was measured instead of implying it is still true (`memory.md` already calls
+  this `known`/`stale`/`invalid`).
 
 **Test**: `tests/village-honesty.test.mjs` — a stale record is never used
 without verification; `checked: false` is impossible on a payload that reports
@@ -355,6 +452,7 @@ timestamp truthfully.
 | Level | What | File |
 |---|---|---|
 | pure | Clustering (houses, plots, pens), thresholds, `missing`, empty input | `tests/village-survey.test.mjs` |
+| unit | **Register read**: memory-first without a live survey, `source`/`status`/`observedAt`, live beats remembered, `findEntities` pens survive a restart | `tests/village-register.test.mjs` |
 | pure | Sweep budget, second-pass idempotence, protected-block detour | `tests/village-sweep.test.mjs` |
 | unit | Deposit target from memory vs cache, stale re-read, fallback | `tests/bedrock-storage-memory.test.mjs` |
 | unit | Farm-order classification vs the collect path, chain closing on delta | `tests/controller-farm-order.test.mjs` |
@@ -396,6 +494,12 @@ explicit operator decision.
 8. **Multi-village.** Nothing here assumes one village. The anchor and the
    records are positional, so a second village is a second set of facts — but
    "the nearest village" as a concept does not exist yet.
+9. **A partially renewed register.** Freshness is per fact (`observedAt`,
+   `verifiedAt`), not per village: a sweep that hits its cell budget, dies, or
+   is refused halfway leaves some cells renewed and others still old. The
+   register must therefore be readable at cell/fact granularity (and report
+   `truncated`), never as one village-wide "last scanned at" that would make an
+   old plot look fresh.
 
 ## Non-objectives (for now)
 

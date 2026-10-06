@@ -67,13 +67,59 @@ while opening a container persists its contents through
 TTL 5 min): after a restart the bot forgets *which* chest holds the carrots,
 even though the memory still knows.
 
+### Gap 3 — the memory is written and then not read
+
+The bot records what it sees and forgets to consult it. Every writer is called:
+`rememberStructure` (`bedrock-adapter.mjs:1306`, inside the survey),
+`rememberContainer` (`:7057`, on every open), `rememberEntity:1251`,
+`rememberResourceSite:1237`, `rememberLandmark:749`, `markChunkVisited`. Almost
+every reader has no production caller — `findEntities:449` is read by tests only,
+and `unexploredFrontier` (`world-memory.mjs:512`) has none — while the *published*
+census (`observe().structures`, `bed`, `farmAnimals`) is rebuilt from the loaded
+radius every time, with a 60 s runtime TTL (`STRUCTURE_RESCAN_MS`, `:233`). The
+two readers that do exist are the exceptions that prove the rule:
+`scanStructureTarget` (`bedrock-harness.mjs:78`) unions the live survey with
+`findLandmarks({kind: 'structure'})` **so a landmark survives a restart**, and
+`_rememberedStorage:7183` feeds `take_*` from the remembered containers. There is
+no way to ask "what do we know about the village?".
+
+## Register or sensor?
+
+**The memory is the register, the survey is the sensor.** That is the discipline
+this roadmap adds, and it is what makes the robot-vacuum analogy true: the map
+survives the restart, and a sweep renews what is old instead of re-measuring what
+is already known. Two consequences, both part of the design:
+
+1. **The read path is the deliverable.** V0 adds
+   `villageRegister({near, dimension, includeStale})`: houses from
+   `findLandmarks` ∪ the live survey, plots from the `resource_site` records (the
+   same kind `remembered-resource-sites.mjs` already routes to a gather step),
+   pens from `findEntities` — the **first production reader** of what
+   `rememberEntity` already stores — and storage from
+   `findContainers`/`containersWithItem`. Every row carries
+   `source: 'memory' | 'live'`, `status` and `observedAt`/`verifiedAt`, so the
+   payload says *measured three minutes ago*, not *true*.
+2. **The staleness default is a trap.** `findContainers` defaults to
+   `includeStale: true` (`world-memory.mjs:213`) and `_rememberedStorage`
+   filters only on "contents > 0" plus reachability — so a **stale** chest is
+   already good enough to take from. Defensible for an explicit `take_*`, never
+   inherited by a deposit target (V2) or a plot census: the register carries the
+   status and the caller decides what it tolerates.
+
+Freshness stays per fact, not per village: a sweep that runs out of budget or
+dies halfway leaves some cells renewed and others old, so the register must be
+readable at cell granularity and report `truncated` — never one village-wide
+"last scanned at" that would make an old plot look fresh.
+
 ## The design in brief
 
 - **V0 — census.** A pure `village-survey.mjs` clusters houses (beds/containers
   within `VILLAGE_HOUSE_RADIUS`), plots (≥ `VILLAGE_PLOT_MIN_CELLS` cells of one
   crop, with ripeness), pens (fenced, `adults`/`babies`) and storage (container
   contents); `GET /observe.village` exposes it with `checked: true`, so "looked
-  and found nothing" is never confused with "not looked".
+  and found nothing" is never confused with "not looked". The adapter **reads
+  the register first** (`villageRegister`, memory ∪ live, with `source`/`status`),
+  and the survey writes back the facts it just measured.
 - **V1 — the sweep.** `survey_village` walks only the unscanned cells near the
   anchor, throttled by `VILLAGE_SURVEY_MS` and bounded by `VILLAGE_SURVEY_CELLS`,
   with typed refusals (`village_too_far`, `survey_budget_exhausted`); never a
@@ -96,7 +142,7 @@ even though the memory still knows.
 
 | Milestone | Deliverable | Status |
 |---|---|---|
-| V0 | Pure census `village-survey.mjs` + `GET /observe.village` + memory writes | spec |
+| V0 | Pure census `village-survey.mjs` + `villageRegister` memory-first read + `GET /observe.village` + memory writes | spec |
 | V1 | `survey_village`: bounded read-only sweep, typed refusals, idempotent | spec |
 | V2 | Deposit target from memory (symmetry with `take_*`), stale re-read | spec |
 | V3 | Farm order as one intent → `plan.farm` → verified chain | spec |
