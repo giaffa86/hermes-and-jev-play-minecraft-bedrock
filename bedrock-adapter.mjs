@@ -12949,7 +12949,9 @@ export class BedrockAdapter {
     return total;
   }
 
-  async _equipArmor () {
+  // Pezzi d'armatura che uno **slot** dell'inventario mostra davvero. `_equipArmor`
+  // parte da qui, non dall'aggregato: l'aggregato somma anche i pickup.
+  _armorPiecesInSlots () {
     const pieces = [];
     for (let index = 0; index < this.inventorySlots.length; index++) {
       const slot = this.inventorySlots[index];
@@ -12958,8 +12960,41 @@ export class BedrockAdapter {
       if (armorSlot < 0 || !slot?.count) continue;
       pieces.push({ index, name, armorSlot, stack_id: slot.stack_id || 0, network_id: slot.network_id });
     }
-    if (!pieces.length) return { ok: false, error: 'no_armor_in_inventory' };
+    return pieces;
+  }
+
+  // Un pezzo che l'aggregato conosce ma che nessuno slot mostra (specchio stantio,
+  // tipicamente appena raccolto o dopo una morte).
+  _carriedArmorPiece () {
+    return Object.keys(this.inventory).find(name => this._armorSlotFor(name) >= 0) || null;
+  }
+
+  // L'armatura si indossa con la stessa primitiva dello scudo (take sul cursore +
+  // place nella container 'armor') e con le stesse due lezioni di campo: un `place`
+  // rifiutato non e' un successo dichiarato, e un pezzo che l'aggregato dice di
+  // avere ma che nessuno slot mostra e' uno specchio stantio, non "nessuna
+  // armatura". L'errore e' tipizzato come `shield_place_failed_<status>`
+  // (`armor_place_failed_<status>`) con gli esiti di ogni tentativo: il 06/10 il
+  // run 1 ha fallito un equip di golden_leggings con un `armor_place_failed`
+  // contato dall'harness ma **senza status** nel payload, perche' qui ogni
+  // fallimento collassava in `armor_equip_failed` (lo status viveva solo nel log
+  // del container).
+  async _equipArmor () {
+    if (this._openContainer) await this._closeContainer();
+    let pieces = this._armorPiecesInSlots();
+    if (!pieces.length) {
+      const carried = this._carriedArmorPiece();
+      if (!carried) return { ok: false, error: 'no_armor_in_inventory' };
+      // Lo specchio e' stantio: si risincronizza una volta (refresh in place, non
+      // per forza una riconnessione) e si rilegge, invece di dichiarare che
+      // l'armatura non c'e' mentre `observe().inventory` la mostra.
+      this.log('armor_resync', { item: carried });
+      try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
+      pieces = this._armorPiecesInSlots();
+      if (!pieces.length) return { ok: false, error: 'no_armor_in_inventory', carried };
+    }
     const equipped = [];
+    const failures = [];
     for (const piece of pieces) {
       let cursorStack = 0;
       try {
@@ -12968,22 +13003,41 @@ export class BedrockAdapter {
         // Stessa primitiva dello scudo: un cursore sporco non deve far saltare
         // silenziosamente l'armatura (il caso "place fallito" è documentato).
         this.log('armor_take_failed', { item: piece.name, error: error.message });
+        failures.push({ item: piece.name, slot: piece.armorSlot, stage: 'take', error: error.message });
         continue;
       }
-      const place = await this._sendStackRequest([{
-        type_id: 'place', legacy_type_id: 1, count: 1,
-        source: this._slotInfo('cursor', 0, cursorStack),
-        destination: this._slotInfo('armor', piece.armorSlot, 0),
-      }]).catch(() => null);
-      if (!place || (String(place.status) !== 'ok' && place.status !== 0)) {
+      let place = null;
+      const attempts = [];
+      // Un solo ripiego con il cursore ancora carico: un place rifiutato non
+      // cambia nulla lato server, quindi la stessa stack id e' ancora valida
+      // (e' il ripiego che `_equipShield` fa sull'altro slot dell'offhand).
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        place = await this._sendStackRequest([{
+          type_id: 'place', legacy_type_id: 1, count: 1,
+          source: this._slotInfo('cursor', 0, cursorStack),
+          destination: this._slotInfo('armor', piece.armorSlot, 0),
+        }]).catch(() => null);
+        const status = place?.status ?? 'timeout';
+        attempts.push({ attempt, destination: `armor/${piece.armorSlot}`, status });
+        if (place && (String(status) === 'ok' || status === 0)) break;
         this.log('armor_place_failed', {
           item: piece.name,
           slot: piece.armorSlot,
-          status: place?.status ?? 'timeout',
+          status,
+          attempt,
           cursor_stack_id: this._cursor?.stack_id ?? null,
           cursorStack,
         });
+      }
+      if (!place || (String(place.status) !== 'ok' && place.status !== 0)) {
         await this._returnCursorToInventory().catch(() => {});
+        failures.push({
+          item: piece.name,
+          slot: piece.armorSlot,
+          stage: 'place',
+          status: attempts[attempts.length - 1]?.status ?? 'timeout',
+          attempts,
+        });
         continue;
       }
       this._applyStackResponse(place, { networkId: piece.network_id });
@@ -12993,8 +13047,12 @@ export class BedrockAdapter {
       this.log('armor_equip', { item: piece.name, slot: piece.armorSlot, status: place.status });
     }
     this._refreshInventory();
-    if (!equipped.length) return { ok: false, error: 'armor_equip_failed' };
-    return { ok: true, equipped };
+    if (!equipped.length) {
+      const last = failures[failures.length - 1];
+      const error = last?.stage === 'place' ? `armor_place_failed_${last.status}` : 'armor_equip_failed';
+      return { ok: false, error, failures };
+    }
+    return { ok: true, equipped, failures };
   }
 
   _closeDoorTarget () {

@@ -1,5 +1,39 @@
 # Log
 
+## [2026-10-06] fix | Equipping armor is typed, retried and survives a stale mirror
+
+Run 1 of the diamond mission spent `equip_armor` once on a carried
+`golden_leggings` and got `{"ok": false, "error": "armor_equip_failed"}` with
+`observe().armor` empty. The counter dump the harness wrote afterwards keeps
+`armor_place_failed=1` and **no** `armor_take_failed`/`cursor_take_failed`: the
+take had worked and the **place** into the `armor` container had been refused —
+and the status was thrown away, `armor_equip_failed` being the only error the
+action could return. The payload lived in the container's `events.jsonl`, so the
+refusal itself is not recoverable from this host.
+
+`_equipArmor` now mirrors `_equipShield` (the fixes of 03/10, when the shield
+take turned out to need an open player window):
+
+1. it closes a container an action has open before touching the armor;
+2. it keeps one retry of the `place` with the cursor still loaded — a refused
+   place changes nothing server-side, so the same `item_stack_id` is still valid
+   — and reports `armor_place_failed_<status>` with `failures[].attempts`, each
+   one carrying its status and the cursor stack id, instead of collapsing into
+   `armor_equip_failed`;
+3. a piece the aggregate shows but no slot does is a stale mirror, not "no
+   armor": one `_resyncByReconnect` (`armor_resync`) then a re-read, and if the
+   slot still does not appear the error is `no_armor_in_inventory` with the
+   `carried` piece named.
+
+A refused take is still reported per piece (`armor_take_failed` in `failures`)
+without skipping the next one. `_equipPumpkin` keeps its own take without the
+window guard: same latent class, not changed here.
+
+`tests/bedrock-armor-equip.test.mjs` (7 tests) drives a fake BDS that refuses the
+place with a status, flakes once, hands the slot only after a resync or never;
+full suite 1780/1780. The cause of the refused place towards `armor` is still
+unexplained — the next live attempt is what will print its status.
+
 ## [2026-10-06] fix | The inventory resync asks the window before it drops the session
 
 Run 2 of the diamond mission refreshed the inventory mirror the only way the

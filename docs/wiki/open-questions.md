@@ -1199,6 +1199,16 @@ unit-test guesses.
   `golden_leggings` and `observe().armor` stayed empty. Only one attempt was made;
   not reproduced.
 
+  Fixed (06/10/2026): the counter dump kept `armor_place_failed=1` and no
+  `armor_take_failed`, so the **place** into the `armor` container had been
+  refused and its status discarded. The action now closes a container an action
+  has open, retries the place once with the cursor still loaded, fails typed
+  (`armor_place_failed_<status>` plus `failures[].attempts`) and, when the
+  aggregate shows armor no slot does, does one `_resyncByReconnect`
+  (`armor_resync`) before declaring `no_armor_in_inventory` with the `carried`
+  piece. The refusal itself stays open: no live attempt has printed its status
+  yet.
+
 ## Death, the inventory mirror and the skeleton defense (06/10/2026)
 
 Two more defects from the same mission, both seen *after* the audit rejected the
