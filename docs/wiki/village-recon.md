@@ -12,12 +12,17 @@ consulted as a lookup — and the one spoken order it exists to serve:
 The analogy is a robot vacuum: the map is drawn on a slow pass, and every later
 task is a route over known cells rather than a new exploration.
 
-Status: **V0 model landed (2026-10-06), V1–V5 spec only.** `world-memory.mjs`
-now keeps discovery and inspection as two facts with two clocks, the rung-2 query
-exists, and the storage matcher is a family match instead of a name whitelist
-(commit `0650877`). The *writes* and the read path in the adapter are still
-missing: nothing yet persists a discovery during a sweep, and the deposit
-decision does not consult the ladder. Everything else on this roadmap is spec.
+Status: **V0 model + V1/V2 storage path landed (2026-10-06); the sweep and the
+farm order are still spec.** `world-memory.mjs` keeps discovery and inspection as
+two facts with two clocks, the rung-2 query exists, and the storage matcher is a
+family match instead of a name whitelist (`0650877`); the adapter now **writes** a
+discovery while the bot walks (`_surveyStorage`, `_rememberStorageDiscovery`) and
+the **deposit** decision climbs the ladder before looking at the world
+(`_storageSearchPlan` → `storage-ladder.mjs`, `c897399`), with
+`observe().storage` exposing the register and the chosen rung visible in
+`observe().deposit`. What is still missing is the bounded sweep
+(`survey_village`, rung 4), the farm-order classifier (V3) and the live
+four-case round. Everything else on this roadmap is spec.
 Everything it builds on (the histogram survey, the marker detector, the container
 memory, the harvest/plant/deposit actions, the village chores) already exists and
 is listed below as the baseline; the two real gaps are the aggregation and the
@@ -26,7 +31,8 @@ Full raw source: [`docs/raw/VILLAGE_RECON_ROADMAP.md`](../raw/VILLAGE_RECON_ROAD
 
 Sources: `bedrock-world.mjs` (histogram survey), `structures.mjs` (marker rules),
 `bedrock-adapter.mjs` (crops, beds, animals, containers, deposit), `world-memory.mjs`
-(container/entity/site records), `village-labor.mjs` (the chore layer),
+(container/entity/site records), `storage-ladder.mjs` (the order as a pure
+decision), `storage-blocks.mjs` (the family matcher), `village-labor.mjs` (the chore layer),
 `controller-decisions.mjs` (chat orders), [exploration](exploration.md) (M5/M6
 structures), [memory](memory.md) (persistent world memory),
 [human-command](human-command.md) (the order channel),
@@ -86,7 +92,10 @@ two readers that do exist are the exceptions that prove the rule:
 `scanStructureTarget` (`bedrock-harness.mjs:78`) unions the live survey with
 `findLandmarks({kind: 'structure'})` **so a landmark survives a restart**, and
 `_rememberedStorage:7183` feeds `take_*` from the remembered containers. There is
-no way to ask "what do we know about the village?".
+no way to ask "what do we know about the village?". The storage half now has
+its reader — `_storageSearchPlan` consults the register before the world, and
+`observe().storage` publishes it — while the village half (houses, plots, pens)
+is still rebuilt from the loaded radius on every call.
 
 ## Register or sensor?
 
@@ -181,13 +190,22 @@ What the code allowed *before* V0, and what changed (checked in the code):
   into `storage-blocks.mjs`, which matches exact names *and* families
   (`*_shulker_box`), with `addStorageBlockName`/`addStorageBlockFamily` as the
   extension points — so dyed shulker boxes are no longer invisible.
-- **Still missing (the next step, not the data model)**: nothing *writes* a
-  discovery in the live path (the only writer is still post-open, via
-  `_setContainerContents`), and `_depositTargetFor` still reads only the runtime
-  cache instead of the ladder, so "put it in the nearest chest" does not yet
-  consult what the bot already knows. `storage-ladder.mjs` holds the order
-  (`known item -> inspect discovered -> local scan -> recon sweep`) as a pure
-  decision, ready to be called.
+- **Landed (V1+V2, `c897399`)**: the write exists and the deposit path reads.
+  `_surveyStorage()` (throttled by `STORAGE_DISCOVERY_RESCAN_MS`, radius
+  `STORAGE_DISCOVERY_RADIUS`) records every storage block in the loaded area as a
+  *discovery* (`contentsKnown: false`, `source: 'discovered'`) from the chunk
+  sweep, and the live fallback of `_depositTargetFor` does the same before
+  choosing a block, so the register learns while the bot works.
+  `_depositTargetFor` climbs the ladder (`_storageSearchPlan` →
+  `planStorageSearch`): a remembered container that holds the item, then a
+  discovered-not-inspected one, then the 5-minute runtime cache, then a live
+  scan. The target it returns carries `rung`, `step`, `verify` (a stale
+  inspection is re-read by the open), `stale`, `remembered` and the whole
+  `ladder`; a remembered target that fails to open falls back **once** to a live
+  container (`retriedAfterStale`), and a `missing_item` never does.
+- **Still missing**: the bounded sweep itself (`survey_village`, rung 4) and the
+  farm-order classifier (V3). Rung 3 is a live scan that now *persists* what it
+  sees, but it has no cost budget beyond the scan radius.
 
 The acceptance test is exactly the order the owner described: iron known in a
 chest → go there; only unopened chests known → inspect them; nothing known →
@@ -226,8 +244,8 @@ failure, and `runs/<run>/actions.jsonl` shows it.
 | Milestone | Deliverable | Status |
 |---|---|---|
 | V0 | Two-fact container record (`discoveredAt`/`inspectedAt`/`contentsKnown`) + read-time staleness + rung-2 query + ladder | **model landed** (`0650877`); census/register still spec |
-| V1 | `survey_village`: bounded read-only sweep, typed refusals, idempotent | spec |
-| V2 | Deposit target from memory (symmetry with `take_*`), stale re-read | spec |
+| V1 | discovery write in the live path (`_surveyStorage`/`_rememberStorageDiscovery`, throttled, family matcher) | **landed** (`c897399`); the `survey_village` sweep itself still spec |
+| V2 | Deposit target from memory (symmetry with `take_*`), stale re-read | **landed** (`c897399`) |
 | V3 | Farm order as one intent → `plan.farm` → verified chain | spec |
 | V4 | Confidence/evidence/missing + protection + declared limits | spec |
 | V5 | Wiki/raw/`BEDROCK.md` wiring | spec (this page) |

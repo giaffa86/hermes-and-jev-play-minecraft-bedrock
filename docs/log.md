@@ -3692,3 +3692,42 @@ container kept running the image deployed at 11:19. Both are closed here.
   no live read-only village round ran.
 - **Not pushed**: `main` is 151 commits ahead of `origin/main` and stays local —
   nothing was pushed, and the privacy scrub on that history precedes any push.
+
+## [2026-10-06] feat | The bot discovers containers while it walks, and deposits by the ladder (V1+V2)
+
+- **The gap**: `rememberContainer` had exactly one production caller
+  (`bedrock-adapter.mjs:7057`, after an open), so a chest the bot merely *saw* was
+  not remembered at all and the rung-2 query
+  (`world-memory.containersToInspect`) had no source; and the deposit side
+  (`_depositTargetFor:7000`) read only the 5-minute runtime cache
+  (`CONTAINER_TTL_MS`), so after a restart the bot forgot *which* chest held the
+  carrots even though the register still knew.
+- **V1 — the write** (`c897399`): `_surveyStorage()` is inherited by the chunk
+  sweep (`_rememberDiscoveries`) and throttled by `STORAGE_DISCOVERY_RESCAN_MS`
+  (60 s) with radius `STORAGE_DISCOVERY_RADIUS` (32); every storage block in the
+  loaded area goes through `_rememberStorageDiscovery()` as a *discovery*
+  (`contentsKnown: false`, `source: 'discovered'`), so a sighting is a known place
+  with an unknown inside. The live fallback of `_depositTargetFor` calls the same
+  writer before choosing a block, so the register learns while the bot works.
+  `STORAGE_BLOCKS` is now `storageBlockNames()` — the four base names plus the
+  `*_shulker_box` family instead of an exact-name whitelist.
+- **V2 — the ladder**: `_storageSearchPlan()` separates the ranking from the write
+  (`memory.containersWithItem` + `containersToInspect`, decorated with distance and
+  reachability) and calls `planStorageSearch` in `storage-ladder.mjs`.
+  `_depositTargetFor` returns `rung`, `step`, `verify`, `stale`, `remembered` and
+  the full `ladder`: remembered-with-the-item → discovered-not-inspected →
+  runtime cache → live scan (which becomes a discovery). A stale inspection is
+  re-read on arrival by the open; a remembered target that fails to open falls
+  back **once** to a live container (`retriedAfterStale`), never on
+  `missing_item`. `observe().deposit` exposes the rung without walking and
+  `observe().storage` the register (known, to-inspect, last survey).
+- **Tests**: 10 new cases in `tests/bedrock-storage-memory.test.mjs` (the target
+  after a simulated restart, the stale re-read, rung 2, the live scan learning the
+  sighting, an unreachable target blocked, the survey throttle with the
+  `observe()` shape, the single fallback, no fallback on a missing item). The
+  scan-cap test in `tests/bedrock-storage.test.mjs` now asks the matcher how many
+  names there are instead of hardcoding four. Full suite **1657 tests, 0 fail**.
+- **Still open**: the bounded sweep (`survey_village`, rung 4) and the farm-order
+  classifier (V3) stay spec; the four-case live row ("find the iron in the
+  chests") has not run — see [open-questions](wiki/open-questions.md) and
+  [village-recon](wiki/village-recon.md).

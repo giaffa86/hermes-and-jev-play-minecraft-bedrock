@@ -509,6 +509,22 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
 
 ## Live verification pending
 
+- **The village storage register now writes and reads, but the four-case live
+  round has not run (2026-10-06).** V1+V2 (`c897399`) close the two wiring gaps: a
+  discovery is written during the chunk sweep and by the live deposit fallback
+  (`contentsKnown: false`, `source: 'discovered'`), and `_depositTargetFor`
+  climbs the ladder in `storage-ladder.mjs` before touching the world (idem
+  `_storageSearchPlan`), so a known chest with the item beats a nearer empty one
+  and a stale inspection is re-read on arrival. The offline proof is 10 cases in
+  `tests/bedrock-storage-memory.test.mjs`. What is missing is the live row the
+  roadmap calls the acceptance test: (1) a chest known to hold iron → the bot
+  walks there from memory with no scan, (2) only unopened chests known → it
+  inspects the nearest, (3) nothing known in the area → a local scan that
+  *persists* the rows, (4) only an empty local area → the sweep. It needs a
+  read-only round near the village (113, 73, 156) with no controller running; the
+  `survey_village` action (rung 4, `VILLAGE_SURVEY_*`) is still spec. See
+  [village-recon](village-recon.md).
+
 - **Deep Dark W0–W2: the model is offline, the world has nothing to test it
   against (2026-10-06).** The vibration model, `sneak_to` and the silent route
   planner are unit-tested (41 cases) but every number comes from the reference
