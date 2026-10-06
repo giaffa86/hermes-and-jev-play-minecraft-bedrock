@@ -45,7 +45,7 @@ action; a mission can run for a long time as many small bounded steps.
 |---|---|---|
 | M1 | Find Biome MVP | persistent exploration-mission model, biome targets, deterministic planner (expanding square/spiral over unexplored chunks), checkpoints, biome detection, structured report, remain-at-target. |
 | M2 | Route replay | return to an already-discovered place from saved checkpoints (`"torna al Cherry Grove"`); checkpoints are guides, local pathfinding may find better paths between them. |
-| M3 | Escort player | walk the player to a discovered location (`ESCORTING` / `WAITING_FOR_PLAYER`, stop if the player lags, avoid pointless fights). |
+| M3 | Escort player | **Implemented (harness side, 06/10)**: `escort_to` walks the named human to a known destination (the order's `plan.escort.to`, else the plan `waypoint`, else the active replay route) and **waits** when the human falls behind (`ESCORT_MAX_GAP`, resuming within `ESCORT_RESUME_GAP`); it gives up with `escort_left_behind`/`escort_lost`. The controller picks it deterministically while `goal.escort` is open. *Spec-only part*: the `ESCORTING`/`WAITING_FOR_PLAYER` state machine, and avoiding pointless fights along the way. |
 | M4 | Search blocks/resources | extend `explore/find` to observable targets (mushrooms, pumpkins, bamboo, mangrove trees): `EXPLORE → SCAN → MATCH BLOCK/ENTITY → REPORT`. |
 | M5 | Search structures | village, trial chamber, pillager outpost, woodland mansion, ancient city, desert pyramid, jungle temple; heuristic detection first (village = villagers + beds + village blocks + pattern), specific detectors later. |
 | M6 | Underground targets | **caves** (`cave_air` volumes, lush/dripstone caves), **mineshafts**, **Deep Dark / Ancient City** (sculk, shriekers), **spawners** (`mob_spawner`); same mission model with a different `target`; warden/lava/spawner hazards and 3D navigation. |
@@ -459,9 +459,13 @@ block room, so the spiral waypoint is 96 blocks away and unreachable
 (`target_not_found`), no new biome can be reached and no travel checkpoint is
 written. The M4 search works from where the bot stands (it scans the 125 loaded
 chunks), so it is live-verifiable in the room, but a target that is not loaded
-still needs travel. M3 (escort) is blocked by the environment: no human player
-is connected to the BDS, so `ESCORTING`/`WAITING_FOR_PLAYER` cannot be
-exercised. M5 (structures) and the M6 marker targets are implemented and
+still needs travel. M3 (escort) was *blocked by the environment* (no human player
+connected to the BDS, so `ESCORTING`/`WAITING_FOR_PLAYER` could not be
+exercised); on 06/10 the order path was implemented harness-side as `escort_to`
+(the bot leads, waits for a lagging human, and closes with a reason) and is
+covered by offline tests — see [verification](verification.md) 47.52 and
+[human-command](human-command.md). What remains untested is the same thing the
+environment blocks: a *real* long escort with a human on the BDS. M5 (structures) and the M6 marker targets are implemented and
 live-verified (village + cavity); the multi-leg case of M2 (a route with
 intermediate checkpoints) is covered by unit tests, since inside the room no
 checkpoint can be earned (they are written every 48 blocks of travel).

@@ -112,11 +112,32 @@ export function withStickyFollow (plan, follow) {
   return { ...(plan || {}), follow };
 }
 
+// Come il follow, una scorta e' un impegno aperto: il planner riscrive il piano a
+// ogni passo e non conosce l'ordine umano, quindi la persona da guidare e la
+// meta vanno riapplicate finche' l'ordine resta aperto (altrimenti l'opzione
+// `escort_to` sparirebbe al primo replan e il bot tornerebbe a seguire).
+export function withStickyEscort (plan, escort) {
+  if (!escort) return plan;
+  if (plan && plan.escort === escort) return plan;
+  return { ...(plan || {}), escort };
+}
+
 // Un ordine di stop ("fermati", "aspetta", "stop") deve chiudere un
 // inseguimento aperto: il fallback deterministico del traduttore di ordini
 // ("segui chi ti ha scritto") non deve mai trasformarlo in un follow.
 export function isStopOrder (message) {
   return /\b(fermati|fermo|stop|basta|aspett\w*|resta|rimani|smettila|non seguirmi|stay|wait|stand still)\b/i.test(String(message || ''));
+}
+
+// «Guidami fino al filone», «accompagnami», «portami la'»: non e' un follow. Il
+// bot deve camminare per primo e *aspettare* chi resta indietro, quindi l'ordine
+// diventa `plan.escort` (opzione `escort_to`) e non `plan.follow`. Il verbo da
+// solo non basta: senza una meta nota il controller lo degrada a follow, perche'
+// una scorta senza destinazione non ha niente da guidare. «Aspettami» resta un
+// ordine di stop (aspettare da fermo), non una scorta.
+const ESCORT_VERB = /\b(guidami|guidaci|guidar\w*|portami|portaci|accompagnami|accompagnaci|fammi strada|vieni con me|andiamo|lead me|guide me|take me|walk me|come with me)\b/;
+export function isEscortOrder (message) {
+  return ESCORT_VERB.test(String(message || '').toLowerCase());
 }
 
 // Un ordine di equipaggiamento ("equipaggiati con l'elmo", "mettiti l'armatura",
@@ -202,6 +223,21 @@ export function isCollectOrder (message, observation) {
   if (!COLLECT_VERB.test(text)) return false;
   if (COLLECT_GATHER_VERB.test(text) && ANY_NUMBER.test(text)) return false;
   return orderItem(text, observation) != null;
+}
+
+// Una scorta si chiude quando sono arrivati *entrambi*: il bot alla meta e
+// l'umano non rimasto indietro. La meta viene dall'ordine (o dal waypoint), la
+// distanza dell'umano dalla vista del harness (`observe().escort.gap`), quindi
+// il verdetto non dipende dalla stima del modello. Se l'umano non e' tracciato
+// non si puo' dichiarare arrivata una scorta di cui non si sa piu' niente.
+export function escortFulfilled (escort, obs) {
+  const target = escort?.to ?? obs?.plan?.waypoint ?? null;
+  const position = obs?.position;
+  if (!target || !position) return false;
+  if (Math.hypot(target.x - position.x, target.z - position.z) > (escort?.arriveDistance ?? 2)) return false;
+  const gap = obs?.escort?.gap;
+  if (gap == null) return false;
+  return gap <= (obs?.escort?.limits?.maxGap ?? 12);
 }
 
 // Un ordine "getta <oggetto>" e' chiuso quando l'oggetto e' uscito

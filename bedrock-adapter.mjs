@@ -197,7 +197,22 @@ const DEPOSIT_FOOD_ITEMS = new Set([...FOODS, ...LAST_RESORT_FOODS]);
 // riserva» mentre in zaino non c'era niente di tutto ciò: una promessa va
 // verificata sullo stato, non ripetuta a memoria.
 const TRIP_KIT_REQUIREMENTS = Object.freeze({ beds: 1, torches: 8, pickaxes: 2, food: 1 });
-export { TRIP_KIT_REQUIREMENTS };
+// Scorta a piedi (ordine umano «guidami/accompagnami»): il bot *guida* un umano
+// verso una destinazione, invece di seguirlo. Oltre `ESCORT_MAX_GAP` blocchi di
+// distacco si ferma e aspetta; riparte quando l'umano rientra in
+// `ESCORT_RESUME_GAP`, chiude con `escort_left_behind` se non torna entro
+// `ESCORT_WAIT_MS`, con `escort_lost` se sparisce per `ESCORT_LOST_MS` e con
+// `escort_timeout` oltre il tetto dell'azione. I numeri sono dichiarati in
+// `observe().escort.limits`: il controller non li indovina, e la scorta non
+// resta appesa in silenzio (live 04/10/2026: un follow immobile dichiarava
+// `ok: true` per tre minuti).
+const ESCORT_MAX_GAP = +(process.env.ESCORT_MAX_GAP || 12);
+const ESCORT_RESUME_GAP = +(process.env.ESCORT_RESUME_GAP || 5);
+const ESCORT_WAIT_MS = +(process.env.ESCORT_WAIT_MS || 60000);
+const ESCORT_LOST_MS = +(process.env.ESCORT_LOST_MS || 20000);
+const ESCORT_TIMEOUT_MS = +(process.env.ESCORT_TIMEOUT_MS || 150000);
+const ESCORT_ARRIVE_DISTANCE = +(process.env.ESCORT_ARRIVE_DISTANCE || 2);
+export { TRIP_KIT_REQUIREMENTS, ESCORT_MAX_GAP, ESCORT_RESUME_GAP, ESCORT_WAIT_MS, ESCORT_LOST_MS, ESCORT_TIMEOUT_MS, ESCORT_ARRIVE_DISTANCE };
 // TTL del «non si è aperto adesso»: un contenitore che non si apre costa fino a ~18 s
 // di tentativi (live 04/10/2026: la cassa ricordata a (93,72,160) non esiste più — in
 // quel punto il mondo ha il baule un blocco più in alto — e `take_egg` finiva in
@@ -3757,6 +3772,7 @@ export class BedrockAdapter {
       deposit: this._depositState(),
       plan: this.plan,
       follow: this._followView(),
+      escort: this._escortView(),
       craft: this._craftNeeds({ liveGather: true }),
       chat: this.chatInbox.slice(-10),
       nearby: this.nearbyBlocks,
@@ -3855,6 +3871,22 @@ export class BedrockAdapter {
           description: `Search for ${this.plan.follow} near their last known position (${seek.distance.toFixed(1)} blocks away)`,
         });
       }
+    }
+    // Ordine umano «guidami/accompagnami fino a <posto>»: `plan.escort.from` e'
+    // l'umano da guidare, la meta e' `plan.escort.to` o il waypoint del piano.
+    // E' il gemello di `follow_player`: la' il bot segue la persona, qui decide
+    // la strada e aspetta chi resta indietro. L'opzione esiste solo se la
+    // destinazione e' nota e l'umano e' tracciato: senza meta sarebbe un
+    // inseguimento travestito.
+    const escort = this._escortView();
+    if (escort?.ready) {
+      const destination = `${Math.round(escort.target.x)}, ${Math.round(escort.target.z)}`;
+      o.push({
+        key: 'escort_to',
+        description: escort.waiting
+          ? `Escort ${escort.name} to ${destination} (waiting for them: ${escort.gap} blocks behind)`
+          : `Walk ${escort.name} to ${destination} (${escort.gap} blocks apart)`,
+      });
     }
     if (drop && !fresh) {
       o.push({ key: 'collect_drop', description: `Walk onto the nearest dropped item (${drop.distance.toFixed(1)} blocks away)` });
@@ -4677,6 +4709,8 @@ export class BedrockAdapter {
           const moveResult = await this._moveTo(target, 2, 45000, { verticalTolerance: Number.isFinite(w.y) ? 1 : null });
           result = { ok: true, ...moveResult };
         }
+      } else if (key === 'escort_to' && this.plan?.escort) {
+        result = await this._escortTo();
       } else if (key === 'follow_player' && this.plan?.follow) {
         result = await this._followPlayer(this.plan.follow);
       } else if (key === 'seek_player' && this.plan?.follow) {
@@ -4887,6 +4921,8 @@ export class BedrockAdapter {
         // (che passa a `_rideToward`). Un errore tipizzato lo dice, invece di
         // far sembrare l'azione inesistente.
         result = { ok: false, error: this.riding ? 'no_ride_destination' : 'not_riding', hint: 'while mounted, steer with goto_waypoint' };
+      } else if (key === 'escort_to') {
+        result = { ok: false, error: 'no_escort_target', hint: 'escort_to needs plan.escort.from (the human being guided) and a destination (plan.escort.to or plan.waypoint)' };
       } else if (key === 'follow_player') {
         result = { ok: false, error: 'no_player_target', hint: 'follow_player is offered only when a nearby player has been named' };
       } else if (key === 'seek_player') {
@@ -10367,6 +10403,135 @@ export class BedrockAdapter {
       }
     }
     return { ok: true, followed: name, distance: last ? +Math.hypot(last.x - this.position.x, last.z - this.position.z).toFixed(1) : null, note: 'follow window elapsed' };
+  }
+
+  // Destinazione della scorta: `plan.escort.to`, altrimenti il waypoint del
+  // piano, altrimenti la destinazione di una rotta di replay attiva (M2: la
+  // rotta di rientro registrata). Senza destinazione l'azione non e' offribile.
+  _escortTarget () {
+    const explicit = this.plan?.escort?.to ?? null;
+    const waypoint = this.plan?.waypoint ?? null;
+    const replay = this.replayRoute?.destination ?? null;
+    const raw = explicit ?? waypoint ?? replay;
+    if (!raw || !Number.isFinite(raw.x) || !Number.isFinite(raw.z)) return null;
+    return {
+      x: raw.x,
+      y: Number.isFinite(raw.y) ? raw.y : (this.position?.y ?? 70),
+      z: raw.z,
+      source: raw === explicit ? 'escort.to' : (raw === waypoint ? 'plan.waypoint' : 'replay_route'),
+    };
+  }
+
+  // Vista della scorta: chi si accompagna, dove si va, quanto dista l'umano e se
+  // l'azione e' offribile adesso. `waiting` e' il gate: l'umano e' oltre il
+  // margine e il bot, se agisse, aspetterebbe. La distanza e' orizzontale, come
+  // nel follow: un dislivello non e' "rimasto indietro".
+  _escortView () {
+    const name = this.plan?.escort?.from ?? this.plan?.escort?.name ?? null;
+    if (!name) return null;
+    const target = this._escortTarget();
+    const human = this._playerByName(name);
+    const position = this.position ?? { x: 0, y: 0, z: 0 };
+    const gap = human?.position
+      ? +Math.hypot(human.position.x - position.x, human.position.z - position.z).toFixed(1)
+      : null;
+    return {
+      name,
+      target: target
+        ? { x: +target.x.toFixed(1), y: +target.y.toFixed(1), z: +target.z.toFixed(1), source: target.source }
+        : null,
+      tracked: !!human?.position,
+      gap,
+      waiting: gap != null && gap > ESCORT_MAX_GAP,
+      ready: !!target && !!human?.position,
+      limits: {
+        maxGap: ESCORT_MAX_GAP,
+        resumeGap: ESCORT_RESUME_GAP,
+        waitMs: ESCORT_WAIT_MS,
+        lostMs: ESCORT_LOST_MS,
+        timeoutMs: ESCORT_TIMEOUT_MS,
+        arriveDistance: ESCORT_ARRIVE_DISTANCE,
+      },
+    };
+  }
+
+  // Scorta: cammina verso la destinazione a segmenti e a ogni giro guarda dove
+  // sta l'umano. La differenza con `_followPlayer` non e' la camminata ma chi
+  // decide la meta: qui la decide il bot, e l'umano e' quello che puo' restare
+  // indietro. `waits` racconta ogni sosta, cosi' il collaudo live puo' dire
+  // quante volte e per quanto il bot si e' fermato ad aspettare.
+  async _escortTo (name = this.plan?.escort?.from ?? this.plan?.escort?.name, target = this._escortTarget(), {
+    arriveDistance = ESCORT_ARRIVE_DISTANCE,
+    maxGap = ESCORT_MAX_GAP,
+    resumeGap = ESCORT_RESUME_GAP,
+    waitMs = ESCORT_WAIT_MS,
+    lostMs = ESCORT_LOST_MS,
+    timeoutMs = ESCORT_TIMEOUT_MS,
+  } = {}) {
+    if (!name) return { ok: false, error: 'no_escort_target', hint: 'no human named: set plan.escort.from (an escort order names the person being guided)' };
+    if (!target) return { ok: false, error: 'no_escort_target', hint: 'no destination: set plan.escort.to or plan.waypoint' };
+    const started = Date.now();
+    const position = () => this.position ?? { x: 0, y: 0, z: 0 };
+    const gapTo = (entity) => Math.hypot(entity.position.x - position().x, entity.position.z - position().z);
+    const waits = [];
+    let waitedMs = 0;
+    let absentSince = null;
+    let failedMoves = 0;
+    while (Date.now() - started < timeoutMs) {
+      const human = this._playerByName(name);
+      if (!human?.position) {
+        // Fuori dal raggio di tracking: si aspetta, ma non per sempre. Meglio un
+        // motivo che due minuti di silenzio con un `ok: true` in fondo.
+        absentSince ??= Date.now();
+        if (Date.now() - absentSince > lostMs) {
+          this.log('escort_lost', { target: name, waitedMs, elapsedMs: Date.now() - started });
+          return { ok: false, error: 'escort_lost', target: name, waitedMs, waits };
+        }
+        await delay(500);
+        continue;
+      }
+      absentSince = null;
+      const gap = gapTo(human);
+      if (gap > maxGap) {
+        // Una attesa per volta: il tetto non si cumula fra due soste.
+        const waitStart = Date.now();
+        let resumed = false;
+        while (Date.now() - waitStart < waitMs && Date.now() - started < timeoutMs) {
+          const current = this._playerByName(name);
+          if (!current?.position) break; // perso: torna al gate principale
+          if (gapTo(current) <= resumeGap) {
+            resumed = true;
+            break;
+          }
+          await delay(250);
+        }
+        const ms = Date.now() - waitStart;
+        waitedMs += ms;
+        waits.push({ gap: +gap.toFixed(1), ms, resumed });
+        if (!resumed) {
+          const error = this._playerByName(name)?.position ? 'escort_left_behind' : 'escort_lost';
+          this.log('escort_wait_over', { target: name, gap: +gap.toFixed(1), ms, error });
+          return { ok: false, error, gap: +gap.toFixed(1), resumeGap, waitedMs, waits };
+        }
+        continue;
+      }
+      const distance = Math.hypot(target.x - position().x, target.z - position().z);
+      if (distance <= arriveDistance) {
+        this.log('escort_arrived', { target: name, distance: +distance.toFixed(1), waitedMs, waits: waits.length });
+        return { ok: true, escorted: name, arrived: true, distance: +distance.toFixed(1), waitedMs, waits };
+      }
+      try {
+        await this._moveTo(target, arriveDistance, Math.min(12000, Math.max(3000, distance * 600)));
+        failedMoves = 0;
+      } catch (error) {
+        if (++failedMoves >= 3) {
+          this.log('escort_failed', { target: name, error: error?.message ?? String(error), waitedMs });
+          return { ok: false, error: `escort_failed: ${error?.message ?? String(error)}`, waitedMs, waits };
+        }
+      }
+    }
+    this.log('escort_timeout', { target: name, waitedMs, waits: waits.length });
+    return { ok: false, error: 'escort_timeout', target: name, waitedMs, waits };
   }
 
   // ---- sopravvivenza ------------------------------------------------------------------

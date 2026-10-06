@@ -627,9 +627,12 @@ Still missing (the rest of the original gap):
   ([verification](verification.md) rows 45/45.1/45.2/45.3), but **an end-to-end
   run cannot happen while the bot is boxed in the room**: the first spiral
   waypoint is 96 blocks away → `target_not_found`, and a target that is not in
-  the 125 loaded chunks still needs travel. Still spec only in
-  [exploration](exploration.md): M3 escort (blocked by the environment, no human
-  player on the BDS) and the *deep* side of M6 (following a cave system beyond
+  the 125 loaded chunks still needs travel. M3 escort is no longer only spec —
+  `escort_to` (06/10) makes the bot lead a named human and wait when they fall
+  behind, with offline coverage ([verification](verification.md) 47.52) — but it
+  has never been run with a real human on the BDS, which is exactly what the
+  environment blocks. Still spec only in
+  [exploration](exploration.md): the *deep* side of M6 (following a cave system beyond
   the loaded radius, Deep Dark/Ancient City never observed live).
 - **Placement** only on a top face adjacent to the bot; no scaling/orientation.
 - **Redstone awareness (R0), oriented placement (R1), interaction/sensing (R2),

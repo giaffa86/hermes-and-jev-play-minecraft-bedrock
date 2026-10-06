@@ -1,5 +1,45 @@
 # Log
 
+## [2026-10-06] feat | An escort order makes the bot lead, not follow
+
+The owner's third question in the 06/10 debrief — *"se ti chiedo di guidarmi fino
+lì riusciresti ad accompagnarmi?"* — had been answered "Sì" by a session that
+had no escort at all: `follow_player` is the bot following the human, the
+opposite, and while the human is out of view it cannot even be offered. Point
+2b of the debrief is now a feature instead of a sentence.
+
+- **`escort_to`** (`bedrock-adapter.mjs`, `_escortTo`/`_escortView`/
+  `_escortTarget`): walks the named human toward a destination — the order's
+  `plan.escort.to`, else the plan `waypoint`, else the active replay route — and
+  **waits** for them: beyond `ESCORT_MAX_GAP` (12) it stops and resumes when the
+  gap is back to `ESCORT_RESUME_GAP` (5), and it gives up with a reason instead
+  of drifting away: `escort_left_behind` after `ESCORT_WAIT_MS` (60 s) of waiting,
+  `escort_lost` after `ESCORT_LOST_MS` (20 s) with no trace, `escort_timeout` at
+  the action ceiling, `escort_failed: <msg>` after three pathfinding failures.
+  Every threshold is in `observe().escort.limits`, so the controller never has to
+  guess a number.
+- **The option is offered only when it is real**: `escort_to` appears in
+  `/options` when `plan.escort` names a human, a destination resolved and that
+  human is tracked; `observe().escort` says which of the three is missing.
+- **The order is deterministic** (`controller-decisions.mjs` +
+  `controller.mjs`): `isEscortOrder` recognises a lead verb
+  ("guidami/accompagnami/portami/vieni con me/lead me…"), `humanCommandPlan`
+  publishes `plan.escort = { from, to }` and clears `plan.follow`, and while
+  `goal.escort` is open the controller picks `escort_to` without a model
+  decision. When the human is out of view it **holds** (the same way it holds a
+  lost follow, spending no budget) and releases the order after
+  `LOST_HOLD_MAX_STEPS` with an `escort_released` reason. An order with no
+  destination degrades to a follow rather than lying about leading.
+- **Tests**: 10 adapter cases (`tests/bedrock-escort.test.mjs`: the wait/resume
+  gate, both refusals, both give-ups, the limits) plus a scripted-harness
+  integration test (`tests/controller-escort.test.mjs`: the order becomes
+  `plan.escort`, the act chosen is `escort_to`, no model decision, one
+  `goal_met`).
+- **Wiki**: row 47.52 of [verification](wiki/verification.md) (🧪 — offline only),
+  the follow-semantics bullet of [human command](wiki/human-command.md), and M3 in
+  [exploration](wiki/exploration.md) is no longer "blocked by the environment":
+  what stays blocked is a *real* escort with a human on the BDS.
+
 ## [2026-10-06] fix | The map points at the vein, and the kit is a state
 
 Two of the five gaps found in the 06/10 debrief (the diamond report was accurate

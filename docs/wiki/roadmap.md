@@ -433,9 +433,10 @@ companion, trade, social and fishing remain declared live-only gaps in the
     done and live-verified (a real village at (113,73,156), the cavity at
     (112,71,144)). Next: run M1 end-to-end on the BDS once the bot can travel
     (today the spiral waypoint is 96 blocks away and unreachable; M4, M2 and the
-    detector work from where the bot stands), then M3 (escort, blocked: no human
-    player on the BDS) and the deep side of M6 (following a cave system beyond
-    the loaded radius; the Deep Dark rule has never been observed live).
+    detector work from where the bot stands), then the *deep* side of M6 (following
+    a cave system beyond the loaded radius; the Deep Dark rule has never been
+    observed live) and a live escort with a human (`escort_to` exists since 06/10
+    and is tested offline, but the BDS never had a human player connected).
 11. **Memory follow-ups** (see [memory](memory.md)): ~~a **structure detector**
     (villages / Ancient Cities → `structure:*` nodes)~~ **done** (03/10:
     `structures.mjs` + `surveyBlocks`, M5/M6), ~~an explicit **observation log**~~

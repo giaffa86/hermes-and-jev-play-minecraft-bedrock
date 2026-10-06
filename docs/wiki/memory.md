@@ -230,7 +230,8 @@ utente (una *missione*) ai nodi del mondo **senza sporcarli**.
   containers and resource sites (`chest_91 --contains--> resource:white_wool`).
 - **Missions + checkpoints**: `createMission`/`addCheckpoint`/`missionRoute` +
   `GET /mission`, `POST /mission`; the adapter records sparse checkpoints during
-  an active mission (route replay / escort).
+  an active mission (route replay / escort — an escort walks toward the plan or
+  replay destination while the human follows).
 - **Goal/episodic layer**: `linkMission`/`missionRelations`/`recordAction`/
   `missionActions` + `findPreviousMissions`/`findSuccessfulLocationsFor` and
   `finishMission` (outcome/success). **Wired into the controller**: each goal

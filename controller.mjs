@@ -29,8 +29,9 @@ import {nextVillageChore, isChoreResolved, villageSnapshot, DEFAULT_VILLAGE_COOL
 import {detectEvents} from './world-events.mjs';
 import {emergencyGoalFor, DEFAULT_EMERGENCY_COOLDOWN_MS} from './emergency-goals.mjs';
 import {
-  buildCriteria, buildDecisionInstructions, collectFulfilled, detectRepeatedAction, dropCountFromText, dropFulfilled, filterOptions,
-  inventoryMatchingToken, isCollectOrder, isDropOrder, isEquipOrder, isStopOrder, matchesItemToken, orderItem, tokenInventoryTotal, withStickyFollow,
+  buildCriteria, buildDecisionInstructions, collectFulfilled, detectRepeatedAction, dropCountFromText, dropFulfilled, escortFulfilled, filterOptions,
+  inventoryMatchingToken, isCollectOrder, isDropOrder, isEquipOrder, isEscortOrder, isStopOrder, matchesItemToken, orderItem, tokenInventoryTotal,
+  withStickyEscort, withStickyFollow,
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
 import {planGreetings, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
@@ -607,8 +608,19 @@ async function humanCommandPlan (obs, entry) {
   }
   if (stopOrder) {
     plan.follow = null;
+    plan.escort = null;
     plan.targets = {};
     plan.waypoint = null;
+  } else if (isEscortOrder(entry.message)) {
+    // «guidami/accompagnami fino a <posto>»: il bot guida, non segue. La meta e'
+    // quella che il piano nomina, altrimenti il waypoint gia' noto (es. il
+    // filone in memoria) — senza meta l'ordine resta il follow di prima, perche'
+    // una scorta senza destinazione non ha niente da guidare.
+    const destination = plan.waypoint ?? obs?.plan?.waypoint ?? null;
+    if (destination) {
+      plan.escort = { from: entry.from, to: { x: destination.x, y: destination.y, z: destination.z } };
+      plan.follow = null;
+    } else if (plan.follow == null) plan.follow = entry.from;
   } else if (plan.follow == null && /follow|stay near|come with|escort|seguimi|accompagn/i.test(entry.message)) plan.follow = entry.from;
   plan.notes = `human:${entry.from} ${plan.notes || ''}`.trim();
   if (construction || plan.construction) { plan.construction ??= construction; plan.construction.brief = entry.message; plan.targets = {}; plan.follow = null; }
@@ -952,6 +964,10 @@ const goalMet = (obs, plan, skillStatus) => {
   // I piani "seguimi" sono aperti: terminano solo con un nuovo ordine o a fine
   // budget, mai da soli (non hanno target/waypoint terminali).
   if (plan.follow) return false;
+  // Una scorta invece si chiude: quando il bot e' alla meta *con* l'umano non
+  // rimasto indietro. Il verdetto sta nei dati (posizione del bot e `gap`
+  // dell'umano), non nell'opinione del modello.
+  if (plan.escort) return escortFulfilled(plan.escort, obs);
   // Un goal autonomo è ancorato al bisogno che l'ha generato: il successo è la
   // scomparsa del bisogno dallo stato del harness, non un target inventato.
   if (plan.need) return isNeedResolved(plan.need, obs, {rules: survivalRules});
@@ -1045,6 +1061,7 @@ plan = initialPlan;
 // piano senza `follow` (live 04/10: il replan anti-loop cancellava l'ordine, il
 // waypoint statico chiudeva il goal e il bot si fermava da solo).
 if (initialPlan?.follow) goal.follow = initialPlan.follow;
+if (initialPlan?.escort) goal.escort = initialPlan.escort;
 if (CONSTRUCTION && !plan.construction) plan = {...plan, targets: {}, construction: CONSTRUCTION};
 plan = await publishPlan(plan);
 goal.plan = plan; goalManager.persist();
@@ -1070,12 +1087,14 @@ let goalReached = false;
 let stepsUsed = 0;
 let prevObs = null;             // osservazione del passo precedente (eventi del mondo)
 let lastFollowTarget = null;    // ultimo ordine "seguimi" annunciato nei log
+let lastEscortTarget = null;    // ultima scorta annunciata nei log
 let lastNeedKey = null;         // ultimo bisogno di sopravvivenza annunciato nei log
 let lastCraftKey = null;        // ultimo passo di approvvigionamento annunciato nei log
 let lastEquipKey = null;        // ultimo ordine di equipaggiamento annunciato nei log
 let lastDropKey = null;         // ultimo ordine "getta" annunciato nei log
 let lastCollectKey = null;      // ultimo ordine "cattura" annunciato nei log
 let lostFollowSteps = 0;        // passi consecutivi con l'ordine "seguimi" aperto ma senza bersaglio
+let lostEscortSteps = 0;        // passi consecutivi con la scorta aperta ma senza traccia dell'umano
 let lostNoticeSent = false;     // l'avviso in chat e' uno per episodio, non uno per cooldown
 let lostHoldSteps = 0;          // passi di attesa a tracce perse (nessuna azione, nessun modello)
 let lastLostNoticeAt = 0;       // ultimo avviso "non ti vedo" (cooldown per episodio)
@@ -1126,6 +1145,7 @@ for (let step = 1; step <= maxSteps; step++) {
     // Un nuovo ordine riorienta l'impegno: "seguimi" apre il follow, qualsiasi
     // altro ordine lo chiude (altrimenti resterebbe appeso per sempre).
     if (plan.follow) goal.follow = plan.follow; else delete goal.follow;
+    if (plan.escort) goal.escort = plan.escort; else delete goal.escort;
     plan = await publishPlan(plan);
     goal.plan = plan; goalManager.persist();
     skillRun = null; // il piano umano sostituisce la skill attiva
@@ -1178,7 +1198,7 @@ for (let step = 1; step <= maxSteps; step++) {
   }
   // `goalMet` vede il follow del *goal*: un waypoint raggiunto da un piano
   // ripianificato non puo' chiudere un ordine "seguimi" ancora aperto.
-  const stickyPlan = withStickyFollow(plan, goal.follow);
+  const stickyPlan = withStickyEscort(withStickyFollow(plan, goal.follow), goal.escort);
   // Un ordine umano il cui piano non dichiara nulla di terminale (nessun
   // target/waypoint/follow/need/skill) non e' "soddisfatto": e' solo vuoto.
   // Senza questa guardia un ordine come "mangia le patate" finiva con
@@ -1217,7 +1237,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // Con un ordine "seguimi" aperto il replan periodico e' rumore: l'obiettivo non
   // cambia finche' non arriva un altro ordine, e riscriverebbe il piano (a spese
   // del planner) rischiando target che allontanano il bot dall'umano.
-  if (!replanReason && !goal.follow && step > 1 && step % REPLAN_EVERY === 1) replanReason = 'periodic';
+  if (!replanReason && !goal.follow && !goal.escort && step > 1 && step % REPLAN_EVERY === 1) replanReason = 'periodic';
   // Un goal autonomo/emergenza è ancorato al suo predicato di successo
   // (bisogno o recupero loot): non va sostituito da un nuovo piano, o si perde
   // l'ancoraggio e il goal non si chiude. Si salta il replan.
@@ -1229,7 +1249,7 @@ for (let step = 1; step <= maxSteps; step++) {
     const candidatePlan = await planForStep(obs, replanReason, goal);
     if (candidatePlan?.met) { log('curriculum_goal_met', {step, reason: replanReason}); goalReached = true; break; }
     const sameSkill = candidatePlan?.skill && candidatePlan.skill === plan.skill;
-    plan = withStickyFollow(candidatePlan, goal.follow);
+    plan = withStickyEscort(withStickyFollow(candidatePlan, goal.follow), goal.escort);
     plan = await publishPlan(plan);
     goal.plan = plan; goalManager.persist();
     if (!sameSkill || !skillRun) skillRun = startSkillRun(plan, obs);
@@ -1299,6 +1319,17 @@ for (let step = 1; step <= maxSteps; step++) {
   // se non c'e' nemmeno quella si aspetta. Il bersaglio resta il goal, non il piano.
   const seekKey = !needKey && goal.follow && filtered.options.some(o => o.key === 'seek_player') ? 'seek_player' : null;
   const followKey = !needKey && goal.follow && filtered.options.some(o => o.key === 'follow_player') ? 'follow_player' : null;
+  // Scorta aperta: si cammina verso la meta e si aspetta chi resta indietro.
+  // Anche qui la scelta e' deterministica (nessuna chiamata al modello): l'esito
+  // lo misura l'harness (`busy` a parte, `escort_to` dice quanto ha aspettato).
+  const escortKey = !needKey && goal.escort && filtered.options.some(o => o.key === 'escort_to') ? 'escort_to' : null;
+  if (escortKey && lastEscortTarget !== goal.escort?.from) {
+    lastEscortTarget = goal.escort?.from ?? null;
+    console.log(`ESCORT ORDER ${goal.escort?.from}: guida verso la meta (nessuna chiamata al modello)`);
+    log('escort_order', {step, key: escortKey, target: goal.escort?.from ?? null, destination: goal.escort?.to ?? obs.escort?.target ?? null, waiting: obs.escort?.waiting === true, gap: obs.escort?.gap ?? null});
+  } else if (!escortKey) {
+    lastEscortTarget = null;
+  }
   const lostFollow = !!goal.follow && !needKey && !followKey;
   if (lostFollow) lostFollowSteps += 1; else lostFollowSteps = 0;
   if (needKey && lastNeedKey !== needKey) {
@@ -1360,6 +1391,30 @@ for (let step = 1; step <= maxSteps; step++) {
     }
   } else {
     lostHoldSteps = 0;
+  }
+  // Scorta con l'umano fuori portata: come per il follow l'ordine resta aperto e
+  // il bot aspetta (senza consumare budget) invece di lasciare il modello libero
+  // di andarsene per la mappa; dopo `LOST_HOLD_MAX_STEPS` passi senza traccia
+  // l'ordine si chiude, e il motivo finisce nei log (`escort_released`).
+  const escortHold = !needKey && !escortKey && !pursuitKey && !!goal.escort && obs.escort?.tracked !== true;
+  if (escortHold) {
+    if (lostEscortSteps >= LOST_HOLD_MAX_STEPS) {
+      console.log(`ESCORT RELEASED ${goal.escort?.from}: nessuna traccia da ${lostEscortSteps} passi`);
+      log('escort_released', {step, target: goal.escort?.from ?? null, steps: lostEscortSteps});
+      delete goal.escort;
+      lostEscortSteps = 0;
+    } else {
+      if (lostEscortSteps === 0) {
+        console.log(`ESCORT HOLD ${goal.escort?.from}: aspetto dove ho perso le tracce`);
+        log('escort_hold', {step, target: goal.escort?.from ?? null, tracked: obs.escort?.tracked === true, ready: obs.escort?.ready === true});
+      }
+      lostEscortSteps += 1;
+      await delay(FOLLOW_IDLE_POLL_MS);
+      step -= 1; // un'attesa non consuma il budget: l'ordine deve restare aperto
+      continue;
+    }
+  } else {
+    lostEscortSteps = 0;
   }
   // Ordine di equipaggiamento umano (`equipaggiati con l'elmo`): quando il
   // piano lo dichiara e l'harness offre davvero `equip_armor`, la scelta e'
@@ -1445,6 +1500,8 @@ for (let step = 1; step <= maxSteps; step++) {
   }
   const decision = needKey
     ? {key: needKey, reason: 'survival_' + (needIntent || 'need') + ':' + needKey, source: 'survival_need'}
+    : escortKey
+    ? {key: escortKey, reason: `escort_order:${goal.escort?.from ?? ''}`, source: 'escort_order'}
     : followKey
     ? {key: followKey, reason: `follow_order:${goal.follow}`, source: 'follow_order'}
     : seekKey
@@ -1466,7 +1523,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // lo stato desiderato (l'umano e' li'), non un loop da punire con l'anti-loop.
   // Ne' una ricerca ne' un'attesa di recupero sono stagnazione: la prima ha un
   // bersaglio verificato dall'harness, la seconda e' il tempo che l'umano torni.
-  chosenFingerprint = pursuitKey || lostWaitKey || craftKey || equipKey || dropKey || collectKey ? null : progressFingerprint(obs, plan);
+  chosenFingerprint = pursuitKey || escortKey || lostWaitKey || craftKey || equipKey || dropKey || collectKey ? null : progressFingerprint(obs, plan);
   const actStarted = Date.now();
   let result = await api('POST', '/act', {key});
   // `busy` non è un verdetto sull'azione: il harness sta ancora eseguendo
@@ -1502,13 +1559,13 @@ for (let step = 1; step <= maxSteps; step++) {
   // Un bisogno risolto in pochi ms (notte saltata) non deve far girare il loop
   // a vuoto; il fingerprint resta comunque contato per il bisogno, cosi' un
   // `sleep` che fallisce e si ripete finisce nell'anti-loop.
-  if ((pursuitKey || needKey || lostWaitKey || equipKey || dropKey || collectKey || craftKey) && result?.ok && (result.ms ?? 0) < 250) await delay(FOLLOW_IDLE_POLL_MS);
-  if (goal.follow && step >= maxSteps) {
-    // Il budget si rinnova finche' l'ordine "seguimi" resta aperto: l'impegno
+  if ((pursuitKey || escortKey || needKey || lostWaitKey || equipKey || dropKey || collectKey || craftKey) && result?.ok && (result.ms ?? 0) < 250) await delay(FOLLOW_IDLE_POLL_MS);
+  if ((goal.follow || goal.escort) && step >= maxSteps) {
+    // Il budget si rinnova finche' l'ordine umano resta aperto: l'impegno
     // finisce con un altro ordine (o con un'emergenza che preempta il goal).
     maxSteps += MAX_STEPS;
     console.log(`FOLLOW open: step budget renewed (+${MAX_STEPS} -> ${maxSteps})`);
-    log('follow_budget_renewed', {step, maxSteps});
+    log('follow_budget_renewed', {step, maxSteps, escort: !!goal.escort});
   } else if (step >= maxSteps) {
     console.log('step budget exhausted');
     log('budget_exhausted', {steps: step, totalCost});

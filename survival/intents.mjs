@@ -52,6 +52,11 @@ const KEY_INTENTS = {
   // movimento (`travel`), ma resta distinto da `follow_player` perche' puo'
   // fallire con `found: false` invece di dichiarare un inseguimento riuscito.
   seek_player: ['travel'],
+  // `escort_to` e' l'ordine umano «guidami/accompagnami fino a <posto>»: il bot
+  // guida e aspetta chi resta indietro. E' movimento (`travel`), ma non e' un
+  // inseguimento come `follow_player`: la meta la decide il bot e l'umano puo'
+  // restare indietro senza che l'azione menta sul suo esito.
+  escort_to: ['travel'],
   dig_down: ['mine', 'travel'],
   dig_up: ['mine', 'travel'],
   // Fluidi: allontanarsi dalla lava è una fuga, non un semplice spostamento.

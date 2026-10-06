@@ -846,7 +846,17 @@ quieter hello is preferred (still an open question).
   (`@bot1` is not `@bot`) and a message that starts with an unconfigured prefix
   is not an order. Still open: require whisper only?
 - **Follow semantics**: settled to stop distance 3, 45 s window, ~64-block
-  tracking range. Still open: long escort and behaviour on player disconnect.
+  tracking range. The companion **escort** order («guidami/accompagnami fino a
+  <posto>») is implemented as `escort_to`: the bot leads toward the destination
+  the order names (or the plan waypoint / the replay route), waits when the human
+  is more than `ESCORT_MAX_GAP` behind, resumes within `ESCORT_RESUME_GAP`,
+  closes with `escort_left_behind` after `ESCORT_WAIT_MS` of waiting and
+  `escort_lost` after `ESCORT_LOST_MS` without a trace; the controller chooses it
+  deterministically while `goal.escort` is open and holds the order (without
+  spending budget) when the human is out of view — see
+  [exploration](exploration.md) M3 and [verification](verification.md) 47.52.
+  Still open: a real long escort with a human on the BDS, and an
+  acknowledgement specific to the order.
 - **Priority vs autonomous plan**: settled to "human order overrides until
   superseded or budget end". Still open: an explicit "resume autonomy" command.
 - **Acknowledgement**: still open — the bot can speak (`POST /say`) and greets a
