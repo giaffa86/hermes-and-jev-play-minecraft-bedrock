@@ -6,8 +6,10 @@ every step outside the sculk sensors' hearing, never trigger a shrieker, and —
 the Warden is summoned anyway — leave crouched along a stored return route
 instead of running or fighting.
 
-Status: **spec, not implemented** (no vibration model, no stealth movement, no
-Warden logic). Nothing in this page is collaudato live. Full raw source:
+Status: **W0 and W1 implemented and unit-tested (06/10/2026)**; W2–W6 are
+spec. Nothing here is collaudato live: the vibration model (8-block sphere,
+player-vibration relay, sneak silence) and the shriek level have never been
+observed on the real BDS. Full raw source:
 [`docs/raw/DEEP_DARK_ROADMAP.md`](../raw/DEEP_DARK_ROADMAP.md).
 
 Sources: `bedrock-adapter.mjs` (movement, sneak input, `DIG_PROTECTED`, effects
@@ -21,29 +23,42 @@ tunnel), [redstone](redstone.md) (the sensor primitive).
 
 ## Current state (from the code)
 
-- **The marker rule exists, has never fired live.** `structures.mjs:86-96` marks
+- **The marker rule exists, has never fired live.** `structures.mjs:84-96` marks
   `ancient_city` from the sculk family (`sculk` ≥ 8 score 3, `sculk_shrieker` ≥ 1
   score 3, `sculk_catalyst` ≥ 1 score 2, `minScore: 6`). No run has ever seen
   one (`found: 0`).
 - **`deep_dark` is only a vocabulary entry.** `exploration.mjs:19` aliases the
   biome, but there is no `find_deep_dark` action anywhere.
-- **Breaking sculk is already refused, being heard is not.** `DIG_PROTECTED`
-  (`bedrock-adapter.mjs:85`) already matches `sculk_sensor$` and
-  `sculk_shrieker$`, and `circuits.mjs:79,87` keeps `sculk_shrieker` out of
-  `DANGEROUS_ITEMS`/`FORBIDDEN_BLOCKS`. But *any* break is itself a vibration:
-  protection from breaking is not protection from being heard.
-- **Sneak is a construction input, not a movement mode.** `_moveTo` clears the
-  flag (`bedrock-adapter.mjs:10203-10204`); the only sneaks are the construction
-  edge placement (`:10188-10204`, input at `:9039-9042`) and the dismount/free-hand
-  path (`:12405`, `:7331`). Every normal step therefore vibrates.
+- **Breaking sculk is refused twice over.** `DIG_PROTECTED`
+  (`bedrock-adapter.mjs:86`) matches the whole family (`sculk$`, `sculk_vein$`,
+  `sculk_catalyst$`, `sculk_sensor$`, `sculk_shrieker$`) and `_gatherProtected`
+  (`:8499`) protects it by name as well; `circuits.mjs:79,87` keeps
+  `sculk_shrieker` out of `DANGEROUS_ITEMS`/`FORBIDDEN_BLOCKS`. Since W0 a `dig_*`
+  whose target cell sits inside a sensor sphere is also refused with
+  `vibration_risk_<label>` (`_digTargets` `:9002`, `_digUp` `:13384`). But *any*
+  break is itself a vibration: protection from breaking is not protection from
+  being heard — what a *step* does is W1/W2.
+- **Sneak is a movement mode since W1.** `_moveTo`
+  (`bedrock-adapter.mjs:10401`) accepts `{ sneak }`, keeps the flag on every tick
+  (`_beginMotionTrack` → `_stealthSneaking`, `_physicsStep`) and clears it at the
+  end; the input is declared once (`_sendAuthInput` `:9180-9196`, transition
+  `start_sneaking`/`stop_sneaking`). The older users remain the construction edge
+  placement (`:10386-10402`) and the dismount/free-hand path (`:12603`, `:7471`).
+  A plain `goto_waypoint` still walks: every normal step vibrates.
 - **The Warden is a generic hostile.** `bedrock-survival.mjs:17`, height `2.9`
   at `:37`, and the generic `awayDirection` flee at `:44-46` — the opposite of
-  the correct tactic (do not run).
-- **Darkness is invisible.** `this.effects` (`bedrock-adapter.mjs:1526`) is
-  consulted only for water breathing.
-- **The sensor primitive already exists.** `bedrock-redstone.mjs:171` reads
+  the correct tactic (do not run). Since W0 the census *sees* it (`_wardenView`
+  inside `_sculkCensus`, `bedrock-adapter.mjs:1500`) with presence, distance and
+  health, but nothing acts on it yet (W3).
+- **Darkness is read since W0.** `this.effects` (`bedrock-adapter.mjs:408`,
+  filled by `_onMobEffect` at `:1646`) was consulted only for water breathing;
+  the sculk census now reports `darkness` in `/observe.sculk`. Nothing reacts to
+  it yet (W5).
+- **The sensor primitive already exists.** `bedrock-redstone.mjs:172` reads
   `sculk_sensor_phase`, and `:56-57` lists the sensor among the sensed
-  components — what is missing is a model of *what it hears*.
+  components. W0 models *what it hears*: `sensorPhase`, `vibrationRisk` and
+  `pointSegmentDistance` (`bedrock-vibration.mjs`), with `_vibrationRiskAt`
+  (`bedrock-adapter.mjs:1589`) as the consumption point.
 - **No underground navigation.** The A* is surface-oriented; the Deep Dark needs
   the 3D navigation of [ai-player-roadmap](ai-player-roadmap.md), as stated in
   [exploration](exploration.md). The survey is a histogram of the ~48 loaded
@@ -65,16 +80,27 @@ Re-verification needed against the deployed Bedrock build; the current reference
 
 ## Plan (W0–W6)
 
-- **W0 — Vibration awareness.** Pure `bedrock-vibration.mjs` (`VIBRATION_RADIUS =
-  8`, `vibrationProfile`, `vibrationRisk`, `sensorCoverage` for a *segment*,
-  `shriekerVerdict`, `wardenWarning`) plus `GET /observe.sculk` (sensors with
-  distance/phase, shriekers with `canSummon`, Darkness, `vibrationRiskAtBot`,
-  Warden presence), the whole `SCULK_FAMILY` in `DIG_PROTECTED` and a typed
-  `vibration_risk` refusal for any `dig_*` inside a sensor radius.
-- **W1 — Sneak-walk as a real mode.** `_moveTo({sneak: true})` keeps the sneak
-  flag on every tick and clears it at the end, with the **authoritative** speed
-  measured against a sneak ceiling: a speed above it is a typed `not_sneaking`
-  failure, because silence must be *verified*, never assumed. `sneak_to` +
+- **W0 — Vibration awareness. ✅ implemented and unit-tested (06/10/2026).**
+  `bedrock-vibration.mjs` is pure and closed: `VIBRATION_RADIUS = 8`,
+  `vibrationProfile(action)`, `sensorPhase`/`shriekerState`, `vibrationRisk` (the
+  sphere), `pointSegmentDistance` (a whole walking leg, in place of the spec's
+  `sensorCoverage`), `shriekerVerdict` (standing on a shrieker is refused even
+  crouched), `wardenWarning` (`clear`/`warning`/`summoned`) and `summarizeSculk`.
+  The adapter has `_sculkCensus` (throttled by `SCULK_RESCAN_MS`, `ready: false`
+  on an unloaded world — and no risk is reported when not ready, because an
+  unlooked-at world must not be read as silence — shrieks counted once on the
+  `active` transition inside `SHRIEK_WINDOW_MS`), `_wardenView`, `_sculkView`,
+  `_vibrationRiskAt`, `observe().sculk` and `GET /observe.sculk`; the whole
+  `SCULK_FAMILY` is in `DIG_PROTECTED` and any `dig_*` inside a sensor sphere is
+  refused with `vibration_risk_<label>`.
+- **W1 — Sneak-walk as a real mode. ✅ implemented and unit-tested (06/10/2026).**
+  `_moveTo(..., { sneak: true })` keeps the sneak flag on every tick
+  (`SNEAK_SPEED_FACTOR` in `_physicsStep`) and declares it on the wire once, and
+  the speed the server actually accepted is measured against the sneak ceiling
+  (`classifySneakSpeed`, `SNEAK_SPEED_CEILING_MPS = 2.6`): above it the walk is a
+  typed `not_sneaking` failure, because silence must be *verified*, never
+  assumed; a track with no real step is `no_measurement`, not a silent success.
+  Action `sneak_to` (offered next to `goto_waypoint`, `riding` refusal) +
   `GET /observe.sneak`.
 - **W2 — Stealth pathfinding.** `planStealthRoute(from, to, world)`: high cost
   inside a sensor sphere, shrieker cells forbidden, no digging and no placing
@@ -97,6 +123,18 @@ Re-verification needed against the deployed Bedrock build; the current reference
 - **W6 — Limits and docs.** Observe, never loot; never break or place
   shrieker/sensor/catalyst; **never a Warden in the shared world without consent**;
   no client-side "silence" trick; documentation in `BEDROCK.md` and this page.
+
+## Status by milestone
+
+| # | Milestone | Content | Status |
+|---|---|---|---|
+| W0 | Vibration awareness | Pure vibration model + whole `SCULK_FAMILY` in `DIG_PROTECTED` + `vibration_risk_<label>` + `/observe.sculk`. | ✅ implemented, unit-tested (11 pure + 8 adapter cases); never live |
+| W1 | Sneak-walk as a real mode | Persistent sneak flag, speed verdict measured from the server (`not_sneaking`), `sneak_to`, `/observe.sneak`. | ✅ implemented, unit-tested (6 adapter cases); never live |
+| W2 | Stealth pathfinding | Vibration cost, forbidden shrieker cells, no dig/place in the Deep Dark, mandatory return route, `no_stealth_route`. | ❌ spec |
+| W3 | Shrieker/Warden warning | `shriekLevel` verdicts and the crouched-escape tactic; the governor must block the generic flee for a Warden. | ❌ spec |
+| W4 | Underground 3D navigation | Pillar/bridge/tunnel with the fluid checks, `find_deep_dark` and the descent/return routes. | ❌ spec |
+| W5 | Darkness, kit, mission | Darkness as a proximity warning, the declared kit + escape budget, `reach_deep_dark`, `CURRICULUM=deep_dark`. | ❌ spec |
+| W6 | Limits and docs | Observe, never loot; never a Warden in the shared world without consent; `BEDROCK.md` + this page. | ◑ `sneak_to` and the observation routes documented; the rest is spec |
 
 ## Open risks
 

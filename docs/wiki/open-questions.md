@@ -495,6 +495,18 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
 
 ## Live verification pending
 
+- **Deep Dark W0/W1: the model is offline, the world has nothing to test it
+  against (2026-10-06).** The vibration model and `sneak_to` are unit-tested (25
+  cases) but every number comes from the reference rather than the deployed
+  build: the 8-block sensor sphere, the player-vibration → shrieker relay, the
+  sneak silence (the ceiling `SNEAK_SPEED_CEILING_MPS = 2.6` is a guess about a
+  Bedrock server, not a measurement), wool occlusion and the 3-shriek summon.
+  The `ancient_city` marker rule has never fired live and no Deep Dark is within
+  reach, so the gate is an expedition (W4) or a disposable world copy; the W3
+  round (a Warden summoned on purpose) additionally needs explicit consent,
+  because the world is shared. A cheap first probe: `GET /observe.sculk` next to
+  any sculk and a `sneak_to` on flat ground, to compare the measured speed with
+  `WALK_SPEED`. See [deep-dark](deep-dark.md).
 - **Companion taming: the code is right, the world is out of stock (2026-10-03).**
   After the naming fix (`cod`/`salmon`, see [companions](companions.md)) the live
   calls are typed and instant — `tame_cat` → `missing_feed {cod/salmon}`,

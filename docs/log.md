@@ -1,5 +1,32 @@
 # Log
 
+## [2026-10-06] feat | Deep Dark W0/W1: a vibration model and a sneak that is verified
+
+The Deep Dark roadmap (`docs/raw/DEEP_DARK_ROADMAP.md`) got its first two
+milestones. **W0** adds the pure module `bedrock-vibration.mjs` (the 8-block
+sphere of `VIBRATION_RADIUS`, `vibrationProfile` per action,
+`sensorPhase`/`shriekerState`, `vibrationRisk` and `pointSegmentDistance`,
+`shriekerVerdict`, `wardenWarning`, `summarizeSculk`), the adapter census
+`_sculkCensus` (throttled by `SCULK_RESCAN_MS`, `ready: false` on an unloaded
+world, shrieks counted once per `active` transition inside a ten-minute window),
+`_wardenView`, the `sculk`/`sneak` blocks in `observe()` and the routes
+`GET /observe.sculk` / `GET /observe.sneak`; the whole `SCULK_FAMILY` joins
+`DIG_PROTECTED`, and a `dig_*` whose target cell lies inside a sensor sphere is
+refused with a typed `vibration_risk_<label>` before anything is broken. **W1**
+turns sneak into a movement mode (`_moveTo(..., { sneak: true })`, flag held on
+every tick, declared on the wire once through the `start_sneaking`/
+`stop_sneaking` transition) and, more importantly, *verifies* it: the distance
+the server accepted is compared with the sneak ceiling, so a walk that was not
+actually crouched fails with `not_sneaking`, and a track with no real step is
+`no_measurement` rather than a silent success. Action `sneak_to` sits next to
+`goto_waypoint` and is refused while riding. Tests: `tests/vibration.test.mjs`
+(11 pure cases) and `tests/bedrock-vibration-adapter.test.mjs` (14 cases: the dig
+refusals, the loaded-world gate, shriek counting, the Warden census, the wire
+transition, the speed verdict, the riding refusal); merged suite **1569/1569**.
+Nothing is live-verified: the Bedrock numbers (sphere, relay, sneak silence,
+3-shriek summon) come from the reference, not from the deployed build, and the
+world holds no loaded Deep Dark.
+
 ## [2026-10-06] feat | The waiting escort says where it waits
 
 On 06/10 the user asked whether the bot tells them in chat "ti sto aspettando,

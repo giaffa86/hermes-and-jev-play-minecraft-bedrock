@@ -16,6 +16,22 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 > current-state authority going forward. `BEDROCK.md` remains the operational
 > runbook for per-action detail.
 
+## Deep Dark follow-up (06/10)
+
+[Deep Dark stealth](deep-dark.md) **W0 and W1 are implemented and unit-tested**
+(25 offline cases in `tests/vibration.test.mjs` and
+`tests/bedrock-vibration-adapter.test.mjs`): a pure vibration model
+(`bedrock-vibration.mjs` — 8-block sphere, `vibrationProfile`, `wardenWarning`,
+`classifySneakSpeed`), the sculk census with `observe().sculk`/`GET /observe.sculk`,
+the whole `SCULK_FAMILY` in `DIG_PROTECTED` with a typed `vibration_risk_<label>`
+refusal for a `dig_*` inside a sensor sphere, and `sneak_to`/`/observe.sneak`,
+where the silence is verified from the speed the server accepted
+(`not_sneaking` above the sneak ceiling, `no_measurement` with no real step).
+Merged suite: **1569/1569**. Not deployed and never live-verified — every Bedrock
+number is from the reference, and no Deep Dark is loaded in reach; W2–W6 (stealth
+pathfinding, the Warden tactic, underground 3D navigation, `find_deep_dark`)
+remain spec. The bot stays OFF.
+
 ## Apiculture follow-up (04/10)
 
 [Bees and honeycomb](bees.md) are implemented and offline-tested after the

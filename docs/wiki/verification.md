@@ -21,15 +21,27 @@ material selection and controller integration. ⏳ Real BDS placement, edge move
 procurement and cleanup require a scoped round in an approved test area.
 No live construction success is claimed.
 
-## Deep Dark / Warden (spec only)
+## Deep Dark / Warden (W0 and W1 only)
 
-❌ [Deep Dark stealth](deep-dark.md): no vibration model, no sneak movement
-mode, no shrieker/Warden logic, no underground 3D navigation. The
-`ancient_city` marker rule exists (`structures.mjs:86-96`) but has never fired
-live, and `DIG_PROTECTED` (`bedrock-adapter.mjs:85`) keeps the bot from
-*breaking* sculk, not from *being heard*. Nothing is live-verified and none of
-W0–W6 is implemented; the Bedrock numbers (8-block sphere, player-vibration
-relay, 3-shriek summon) must be re-probed first.
+⚠️ [Deep Dark stealth](deep-dark.md): **W0 (vibration awareness) and W1
+(sneak-walk as a real mode) are implemented and unit-tested (06/10/2026), never
+live.** The pure model is `bedrock-vibration.mjs` (`VIBRATION_RADIUS = 8`,
+`vibrationRisk`, `pointSegmentDistance`, `shriekerVerdict`, `wardenWarning`,
+`classifySneakSpeed`), the census is `_sculkCensus` with `observe().sculk` /
+`GET /observe.sculk`, the whole `SCULK_FAMILY` is in `DIG_PROTECTED`, a `dig_*`
+inside a sensor sphere is refused with `vibration_risk_<label>`, and `sneak_to`
+walks crouched with the speed measured from the server (`not_sneaking` above the
+sneak ceiling, `no_measurement` with no real step) — 25 offline cases
+(`tests/vibration.test.mjs`, `tests/bedrock-vibration-adapter.test.mjs`);
+`BEDROCK.md` carries the `sneak_to` row.
+
+❌ W2–W6 are spec: no stealth pathfinding, no shrieker/Warden *tactic* (the
+Warden is seen by the census but the survival layer still flees), no underground
+3D navigation, no `find_deep_dark`. The `ancient_city` marker rule exists
+(`structures.mjs:84-96`) but has never fired live, and nothing here is
+live-verified: the Bedrock numbers (8-block sphere, player-vibration relay,
+sneak silence, 3-shriek summon) must be probed before they are trusted, and the
+world has no loaded Deep Dark.
 
 ## How to run
 

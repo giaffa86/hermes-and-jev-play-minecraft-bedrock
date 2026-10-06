@@ -32,6 +32,7 @@ import { loadCircuits, planCircuit, circuitSiteBlocked, circuitSafety, forbidden
 import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
 import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, isNetherLike, landingHazard, maxFallDepth, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, projectileVelocity, dodgeCandidates, breaksLine, isPiglinType, goldArmorWorn, piglinNeutral, barterTarget, isBarterReward, BARTER_INGOT, BARTER_RANGE, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName, endermanAimPoint, isPumpkinMask, pumpkinMaskWorn, isEnderPearl, ENDERMAN_GAZE_TOLERANCE_DEG, isBlazeType, coverCandidates, blazeTactics, blazeRodProgress, BLAZE_RANGE, BLAZE_RETREAT_HEALTH, BLAZE_ROD, COVER_RADIUS } from './bedrock-nether.mjs';
 import { END_DIMENSION, END_PORTAL, END_PORTAL_FRAME, EYE_OF_ENDER, BLAZE_POWDER, BLAZE_ROD_ITEM, ENDER_EYE_FRAME_TOTAL, STRONGHOLD_RADIUS, EYE_READINGS_MAX, POWDER_PER_ROD, isEyeSignalType, frameHasEye, frameStatus, eyeCraftPlan, eyeReading, triangulateStronghold, bossVerdict, endSummary } from './bedrock-end.mjs';
+import { VIBRATION_RADIUS, SHRIEK_WINDOW_MS, SNEAK_SPEED_FACTOR, SCULK_FAMILY, SCULK_SENSORS, SCULK_SHRIEKERS, isSculkFamily, sensorPhase, shriekerState, vibrationRisk, shriekerVerdict, wardenWarning, classifySneakSpeed, summarizeSculk } from './bedrock-vibration.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -82,11 +83,18 @@ const TOOL_HARVEST_RANK = { wooden: 1, golden: 1, stone: 2, copper: 2, iron: 3, 
 const HARVEST_TOOL_RANK = { 941: 1, 956: 1, 946: 2, 951: 2, 961: 3, 966: 4, 971: 5 };
 // Blocchi funzionali o costruiti che dig_down non deve mai scavare per errore
 // (tavoli, contenitori, stazioni): il passo verrebbe rifiutato invece che distruggerli.
-const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|_bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$|farmland$|_fence$|_fence_gate$|wheat$|carrots$|potatoes$|beetroot$|melon_stem$|pumpkin_stem$|sweet_berry_bush$|nether_wart$|redstone_wire$|redstone_block$|lever$|_button$|pressure_plate$|_repeater$|_comparator$|observer$|piston$|dispenser$|dropper$|lamp$|daylight_detector$|tripwire_hook$|tripwire$|target$|crafter$|sculk_sensor$|sculk_shrieker$|command_block$|structure_block$|structure_void$|jigsaw$|barrier$|bedrock$|end_crystal$|fire$|soul_fire$|beehive$|bee_nest$|campfire$)/;
+const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|_bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$|farmland$|_fence$|_fence_gate$|wheat$|carrots$|potatoes$|beetroot$|melon_stem$|pumpkin_stem$|sweet_berry_bush$|nether_wart$|redstone_wire$|redstone_block$|lever$|_button$|pressure_plate$|_repeater$|_comparator$|observer$|piston$|dispenser$|dropper$|lamp$|daylight_detector$|tripwire_hook$|tripwire$|target$|crafter$|sculk$|sculk_vein$|sculk_catalyst$|sculk_sensor$|sculk_shrieker$|command_block$|structure_block$|structure_void$|jigsaw$|barrier$|bedrock$|end_crystal$|fire$|soul_fire$|beehive$|bee_nest$|campfire$)/;
 // Redstone (R0): un circuito non è un ostacolo da scavare ma un impianto della
 // base. I minerali di redstone restano **fuori** da DIG_PROTECTED (si estraggono
 // con `mine_redstone_ore`), i componenti no.
 const REDSTONE_RESCAN_MS = +(process.env.REDSTONE_RESCAN_MS || 5000);
+// Deep Dark (W0 di docs/raw/DEEP_DARK_ROADMAP.md): il censimento di sensori e
+// shrieker è throttled come quello della redstone. In `DIG_PROTECTED` la
+// famiglia sculk è completa: scavare *qualsiasi* blocco sculk è già una
+// vibrazione, non solo rompere il sensore.
+const SCULK_RESCAN_MS = +(process.env.SCULK_RESCAN_MS || 5000);
+const SCULK_SCAN_RADIUS = 48;
+const SCULK_SCAN_LIMIT = 24;
 const REDSTONE_NEARBY_NAMES = [...new Set([...REDSTONE_ORES, ...REDSTONE_COMPONENTS, ...REDSTONE_HAZARDS])];
 // Il nome dell'item non è sempre il nome del blocco: la polvere di redstone si
 // piazza come `redstone_wire`.
@@ -381,6 +389,12 @@ export class BedrockAdapter {
     this._structureSurveyAt = 0;
     this._fluidScan = null;        // censimento acqua/lava nell'area caricata (M0)
     this._fluidScanAt = 0;
+    // W0: censimento sculk (sensori, shrieker, celle della famiglia) e livello di
+    // allarme. Gli shriek osservati si sommano in una finestra: è l'unico segnale
+    // del livello di allarme visibile al client (il warning level vive nel server).
+    this._sculkScan = null;
+    this._sculkScanAt = 0;
+    this._sculkShrieks = [];
     // Aria (M1): il server non espone l'attributo, quindi il budget è *simulato*
     // tick per tick (`airSource: 'simulated'`). Se un giorno arrivasse, la verità
     // del server vince e la sorgente diventa 'server'.
@@ -485,12 +499,16 @@ export class BedrockAdapter {
     this._lastYaw = 0;
     this._lastPitch = 0;
     this._motion = null;
+    this._motionTrack = null;       // misura di velocità del movimento in corso (W1)
     // Salto fuori dal pathfinder (pillar-up): `_motion` è di proprietà del
     // pathfinder e `_updateMotionState` ne dereferenzia `target`/`path`, quindi
     // un salto a comando usa un canale dedicato invece di sovrascriverlo.
     this._freeJump = null;
     this.riding = null;                // { riddenEntityId, at } quando il bot è montato
     this._sneaking = false;            // sneak dichiarato al server (mount/dismount/trade)
+    this._sneakDeclared = false;       // ultimo `sneaking` mandato nei player_auth_input
+    this._stealthSneaking = false;     // sneak di navigazione silenziosa (W1)
+    this._lastSneak = null;            // ultima misura di velocità sneak (verdetto dal server)
     this.offhand = null;               // { name, count } dell'offhand (scudo), conferma dal server
     this.shieldUp = false;             // l'ultimo frame auth dichiarava l'uso dell'item
     this._ridingForward = false;       // vettore avanti continuo mentre cavalca
@@ -1472,6 +1490,108 @@ export class BedrockAdapter {
     // da /observe evita di gonfiare la percezione del controller.
     if (cells) view.cells = census.cells;
     return view;
+  }
+
+  // ---- Deep Dark (W0 di docs/raw/DEEP_DARK_ROADMAP.md) ------------------------
+  // Sensori, shrieker e celle sculk nell'area caricata. Il censimento è throttled
+  // come quello dei fluidi e, come quello, **non** si mette in cache appena
+  // connessi: un mondo non ancora caricato non è un Deep Dark silenzioso
+  // (`ready: false`), quindi la consapevolezza si recupera al primo tick pieno.
+  _sculkCensus ({ force = false } = {}) {
+    const now = Date.now();
+    if (!force && this._sculkScan && now - this._sculkScanAt < SCULK_RESCAN_MS) return this._sculkScan;
+    const point = this.position ?? this._feet ?? null;
+    const sensors = [], shriekers = [], blocks = [];
+    const find = typeof this.world?.findBlocks === 'function' ? this.world.findBlocks.bind(this.world) : null;
+    const propertiesAt = position => {
+      const block = this.world?.blockAt?.(position) ?? null;
+      try { return block?.getProperties?.() ?? null; } catch { return null; }
+    };
+    if (find && point) {
+      for (const name of SCULK_SENSORS) {
+        for (const row of find(name, point, SCULK_SCAN_RADIUS, SCULK_SCAN_LIMIT)) {
+          const position = row?.position ?? row;
+          sensors.push({ name, position, distance: +(row?.distance ?? 0).toFixed(2), ...sensorPhase(propertiesAt(position)) });
+        }
+      }
+      for (const name of SCULK_SHRIEKERS) {
+        for (const row of find(name, point, SCULK_SCAN_RADIUS, SCULK_SCAN_LIMIT)) {
+          const position = row?.position ?? row;
+          shriekers.push({ name, position, distance: +(row?.distance ?? 0).toFixed(2), ...shriekerState(propertiesAt(position)) });
+        }
+      }
+      for (const name of SCULK_FAMILY) for (const row of find(name, point, SCULK_SCAN_RADIUS, SCULK_SCAN_LIMIT)) blocks.push({ name, position: row?.position ?? row });
+    }
+    // Ogni shrieker che *sta* shriekando è un allarme in corso; quando smette, il
+    // suo shriek è consumato (il conteggio vero del server non è osservabile) e
+    // gli restano solo le voci dentro la finestra.
+    const activeKeys = new Set(shriekers.filter(row => row.active === true).map(row => `${row.position.x},${row.position.y},${row.position.z}`));
+    const known = new Set(this._sculkShrieks.map(entry => `${entry.position.x},${entry.position.y},${entry.position.z}`));
+    for (const key of activeKeys) if (!known.has(key)) {
+      const row = shriekers.find(candidate => `${candidate.position.x},${candidate.position.y},${candidate.position.z}` === key);
+      this._sculkShrieks.push({ position: row.position, at: now });
+    }
+    this._sculkShrieks = this._sculkShrieks.filter(entry => activeKeys.has(`${entry.position.x},${entry.position.y},${entry.position.z}`) || now - entry.at <= SHRIEK_WINDOW_MS);
+    const feet = this._feet ? { x: Math.floor(this._feet.x), y: Math.floor(this._feet.y + 0.1), z: Math.floor(this._feet.z) } : null;
+    const loaded = this.world?.loaded?.size ?? null;
+    const ready = loaded !== 0;
+    // Senza censimento pronto il rischio non si calcola: un `count: 0` da un
+    // mondo non ancora guardato sarebbe una rassicurazione falsa, e il consumo
+    // coerente (`_vibrationRiskAt`) rifiuta solo quando il censimento è pronto.
+    const summary = summarizeSculk({ sensors, shriekers, blocks, point: ready ? feet : null });
+    const census = {
+      ...summary,
+      level: this._sculkShrieks.length,
+      windowMs: SHRIEK_WINDOW_MS,
+      warning: wardenWarning(this._sculkShrieks.length),
+      darkness: this.effects?.has?.('darkness') ?? null,
+      warden: this._wardenView(),
+      shriekerAtBot: shriekerVerdict(feet, shriekers),
+      family: SCULK_FAMILY,
+      // Le righe complete (`sensorRows`) servono al calcolo del rischio; in testa
+      // restano i *conteggi* di `summarizeSculk`, che è il contratto del modulo
+      // puro (stessa forma di `summarizeFluids`/`summarizeRedstone`).
+      sensorRows: sensors,
+      shriekerRows: shriekers,
+      scanned: sensors.length + shriekers.length + blocks.length,
+      loaded, ready, at: now,
+    };
+    if (!ready) return census;
+    this._sculkScan = census;
+    this._sculkScanAt = now;
+    return this._sculkScan;
+  }
+
+  // Il Warden è cieco e segue vibrazioni e odore: la sua presenza cambia la
+  // tattica (fermarsi, non scappare di corsa) e viene dalla stessa mappa di
+  // entità del resto della percezione.
+  _wardenView () {
+    const from = this.position ?? this._feet ?? null;
+    for (const entity of this.entities?.values?.() ?? []) {
+      if (entity?.type !== 'warden' || !entity.position) continue;
+      const distance = from ? +Math.hypot(entity.position.x - from.x, entity.position.y - from.y, entity.position.z - from.z).toFixed(2) : null;
+      return { present: true, position: entity.position, distance, health: entity.health ?? null, lastAt: entity.lastAt ?? null };
+    }
+    return { present: false, position: null, distance: null, health: null, lastAt: null };
+  }
+
+  // Vista per /observe.sculk: censimento (in cache) + rischio nella cella del bot.
+  _sculkView ({ force = false } = {}) {
+    return { ...this._sculkCensus({ force }), sneak: this._sneakView() };
+  }
+
+  _sneakView () {
+    return { active: !!this._stealthSneaking, declared: !!this._sneakDeclared, last: this._lastSneak };
+  }
+
+  // Rischio di vibrazione in una cella: `null` se il censimento non è pronto o non
+  // ci sono sensori noti — nessun rifiuto inventato su un mondo non guardato.
+  _vibrationRiskAt (cell) {
+    if (!cell) return null;
+    const census = this._sculkCensus();
+    if (!census.ready || !census.sensorRows?.length) return null;
+    const risk = vibrationRisk(cell, census.sensorRows, { radius: VIBRATION_RADIUS });
+    return risk.count > 0 ? risk : null;
   }
 
   // ---- M2: respirare e gestire una discesa -----------------------------------
@@ -3784,6 +3904,8 @@ export class BedrockAdapter {
       bucket: this._bucketView(),
       nether: this._netherView(),
       redstone: this._redstoneView(),
+      sculk: this._sculkView(),
+      sneak: this._sneakView(),
       circuits: this._circuitsView(),
       construction: this.construction.view(),
       ores: (this.valuableOres ?? []).slice(0, 8),
@@ -3855,6 +3977,10 @@ export class BedrockAdapter {
     }
     if (waypointUnmet) {
       o.push({ key: 'goto_waypoint', description: `Pathfind to planner waypoint ${JSON.stringify(this.plan.waypoint)}` });
+      // W1: la variante silenziosa. Il governor può togliere `goto_waypoint`
+      // quando un warden è nei paraggi, non aggiungerla: qui viene offerta
+      // accanto all'originale e il rifiuto `not_sneaking` arriva dall'esito.
+      o.push({ key: 'sneak_to', description: `Sneak-walk to planner waypoint ${JSON.stringify(this.plan.waypoint)} (silent step; refused as \`not_sneaking\` if the server still moves at walk speed)` });
     }
     // Comando umano "seguimi": plan.follow = gamertag del giocatore da seguire.
     const follow = this._playerByName(this.plan?.follow);
@@ -4700,6 +4826,22 @@ export class BedrockAdapter {
         result = { ok: true };
       } else if (key === 'goto_waypoint' && this.resourceSites.pending) {
         result = await this.resourceSites.navigate(this.resourceSites.pending, context);
+      } else if (key === 'sneak_to' && this.plan?.waypoint) {
+        // W1: come `goto_waypoint` ma accovacciato. Il silenzio si verifica sul
+        // movimento vero: se il server muove comunque a velocità di cammino lo
+        // sneak non è stato accettato e il passo è rumoroso, quindi il risultato
+        // è un rifiuto tipizzato e non un successo presunto.
+        const w = this.plan.waypoint;
+        const target = { x: w.x, y: Number.isFinite(w.y) ? w.y : (this.position?.y ?? 70), z: w.z };
+        if (this.riding) {
+          result = { ok: false, error: 'riding', hint: 'dismount before sneaking' };
+        } else {
+          const moveResult = await this._moveTo(target, 2, 45000, { sneak: true, verticalTolerance: Number.isFinite(w.y) ? 1 : null });
+          const measured = this._lastSneak;
+          result = measured?.ok === false
+            ? { ok: false, error: 'not_sneaking', measured, path: moveResult }
+            : { ok: true, ...moveResult, sneak: measured };
+        }
       } else if (key === 'goto_waypoint' && this.plan?.waypoint) {
         const w = this.plan.waypoint;
         const target = { x: w.x, y: Number.isFinite(w.y) ? w.y : (this.position?.y ?? 70), z: w.z };
@@ -8358,6 +8500,8 @@ export class BedrockAdapter {
     if (!block?.position) return true;
     const pos = block.position, key = `${pos.x},${pos.y},${pos.z}`;
     if (DIG_PROTECTED.test(block.name ?? '') && !isCropBlock(block.name)) return true;
+    // W0: la famiglia sculk è protetta per intero — scavarla è gia' una vibrazione.
+    if (isSculkFamily(block.name)) return true;
     if (this._placedBlocks?.has(key) || this.memory?.placementAt?.(pos, this.dimension)) return true;
     const project = this.construction?.project;
     return project?.dimension === this.dimension && project.plan.cells.some(cell =>
@@ -8873,6 +9017,10 @@ export class BedrockAdapter {
       if (this._passableForPath(block)) continue;
       if (/water|lava/.test(block.name)) return { error: `unsafe_block_${label}` };
       if (DIG_PROTECTED.test(block.name)) return { error: `protected_${label}`, block: block.name };
+      // W0: scavare dentro il raggio di un sensore sculk è già una vibrazione,
+      // anche se il blocco non è della famiglia sculk.
+      const noise = this._vibrationRiskAt(cell);
+      if (noise) return { error: `vibration_risk_${label}`, block: block.name, position: cell, sensors: noise.count, nearest: noise.nearest };
       if (!block.diggable || !(block.hardness >= 0)) return { error: `not_diggable_${label}` };
       targets.push({ cell, block, label });
     }
@@ -9036,10 +9184,14 @@ export class BedrockAdapter {
     this.tick = tick != null ? tick : this._advanceTick();
     const position = { ...this.position };
     const inputData = ['block_breaking_delay_enabled'];
-    if (this._constructionSneaking) inputData.push('sneaking');
-    if (this._constructionSneaking && !this._constructionWasSneaking) inputData.push('start_sneaking');
-    if (!this._constructionSneaking && this._constructionWasSneaking) inputData.push('stop_sneaking');
-    this._constructionWasSneaking = !!this._constructionSneaking;
+    // W1: lo sneak di navigazione (`_stealthSneaking`) si somma a quello di
+    // costruzione; al server interessa un solo stato, con le transizioni a fronte
+    // (`start_sneaking`/`stop_sneaking` solo quando cambia).
+    const sneaking = !!(this._constructionSneaking || this._stealthSneaking);
+    if (sneaking) inputData.push('sneaking');
+    if (sneaking && !this._sneakDeclared) inputData.push('start_sneaking');
+    if (!sneaking && this._sneakDeclared) inputData.push('stop_sneaking');
+    this._sneakDeclared = sneaking;
     let move = moveVector || { x: 0, z: 0 };
     const motion = this._motion;
     if (this.riding) {
@@ -9660,6 +9812,10 @@ export class BedrockAdapter {
     if (motion?.active && motion.forward) {
       const yawRad = motion.yaw * Math.PI / 180;
       let speed = this._wading() ? WALK_SPEED * WADE_SPEED_FACTOR : WALK_SPEED;
+      // W1: accovacciato si cammina al 30% della velocità. Se la previsione locale
+      // resta *sotto* quella del server si viene corretti meno (e la velocità vera
+      // la misura comunque `_lastSneak` sui pacchetti `move_player`).
+      if (motion.sneak) speed *= SNEAK_SPEED_FACTOR;
       if (motion.preciseEdge) speed = Math.min(speed * 0.3, Math.hypot(motion.target.x - this._feet.x, motion.target.z - this._feet.z));
       const waypoint = motion.path?.[motion.index];
       if (waypoint && !motion.preciseEdge) speed = Math.min(speed, Math.hypot(waypoint.x + 0.5 - this._feet.x, waypoint.z + 0.5 - this._feet.z));
@@ -9700,18 +9856,19 @@ export class BedrockAdapter {
       }
     }
     if (this._motion?.active) this._updateMotionState();
+    this._sampleMotionTrack();
   }
 
   // ---- percorso e stato del movimento ------------------------------------------------
 
-  _startMotion (path, goalNode, target, stopDistance, deadline, { arrivalVerticalTolerance = 3 } = {}) {
+  _startMotion (path, goalNode, target, stopDistance, deadline, { arrivalVerticalTolerance = 3, sneak = false } = {}) {
     return new Promise(resolve => {
       // Un movimento ancora pendente verrebbe sovrascritto e la sua promise non
       // sarebbe piu' risolvibile (nessuno la risolve): la si chiude esplicitamente.
       if (this._motion?.active) this._finishMotion('superseded');
       this._motion = {
         active: true, path, index: Math.min(1, path.length - 1), goalNode,
-        target, stopDistance, deadline, resolve, arrivalVerticalTolerance,
+        target, stopDistance, deadline, resolve, arrivalVerticalTolerance, sneak: !!sneak, track: this._motionTrack ?? null,
         yaw: this._yawTo(this._feet, { x: goalNode.x + 0.5, z: goalNode.z + 0.5 }),
         forward: true, jumpQueued: false, jumpHeldTicks: 0, jumpStart: false,
         bestWaypointDist: Infinity, lastProgressAt: Date.now(), stuckTries: 0,
@@ -9728,13 +9885,54 @@ export class BedrockAdapter {
   }
 
   _stopMotion () {
+    if (this._motion?.track) { this._endMotionTrack(this._motion.track); this._motion.track = null; }
     this._motion = null;
+  }
+
+  // ---- W1: velocità misurata (lo sneak si verifica, non si presume) -----------
+  // La posizione che conta è quella del **server** (`this.position` arriva dai
+  // pacchetti `move_player`): il flag `sneaking` è solo una richiesta, il server
+  // può muovere il bot a velocità di cammino lo stesso.
+  _beginMotionTrack ({ sneak = false } = {}) {
+    this._stealthSneaking = !!sneak;
+    const track = { sneak: !!sneak, at: Date.now(), distanceM: 0, samples: 0, skipped: 0, closed: false, last: null };
+    this._motionTrack = track;
+    return track;
+  }
+
+  _sampleMotionTrack () {
+    const track = this._motionTrack;
+    if (!track || track.closed || !this.position) return;
+    const x = this.position.x, z = this.position.z;
+    if (track.last) {
+      const step = Math.hypot(x - track.last.x, z - track.last.z);
+      // Un salto grande non è un passo ma una correzione/teletrasporto: contarlo
+      // gonfierebbe la velocità misurata e farebbe fallire uno sneak vero.
+      if (step <= 1) track.distanceM += step;
+      else track.skipped++;
+    }
+    track.last = { x, z };
+    track.samples++;
+  }
+
+  _endMotionTrack (track = this._motionTrack) {
+    if (this._motionTrack === track) this._motionTrack = null;
+    if (this._stealthSneaking) this._stealthSneaking = false;
+    if (!track || track.closed) return null;
+    track.closed = true;
+    const seconds = (Date.now() - track.at) / 1000;
+    const verdict = classifySneakSpeed({ distanceM: track.distanceM, seconds });
+    this._lastSneak = { ...verdict, sneak: track.sneak, samples: track.samples, skipped: track.skipped };
+    return this._lastSneak;
   }
 
   _finishMotion (reason) {
     const motion = this._motion;
     if (!motion) return;
     if (motion.guard) { clearTimeout(motion.guard); motion.guard = null; }
+    // W1: il movimento è finito, la misura di velocità si chiude adesso (anche su
+    // `stuck`/`timeout`): un verdetto di silenzio vale solo sul tratto percorso.
+    if (motion.track) { this._endMotionTrack(motion.track); motion.track = null; }
     motion.active = false;
     motion.forward = false;
     const resolve = motion.resolve;
@@ -10200,7 +10398,7 @@ export class BedrockAdapter {
     }
   }
 
-  async _moveTo (target, stopDistance = 1.5, timeoutMs = 30000, { signal = null, verticalTolerance = null, arrivalVerticalTolerance = 3, preciseArrival = false } = {}) {
+  async _moveTo (target, stopDistance = 1.5, timeoutMs = 30000, { signal = null, verticalTolerance = null, arrivalVerticalTolerance = 3, preciseArrival = false, sneak = false } = {}) {
     this._constructionSneaking = false;
     signal ??= this._actionScope?.getStore()?.signal;
     if (signal?.aborted) throw new Error('action_cancelled');
@@ -10255,7 +10453,8 @@ export class BedrockAdapter {
       // il bot è arrivato a destinazione e l'azione ha finito `path_failed` in 28,5 s).
       const endNode = path.at(-1);
       const motionStart = { ...this._feet };
-      const outcome = await this._startMotion(path, goal, { x: endNode.x + 0.5, y: endNode.y, z: endNode.z + 0.5 }, stop, deadline, { arrivalVerticalTolerance });
+      this._beginMotionTrack({ sneak });
+      const outcome = await this._startMotion(path, goal, { x: endNode.x + 0.5, y: endNode.y, z: endNode.z + 0.5 }, stop, deadline, { arrivalVerticalTolerance, sneak });
       if (signal?.aborted) throw new Error('action_cancelled');
       const reachedWaypoints = Math.max(0, (this._motion?.index ?? 1) - Math.min(1, path.length - 1));
       this._stopMotion();
@@ -13149,6 +13348,9 @@ export class BedrockAdapter {
       if (this._passableForPath(block)) continue;
       if (/water|lava/.test(block.name)) return { error: `unsafe_block_${label}` };
       if (DIG_PROTECTED.test(block.name)) return { error: `protected_${label}`, block: block.name };
+      // W0: come in _digTargets, scavare dentro il raggio di un sensore vibra.
+      const noise = this._vibrationRiskAt(cell);
+      if (noise) return { error: `vibration_risk_${label}`, block: block.name, position: cell, sensors: noise.count, nearest: noise.nearest };
       if (!block.diggable || !(block.hardness >= 0)) return { error: `not_diggable_${label}` };
       targets.push({ cell, block, label });
     }

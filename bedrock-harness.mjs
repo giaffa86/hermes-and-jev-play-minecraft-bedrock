@@ -264,6 +264,18 @@ server = createServer(async (req, res) => {
       const u = new URL(req.url, 'http://x');
       const force = /^(1|true|on)$/i.test(u.searchParams.get('force') ?? '');
       response = [200, adapter._redstoneView({ force })];
+    } else if (req.method === 'GET' && req.url.startsWith('/observe.sculk')) {
+      // Deep Dark (W0 di docs/wiki/deep-dark.md): sensori sculk, shrieker con
+      // `can_summon`/`active`, celle della famiglia, rischio di vibrazione nella
+      // cella del bot e livello di allarme (shriek osservati nella finestra).
+      // Censimento in cache, `?force=1` lo rifà subito (diagnostica).
+      const u = new URL(req.url, 'http://x');
+      const force = /^(1|true|on)$/i.test(u.searchParams.get('force') ?? '');
+      response = [200, adapter._sculkView({ force })];
+    } else if (req.method === 'GET' && req.url.startsWith('/observe.sneak')) {
+      // W1: stato dello sneak di navigazione e ultima velocità misurata sul
+      // movimento vero (`this.position` viene dai pacchetti `move_player`).
+      response = [200, adapter._sneakView()];
     } else if (req.method === 'GET' && req.url.startsWith('/observe.portals')) {
       // Nether/End (N0 di docs/wiki/nether.md): portali, fuoco, magma, spawner,
       // proiettili in arrivo e sguardo verso un enderman. Il censimento ha un TTL

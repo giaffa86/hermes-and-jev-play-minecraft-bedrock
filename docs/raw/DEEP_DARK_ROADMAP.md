@@ -1,8 +1,10 @@
 # Roadmap — Deep Dark stealth: sculk sensors, shriekers and the Warden
 
-> Raw source (spec). Synthesis in [`wiki/deep-dark.md`](../wiki/deep-dark.md).
-> Status: **spec, not implemented** (no vibration model, no stealth movement,
-> no Warden logic in production).
+> Raw source (spec). Synthesis and milestone status in
+> [`wiki/deep-dark.md`](../wiki/deep-dark.md).
+> Status: **W0 (vibration awareness) and W1 (sneak-walk verified from the measured
+> speed) implemented and unit-tested (06/10/2026), never live; W2–W6 spec** (the
+> milestone status is tracked in the wiki page, not here).
 > Code references: `bedrock-adapter.mjs`, `bedrock-world.mjs`,
 > `bedrock-survival.mjs`, `structures.mjs`, `exploration.mjs`, `circuits.mjs`,
 > `survival/*`, `knowledge/*.json`.
@@ -29,7 +31,7 @@ the absence of a shriek* — never guess that it is being quiet.
 
 ## Current state (verified from the code)
 
-1. **Structure rule exists, never observed live.** `structures.mjs:86-96` marks
+1. **Structure rule exists, never observed live.** `structures.mjs:84-96` marks
    `ancient_city` from the sculk family (`sculk` ≥ 8 → score 3,
    `sculk_shrieker` ≥ 1 → 3, `sculk_catalyst` ≥ 1 → 2, `minScore: 6`, anchors
    `['sculk_shrieker', 'sculk_catalyst', 'sculk']`). No live run has ever seen
@@ -37,7 +39,7 @@ the absence of a shriek* — never guess that it is being quiet.
 2. **The biome is a vocabulary entry and nothing more.** `exploration.mjs:19`
    aliases `deep_dark: ['deep_dark', 'deep dark']`; there is **no**
    `find_deep_dark` action in the adapter, harness or controller.
-3. **Sculk blocks are already protected from digging.** `bedrock-adapter.mjs:85`
+3. **Sculk blocks are already protected from digging.** `bedrock-adapter.mjs:86`
    `DIG_PROTECTED` already matches `sculk_sensor$` and `sculk_shrieker$`, and
    `circuits.mjs:79,87` lists `sculk_shrieker` in `DANGEROUS_ITEMS` and
    `FORBIDDEN_BLOCKS`. What is missing is the other half of the truth: **any**
@@ -55,9 +57,9 @@ the absence of a shriek* — never guess that it is being quiet.
    `:10188-10204` (`_constructionSneaking`), the input flag at `:9039-9042`
    (used to place a block on an edge for 2.5 s) and the dismount/free-hands path
    (`:12405` `start_sneak`, `:7331` `stop_sneak`). Ordinary movement explicitly
-   resets it: `_moveTo` clears the sneak flag at `bedrock-adapter.mjs:10203-10204`.
+   resets it: `_moveTo` clears the sneak flag at `bedrock-adapter.mjs:10456`.
    Every normal step therefore produces step vibrations.
-7. **Effects are parsed but barely used.** `this.effects` (`bedrock-adapter.mjs:1526`)
+7. **Effects are parsed but barely used.** `this.effects` (`bedrock-adapter.mjs:408/1646`)
    is consulted only for water breathing, so the **Darkness** effect that the
    Warden inflicts is invisible to the controller.
 8. **No underground navigation.** The A* is surface-oriented (support, ±1 steps,
@@ -148,7 +150,7 @@ still has to be re-verified against the Bedrock build actually deployed:
   `findBlocks`/`findBlocksByState` in `bedrock-world.mjs`; report
   `checked: true` even when the field is empty, so "no sculk loaded" is not
   confused with "not looked".
-- Extend `DIG_PROTECTED` (`bedrock-adapter.mjs:85`) to the whole `SCULK_FAMILY`,
+- Extend `DIG_PROTECTED` (`bedrock-adapter.mjs:86`) to the whole `SCULK_FAMILY`,
   and refuse `dig_*` inside a sensor radius with a typed code
   (`vibration_risk`) — digging is a vibration even when the block is not sculk.
 - Pure tests in `tests/bedrock-vibration.test.mjs` (see the test plan).
@@ -169,7 +171,7 @@ sculk block is refused; a unit A/B shows the risk verdict changing with distance
 - `_moveTo` gains a `{sneak: true}` mode: it sends the sneak input before the
   first movement tick, keeps `sneaking` on every `player_auth_input`, and clears
   it only after the last tick of the path (the opposite of the current
-  `bedrock-adapter.mjs:10203-10204` reset).
+  `bedrock-adapter.mjs:10456` reset).
 - Speed verification from the server: sample the authoritative position and
   classify the measured speed against a **sneak ceiling** (sneak is much slower
   than a walk). A measured speed above the ceiling is a typed outcome
@@ -265,7 +267,7 @@ a Deep Dark target is reachable in a bounded round.
 
 **Deliverable**
 
-- Darkness handling from the existing effects map (`bedrock-adapter.mjs:1526`):
+- Darkness handling from the existing effects map (`bedrock-adapter.mjs:408/1646`):
   report `darknessActive` as a **warning that the Warden may already be near**,
   never as a blocker. The mitigation is the return route plus the hold tactic
   (no night-vision dependency).
