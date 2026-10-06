@@ -85,6 +85,12 @@ const MAX_CORRECTION_DRIFT = 0.75; // oltre questa distanza la correzione è aut
 // BDS 1.26.52: se il respawn non si completa entro questo tempo, si riconnette
 // (nuovo login = unico recovery noto dalla morte bloccata). Vedi _survivalTick.
 const RESPAWN_RECONNECT_MS = +(process.env.RESPAWN_RECONNECT_MS || 25000);
+// Un fendente che non muove la vita del bersaglio e' un fendente che il server
+// non ha applicato: il runtime id e' stantio (l'entita' e' rinata con un id
+// nuovo). Dopo N colpi muti `_combat` ri-risolve il bersaglio invece di
+// continuare a colpire un fantasma (live demo-r2 del 06/10: 25 colpi su
+// `runtimeId 50` mentre l'`entity_add` diceva 508, vita ferma a 12).
+const ATTACK_SILENT_HITS = +(process.env.ATTACK_SILENT_HITS || 3);
 // Rinfrescare lo specchio degli slot riconnettendosi è l'ultima spiaggia: il
 // BDS che non ha ancora rilasciato la sessione NetherNet risponde
 // `connecterror:9` (= `ErrorCode.InactivityTimeout` della negoziazione,
@@ -629,6 +635,13 @@ export class BedrockAdapter {
     this._playerSleepKnown = false;
     this.dead = false;
     this.deaths = 0;
+    // Una *morte* e' un episodio: da quando la vita arriva a 0 a quando torna
+    // sopra 0. `dead` invece si chiude e si riapre dentro l'episodio (il
+    // respawn client, il limbo del BDS), e contare su di lui faceva scrivere un
+    // evento `death` a ogni ciclo (live demo-r2: 10 `death` a ledger contro 7
+    // morti vere, tutte nella stessa casa, 4 delle quali senza nessuna azione
+    // del driver in mezzo).
+    this._deathEpisode = false;
     this._respawnAt = 0;
     this._limboSince = null;           // health <= 0 senza stato dead (respawn a metà)
     this._deadSince = null;            // morte in corso: base per il watchdog di riconnessione
@@ -855,23 +868,7 @@ export class BedrockAdapter {
         if (serverTick > this.tick) this.tick = serverTick;
       });
 
-      this.client.on('start_game', (packet) => {
-        this.position = packet.player_position;
-        this.dimension = packet.dimension || 'overworld';
-        this.movementAuthority = packet.movement_authority ?? null;
-        this.rewindHistorySize = packet.rewind_history_size ?? null;
-        this.serverAuthBlockBreaking = packet.server_authoritative_block_breaking ?? false;
-        this.inventorySlots = [];
-        this.inventory = {};
-        this.pickups = {};
-        this.selectedHotbar = 0;
-        this._furnaceSlots = {};
-        this.tick = BigInt(packet.current_tick || 0);
-        this._tickAnchor = { tick: this.tick, time: Date.now() };
-        this._lastSimTick = null;
-        this.log('start_game', { serverAuthBlockBreaking: this.serverAuthBlockBreaking, movementAuthority: this.movementAuthority, rewindHistorySize: this.rewindHistorySize });
-        this.world.start(packet);
-      });
+      this.client.on('start_game', packet => this._onStartGame(packet));
 
       client.on('set_movement_authority', (packet) => {
         this.movementAuthority = packet.movement_authority;
@@ -11883,6 +11880,19 @@ export class BedrockAdapter {
     }
     if (packet.unique_id != null) {
       entity.uniqueId = String(packet.unique_id);
+      // Lo stesso unique_id con un runtime id nuovo e' la stessa entita' che
+      // rinasce (rejoin, o il server che la ricrea): il vecchio id non e' piu'
+      // valido lato server, e lasciarlo in mappa significa offrire al combat un
+      // bersaglio fantasma. Il campo `unique_id` e' l'unica cosa che lo dice.
+      const previous = this._entitiesByUnique.get(entity.uniqueId);
+      if (previous && previous !== runtimeId && this.entities.has(previous)) {
+        const ghost = this.entities.get(previous);
+        this.entities.delete(previous);
+        if (ghost?.username && ghost.username !== entity.username) {
+          this._playersByName.delete(ghost.username.toLowerCase());
+        }
+        this.log('entity_readded', { uniqueId: entity.uniqueId, from: previous, to: runtimeId, entityType: type, kind });
+      }
       this._entitiesByUnique.set(entity.uniqueId, runtimeId);
     }
     if (packet.position) {
@@ -12207,8 +12217,37 @@ export class BedrockAdapter {
     return true;
   }
 
+  // Login nuovo (primo o dopo un reconnect): tutto cio' che e' legato a un id
+  // del server va buttato, perche' i runtime id sono **per sessione**. Tenere
+  // la mappa delle entita' lasciava dei fantasmi che il censimento leggeva come
+  // mob vivi — e il combat li inseguiva: live demo-r2 del 06/10, 25 fendenti a
+  // uno scheletro sul suo runtime id vecchio (50) mentre l'`entity_add` diceva
+  // 508, vita del bersaglio ferma a 12 (vedi `_trackEntity`, che toglie il
+  // fantasma anche quando il re-add arriva senza un login nuovo).
+  _onStartGame (packet) {
+    this.position = packet.player_position;
+    this.dimension = packet.dimension || 'overworld';
+    this.movementAuthority = packet.movement_authority ?? null;
+    this.rewindHistorySize = packet.rewind_history_size ?? null;
+    this.serverAuthBlockBreaking = packet.server_authoritative_block_breaking ?? false;
+    this.inventorySlots = [];
+    this.inventory = {};
+    this.pickups = {};
+    this.entities.clear();
+    this._entitiesByUnique.clear();
+    this._playersByName.clear();
+    this.selectedHotbar = 0;
+    this._furnaceSlots = {};
+    this.tick = BigInt(packet.current_tick || 0);
+    this._tickAnchor = { tick: this.tick, time: Date.now() };
+    this._lastSimTick = null;
+    this.log('start_game', { serverAuthBlockBreaking: this.serverAuthBlockBreaking, movementAuthority: this.movementAuthority, rewindHistorySize: this.rewindHistorySize });
+    this.world.start(packet);
+  }
+
   _onOwnHealth () {
-    if (this.health <= 0 && !this.dead) {
+    if (this.health <= 0 && !this._deathEpisode) {
+      this._deathEpisode = true;
       this.dead = true;
       this.deaths++;
       this._respawnAt = Date.now() + 1500;
@@ -12231,8 +12270,9 @@ export class BedrockAdapter {
       // conteggio raddoppia: vedi `_forgetDroppedInventory`).
       this._forgetDroppedInventory('death');
       this.log('death', { deaths: this.deaths, position: this.pos(), site: this.deathSite?.position ?? null });
-    } else if (this.health > 0 && this.dead) {
+    } else if (this.health > 0 && (this.dead || this._deathEpisode)) {
       this.dead = false;
+      this._deathEpisode = false;
       this._respawnAt = 0;
       this._deadSince = null;
       this._respawnReconnecting = false;
@@ -12682,6 +12722,8 @@ export class BedrockAdapter {
     let weapon = null;
     let approachFailures = 0;
     let lockedId = null;
+    let lockedHealth = null;
+    let silentHits = 0;
     let lastHitAt = 0;
     let weaponChecked = false;
     // Nessun successo inventato: `killed` solo con un segnale di morte, oppure
@@ -12739,6 +12781,33 @@ export class BedrockAdapter {
       this._attackEntity(pre.entity);
       hits++;
       lastHitAt = Date.now();
+      // Il server conferma un fendente solo con la vita del bersaglio che
+      // scende: se resta identica il colpo non e' arrivato a nessuno (runtime id
+      // stantio, l'entita' e' rinata con un id nuovo e il vecchio non esiste piu'
+      // lato server). Dopo `ATTACK_SILENT_HITS` colpi muti si ri-risolve il
+      // bersaglio invece di continuare a colpire un fantasma per tutto il
+      // timeout: e' quello che e' successo live il 06/10 (`attack_skeleton`
+      // `{ok:false, error:'died_in_combat', hits:25}` con la vita ferma a 12).
+      const health = pre.entity.health;
+      if (health != null && lockedHealth != null && health === lockedHealth) silentHits++;
+      else silentHits = 0;
+      if (health != null) lockedHealth = health;
+      if (silentHits >= ATTACK_SILENT_HITS) {
+        const fresh = this._entityOfType(type);
+        this.log('attack_no_damage', {
+          target: type,
+          runtimeId: lockedId,
+          hits,
+          health,
+          silentHits,
+          reappeared: fresh ? String(fresh.runtimeId) : null,
+        });
+        silentHits = 0;
+        if (fresh && String(fresh.runtimeId) !== String(lockedId)) {
+          lockedId = String(fresh.runtimeId);
+          lockedHealth = null;
+        }
+      }
       const waitUntil = Math.min(deadline, Date.now() + 550);
       while (Date.now() < waitUntil) {
         const watched = this._lockedTargetState(lockedId);

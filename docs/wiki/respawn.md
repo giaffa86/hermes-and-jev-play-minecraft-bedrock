@@ -56,6 +56,29 @@ harness reconnects (fresh login) and the player spawns alive.
 
 Verified live twice, **without a BDS restart**.
 
+## One death is one episode (06/10/2026)
+
+The watchdog above hid a counting bug that only showed up in the ledger. `dead`
+is a *client* state and the server never restores the health, so the fallback
+(`_finishRespawn`, reached 4 s after the respawn request when the server never
+answers `state 1`) clears `dead` while the health is still 0. The next health
+attribute — still 0 — re-entered the death branch of `_onOwnHealth`: `deaths++`,
+another `death` event, `deathSite` rewritten and `_deadSince` reset, so the
+reconnect timer (and the `deadMs` it reports) restarted at every cycle. Live in
+run 2 `demo-r2`: four extra `death` events at 22:24:00, 22:24:24, 22:24:48 and
+22:25:16, all at the same coordinates with no action in between, and a
+`respawn_reconnect { deadMs: 25023 }` that measured the last cycle instead of the
+death. The ledger counted 10 deaths where the bot died 7 times.
+
+A death is now an **episode**: `_deathEpisode` is opened when health reaches 0
+and closed only when health is back above 0, so neither `_finishRespawn` nor the
+limbo re-arm can open a second one, and `alive_again` also fires when `dead` had
+already been closed by the fallback (before, that path left the limbo silent).
+`tests/bedrock-death-episode.test.mjs` pins the single event across a whole limbo
+dance. Note that the internal `deaths` counter (`bedrock-adapter.mjs:631`) lives
+for the process and is never reset in code: after a harness restart it starts
+from zero, so `/observe` alone is not a death record — the run ledger is.
+
 ## Limits
 
 - **Time gap**: ~25 s dead + a reconnect (~10-15 s) ≈ **25-40 s** before the bot

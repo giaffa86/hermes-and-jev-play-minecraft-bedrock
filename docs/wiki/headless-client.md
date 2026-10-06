@@ -460,6 +460,20 @@ Entities are even shorter-sighted:
 A human sees players/mobs up to the full render distance (tens/hundreds of
 blocks); the bot only "sees" them at 24-32 blocks.
 
+Runtime ids are **per session**, and the census has to say so. Two paths used to
+keep stale ones: a login (`start_game`) cleared the inventory mirror and not
+`this.entities`, and an `add_entity` carrying an `unique_id` already known under
+another runtime id added a second entry, leaving the old one with its type and
+health until `_pruneEntities` dropped it 60 s later. Live in run 2 the bot
+attacked the skeleton of its previous session: 25 `attack` packets whose target
+health never moved from 12 (`attack_skeleton` → `died_in_combat`, `hits: 25`),
+because `_combat` locks its target by runtime id on purpose (03/10: re-resolving
+the nearest mob every swing spread the hits). Now `_trackEntity` drops the
+previous runtime id when the same `unique_id` reappears (`entity_readded`),
+`_onStartGame` clears the census, and a hit that does not move the target's
+health counts as a miss — after `ATTACK_SILENT_HITS` (default 3) `_combat` logs
+`attack_no_damage` and re-locks the nearest entity of that type.
+
 ### Human vs bot
 
 | | Human (graphical client) | Bot |

@@ -1253,6 +1253,47 @@ goal and both fixed with a regression test (see [log.md](../log.md), entry
   mirror after a reconnect, now `inventory_snapshot_ignored`) is pinned in
   `tests/bedrock-inventory-mirror.test.mjs`.
 
+## The ten deaths of run 2: what was policy and what was a defect (06/10/2026)
+
+The driver dumped the ten `death` events of `demo-r2` from the container ledger
+with two minutes of context each. **Five are driver decisions, two are harness
+defects (both fixed), and the count itself was wrong.** The driver-side ones:
+three deaths while mining or descending with low health instead of eating and
+retreating (20:32:22 at (88.5, 17.6, 208.5); 21:31:53 at (89.3, 20.6, 185.65)
+after six failed `go_home` and the fall damage they cost; 21:37:29 at (90.6,
+17.6, 180.5) while recovering the loot of the previous one), one `flee` that
+failed (22:27:32 at (85.4, 73.6, 167.5)), and sending the bot to sleep in a base
+that was **dark and unlit** — the torch crafting that would have lit it was
+broken at the time (`5fa6f04`) — with a skeleton already inside.
+
+- **One death wrote several `death` events.** `dead` is a client state: the
+  fallback `_finishRespawn` clears it while the BDS still reports health 0, so
+  the next health attribute re-entered the death branch and counted the same
+  death again — four extra events at 22:24:00, 22:24:24, 22:24:48 and 22:25:16
+  at the same coordinate, and a `respawn_reconnect { deadMs: 25023 }` that timed
+  the last cycle rather than the death. Fixed: a death is an **episode**
+  (`_deathEpisode`, health 0 → health > 0) and `alive_again` now fires even when
+  `dead` was already closed by the fallback. See [respawn](respawn.md) and
+  `tests/bedrock-death-episode.test.mjs`. The counter mismatch is data, not a
+  bug: `deaths` is per process and restarts with the harness (10 ledger events,
+  7 in the counter), so **the ledger is the record**.
+- **Combat fought a ghost of the previous session.** The skeleton that killed
+  the bot was revealed by an `entity_add` *after* the respawn reconnect — the
+  entity list is rebuilt at the rejoin — with runtime id 508, while `_combat`
+  held the 50 of the dead session, and `add_entity` had left the old runtime id
+  in `this.entities` (pruning only clears it after 60 s without packets). The
+  result was 25 `attack` packets whose `targetHealth` never moved from 12 and an
+  `attack_skeleton` that answered `{ ok: false, error: 'died_in_combat', hits:
+  25 }`: an iron sword doing literally nothing. Fixed in three places (a
+  runtime-id tombstone on re-add, a census reset at `start_game`, and a
+  `ATTACK_SILENT_HITS` re-lock in `_combat`), pinned by
+  `tests/bedrock-entity-ghost.test.mjs`.
+- **Still open.** Nothing makes the bot leave a mob's reach right after a
+  respawn: a skeleton camping the spawn point is still a death loop, and it needs
+  a *"respawn, then immediately move and fight"* policy — the same item left open
+  in the skeleton-defense section above. It is a policy gap, not an option
+  filter.
+
 ## The resync wedged the server (06/10/2026)
 
 Run 2's deposit loop ended with the server refusing every new session:

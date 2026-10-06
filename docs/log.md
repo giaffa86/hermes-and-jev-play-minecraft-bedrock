@@ -1,5 +1,57 @@
 # Log
 
+## [2026-10-06] fix | One death is one episode, and a runtime id does not outlive its session
+
+The driver dumped the ten `death` events of run 2 (`demo-r2`) from the container
+ledger with two minutes of context each. Three of them are mining decisions made
+with low health and one is a `flee` that failed; two are harness defects, and
+both are now fixed.
+
+**The respawn limbo wrote a death per cycle.** `_onOwnHealth` opened the death on
+`health <= 0 && !dead`, but the client-side respawn closes `dead` on its own —
+`_finishRespawn`, reached by the 4 s fallback when the server never sends
+`state 1` — while the BDS has not restored the health yet. The next health
+attribute, still 0, therefore re-entered the death branch: `deaths++`, another
+`death` event, `deathSite` rewritten and `_deadSince` reset, so the reconnect
+timer (and the `deadMs` it reports) restarted at every cycle. Live: four extra
+`death` events at 22:24:00, 22:24:24, 22:24:48 and 22:25:16, all at the same
+coordinate with no action in between, plus `respawn_limbo_recover { health: 0,
+deaths: 5 }` and a `respawn_reconnect { deadMs: 25023 }` whose 25 s measured the
+last cycle, not the death. A death is now an **episode** (`_deathEpisode`, from
+health 0 to health > 0): neither `_finishRespawn` nor the limbo re-arm opens a
+new one, and `alive_again` also fires when `dead` had already been closed by the
+fallback — before, that path left the limbo silent. `tests/bedrock-death-episode.test.mjs`
+(3 tests) pins the single event across the whole dance. The internal `deaths`
+counter lives only in the constructor (`bedrock-adapter.mjs:631`) and is
+never reset in code: it is per process, so a harness restart restarts it — the
+ledger stays the only continuous record (10 events there, 7 in the counter).
+
+**A skeleton was attacked on a runtime id from the previous session.** Runtime
+ids are per session, but two paths kept stale ones in the census: `_onStartGame`
+cleared the inventory mirror and the pickups and **not** `this.entities`, and an
+`add_entity` carrying an `unique_id` already known under another runtime id added
+a second entry, leaving the old one with its type, position and health until
+`_pruneEntities` dropped it after 60 s without packets. The rejoin after the
+respawn reconnect rebuilt the list with the skeleton as `508`; `_combat`, which
+locks its target by runtime id on purpose (03/10: re-resolving the nearest mob
+every swing spread the hits and killed nobody), kept swinging at `50` — 25
+`attack` with `targetHealth: 12`, `attack_skeleton` returning `{ ok: false,
+error: 'died_in_combat', hits: 25 }`, and an iron sword did no damage at all.
+Fixed in three places: `_trackEntity` deletes the previous runtime id when the
+same `unique_id` reappears with a new one (`entity_readded`); `_onStartGame`
+clears the census, the unique-id index and the name index; and `_combat` treats a
+hit that does not move the target's health as no hit — after `ATTACK_SILENT_HITS`
+(default 3) it logs `attack_no_damage` (`runtimeId`, `reappeared`, `health`) and
+re-locks the nearest entity of that type. A refused `player_action respawn` inside
+`_survivalTick` is unchanged: the `RESPAWN_RECONNECT_MS` watchdog remains the
+recovery. `tests/bedrock-entity-ghost.test.mjs` (3 tests) pins the tombstone, the
+login reset and the re-lock.
+
+Left open, and it is policy rather than harness: nothing yet makes the bot leave
+a mob's reach right after a respawn, so a skeleton camping the spawn point is
+still a death loop (see open-questions), and the dark base that let it spawn
+indoors is only half fixed by the torch crafting of `5fa6f04`.
+
 ## [2026-10-06] fix | Equipping armor is typed, retried and survives a stale mirror
 
 Run 1 of the diamond mission spent `equip_armor` once on a carried
