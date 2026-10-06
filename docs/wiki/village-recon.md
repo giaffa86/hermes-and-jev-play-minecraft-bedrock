@@ -212,6 +212,35 @@ chest → go there; only unopened chests known → inspect them; nothing known �
 local scan; only an empty local area → sweep. A run that jumps to the sweep is a
 failure, and `runs/<run>/actions.jsonl` shows it.
 
+## Rung 4 is the exploration capability, specialized
+
+The bounded sweep is not a village-only engine: it is the general **Autonomous
+Exploration & Discovery** capability — the M1 “find a biome” planner in
+`exploration.mjs` (`spiralOffsets:53`, `nextExplorationWaypoint:68`,
+`planExplorationStep:106`) with persisted missions and checkpoints in
+`world-memory.mjs:777-911` — pointed at a village. The mapping is one-to-one:
+deterministic spiral over unexplored cells, persistent
+`visitedChunks`/`unexploredFrontier` (`world-memory.mjs:581`/`:618`/`:631`),
+mission + checkpoints + `replayRouteFromMission`, pause/resume/restart, bounded
+execution. The village adds only a **configuration** (anchor, spiral radius, the
+three limits) and a **consumer** (the V0 census, written from what the walk
+actually saw).
+
+The rule that follows: no second frontier/spiral implementation, no second
+visited-chunk bookkeeping, no second checkpoint format, no second notion of
+“mission exhausted”. If the sweep needs a behaviour the general planner lacks — a
+radius-bounded spiral around an anchor, say — that behaviour goes into
+`exploration.mjs`, where the biome and `find_structure` searches benefit from it
+too. And `survey_village` must not become the only door to rung 4: a later
+“explore this area” order is the same planner with a different target and a
+different census.
+
+Structure detection is **graded, not boolean**: `NOT_FOUND` / `CANDIDATE` /
+`CONFIRMED`, with the evidence that justified the step attached, so “there is a
+village here” is never a bare claim. That is also why `/locate` stays out of
+scope: a position handed over by a command carries no observation at all, and the
+order the register exists to record would be inverted.
+
 ## The design in brief
 
 - **V0 — census.** A pure `village-survey.mjs` clusters houses (beds/containers

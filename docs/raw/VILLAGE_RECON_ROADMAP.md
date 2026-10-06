@@ -293,6 +293,39 @@ read (including the non-destructive discovery write), **V1** *is* rung 4 (the
 sweep), **V2** makes the deposit path climb the ladder instead of asking only the
 5-minute runtime cache.
 
+## Rung 4 is the exploration capability, not a village-only engine
+
+Rung 4 is not a village feature that happens to explore: it is the general
+**Autonomous Exploration & Discovery** capability (`docs/raw/GOAL_EXPLORATION.md`,
+the M1 “find a biome” vertical slice in `exploration.mjs`) applied to one target.
+That mechanism already exists and must stay the only one:
+
+| General capability | Where it lives today | Rung 4 of this ladder |
+|---|---|---|
+| Deterministic planner over unexplored cells | `exploration.mjs:53 spiralOffsets`, `:68 nextExplorationWaypoint({origin, visited, spacing, maxRadius})`, `:106 planExplorationStep` | the sweep route |
+| Persistent visited state | `world-memory.mjs:581 markChunkVisited`, `:618 visitedChunks`, `:631 unexploredFrontier` | what “already scanned” means |
+| Mission + checkpoints + route replay | `world-memory.mjs:777-911`, `exploration.mjs:251 replayRouteFromMission` | the sweep is a *mission*, not a one-shot action |
+| Pause / resume / restart | `POST /explore` supersedes stale `running` missions, `GET /explore` steps one | a sweep interrupted by a death resumes |
+| Bounded execution | per-step planning over a persisted mission | `VILLAGE_SURVEY_CELLS` + `VILLAGE_SURVEY_MAX_MS` |
+| Structure discovery | `structures.mjs` detector + WorldMemory observations | the village census (V0) |
+| The planner never acts | Hermes picks the goal and the harness returns one bounded step | Hermes picks `survey_village`, Jev walks it |
+| Position from observation, never from `/locate` | `resolveSearchTarget`/`detectStructures`, no world-query shortcut | the scope freeze below |
+
+**The reuse contract — what V1 adds and what it must not.**
+
+- *Add*: a village **configuration** of the existing planner (anchor = the
+  register's village anchor, spiral spacing/radius, the three limits) and a
+  **consumer** at the end (the V0 census, written from what the walk actually saw).
+- *Add*: `stoppedBy`/`truncated` and the typed refusals, which are about *this*
+  action's budget bookkeeping.
+- *Do not add*: a second frontier/spiral implementation, a second visited-chunk
+  bookkeeping, a second checkpoint/route format, or a second notion of
+  “mission exhausted”. If the sweep needs a behaviour the general planner lacks
+  (e.g. a radius-bounded spiral around an anchor), that behaviour goes into
+  `exploration.mjs` and the biome/`find_structure` paths get it too.
+- *Do not*: make `survey_village` the only door to rung 4. Any later “explore this
+  area” order is the same planner with a different target and a different census.
+
 ## Proposed vocabulary (closed loaders, per convention)
 
 ### New/changed `/options` action keys
@@ -321,9 +354,18 @@ already offers (`harvest_*`, `plant_*`, `deposit_*`, `dump_inventory`).
   "storage":[{ "position": {...}, "type": "chest", "contains": { "carrot": 12 },
                "rememberedAt": 0, "status": "known" }],
   "survey": { "scanned": 0, "truncated": false, "stoppedBy": null, "elapsedMs": 0, "at": 0 },
-  "missing": ["bell (0/1)"]
+  "missing": ["bell (0/1)"],
+  "detection": { "state": "CONFIRMED",   // NOT_FOUND | CANDIDATE | CONFIRMED
+                 "evidence": ["beds 2/2", "workstations 1/1", "villagers 3/2"] }
 }
 ```
+
+**Evidence is graded, not boolean.** `detection.state` is `NOT_FOUND` (the cells
+were scanned and stayed empty), `CANDIDATE` (a partial marker match, stored as a
+lead) or `CONFIRMED` (the markers `structures.mjs` scores: beds, workstations,
+villagers), and `evidence` lists what justified the step. Nothing in this
+vocabulary can be produced by a world query — the position comes from the
+observation, which is why `/locate` stays out of scope.
 
 **Refusal and truncation are two different facts.** `truncated: true` (with
 `stoppedBy`: `"cells"` / `"time"` / `"distance"`) describes the census that *was*
@@ -441,12 +483,17 @@ runtime cache is.
 
 **Deliverable**
 
-- `survey_village` action: a bounded route over the cells that are **not already
-  known**: the visited-chunk index (`visitedChunks`, read in production at
-  `bedrock-harness.mjs:508`/`:609`) crossed with the register (V0) tells it what
-  is unknown, and `unexploredFrontier` (`world-memory.mjs:512`, today with no
-  production caller) gives the cells that were never scanned — so a second sweep
-  is cheap and a sweep after a restart is not a re-measure from zero.
+- `survey_village` action: **a configuration of the general exploration planner,
+  not a second sweep engine** (reuse contract above). It walks only the cells
+  that are **not already known**: the visited-chunk index (`visitedChunks`, read
+  in production at `bedrock-harness.mjs:508`/`:609`) crossed with the register
+  (V0) tells it what is unknown, and `unexploredFrontier`
+  (`world-memory.mjs:631`, today with no production caller) gives the cells that
+  were never scanned — so a second sweep is cheap and a sweep after a restart is
+  not a re-measure from zero. The route stays
+  `exploration.mjs` (`nextExplorationWaypoint`/`planExplorationStep`), the
+  mission/checkpoint persistence is the existing one, and the village adds an
+  anchor, a radius and a census.
 - **Three independent limits, the first one reached wins.**
   `VILLAGE_SURVEY_MS` is the *cooldown* between two sweeps (not a bound on one),
   `VILLAGE_SURVEY_CELLS` is the *exploration* budget (how many new cells may be

@@ -3785,3 +3785,33 @@ container kept running the image deployed at 11:19. Both are closed here.
 - Scope frozen for the implementation: no biome heuristics, no "intelligent"
   village search, no `/locate` — a command that hands over a position would skip
   exactly the observation this roadmap exists to produce.
+
+## [2026-10-06] spec | Rung 4 is the exploration capability, specialized
+
+- The bounded sweep is not a village-only engine: it is the general
+  **Autonomous Exploration & Discovery** capability (`GOAL_EXPLORATION.md`, the M1
+  "find a biome" vertical slice in `exploration.mjs`) pointed at a village. The
+  spec now names the one-to-one mapping instead of describing a second engine:
+  deterministic spiral over unexplored cells
+  (`exploration.mjs:53`/`:68`/`:106`), persistent visited state
+  (`world-memory.mjs:581`/`:618`/`:631`), mission + checkpoints + route replay
+  (`world-memory.mjs:777-911`, `replayRouteFromMission:251`), pause/resume/restart
+  (`POST /explore` supersedes stale `running` missions), bounded execution and
+  progressive structure discovery.
+- The **reuse contract** is explicit: V1 adds a *configuration* of the existing
+  planner (anchor, spiral radius, three limits) and a *consumer* at the end (the
+  V0 census), plus the budget bookkeeping (`truncated`/`stoppedBy`, typed
+  refusals). It must not add a second frontier/spiral, a second visited-chunk
+  bookkeeping, a second checkpoint format or a second "mission exhausted"; a
+  behaviour the general planner lacks (e.g. a radius-bounded spiral) goes into
+  `exploration.mjs`, where the biome and `find_structure` searches get it too.
+  `survey_village` is a door to rung 4, not *the* door: any later "explore this
+  area" order is the same planner with a different target and census.
+- **Structure evidence is graded**, so the census carries
+  `detection: { state: NOT_FOUND | CANDIDATE | CONFIRMED, evidence: [...] }`:
+  `CONFIRMED` needs the markers `structures.mjs` scores, `CANDIDATE` is a stored
+  lead, `NOT_FOUND` is a scanned, empty cell. This is the vocabulary that makes
+  `/locate` obviously out of scope — a command would hand over a position with no
+  evidence, inverting the order the register exists to record.
+- Also fixed a stale line reference: `unexploredFrontier` is
+  `world-memory.mjs:631`, not `:512`.
