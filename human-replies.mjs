@@ -103,13 +103,27 @@ export function lostNotice ({ from, prefix = '@bot', lang = DEFAULT_LANG, templa
 // ragione per cui questa funzione puo' restituire null.
 export const DEFAULT_ESCORT_WAITING_TEMPLATE = t(DEFAULT_LANG, 'escort_waiting');
 
+// `Number(null)` e' 0: una coordinata assente non deve diventare un numero
+// vero, quindi si controlla anche il valore grezzo, non solo il parse.
+const readableCoord = value => value != null && value !== '' && Number.isFinite(Number(value));
+const coordNumber = value => (readableCoord(value) ? Math.round(Number(value)) : '?');
+
 export function escortWaiting ({ from, position = null, lang = DEFAULT_LANG, template = t(lang, 'escort_waiting'), maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
-  // `Number(null)` e' 0: una coordinata assente non deve diventare un numero
-  // vero, quindi si controlla anche il valore grezzo, non solo il parse.
-  const readable = value => value != null && value !== '' && Number.isFinite(Number(value));
-  if (!position || !readable(position.x) || !readable(position.z)) return null;
-  const num = value => (readable(value) ? Math.round(Number(value)) : '?');
-  return renderReply(template, { name: from ?? '?', x: num(position.x), y: num(position.y), z: num(position.z) }, maxLength);
+  if (!position || !readableCoord(position.x) || !readableCoord(position.z)) return null;
+  return renderReply(template, { name: from ?? '?', x: coordNumber(position.x), y: coordNumber(position.y), z: coordNumber(position.z) }, maxLength);
+}
+
+// L'umano si e' imbarcato e il bot non e' riuscito a salire (posto pieno, mezzo
+// non joinable, join non confermato): qui il messaggio dice *due* cose che chi
+// sta salpando non puo' vedere da solo — non sono a bordo, e da dove mi devi
+// venire a prendere. Senza posizione leggibile si tace (`null`), come per la
+// scorta; senza il tipo del mezzo non si indovina: ogni stato di attesa nasce da
+// un mezzo noto, quindi un `mount` assente e' un errore e non si annuncia.
+export function mountWaitingShore ({ from, position = null, mount = null, lang = DEFAULT_LANG, template = t(lang, 'mount_waiting_shore'), maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
+  const label = String(mount ?? '').replace(/^minecraft:/, '').replace(/_/g, ' ').trim();
+  if (!label) return null;
+  if (!position || !readableCoord(position.x) || !readableCoord(position.z)) return null;
+  return renderReply(template, { name: from ?? '?', mount: label, x: coordNumber(position.x), y: coordNumber(position.y), z: coordNumber(position.z) }, maxLength);
 }
 
 // One chat line: no newlines, collapsed spaces, bounded length. Truncation

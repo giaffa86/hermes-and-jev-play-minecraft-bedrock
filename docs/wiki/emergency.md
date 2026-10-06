@@ -94,6 +94,7 @@ but **not** turned into goals: the governor already handles them instantly.
 | Rescue a player, flee a lasting hazard | emergency goal | multi-step, player-facing |
 | Drowning / on fire / lava near | governor or goal | blocked: needs fluid/fire perception ([fluids](fluids.md) M0) |
 | A richer vein in sight while a goal runs | **opportunity goal** | multi-step detour that needs a parent to resume (suspended, not preempted) — [opportunity](opportunity.md) |
+| A human `@bot` order while a goal runs | **child goal (suspend + resume)** | the human outranks the plan; the order runs as its own goal with its own requester and the parent is revalidated before resuming — [goal-stack](goal-stack.md) |
 
 ## Dedup and anti-oscillation
 
@@ -136,6 +137,7 @@ but **not** turned into goals: the governor already handles them instantly.
 ## Related pages
 
 - [opportunity](opportunity.md) — the suspending counterpart (a better vein in sight).
+- [goal-stack](goal-stack.md) — the human-order sibling (an order suspends the running goal).
 - [ai-player-roadmap](ai-player-roadmap.md) — M2 in the nine-milestone plan.
 - [survival-intelligence](survival-intelligence.md) — the governor (action level).
 - [control-flow](control-flow.md) — where emergency goals sit in the loop.

@@ -196,6 +196,77 @@ behaviour. Measured and ruled out on the live server (see
   before every interaction (a command, not an assumed state), and the mount still
   ends `mount_not_confirmed`.
 
+### 2026-10-06: boarding the human's boat (detect in production, join behind a flag)
+
+`follow_player` can never deliver on a boat: it is a locomotion intent
+(`survival/intents.mjs`, `follow_player: ['travel']`) whose only primitive is
+`_moveTo`, and the option is offered only when `entityApproachable(follow,
+{range: 3, dy: 2})` — on deep water it disappears and the bot falls back to
+`seek_player` on the last known position, i.e. it walks along the shore while the
+boat leaves. Boarding is a different action, so it is a different option:
+`join_human_mount`. The mission is split into the three pieces the design asks
+for.
+
+- **detect** — the server's rider→vehicle links are now kept for *every* rider,
+  not only for the bot (`this.entityLinks`, filled in `_onEntityLink`; a non-self
+  link used to be logged as `entity_link_other` and discarded), and the `riding`
+  flag (flags bit 2) is parsed for other entities too as a fallback before the
+  link arrives. `_humanMountView()` answers *which* vehicle the followed human is
+  on: from the link (source `link`), or — when the flag says he is riding but no
+  link is in yet — the nearest candidate within 6 blocks with
+  `mountCapacity(entity) >= 2` (source `proximity`: a good guess, not proof).
+- **decide** — `bedrock-mount-follow.mjs` is a pure state machine, unit-tested
+  with no server: `FOLLOWING → HUMAN_MOUNT_DETECTED → JOINING_HUMAN_MOUNT →
+  RIDING_WITH_HUMAN → FOLLOWING`, with controlled exits to `WAITING_AT_SHORE`
+  (`human_mount_unreachable`, `human_mount_full`, `human_mount_unsupported`,
+  `join_disabled`, `human_mount_attempts_exhausted`).
+  `seatInfo(entity, {riders})` (`bedrock-survival.mjs`) answers
+  seats/riders/free with a typed `reason` (`unsupported` = one-seater, `full` =
+  no free seat), and capacity is per **entity** (`mountCapacity`) and not per type
+  name, so a variant can change it later.
+- **act** — `join_human_mount` is dispatched *before* `mount_boat`/`mount_<type>`
+  (which board the nearest vehicle of a type, not the human's) and before every
+  locomotion fallback, and `optionPriority` ranks it 1.5: above `follow_player`
+  (2) and every `mount_*` (8). `_joinHumanMount` targets the human vehicle's
+  `runtimeId` — not "the nearest of that type" — approaches to ≤4.5 blocks, looks
+  and interacts on the same path as `_mountVehicle`.
+
+The **join itself stays behind `BEDROCK_JOIN_HUMAN_MOUNT=1`** (default off) for the
+reason above: the server does not confirm our interact, so a real join would end
+`mount_not_confirmed` anyway. With the flag off the refusal is typed and instant
+(`join_human_mount_disabled`) and no packet is written.
+
+What the mission already delivers in production is the **worst case removed**:
+when the bot cannot board (seat taken, one-seater, unreachable, flag off) the
+controller says where it waits — `mount_waiting_shore` in the five languages ("I
+could not get on your oak boat: I am waiting here at x 0, y 64, z 0") — once per
+episode (`MOUNT_WAITING_COOLDOWN_MS`, default 60 s), instead of ~45 s of silent
+stalls. The typed reason stays in the logs (`mount_follow_state`,
+`join_human_mount_order`, `mount_waiting_shore`), not in chat.
+
+While the bot is a **passenger** the order stays open but idle: `mountRiding`
+(`obs.mountFollow.state === 'RIDING_WITH_HUMAN'`) suppresses `follow_player`,
+`seek_player` and `join_human_mount`, the ride is logged once as `mount_ride_hold`
+and consumes neither step budget nor a model call (an executable survival need
+still goes first), and the *lost human* notice is excluded — being carried is not
+"I lost you". On dismount the state is `FOLLOWING` again and the deterministic
+follow resumes by itself: the mission needs no second order, and getting off
+stays the rider's decision (`dismount` is never acted on its own).
+
+Tested offline: `tests/bedrock-mount-follow.test.mjs` (15 cases: capacity and
+seat table, every transition and exit reason, the priority order against
+`mount_boat`/`mount_donkey`/`mount_minecart`/`seek_player`/`goto_waypoint`/`wait`,
+the non-self link and flag, the dispatch that never falls back to `_mountVehicle`,
+the disabled-flag refusal with no packet written) and
+`tests/controller-mount-follow.test.mjs` (3 scripted-harness cases: the boarding
+order is acted four times in a row while `mount_boat`/`follow_player`/
+`seek_player` stay unacted; the shore line is said exactly once, with
+coordinates; and — with `follow_player`, `seek_player`, `mount_boat` and
+`dismount` all offered — the bot acts *nothing* while carried for four
+observations and then acts `follow_player` again on its own after the dismount).
+**Live verification pending**, and the real join is still blocked on
+the packet capture described in [open-questions](open-questions.md) §Mounting.
+
 ### 2026-10-04 (later): shearing verified live, taming blocked on fish
 
 The companion round that had been blocked by the sealed room is now done on the live
@@ -220,6 +291,9 @@ for the fishing front (no bite yet) or for a fish to be brought home.
 
 - **Saddle** equipping for `horse`/`donkey`/`mule` (they need a saddle to be
   steered once ridden).
+- Riding as a **passenger on the human's** vehicle: detection, decision and the
+  shore message are in production (see the 2026-10-06 round above), but the join
+  itself is gated on the same missing `set_entity_link`.
 - Mount **inventory/armor** (donkey/mule chest, horse armor, nautilus armor).
 - `rider_jump` (mount jump) and **minecart steering on rails** (the current ride
   is a straight "forward toward the waypoint" heuristic).

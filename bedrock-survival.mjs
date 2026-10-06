@@ -244,6 +244,40 @@ export function isRideableType (type) {
   return isVehicleType(type) || isRideTameableType(type);
 }
 
+// Posti a sedere per tipo di mezzo. La barca (e la zattera) ne ha 2, il cammello
+// 2, cavallo/asino/mulo/llama/carrello 1. Il tipo è solo la fonte di oggi: la
+// funzione prende l'*entità* perché la capacità potrà dipendere da metadata o
+// variante (baule, sellino, stati del veicolo) senza toccare i chiamanti.
+const MOUNT_CAPACITY = {
+  boat: 2, raft: 2, bamboo_raft: 2,
+  camel: 2,
+  horse: 1, donkey: 1, mule: 1, llama: 1, trader_llama: 1, nautilus: 1,
+  minecart: 1,
+};
+
+// Posti di un mezzo, 0 se non è un mezzo con posti noti.
+export function mountCapacity (entity) {
+  const type = normalizeEntityType(typeof entity === 'string' ? entity : entity?.type);
+  if (Object.prototype.hasOwnProperty.call(MOUNT_CAPACITY, type)) return MOUNT_CAPACITY[type];
+  if (type.endsWith('_boat') || type.endsWith('_chest_boat') || type.endsWith('_raft')) return 2;
+  if (type.endsWith('_minecart')) return 1;
+  return 0;
+}
+
+// Un posto per il bot sul mezzo di un altro. Serve `seats >= 2`, perché il bot
+// sarebbe il secondo passeggero: un cavallo o un carrello non lo portano con
+// l'umano. `reason` distingue i due rifiuti perché per chi decide sono cose
+// diverse: `unsupported` (il mezzo non porta passeggeri) e `full` (li porta, ma
+// sono occupati).
+export function seatInfo (entity, { riders = 0 } = {}) {
+  const type = normalizeEntityType(typeof entity === 'string' ? entity : entity?.type);
+  const seats = mountCapacity(entity);
+  const occupied = Math.max(0, Number(riders) || 0);
+  if (seats < 2) return { type, seats, riders: occupied, free: 0, joinable: false, reason: 'unsupported' };
+  const free = Math.max(0, seats - occupied);
+  return { type, seats, riders: occupied, free, joinable: free > 0, reason: free > 0 ? null : 'full' };
+}
+
 export function cropForSeed (item) {
   return SEED_TO_CROP[String(item).replace(/^minecraft:/, '')] || null;
 }

@@ -41,7 +41,7 @@ process.stdout.write(next);
 // Scripted harness. `chatFrom` is the sender of the order injected from the
 // second observation on; `calls` records every request so the test can inspect
 // the `/say` traffic.
-function startChatHarness ({ chatFrom = 'Ale', chatMessage = '@bot prendi la terra', chatAgeMs = 0, self = { username: 'hermes-bot', name: null }, options = null, act = null, extra = () => ({}) } = {}) {
+function startChatHarness ({ chatFrom = 'Ale', chatMessage = '@bot prendi la terra', chatAgeMs = 0, chatFromObserve = 2, self = { username: 'hermes-bot', name: null }, options = null, act = null, extra = () => ({}) } = {}) {
   return new Promise(resolve => {
     const calls = [];
     let observes = 0;
@@ -61,7 +61,7 @@ function startChatHarness ({ chatFrom = 'Ale', chatMessage = '@bot prendi la ter
       // indossata, inventario) e quindi di verificare un vero criterio di
       // successo invece del solo testo delle risposte.
       ...extra(),
-      chat: observes >= 2 && chatFrom
+      chat: observes >= chatFromObserve && chatFrom
         ? [{ from: chatFrom, message: chatMessage, type: 'chat', xuid: '1234567890', at: chatAt }]
         : [],
     });
@@ -728,7 +728,7 @@ test("un ordine di equipaggiamento senza armatura lo dice all'umano e fallisce, 
 // e `_plannedCollectNames` nell'adapter: senza l'oggetto nello zaino o a terra
 // l'opzione non c'è e l'ordine deve incontrare il rifiuto, non un'azione che
 // fallisce.
-async function startInventoryHarness ({ chatMessage, inv = {}, drops = [], token }) {
+async function startInventoryHarness ({ chatMessage, inv = {}, drops = [], token, chatFromObserve = 2 }) {
   let inventory = { ...inv };
   let ground = drops.map((item, index) => ({ id: `d${index}`, item, count: 1, position: { x: 2, y: 63, z: 0 } }));
   const matches = name => (token === 'armor'
@@ -736,6 +736,7 @@ async function startInventoryHarness ({ chatMessage, inv = {}, drops = [], token
     : String(name).includes(token));
   const harness = await startChatHarness({
     chatMessage,
+    chatFromObserve,
     extra: () => ({ inventory: { ...inventory }, drops: ground, dropped: ground }),
     options: () => {
       const offered = [];
@@ -793,6 +794,10 @@ test("un ordine \"getta i diamanti\" è deterministico: drop_item scelto dal con
     chatMessage: '@bot getta i diamanti',
     inv: { dirt: 1, diamond: 3 },
     token: 'diamond',
+    // L'ordine arriva a goal iniziale gia' chiuso (IDLE): qui si verifica il
+    // drop deterministico, mentre la sospensione di un goal in corso da parte
+    // di un ordine umano e' coperta da `controller-goal-stack.test.mjs`.
+    chatFromObserve: 3,
   });
   const fake = fakeHermesQueue([]);
   const runId = `test-chat-drop-${process.pid}-${Date.now()}`;

@@ -47,6 +47,11 @@ const KEY_INTENTS = {
   // differenza sua e' un inseguimento di un bersaglio mobile, quindi il
   // filtro di emergenza lo protegge quando l'ordine e' aperto (resolver.mjs).
   follow_player: ['travel'],
+  // `join_human_mount` e' «l'umano si e' imbarcato e c'e' un posto per me»:
+  // stessa famiglia di movimento (`travel`), ma il bersaglio non e' la persona,
+  // e' il suo mezzo. Resta distinto da `follow_player` perche' l'ordine di
+  // dispatch e la priorita' devono tenere la salita *prima* di ogni inseguimento.
+  join_human_mount: ['travel'],
   // `seek_player` e' il recupero autonomo dell'umano perso: cammina verso
   // l'ultima posizione nota senza inseguire un bersaglio mobile. Conta come
   // movimento (`travel`), ma resta distinto da `follow_player` perche' puo'

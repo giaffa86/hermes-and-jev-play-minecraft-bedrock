@@ -3340,3 +3340,232 @@ and tracked no weather at all.
 - **Wiki**: the weather window and the new behaviour are recorded in
   [survival intelligence](wiki/survival-intelligence.md) and in row 10 of
   [verification](wiki/verification.md).
+
+## [2026-10-06] ingest | Village reconnaissance and the farm order
+
+- Added the raw spec
+  [`docs/raw/VILLAGE_RECON_ROADMAP.md`](raw/VILLAGE_RECON_ROADMAP.md) and the
+  wiki page [`wiki/village-recon.md`](wiki/village-recon.md) (V0–V5, **spec
+  only**), answering an operator question: should the bot be able to survey a
+  village (houses, free beds, pens, plots, storage) like a robot vacuum, so that
+  `raccogli le carote dal campo, rimpianta e metti il raccolto nel baule più
+  vicino` becomes one order?
+- **What already exists** (read from the code, not recalled): the histogram
+  survey `surveyBlocks` (`bedrock-world.mjs:294`) and the pure marker detector
+  `structures.mjs:150` with the village rule at `structures.mjs:35`
+  (`minScore: 5`); the live round in [exploration](wiki/exploration.md) —
+  village at (113, 73, 156), score 6, `bed: 30`, `villagers: 11`,
+  `missing: bell (0/1)`, with the declared limit that the survey is "an
+  histogram of names, not a map"; the memory record kinds and writers
+  (`world-memory.mjs:174/332/378/426/837`); the three steps of the order as
+  option keys (`harvest_<crop>` at `bedrock-adapter.mjs:4383`, which already
+  **replants**, `plant_<item>:4702`, `deposit_<item>:4689` / `dump_inventory:4681`);
+  the censuses `_findBeds:13211`, `_nearbyFarmAnimals:11581`,
+  `_cachedContainers:7041`; and the chore layer `village-labor.mjs:94`
+  (`harvest_crops`, verified by a state delta).
+- **Two gaps named**: (1) nothing aggregates a house, a plot or a pen — the
+  beds/animals/containers are recomputed on demand and never written as a
+  village fact; (2) the shortcut is ambiguous — `controller-decisions.mjs:173`
+  resolves the noun only against the inventory and the visible drops, so
+  `isCollectOrder:221` reads "raccogli le carote" as *pick up carrot items* when
+  the bot carries carrots (the empty case refuses with `no_drop`,
+  `chat-lang/it.mjs:60`) — and the deposit side has no memory:
+  `_depositTargetFor:7000` scores only the runtime cache
+  (`_cachedContainers:7041`, TTL 5 min), so after a restart the bot forgets
+  which chest holds the carrots although `rememberContainer` persisted it.
+- **Roadmap**: V0 pure census `village-survey.mjs` + `GET /observe.village`
+  (with `checked: true`), V1 a bounded read-only `survey_village` sweep (typed
+  refusals `village_too_far`/`survey_budget_exhausted`, throttled, idempotent,
+  never a dig and never a villager), V2 deposit target from memory with a
+  stale re-read, V3 the farm order as `plan.farm = {crop, replant, store,
+  field}` driving the chain against `GET /options` and closing on a state delta,
+  V4 confidence/evidence/`missing` plus protection, V5 the wiki wiring. New env
+  vars proposed: `VILLAGE_SURVEY_MS`, `VILLAGE_SURVEY_CELLS`,
+  `VILLAGE_HOUSE_RADIUS`, `VILLAGE_PLOT_MIN_CELLS`, `VILLAGE_MEMORY_TTL_MS`.
+- **Non-objectives**: voxel maps or room segmentation, renovating houses,
+  villager engineering, redstone farming, looting the village chests,
+  slaughtering the base's animals, and letting the model supply a village fact.
+- Recorded in [index](index.md) (wiki + raw tables) and
+  [sources](sources.md); the open questions from the spec go to
+  [open-questions](wiki/open-questions.md) when the implementation starts.
+
+## [2026-10-06] ingest | Village census reads the world memory, not only the radius
+
+- Operator question on the V0–V5 spec: *"sfrutta la memory per il censimento?"*
+  Answer: in the baseline, no — the memory is written and then not read, and the
+  spec was sensor-first. Fixed in
+  [`raw/VILLAGE_RECON_ROADMAP.md`](raw/VILLAGE_RECON_ROADMAP.md) (new section
+  "Register vs sensor (the memory contract)") and in
+  [`wiki/village-recon.md`](wiki/village-recon.md) (new **Gap 3** + section
+  "Register or sensor?").
+- **What the code actually does** (verified): writers are all called —
+  `rememberStructure` (`bedrock-adapter.mjs:1306`, inside `_surveyStructures`),
+  `rememberContainer:7057` (on every open), `rememberEntity:1251`,
+  `rememberResourceSite:1237`, `rememberLandmark:749`/`:12223`,
+  `markChunkVisited` (~`:1257`) — while readers with a production caller are only
+  three: `scanStructureTarget` (`bedrock-harness.mjs:78`, live survey ∪
+  `findLandmarks({kind:'structure'})`, explicitly so a landmark survives a
+  restart, but only on the `find_structure` path), `_rememberedStorage:7183` +
+  `_rememberedContainerFor:7207` for `take_*`, and `visitedChunks`
+  (`bedrock-harness.mjs:508`/`:609`, the explore route). `findEntities:449` is
+  read by tests only; `unexploredFrontier` (`world-memory.mjs:512`) has **no**
+  production caller; `observe()` publishes a runtime field
+  (`this.structures`, 60 s TTL `STRUCTURE_RESCAN_MS:233`) instead of the memory.
+- **Spec changes**: V0's deliverable is now the read path —
+  `villageRegister({near, dimension, includeStale})` merging remembered facts
+  (`findLandmarks` for houses, `resource_site` for plots, `findEntities` for pens
+  — the first production reader of `rememberEntity` — `findContainers`/
+  `containersWithItem` for storage) with the live radius, each row carrying
+  `source: 'memory' | 'live'`, `status`, `observedAt`, `verifiedAt`; the restart
+  check is an explicit acceptance criterion (a just-restarted harness must still
+  name the village and its plots from memory). V1 plans its route from
+  `visitedChunks` + `unexploredFrontier` instead of a blind ring. V2 asks for
+  `known` records only, because `findContainers` defaults to
+  `includeStale: true` (`world-memory.mjs:213`) and `_rememberedStorage` tolerates
+  stale rows — acceptable for an explicit `take_*`, not for a deposit target.
+  New test row `tests/village-register.test.mjs`; new risk 9 (freshness is per
+  fact, so a half-finished sweep must not look like one village-wide rescan).
+- Rule recorded for the whole roadmap: **the memory is the register, the survey
+  is the sensor** — a village fact comes from a record with a status or from a
+  fresh measurement that immediately becomes one, never from the model.
+
+## [2026-10-06] ingest | A chest search costs a sweep once, a lookup forever
+
+- Question that produced this (from the owner): *if I ask the bot to find iron
+  in the chests, does it still have to do reconnaissance?* Answer recorded in
+  the spec as a new section, `docs/raw/VILLAGE_RECON_ROADMAP.md`
+  ("The chest search: reconnaissance in two depths") and summarised in
+  [`docs/wiki/village-recon.md`](wiki/village-recon.md).
+- The two depths: **where** the containers are is cheap and interaction-free
+  (`_findNearbyStorageBlocks:7029`, `STORAGE_BLOCKS` in the loaded palette,
+  radius 32, `STORAGE_SCAN_PER_NAME = 24` at `bedrock-adapter.mjs:159`), while
+  **what is inside** costs one open per chest (`read_container:4595`, batched at
+  `STORAGE_READ_LIMIT = 8` at `:164`). A chest is opaque from outside, so the
+  sweep is unavoidable the first time — and never again for the same chest:
+  `_rememberedStorage:7183` → `_rememberedContainerFor:7207` answers from the
+  record, with `take_*` re-verifying on arrival.
+- Design consequence added to V0: the register needs `contentsKnown` next to the
+  contents, so a chest the sweep only *saw* is a known place with an unknown
+  inside instead of a missing fact. Today that row is impossible:
+  `rememberContainer` has exactly one call site, `_setContainerContents:7057`,
+  i.e. it only fires **after an open**, so a merely-seen chest is not remembered
+  at all — not even by position.
+- Honest bound kept: the register says *where to look*, not *what you will
+  find* — a remembered "13 iron_ingot" may already be gone, which is why a
+  `stale` row is a candidate to verify and not a promise. "Find the iron in the
+  chests" is now the first V0/V2 acceptance case because it exercises register,
+  memory read path, staleness discipline and the take/deposit symmetry without
+  involving a single farming mechanic.
+
+## [2026-10-06] ingest | Boarding the human's vehicle: detect, decide, act
+
+- Question that started this (from the owner): *"if I tell the bot 'follow me' and
+  then get on a boat, does it sit behind me or does it stay on dry land?"* The
+  answer was "it stays ashore", for two independent reasons — `follow_player` is
+  a locomotion intent whose only primitive is `_moveTo` (`survival/intents.mjs`),
+  and its option disappears on deep water because the gate is
+  `entityApproachable(follow, {range: 3, dy: 2})`; the mount itself is blocked by
+  the server never sending `set_entity_link` for our `interact`. The owner then
+  asked for the mission: `follow_player → detect_mount_state →
+  join_same_mount_if_seat_available → resume_follow_on_dismount`, with three
+  adjustments — capacity per **entity** (`mountCapacity`/`seatInfo`) instead of
+  per type name, `human_mount_full` and `human_mount_unsupported` kept as
+  distinct typed refusals, and `join_human_mount` ranked above **every**
+  locomotion fallback (not only above `mount_*`), because chasing a boat is not
+  a way of reaching it.
+- Split implemented: **detect** (rider links kept for every rider in
+  `entityLinks`, `riding` flag read on non-self entities, `_humanMountView()` with
+  sources `link`/`proximity`), **decide** (`bedrock-mount-follow.mjs`: pure state
+  machine `FOLLOWING → HUMAN_MOUNT_DETECTED → JOINING_HUMAN_MOUNT →
+  RIDING_WITH_HUMAN → FOLLOWING`, exits to `WAITING_AT_SHORE` with typed reasons),
+  **act** (`join_human_mount` dispatched before `mount_boat`/`mount_*` and every
+  locomotion fallback, `optionPriority` 1.5, `_joinHumanMount` targeting the
+  human vehicle's `runtimeId`).
+- Boundary chosen: the real join is behind `BEDROCK_JOIN_HUMAN_MOUNT=1` (default
+  off), because the server does not confirm the interact — the capture described
+  in [open-questions](wiki/open-questions.md) §Mounting is still the unblocking
+  fact. What runs in production is the *refusal*: no 45 s of silent stalling, a
+  typed reason in the logs and a `mount_waiting_shore` line with coordinates, once
+  per episode.
+- Evidence: `tests/bedrock-mount-follow.test.mjs` (15 cases) and
+  `tests/controller-mount-follow.test.mjs` (2 scripted-harness cases); full suite
+  1602/1602. Synthesis in [companions](wiki/companions.md) (§2026-10-06) and
+  [open-questions](wiki/open-questions.md) §Mounting.
+
+## [2026-10-06] feat | Riding as a passenger holds the follow order and resumes it
+
+- Gap closed after the mount-join commit: while the bot was a passenger with a
+  `follow me` order open, the controller still offered `follow_player`, so the
+  bot tried to walk after a boat it was sitting in (the harness answers
+  `riding`), and the steps without a pursued target could even start the
+  "where are you?" notice.
+- Fix in `controller.mjs`: `mountRiding` (`obs.mountFollow?.state ===
+  'RIDING_WITH_HUMAN'`) suppresses `follow_player`, `seek_player` and
+  `join_human_mount`, and excludes the step from `lostFollow`; while the state
+  lasts the controller holds (log `mount_ride_hold`, no action, no step budget,
+  no model call — a survival need still runs), mirroring the existing
+  `lostHold`/`escortHold` pattern. On dismount the state returns to `FOLLOWING`
+  and the deterministic follow resumes with no second order; `dismount` is never
+  acted on by the bot.
+- Deferred on purpose (owner's call): the shore *hold* primitive — the `ti
+  aspetto qui` line stays a separate mission, to be built when a reliable hold
+  exists.
+- Evidence: third scripted-harness case in
+  `tests/controller-mount-follow.test.mjs` (all four locomotion/exit options
+  offered while carried; nothing acted, one `mount_ride_hold`, no `follow_lost`,
+  then `follow_player` resumed) — 3/3; synthesis updated in
+  [companions](wiki/companions.md) §2026-10-06.
+
+## [2026-10-06] feat | A human order suspends the running goal; the parent resumes revalidated
+
+- Gap: a human `@bot` order arriving while another goal was running used to
+  **reorient** it — `controller.mjs` replaced `goal.plan` in place, set
+  `goal.humanOrder` and cleared `skillRun`, so the parent's objective/plan no
+  longer matched its record and the outcome of a *second* human's order went to
+  the first human (the sender was read from `goal.parameters.from`, i.e. the
+  goal's original `from`).
+- Fix (`controller.mjs`): the order now **suspends** the parent and runs as a
+  child goal. `runGoal` returns `{status:'preempted', human:{plan, entry}}`;
+  `main` calls `goalManager.preempt('human_order:<from>')`, enqueues
+  `{type:'chat', source:CHAT, plan, parameters:{from, message}, parentGoal}`,
+  prints `HUMAN ORDER <from>: suspend <parent> -> run <child>` and logs
+  `human_preempt {from, parentGoalId, goalId}`. Kept as reorientations: a **stop**
+  order (`isStopOrder`), an order from the same requester, an `EMERGENCY` parent,
+  and a chain already `MAX_GOAL_DEPTH` deep (default 3, logs
+  `human_order_override`).
+- Resume: the post-goal parent block moved **before** the `outcome.error` /
+  `!SESSION` exits (a failed, cancelled or errored child still hands the parent
+  back) and revalidates first — `goalAlreadySatisfied(parent, obs)`
+  (`goalMet(obs, plan, null) && !planIsOpen(plan)`, the same `planIsOpen` guard
+  `runGoal` uses for a human order) completes the parent with zero actions and
+  logs `goal_resume_satisfied`, else `goalManager.resume(parent.id)` +
+  `RESUME <id> (suspended while <child> ran)` + `goal_resumed`. Resume is a
+  re-plan from a fresh `observ()`, never a mid-action resume.
+- Requester attribution: `reportHumanOutcome(goal, {status, steps, reason})`
+  resolves the sender as `goal.humanOrder?.from ?? (source === CHAT ?
+  goal.parameters?.from : null)`, so ack and outcome reach the human who sent
+  the order that just closed.
+- Goal Manager (`goal-manager.mjs`): added `ancestors(id)` / `depth(id)`
+  (nearest-first, orphan-safe, cycle-safe) over the existing `parentGoal` field;
+  no new status, no second scheduler.
+- Evidence: new `tests/controller-goal-stack.test.mjs` (scripted harness) —
+  autonomous A → human B (done / failed) → resume A; an emergency inside the
+  human order unwinds `RESUME B` then `RESUME A` with the persisted chain
+  `E.parentGoal = B`, `B.parentGoal = A`; a parent already satisfied while
+  suspended (0 actions, `goal_resume_satisfied`); two consecutive humans each
+  with their own outcome; a restart with two suspended goals (child before
+  parent); the same-requester revision. 7/7 green.
+  `tests/goal-manager.test.mjs` ancestry unit test (13/13). The pre-existing run
+  `node --test tests/controller-*.test.mjs tests/goal-manager.test.mjs` stayed at
+  112 pass before the new file; the only test touched
+  (`tests/controller-chat-ack.test.mjs`, the `chatFromObserve` knob) now lands the
+  drop-order case in IDLE, because `drop_item` empties the harness inventory.
+- Docs: new [goal-stack](wiki/goal-stack.md) (plus `index.md`/`sources.md` rows
+  and cross-links in emergency/human-command/ai-player-roadmap/goal-achievement),
+  verification row 63, the open-questions lifecycle bullet, and `MAX_GOAL_DEPTH`
+  in `AGENTS.md`.
+- Open: startup resume stays flat (no world revalidation — `goalAlreadySatisfied`
+  needs a live observation the startup path does not fetch, and
+  `tests/controller-session.test.mjs` asserts the current ordering); a
+  depth-capped order silently degrades to the old reorientation; no live round
+  with a real human yet.

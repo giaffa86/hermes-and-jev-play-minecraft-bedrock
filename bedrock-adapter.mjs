@@ -12,7 +12,10 @@ import { BedrockWorld } from './bedrock-world.mjs';
 import { HIVE_BLOCKS, BEE_CRAFT_ITEMS, BEE_SCAN_RADIUS, BEE_SCAN_LIMIT, isBeeProtected, hiveVerdict, honeyLevel, beeFlower, beeFlowerCount } from './bedrock-bees.mjs';
 import { trackNethernetClient, closeBedrockClient } from './bedrock-lifecycle.mjs';
 import { tagCount } from './survival/item-tags.mjs';
-import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isMilkableType, isTameableType, isRideTameableType, isCompanionType, isRideableType, animalFeed, tameFeed, cropForSeed, cropMaturity, seedForCrop, isCropBlock, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS, FOODS, LAST_RESORT_FOODS, BUCKET_INGREDIENTS, SHIELD_INGREDIENTS, STARVING_FOOD } from './bedrock-survival.mjs';
+import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isMilkableType, isTameableType, isRideTameableType, isCompanionType, isRideableType, animalFeed, tameFeed, cropForSeed, cropMaturity, seedForCrop, isCropBlock, mountCapacity, seatInfo, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS, FOODS, LAST_RESORT_FOODS, BUCKET_INGREDIENTS, SHIELD_INGREDIENTS, STARVING_FOOD } from './bedrock-survival.mjs';
+// Missione «segui l'umano che si imbarca»: la decisione è pura, l'adapter
+// raccoglie solo i fatti (link, flag `riding`, raggiungibilità).
+import { MOUNT_FOLLOW_STATES, MOUNT_JOIN_ATTEMPTS, mountFollowTransition } from './bedrock-mount-follow.mjs';
 import { professionName, normalizeProfession, professionMatches, pickBestTrade } from './bedrock-trading.mjs';
 import { isWaterBlock, fishCount, fishItems, shoreCandidates, nextBiteDelay, bobberVerdict, FISHING_ROD_INGREDIENTS, CAST_RANGE } from './bedrock-fishing.mjs';
 import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
@@ -505,6 +508,14 @@ export class BedrockAdapter {
     // un salto a comando usa un canale dedicato invece di sovrascriverlo.
     this._freeJump = null;
     this.riding = null;                // { riddenEntityId, at } quando il bot è montato
+    // Missione «l'umano si imbarca»: i link rider→veicolo di *tutti* i rider
+    // (non solo del bot) sono la verità su chi sta su cosa, e lo stato della
+    // macchina a stati. Il rilevamento è in produzione; il join vero è dietro
+    // `BEDROCK_JOIN_HUMAN_MOUNT=1` perché il server non conferma il nostro
+    // interact (nessun `set_entity_link`: vedi docs/wiki/companions.md).
+    this.entityLinks = new Map();      // riderRuntimeId -> { ridden, type, at }
+    this.joinHumanMountEnabled = process.env.BEDROCK_JOIN_HUMAN_MOUNT === '1';
+    this._mountFollow = { state: MOUNT_FOLLOW_STATES.IDLE, action: 'none', reason: null, attempts: 0, lastError: null, mountKey: null };
     this._sneaking = false;            // sneak dichiarato al server (mount/dismount/trade)
     this._sneakDeclared = false;       // ultimo `sneaking` mandato nei player_auth_input
     this._stealthSneaking = false;     // sneak di navigazione silenziosa (W1)
@@ -3956,6 +3967,9 @@ export class BedrockAdapter {
       plan: this.plan,
       follow: this._followView(),
       escort: this._escortView(),
+      // Missione «l'umano si è imbarcato»: stato, motivo, azione e vista del
+      // mezzo. Il controller la usa per dire dove aspetta invece di tacere.
+      mountFollow: this._mountFollowView(),
       craft: this._craftNeeds({ liveGather: true }),
       chat: this.chatInbox.slice(-10),
       nearby: this.nearbyBlocks,
@@ -4061,6 +4075,18 @@ export class BedrockAdapter {
           description: `Search for ${this.plan.follow} near their last known position (${seek.distance.toFixed(1)} blocks away)`,
         });
       }
+    }
+    // L'umano si è imbarcato e c'è un posto per il bot: si sale *su quel mezzo*.
+    // L'opzione sta qui — prima di ogni fallback di locomozione e dei `mount_*`
+    // generici — perché inseguire una barca in acqua profonda non è una via per
+    // raggiungerla: è il difetto che questa missione chiude.
+    const mountFollow = this._mountFollowView();
+    if (mountFollow.action === 'join' && mountFollow.mount) {
+      const m = mountFollow.mount;
+      o.push({
+        key: 'join_human_mount',
+        description: `Board ${mountFollow.human}'s ${m.type} (${m.free} free seat(s) of ${m.seats}, ${m.distance.toFixed(1)} blocks away, ${m.source === 'link' ? 'confirmed by the server link' : 'detected next to them'})`,
+      });
     }
     // Ordine umano «guidami/accompagnami fino a <posto>»: `plan.escort.from` e'
     // l'umano da guidare, la meta e' `plan.escort.to` o il waypoint del piano.
@@ -4988,6 +5014,11 @@ export class BedrockAdapter {
         result = await this._emptyBucket({ item: LAVA_BUCKET_ITEM });
       } else if (key === 'fill_bottle') {
         result = await this._fillBottle();
+      } else if (key === 'join_human_mount') {
+        // Prima di `mount_boat`/`mount_<tipo>` e di ogni fallback di locomozione
+        // (stessa trappola di M5): il bersaglio è il mezzo dell'umano, non "il
+        // più vicino del tipo".
+        result = await this._joinHumanMount();
       } else if (key === 'craft_boat') {
         result = await this._craftBoat();
       } else if (key === 'mount_boat') {
@@ -11107,6 +11138,11 @@ export class BedrockAdapter {
         if (tamed != null) entity.tamed = tamed;
         const sheared = this._metadataFlag(entry.value, 'sheared');
         if (sheared != null) entity.sheared = sheared;
+        // `riding` (bit 2) dice che *quell'entità* è a bordo di qualcosa: è il
+        // fallback del link per capire che l'umano si è imbarcato, prima che il
+        // `set_entity_link` arrivi (o quando il server non lo manda affatto).
+        const riding = this._metadataFlag(entry.value, 'riding');
+        if (riding != null) entity.riding = riding;
       }
       // flags_extended (chiave 92): `trusting` è il segnale dell'ocelot
       // (l'ocelot non si "doma", si fida).
@@ -11203,6 +11239,14 @@ export class BedrockAdapter {
       const rider = String(link?.rider_entity_id ?? '');
       const ridden = String(link?.ridden_entity_id ?? '');
       seen.push({ rider, ridden, type: link?.type ?? null });
+      // Chi sta su cosa, per *tutti* i rider e non solo per il bot: è il segnale
+      // autorevole per sapere che l'umano è salito sul veicolo X e quanti posti
+      // di X sono occupati. Prima questo link finiva solo nel log diagnostico
+      // `entity_link_other`. `type === 0` è lo smontaggio: il link si cancella.
+      if (rider) {
+        if (link.type === 0) this.entityLinks.delete(rider);
+        else this.entityLinks.set(rider, { ridden, type: link.type ?? null, at: Date.now() });
+      }
       if (rider !== self) {
         // Diagnostica: un link che non è nostro spiega un `riding` rimasto nullo
         // quando il server l'ha comunque mandato (raro: pochi eventi per sessione).
@@ -12687,6 +12731,173 @@ export class BedrockAdapter {
     }
     rows.sort((a, b) => a.distance - b.distance);
     return rows.slice(0, limit);
+  }
+
+  // Chi è a bordo di un mezzo (runtime id). I link del server sono la verità; il
+  // flag `riding` di un'entità non dice *quale* mezzo, quindi da solo non basta a
+  // contare i posti occupati.
+  _ridersOf (runtimeId) {
+    const id = String(runtimeId ?? '');
+    if (!id) return [];
+    const riders = [];
+    for (const [rider, link] of this.entityLinks) {
+      if (String(link.ridden) === id && !riders.includes(rider)) riders.push(rider);
+    }
+    return riders;
+  }
+
+  // Il mezzo su cui sta l'umano da seguire. Fonte autorevole: il link del server
+  // (rider=umano → ridden=mezzo). Prima del link si ripiega sul flag `riding`
+  // dell'umano più la prossimità, dichiarando la sorgente `proximity` perché non
+  // è una prova: accanto alla sua barca può essercene un'altra.
+  _humanMountView () {
+    const name = this.plan?.follow;
+    if (!name) return null;
+    const human = this._playerByName(name);
+    if (!human?.position) return null;
+    const linked = this.entityLinks.get(String(human.runtimeId));
+    let mount = linked ? this.entities.get(String(linked.ridden)) : null;
+    let source = mount ? 'link' : null;
+    if (!mount && human.riding === true) {
+      // Candidati: i mezzi che possono *portare anche il bot*, non tutti i
+      // cavalcabili. Un cavallo è a un posto e quindi non è un candidato a
+      // prescindere: qui la capacità decide, non la classificazione del censimento.
+      let best = null;
+      for (const entity of this.entities.values()) {
+        if (entity === human || entity.kind !== 'mob' || !entity.position) continue;
+        if (mountCapacity(entity) < 2) continue;
+        const d = Math.hypot(entity.position.x - human.position.x, entity.position.z - human.position.z);
+        if (d > 6) continue;
+        if (!best || d < best.d) best = { entity, d };
+      }
+      if (best) { mount = best.entity; source = 'proximity'; }
+    }
+    if (!mount?.position) return null;
+    const info = seatInfo(mount, { riders: this._ridersOf(mount.runtimeId).length });
+    return {
+      human: human.username || name,
+      runtimeId: String(mount.runtimeId),
+      type: info.type,
+      source,
+      seats: info.seats,
+      riders: info.riders,
+      free: info.free,
+      joinable: info.joinable,
+      reason: info.reason,
+      position: { ...mount.position },
+      distance: +this._entityDistance(mount).toFixed(1),
+    };
+  }
+
+  // Vista della missione «l'umano si è imbarcato». Qui si raccolgono i fatti
+  // (link, flag, raggiungibilità) e si conservano tentativi ed esito dell'ultimo
+  // join: la decisione è della macchina a stati pura (`bedrock-mount-follow.mjs`).
+  // I tentativi sopravvivono all'osservazione perché senza di quelli il bot
+  // riproverebbe in loop un interact che il server ha già rifiutato.
+  _mountFollowView () {
+    const following = !!this.plan?.follow;
+    const mount = following ? this._humanMountView() : null;
+    const botRiding = !!this.riding;
+    // Mezzo diverso (o umano tornato a piedi): la missione riparte da zero. I
+    // tentativi appartengono a *quel* mezzo, non alla persona.
+    if (mount?.runtimeId !== this._mountFollow.mountKey) {
+      this._mountFollow.mountKey = mount?.runtimeId ?? null;
+      this._mountFollow.attempts = 0;
+      this._mountFollow.lastError = null;
+    }
+    let reachable = false;
+    if (mount) {
+      const entity = this.entities.get(mount.runtimeId);
+      reachable = !!entity && this.entityApproachable(entity, { range: 4, dy: 3 });
+    }
+    const next = mountFollowTransition({
+      state: this._mountFollow.state,
+      following,
+      botRiding,
+      ridingHumanMount: botRiding && !!mount && String(this.riding?.riddenEntityId ?? '') === mount.runtimeId,
+      mount,
+      reachable,
+      joinEnabled: this.joinHumanMountEnabled,
+      joinAttempted: this._mountFollow.attempts > 0 && !!this._mountFollow.lastError,
+      joinError: this._mountFollow.lastError,
+      attempts: this._mountFollow.attempts,
+    });
+    if (next.state !== this._mountFollow.state) {
+      this.log('mount_follow_state', {
+        from: this._mountFollow.state,
+        to: next.state,
+        action: next.action,
+        reason: next.reason,
+        human: mount?.human ?? this.plan?.follow ?? null,
+        mount: mount
+          ? { type: mount.type, runtimeId: mount.runtimeId, seats: mount.seats, riders: mount.riders, free: mount.free, source: mount.source, distance: mount.distance }
+          : null,
+        flags: { joinEnabled: this.joinHumanMountEnabled, reachable, attempts: this._mountFollow.attempts },
+      });
+    }
+    this._mountFollow.state = next.state;
+    this._mountFollow.action = next.action;
+    this._mountFollow.reason = next.reason;
+    return {
+      ...next,
+      human: mount?.human ?? this.plan?.follow ?? null,
+      attempts: this._mountFollow.attempts,
+      attemptLimit: MOUNT_JOIN_ATTEMPTS,
+      joinEnabled: this.joinHumanMountEnabled,
+      mount,
+    };
+  }
+
+  // Sale sul mezzo *dell'umano*: bersaglio il suo runtime id, non "il più vicino
+  // del tipo" (accanto alla sua barca può essercene un'altra). Dietro feature
+  // flag: senza `BEDROCK_JOIN_HUMAN_MOUNT=1` non parte un solo pacchetto e il
+  // rifiuto è tipizzato (`join_human_mount_disabled`).
+  async _joinHumanMount (mountOrId = null, timeoutMs = 20000) {
+    if (!this.joinHumanMountEnabled) return { ok: false, error: 'join_human_mount_disabled' };
+    if (this.riding) return { ok: false, error: 'already_riding', ridden: this.riding.riddenEntityId };
+    const mount = mountOrId && typeof mountOrId === 'object' ? mountOrId : this._humanMountView();
+    if (!mount) return { ok: false, error: 'human_mount_unknown' };
+    // Il tentativo appartiene a *questo* mezzo: senza fissarlo qui, la vista
+    // successiva lo leggerebbe come un mezzo nuovo e azzererebbe l'errore,
+    // rimettendo il bot a riprovare in loop ciò che il server ha già rifiutato.
+    this._mountFollow.mountKey = mount.runtimeId;
+    if (mount.seats < 2 || mount.reason === 'unsupported') {
+      return { ok: false, error: 'human_mount_unsupported', type: mount.type, seats: mount.seats };
+    }
+    if (mount.free <= 0) {
+      return { ok: false, error: 'human_mount_full', type: mount.type, seats: mount.seats, riders: mount.riders };
+    }
+    const hand = this._freeHands('mount');
+    const entity = this.entities.get(mount.runtimeId);
+    if (!entity) return { ok: false, error: 'human_mount_gone' };
+    if (this._entityDistance(entity) > 4.5) {
+      try { await this._moveTo(entity.position, 2.0, Math.min(15000, timeoutMs)); } catch (error) { this.log('join_human_mount_approach_failed', { message: error.message, mount: mount.type }); }
+    }
+    this._mountFollow.attempts += 1;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline && !this.riding) {
+      const live = this.entities.get(mount.runtimeId);
+      if (!live) { this._mountFollow.lastError = 'human_mount_gone'; return { ok: false, error: 'human_mount_gone' }; }
+      const distance = this._entityDistance(live);
+      if (distance > 5) {
+        this._mountFollow.lastError = 'human_mount_unreachable';
+        return { ok: false, error: 'human_mount_unreachable', type: mount.type, distance: +distance.toFixed(1) };
+      }
+      const look = this._lookAt({ x: live.position.x, y: live.position.y + entityHeight(live.type) * 0.5, z: live.position.z });
+      await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
+      await delay(120);
+      this._interactEntity(live);
+      const waitUntil = Math.min(deadline, Date.now() + 2000);
+      while (Date.now() < waitUntil && !this.riding) await delay(100);
+    }
+    if (!this.riding) {
+      this._mountFollow.lastError = 'mount_not_confirmed';
+      this.log('join_human_mount_unconfirmed', { mount: mount.type, runtimeId: mount.runtimeId, attempts: this._mountFollow.attempts, hand, source: mount.source });
+      return { ok: false, error: 'mount_not_confirmed', type: mount.type, hand, attempts: this._mountFollow.attempts };
+    }
+    this._mountFollow.lastError = null;
+    this.log('join_human_mount', { mount: mount.type, runtimeId: mount.runtimeId, attempts: this._mountFollow.attempts, source: mount.source });
+    return { ok: true, mounted: mount.type, ridden: this.riding.riddenEntityId, source: mount.source };
   }
 
   // Monta il veicolo/cavalcabile più vicino del tipo richiesto: mano vuota e
