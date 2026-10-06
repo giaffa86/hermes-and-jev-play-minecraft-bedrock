@@ -12,10 +12,15 @@ consulted as a lookup — and the one spoken order it exists to serve:
 The analogy is a robot vacuum: the map is drawn on a slow pass, and every later
 task is a route over known cells rather than a new exploration.
 
-Status: **V0–V5 spec only** — nothing on this roadmap is implemented. Everything
-it builds on (the histogram survey, the marker detector, the container memory,
-the harvest/plant/deposit actions, the village chores) already exists and is
-listed below as the baseline; the two real gaps are the aggregation and the
+Status: **V0 model landed (2026-10-06), V1–V5 spec only.** `world-memory.mjs`
+now keeps discovery and inspection as two facts with two clocks, the rung-2 query
+exists, and the storage matcher is a family match instead of a name whitelist
+(commit `0650877`). The *writes* and the read path in the adapter are still
+missing: nothing yet persists a discovery during a sweep, and the deposit
+decision does not consult the ladder. Everything else on this roadmap is spec.
+Everything it builds on (the histogram survey, the marker detector, the container
+memory, the harvest/plant/deposit actions, the village chores) already exists and
+is listed below as the baseline; the two real gaps are the aggregation and the
 meaning of the order.
 Full raw source: [`docs/raw/VILLAGE_RECON_ROADMAP.md`](../raw/VILLAGE_RECON_ROADMAP.md).
 
@@ -154,22 +159,35 @@ and **Hermes must not order it while the register can still answer at rung 1 or
 2** — which is why the register must *expose* the ladder: an empty list proves "I
 don't know" instead of assuming it.
 
-What the code allows today, checked piece by piece:
+What the code allowed *before* V0, and what changed (checked in the code):
 
-- **Ready**: `containerId:169` is spatial, so a re-write upserts in place, and
-  `rememberContainer:174` already preserves `discoveredAt` across upserts.
-- **Missing, and blocking**: nothing writes a discovery (the only writer is
-  post-open), `contents = {}` cannot say *unknown* (it means *empty*), and
-  `_materializeContains:204` invalidates every `contains` edge before rebuilding
-  them — so a naive discovery write would **erase** the contents learned
-  earlier. `contentsKnown: false` must skip materialization.
-- **Missing, cheap to add**: rung 2 has no query — `containersWithItem:226`
-  filters on known contents, and no `findContainers:213` parameter carries
-  `contentsKnown`.
-- **Partial**: stale promotion is startup-only (`refreshStatuses:1398` is called
-  only by `hydrate:1405`, no timer) while `findContainers` defaults to
-  `includeStale: true`; and `STORAGE_BLOCKS:157` is an exact-name list, so dyed
-  shulker boxes are invisible.
+- **Landed (2026-10-06, `0650877`)**: `containerId` is spatial, so a re-write
+  upserts in place, and `rememberContainer` still preserves `discoveredAt`.
+  `rememberContainer` now takes a *write kind*: a call without a `contents`
+  payload (or with `contentsKnown: false`) is a **discovery** that updates
+  `type`/`position`/`discoveredAt`/`lastSeenAt` and never touches `contents`,
+  `inspectedAt` or the `contains` edges; a call with a payload is an
+  **inspection** and is the only write that stores contents and re-materializes
+  the edges. `contents: null` means *not measured*, `{}` means *measured and
+  empty* — so "never inspected", "inspected and empty", "inspected with
+  contents" and "contents stale" are four distinguishable states
+  (`describeContainer`, `CONTAINER_INSPECTION_STATE`).
+- **Landed**: staleness is computed **on read** from `inspectedAt`/`discoveredAt`
+  (`CONTAINER_INSPECTED_STALE_MS` 5 min, `CONTAINER_DISCOVERY_STALE_MS` 6 h), so no
+  timer and no `hydrate` are needed; `findContainers({ includeStale })` answers
+  with the derived value, and a status already marked stale stays stale.
+  `containersToInspect` is the rung-2 query, ordered by distance.
+- **Landed**: the storage names moved out of the adapter's exact-name whitelist
+  into `storage-blocks.mjs`, which matches exact names *and* families
+  (`*_shulker_box`), with `addStorageBlockName`/`addStorageBlockFamily` as the
+  extension points — so dyed shulker boxes are no longer invisible.
+- **Still missing (the next step, not the data model)**: nothing *writes* a
+  discovery in the live path (the only writer is still post-open, via
+  `_setContainerContents`), and `_depositTargetFor` still reads only the runtime
+  cache instead of the ladder, so "put it in the nearest chest" does not yet
+  consult what the bot already knows. `storage-ladder.mjs` holds the order
+  (`known item -> inspect discovered -> local scan -> recon sweep`) as a pure
+  decision, ready to be called.
 
 The acceptance test is exactly the order the owner described: iron known in a
 chest → go there; only unopened chests known → inspect them; nothing known →
@@ -207,7 +225,7 @@ failure, and `runs/<run>/actions.jsonl` shows it.
 
 | Milestone | Deliverable | Status |
 |---|---|---|
-| V0 | Pure census `village-survey.mjs` + `villageRegister` memory-first read + `GET /observe.village` + memory writes | spec |
+| V0 | Two-fact container record (`discoveredAt`/`inspectedAt`/`contentsKnown`) + read-time staleness + rung-2 query + ladder | **model landed** (`0650877`); census/register still spec |
 | V1 | `survey_village`: bounded read-only sweep, typed refusals, idempotent | spec |
 | V2 | Deposit target from memory (symmetry with `take_*`), stale re-read | spec |
 | V3 | Farm order as one intent → `plan.farm` → verified chain | spec |

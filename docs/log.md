@@ -3500,3 +3500,44 @@ these?): no, and here is what blocks it.**
   rows: the ladder ordering, a discovery write that never erases known contents,
   a discovery row outliving an inspection TTL, and a live four-case chest test.
 
+
+## [2026-10-06] feat | Discovery and inspection are two facts in the data model (V0)
+
+- `world-memory.mjs`: `rememberContainer` now takes a *write kind*. Without a
+  `contents` payload (or with `contentsKnown: false`) it is a **discovery**: it
+  updates `type`/`position`/`discoveredAt`/`lastSeenAt` and never touches
+  `contents`, `inspectedAt` or the `contains` edges. With a payload it is an
+  **inspection**, the only write that stores contents and re-materializes the
+  edges. The old default `contents = {}` conflated the two, so a discovery would
+  have erased the contents learned earlier via `_materializeContains` (which
+  invalidates every `contains` edge before rebuilding them).
+- `contents: null` = *not measured*, `{}` = *measured and empty*: four states are
+  now distinguishable (`describeContainer`, `CONTAINER_INSPECTION_STATE`:
+  `never_inspected` / `empty` / `contents` / `stale`).
+- Staleness is **computed on read** from `inspectedAt`/`discoveredAt`
+  (`containerStaleMs` 5 min, new `containerDiscoveryStaleMs` 6 h), so no timer and
+  no `hydrate` are needed for a container to stop being trusted;
+  `findContainers({ includeStale })` answers with the derived value and a status
+  already marked stale stays stale (staleness is monotone). `refreshStatuses`
+  remains for landmarks and as a convenience write.
+- New rung-2 query `containersToInspect({ from, limit, includeDiscoveryStale })`:
+  never inspected or inspection expired, ordered by distance.
+  `findContainers` also accepts `contentsKnown` and `needsInspection`.
+- `storage-blocks.mjs` replaces the adapter's exact-name whitelist with a matcher:
+  exact names plus families (`*_shulker_box`, so every dye colour) and the
+  extension points `addStorageBlockName` / `addStorageBlockFamily`.
+- `storage-ladder.mjs` holds the four-rung order (`known item` → `inspect
+  discovered` → `local scan` → `recon sweep`) as a pure decision with a `reason`
+  and a `blocked` list, so a caller that jumps to the sweep while a remembered
+  container could have answered is visible instead of implicit.
+- Tests: `tests/world-memory-container-facts.test.mjs` (json + sqlite) closes V0
+  with *"a later discovery never erases known contents"* and *"a stale inspection
+  never makes the discovery disappear"*; `tests/storage-ladder.test.mjs` (13
+  cases) and `tests/storage-blocks.test.mjs` cover the ladder and the matcher.
+  Full suite: 1621 pass, 0 fail.
+- Not yet wired (next step, deliberately after the model): nothing in the live
+  path *writes* a discovery (the only writer is still post-open in
+  `_setContainerContents:7052`), and `_depositTargetFor:7000` still reads only the
+  runtime cache instead of climbing the ladder.
+- Commit `0650877` on `docs/village-recon-roadmap`; wiki status updated in
+  [`docs/wiki/village-recon.md`](wiki/village-recon.md).
