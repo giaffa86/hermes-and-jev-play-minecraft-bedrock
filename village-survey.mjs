@@ -13,7 +13,7 @@
 // the seed to replant), pens (animal clusters, fenced or not), and the storage
 // list with what is known about each container.
 //
-// Two rules keep it honest:
+// Three rules keep it honest:
 //   - `checked` answers "did we look?" and `detection.state` answers "what did
 //     we find?": NOT_FOUND is *looked and empty*, never *not looked* (that is
 //     `checked: false, state: null`). CANDIDATE is a partial match, recorded as
@@ -21,6 +21,11 @@
 //     come from a world query — `/locate` is out of scope on purpose.
 //   - the census never guesses: a crop whose maturity the observer could not
 //     read stays `unknown`, and a field the input does not carry stays `null`.
+//   - every fact carries `confidence`, `evidence` and `missing`. `confidence` is
+//     the share of that fact which was actually *read* (never an estimate),
+//     `missing` names what was not seen, and a cluster below its threshold is
+//     absent — with the leftovers counted in `ignored`, so "below threshold" can
+//     never be confused with "not looked at".
 
 import { isCropBlock, seedForCrop, isFarmAnimalType, CROP_BLOCKS } from './bedrock-survival.mjs';
 import { detectStructures, scoreStructures } from './structures.mjs';
@@ -47,6 +52,9 @@ export const VILLAGE_HOUSE_RADIUS = 8;
 export const VILLAGE_PLOT_RADIUS = 4;
 export const VILLAGE_PEN_RADIUS = 12;
 export const VILLAGE_MAX_CELLS = 20000;
+// Sotto questa soglia un grappolo di colture non è un appezzamento: le celle
+// restano contate in `counts.crops` e il grappolo finisce in `ignored.plots`.
+export const VILLAGE_PLOT_MIN_CELLS = 4;
 
 export const VILLAGE_DETECTION_STATE = Object.freeze({
   NOT_FOUND: 'NOT_FOUND',
@@ -110,6 +118,10 @@ const triState = value => {
   if (value === false) return false;
   return null;
 };
+
+// Confidence non è una stima: è la quota di un fatto che l'osservazione ha
+// davvero letto. `null` quando non c'è nulla da leggere.
+const shareOf = (known, total) => (total > 0 ? +(known / total).toFixed(2) : null);
 
 // Greedy chaining: a row joins the first group of the same key with a member
 // within `radius`. Deterministic given a sorted input, and it follows the shape
@@ -230,23 +242,33 @@ function evidenceOf (verdict) {
   });
 }
 
+// Il fatto di una riga di deposito è "c'è un contenitore qui": la posizione è
+// ciò che la riga *è*, quindi la confidenza — e il `missing` — riguardano il
+// contenuto, che solo un'ispezione ha letto. La riga senza posizione non è un
+// fatto: finisce in `ignored`, non in `storage`.
 function containersOf (rows) {
-  return (rows || [])
-    .map(row => {
-      const position = pos(row?.position);
-      if (!position) return null;
-      const contents = row?.contains ?? row?.contents ?? null;
-      const contentsKnown = row?.contentsKnown === false ? false : (row?.contentsKnown === true ? true : contents != null);
-      return {
-        position,
-        type: nameOf(row?.type) || null,
-        contains: contentsKnown ? (contents ?? {}) : null,
-        contentsKnown,
-        status: row?.status ?? null,
-        rememberedAt: row?.rememberedAt ?? row?.inspectedAt ?? row?.lastSeenAt ?? null,
-      };
-    })
-    .filter(Boolean);
+  const all = rows || [];
+  const out = [];
+  for (const row of all) {
+    const position = pos(row?.position);
+    if (!position) continue;
+    const contents = row?.contains ?? row?.contents ?? null;
+    // "non ispezionato" ≠ "ispezionato e vuoto": un flag esplicito vince, e solo
+    // in sua assenza la presenza di un contenuto decide.
+    let contentsKnown = row?.contentsKnown;
+    if (contentsKnown !== true && contentsKnown !== false) contentsKnown = contents != null;
+    out.push({
+      position,
+      type: nameOf(row?.type) || null,
+      contains: contentsKnown ? (contents ?? {}) : null,
+      contentsKnown,
+      status: row?.status ?? null,
+      rememberedAt: row?.rememberedAt ?? row?.inspectedAt ?? row?.lastSeenAt ?? null,
+      confidence: contentsKnown ? 1 : 0,
+      missing: contentsKnown ? [] : ['contents'],
+    });
+  }
+  return { rows: out, ignored: all.length - out.length };
 }
 
 function housesOf (cells, containers, radius) {
@@ -255,20 +277,32 @@ function housesOf (cells, containers, radius) {
   return cluster(beds, radius).map(group => {
     const anchor = group.rows[0].position;
     const own = containers.filter(container => group.rows.some(cell => planar(cell.position, container.position) <= radius));
-    const near = cells.filter(cell => /_door$/.test(cell.name) && group.rows.some(bed => planar(bed.position, cell.position) <= radius));
+    const near = doors.filter(door => group.rows.some(bed => planar(bed.position, door.position) <= radius));
+    const read = group.rows.filter(row => row.occupied !== null).length;
+    const missing = [];
+    if (read < group.rows.length) missing.push('occupancy');
+    if (!near.length) missing.push('door');
+    if (!own.length) missing.push('container');
     return {
       anchor,
       beds: group.rows.map(row => ({ position: row.position, occupied: row.occupied })),
       containers: own.map(row => ({ position: row.position, type: row.type })),
-      evidence: { beds: group.rows.length, doors: near.length || doors.length * 0, containers: own.length },
+      evidence: { beds: group.rows.length, doors: near.length, containers: own.length },
+      // Una casa con letti la cui occupazione non è stata letta non può dire che
+      // un letto è libero: la confidenza è la quota di letti davvero letti.
+      confidence: shareOf(read, group.rows.length),
+      missing,
     };
   });
 }
 
-function plotsOf (cells, radius) {
+function plotsOf (cells, radius, minCells) {
   const crops = cells.filter(cell => isCropBlock(cell.name));
-  return cluster(crops, radius).map(group => {
+  const plots = [];
+  let ignored = 0;
+  for (const group of cluster(crops, radius)) {
     const rows = group.rows;
+    if (rows.length < minCells) { ignored++; continue; }
     const ready = rows.filter(row => row.mature === true).length;
     const immature = rows.filter(row => row.mature === false).length;
     const unknown = rows.length - ready - immature;
@@ -277,7 +311,7 @@ function plotsOf (cells, radius) {
       y: rows.reduce((sum, row) => sum + row.position.y, 0) / rows.length,
       z: rows.reduce((sum, row) => sum + row.position.z, 0) / rows.length,
     });
-    return {
+    plots.push({
       crop: group.key,
       seed: seedForCrop(group.key),
       cells: rows.length,
@@ -285,11 +319,16 @@ function plotsOf (cells, radius) {
       immature,
       unknown,
       center,
-    };
-  });
+      evidence: { cells: rows.length, ready, immature, unknown },
+      // La maturità non letta è la parte di appezzamento che non si conosce.
+      confidence: shareOf(ready + immature, rows.length),
+      missing: unknown > 0 ? ['ripeness'] : [],
+    });
+  }
+  return { plots, ignored };
 }
 
-function pensOf (entities, cells, radius) {
+function pensOf (entities, cells, radius, unread = 0) {
   const animals = entities
     .filter(entity => isFarmAnimalType(entity?.type))
     .map(entity => ({
@@ -309,10 +348,21 @@ function pensOf (entities, cells, radius) {
       else row.adults++;
       byType.set(animal.type, row);
     }
+    const fenced = fences.some(fence => planar(fence.position, anchor) <= radius);
     return {
       anchor,
-      fenced: fences.some(fence => planar(fence.position, anchor) <= radius),
+      fenced,
       animals: [...byType.values()],
+      evidence: {
+        animals: group.rows.length,
+        adults: group.rows.filter(animal => !animal.baby).length,
+        babies: group.rows.filter(animal => animal.baby).length,
+        fenced,
+      },
+      // Il recinto non è più sicuro della quota di bestiame che si è riusciti a
+      // leggere: un animale visto ma senza posizione abbassa la confidenza.
+      confidence: shareOf(group.rows.length, group.rows.length + unread),
+      missing: fenced ? [] : ['fence'],
     };
   });
 }
@@ -353,13 +403,18 @@ export function surveyVillage ({
   const plotRadius = Number.isFinite(limits.plotRadius) ? limits.plotRadius : VILLAGE_PLOT_RADIUS;
   const penRadius = Number.isFinite(limits.penRadius) ? limits.penRadius : VILLAGE_PEN_RADIUS;
   const maxCells = Number.isFinite(limits.maxCells) && limits.maxCells >= 0 ? limits.maxCells : VILLAGE_MAX_CELLS;
+  const plotMinCells = Number.isFinite(limits.plotMinCells) && limits.plotMinCells > 0 ? limits.plotMinCells : VILLAGE_PLOT_MIN_CELLS;
 
   const all = withBeds(nearbyCells(nearby), beds);
   const cells = all.slice(0, maxCells);
   const dropped = all.length - cells.length;
 
-  const storage = containersOf(containers);
+  const storageFacts = containersOf(containers);
+  const storage = storageFacts.rows;
   const animals = farmAnimals.filter(entity => isFarmAnimalType(entity?.type));
+  // Un animale visto ma senza posizione *c'è*: entra nel conteggio del bestiame e
+  // abbassa la confidenza dei recinti, invece di sparire.
+  const unread = animals.filter(animal => !pos(animal.position)).length;
   const known = anchor ? pos(anchor) : null;
 
   const histogram = mergeHistogram(histogramOf(cells), survey);
@@ -372,16 +427,31 @@ export function surveyVillage ({
     .find(score => score.type === 'village') ?? null;
 
   const houses = housesOf(cells, storage, houseRadius);
-  const plots = plotsOf(cells, plotRadius);
-  const pens = pensOf(animals, cells, penRadius);
+  const plotFacts = plotsOf(cells, plotRadius, plotMinCells);
+  const plots = plotFacts.plots;
+  const pens = pensOf(animals, cells, penRadius, unread);
 
-  const checked = scanned == null ? (cells.length > 0 || animals.length > 0 || storage.length > 0) : scanned > 0;
+  // "C'è un dato ⇒ si è guardato": un payload che riporta una cella, un animale o
+  // un contenitore ha guardato, qualunque cosa dica `scanned`. `checked: false`
+  // resta riservato a un'osservazione vuota che non ha guardato nulla — e resta
+  // anche il caso "guardato e vuoto": `checked: true`, `state: NOT_FOUND`.
+  const observed = cells.length > 0 || animals.length > 0 || storage.length > 0;
+  const checked = observed || (scanned != null && scanned > 0);
   let state = null;
   if (checked) {
     if (detected) state = VILLAGE_DETECTION_STATE.CONFIRMED;
     else if (verdict?.matched.length) state = VILLAGE_DETECTION_STATE.CANDIDATE;
     else state = VILLAGE_DETECTION_STATE.NOT_FOUND;
   }
+  // Un marker mancante è un fatto *relativo a una misura*: se non si è guardato
+  // non manca niente, perché non c'è nessun "rispetto a cosa".
+  const missing = checked ? (verdict?.missing ?? []) : [];
+  // La confidenza del verdetto è quella del detector (stessa formula di
+  // `GET /observe.structures`), mai una seconda stima: sotto soglia vale come
+  // tale, ed è per questo che `CANDIDATE` si porta un numero < 0.5.
+  let detectionConfidence = 0;
+  if (detected) detectionConfidence = detected.confidence;
+  else if (verdict?.minScore) detectionConfidence = Math.min(1, +((verdict.score ?? 0) / (verdict.minScore * 2)).toFixed(2));
 
   const site = known ?? detected?.position ?? houses[0]?.anchor ?? null;
   const ordered = site
@@ -396,14 +466,22 @@ export function surveyVillage ({
     plots,
     pens,
     storage: ordered,
-    missing: verdict?.missing ?? [],
+    missing,
+    // Ciò che è stato visto e *non* è un fatto: un grappolo di colture sotto la
+    // soglia, un animale senza posizione, una riga di deposito senza posizione.
+    // Senza questo, "sotto soglia" sembrerebbe "non guardato".
+    ignored: { plots: plotFacts.ignored, animals: unread, containers: storageFacts.ignored },
+    // Le regole con cui sono nati i fatti: un lettore deve poterle rileggere dal
+    // payload, non ricostruirle dai doc.
+    thresholds: { houseRadius, plotRadius, penRadius, plotMinCells, maxCells },
     detection: {
       state,
+      confidence: detectionConfidence,
       evidence: evidenceOf(verdict),
       score: verdict?.score ?? 0,
       minScore: verdict?.minScore ?? null,
       matched: verdict?.matched ?? [],
-      missing: verdict?.missing ?? [],
+      missing,
     },
     counts: {
       houses: houses.length,
@@ -415,7 +493,9 @@ export function surveyVillage ({
       crops: cells.filter(cell => isCropBlock(cell.name)).length,
     },
     survey: {
-      scanned: scanned == null ? cells.length : scanned,
+      // Un contatore più piccolo delle celle che descrive non è un fatto sul
+      // mondo: il payload non può dire di aver letto meno di ciò che riporta.
+      scanned: Math.max(Number.isFinite(scanned) ? scanned : 0, cells.length),
       cells: cells.length,
       dropped,
       truncated: dropped > 0,

@@ -19,7 +19,7 @@ const block = (name, x, y, z, props = {}) => ({
   getProperties: () => props,
 });
 
-// Un sito completo: campana, tre letti, tre carote (due mature), un composter,
+// Un sito completo: campana, tre letti, quattro carote (tre mature), un composter,
 // due staccionate — e, per il detector, due villager.
 const siteBlocks = () => ({
   bell: [block('bell', 0, 66, 4)],
@@ -28,6 +28,7 @@ const siteBlocks = () => ({
     block('carrots', 0, 64, 0, { growth: 7 }),
     block('carrots', 1, 64, 0, { growth: 7 }),
     block('carrots', 2, 64, 0, { growth: 3 }),
+    block('carrots', 3, 64, 0, { growth: 7 }),
   ],
   composter: [block('composter', 2, 64, 5)],
   oak_fence: [block('oak_fence', 1, 64, 8), block('oak_fence', 2, 64, 8)],
@@ -76,12 +77,12 @@ test('the view censuses the site from the world, not from observe().nearby', () 
   assert.deepEqual(view.detection.evidence, ['bell 1', 'beds 3', 'workstations 1', 'villagers 2']);
   assert.deepEqual(view.anchor, { x: 0, y: 66, z: 4 }, 'ancora sulla campana, come il detector');
   assert.equal(view.counts.beds, 3);
-  assert.equal(view.counts.crops, 3);
+  assert.equal(view.counts.crops, 4);
   assert.equal(view.houses.length, 1);
   assert.equal(view.plots.length, 1);
   assert.equal(view.plots[0].crop, 'carrots');
   assert.equal(view.plots[0].seed, 'carrot', 'la ricrescita è dichiarata: carota');
-  assert.deepEqual([view.plots[0].ready, view.plots[0].immature], [2, 1]);
+  assert.deepEqual([view.plots[0].ready, view.plots[0].immature], [3, 1]);
   assert.equal(view.pens.length, 1, 'una mucca è un recinto');
   assert.equal(view.pens[0].fenced, true, 'le due staccionate sono vicine alla mucca');
   assert.equal(view.counts.animals, 1, 'due villager non sono bestiame');

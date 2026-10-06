@@ -4023,3 +4023,62 @@ container kept running the image deployed at 11:19. Both are closed here.
 - Still open: V4 (honesty, protection), the four-case chest ladder and the
   farm-order A/B on the host, plus the memory-first read (`villageRegister`) and
   the `VILLAGE_PLOT_MIN_CELLS` threshold.
+
+## [2026-10-06] feat | The census says how much it read, and a village bed is finally protected
+
+V4 of [`docs/raw/VILLAGE_RECON_ROADMAP.md`](raw/VILLAGE_RECON_ROADMAP.md) — the
+honesty, protection and limits layer of the village reconnaissance. A census
+that guesses is worse than a census that says nothing, because once the guess is
+in the payload it is indistinguishable from a measurement.
+
+- **Confidence is the read share, not an adjective.** Every house, plot, pen and
+  storage row in `village-survey.mjs` carries `confidence` (`shareOf(known,
+  total)`, `null` when the denominator is 0), `evidence` (the numbers that
+  produced it: `{beds, doors, containers}`, `{cells, ready, immature, unknown}`,
+  `{animals, adults, babies, fenced}`) and `missing` (a named hole: `occupancy`,
+  `door`, `container`, `ripeness`, `fence`, `contents`). A house with one unread
+  bed out of two is `0.5` with `missing: ['occupancy']`, never "a free bed
+  exists". `detection.confidence` reuses the detector's own formula
+  (`structures.mjs:226`), so a `CANDIDATE` verdict carries a number below 0.5
+  instead of a fake 1.
+- **Below threshold is absent *and visible*.** A crop cluster under
+  `VILLAGE_PLOT_MIN_CELLS` (now applied in the census, and overridable from the
+  adapter with the `VILLAGE_PLOT_MIN_CELLS` env var) produces no plot, and the
+  dropped clusters are counted in `ignored.plots`; an animal without coordinates
+  is `ignored.animals`, a storage row without a position `ignored.containers`.
+  Without `ignored`, "seen and below the threshold" would look exactly like
+  "never looked at".
+- **`checked` and `scanned` cannot contradict the payload.** `checked` is now
+  `observed || scanned > 0` (at least one cell, animal or storage row means the
+  payload reports something, therefore somebody looked), `survey.scanned` is
+  `max(scanned, cells)`, and a payload nobody looked at names **no** `missing`
+  marker: a hole is relative to a measurement. The payload also carries
+  `thresholds` (the clustering rules) and `limits` (radius, per-name cell cap,
+  rescan throttle, survey radius, maximum distance), so "how much does this map
+  cover" is answerable from the data.
+- **Unknown contents is not an empty chest.** `contentsKnown: false` is
+  `contains: null`, `confidence: 0`, `missing: ['contents']`; a stale item stays
+  usable only through `planStorageSearch`, which answers `verify: true` — the
+  ladder orders the walk, it does not license belief.
+- **A protection bug, found by the new test.** `DIG_PROTECTED` matched beds with
+  `_bed$` while the Bedrock block is named plain `bed`: a village bed was
+  diggable. It is now `(^|_)bed$` (`bedrock-adapter.mjs:98`), which covers `bed`
+  and the Java-style `oak_bed` and leaves the crop exemption at `:9145` intact
+  (a *mature* crop must stay breakable or `harvest_<block>` could not work).
+  `farmland$`, `_fence$` and the crop names already covered the rest.
+- `tests/village-honesty.test.mjs` (14 offline cases) fixes all of it: a payload
+  that reports data is never `checked: false`; a payload nobody looked at claims
+  nothing; "looked and empty" names every rule below its `min`; confidence is
+  the read share for plots, houses and pens; unknown contents is not an empty
+  chest; a sub-threshold cluster is absent and counted; the thresholds travel; a
+  stale memory is used only with `verify: true`; no key returned by
+  `farmOptionKeys` (nor any source line of the census) is destructive; and
+  `farmland`, `bed`, `oak_fence` and an immature `carrots` all stop `_digTargets`
+  with a typed `protected_*` error, while the chain still breaks the ripe crop
+  it harvested and never the farmland underneath it.
+- `tests/village-survey.test.mjs` (16 cases) and `tests/village-view.test.mjs`
+  (6 cases) were extended for the new fields; the full suite is **1727 pass / 0
+  fail**. [`docs/wiki/village-recon.md`](wiki/village-recon.md) gains "honesty,
+  protection and the limits of the map".
+- Still open: the live rounds — the farm-order A/B and the four-case chest
+  ladder — plus the memory-first read (`villageRegister`).

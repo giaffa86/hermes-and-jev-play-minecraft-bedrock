@@ -13,7 +13,7 @@ The analogy is a robot vacuum: the map is drawn on a slow pass, and every later
 task is a route over known cells rather than a new exploration.
 
 Status: **V0 model + census + read path + V1/V2 storage path + the V1 sweep action
-+ the V3 farm order landed (2026-10-06); V4 (honesty, protection) and the live
++ the V3 farm order + the V4 honesty/protection landed (2026-10-06); the live
 rounds are still spec.** `world-memory.mjs` keeps discovery and inspection as
 two facts with two clocks, the rung-2 query exists, and the storage matcher is a
 family match instead of a name whitelist (`0650877`); the adapter now **writes** a
@@ -32,9 +32,12 @@ keeps three independent limits and writes a register that makes the next pass �
 and a pass after a restart — cheap. The **farm order** followed: `plan.farm` is
 classified from a crop family plus a farm verb, and the controller drives the
 chain (`harvest` → `plant` → `deposit`) one bounded step at a time against
-`/options`, closing on a state delta. What is still missing is V4 (honesty,
-protection) and the live rounds (the farm-order A/B and the four-case chest
-ladder). Everything else on this roadmap is spec.
+`/options`, closing on a state delta. The **honesty layer** followed: every
+village fact carries `confidence`, `evidence` and `missing`, what is below
+threshold is `ignored` instead of invented, `checked` cannot be `false` on a
+payload that reports data, and the protection list now really covers a Bedrock
+`bed`. What is still missing is the live rounds (the farm-order A/B and the
+four-case chest ladder). Everything else on this roadmap is spec.
 Everything it builds on (the histogram survey, the marker detector, the container
 memory, the harvest/plant/deposit actions, the village chores) already exists and
 is listed below as the baseline; the two real gaps are the aggregation and the
@@ -157,7 +160,8 @@ Four things stopped being spec and became code:
   waypoint budget is the spiral itself.
 
 Tests: `tests/village-survey.test.mjs` (16 cases), `tests/village-sweep.test.mjs`
-(7 offline cases), `tests/village-view.test.mjs` (6 cases, the read path) and
+(7 offline cases), `tests/village-view.test.mjs` (6 cases, the read path),
+`tests/village-honesty.test.mjs` (14 cases, the honesty and protection layer) and
 `tests/village-sweep-action.test.mjs` (9 cases, the action below).
 Still open in this milestone: the memory-first read (`villageRegister`), the
 `VILLAGE_PLOT_MIN_CELLS` threshold (a cluster is reported with its count, the
@@ -301,6 +305,77 @@ that executes it read the same rule.
 the step order — including the case that used to fail, carrots in the backpack
 with no drop ⇒ `harvest_carrots` — the harvest cap, the delta gating, the dedupe
 of the two content sources and the adapter's exemption policy.
+
+### What landed (2026-10-06): honesty, protection and the limits of the map
+
+A census that guesses is worse than a census that says nothing, because the
+guess is indistinguishable from a measurement once it is in the payload. V4
+makes the difference structural rather than stylistic.
+
+**Confidence is the share of the fact that was read.** Every house, plot, pen
+and storage row now carries three fields instead of an adjective:
+
+| Fact | `evidence` | `confidence` | `missing` when a hole exists |
+|---|---|---|---|
+| house | `{beds, doors, containers}` | share of beds whose `occupied` was read | `occupancy`, `door`, `container` |
+| plot | `{cells, ready, immature, unknown}` | share of cells whose ripeness was read | `ripeness` |
+| pen | `{animals, adults, babies, fenced}` | share of animals that had a position | `fence` |
+| storage | `{contents}` (implicit) | `1` when `contentsKnown`, else `0` | `contents` |
+
+A house with one unread bed out of two is `confidence: 0.5` and says
+`missing: ['occupancy']` — it never rounds up to "there is a free bed".
+`detection.confidence` reuses the detector's own formula
+(`structures.mjs:226`), so a `CANDIDATE` verdict legitimately carries a number
+below 0.5 rather than a fake 1.
+
+**Below the threshold is absent, and it is visible.** A crop cluster under
+`VILLAGE_PLOT_MIN_CELLS` produces no plot; the clusters that were dropped are
+counted in `ignored.plots`, an animal without coordinates in
+`ignored.animals`, a storage row without a position in `ignored.containers`.
+Without `ignored`, "seen and below the threshold" would be indistinguishable
+from "never looked at". The same reasoning fixes `checked`: it is now
+`observed || scanned > 0`, where `observed` means the payload has at least one
+cell, animal or storage row — a payload that reports data cannot claim it never
+looked. `survey.scanned` is `max(scanned, cells)` so the counter can never say
+it read less than the payload reports, and a payload nobody looked at names
+**no** `missing` marker: a hole exists relative to a measurement, and with no
+measurement there is nothing to be missing relative to.
+
+**The rules travel with the facts.** `thresholds` is in the payload
+(`{houseRadius, plotRadius, penRadius, plotMinCells, maxCells}`), so a reader
+re-derives the same clusters instead of guessing them from prose, and
+`VILLAGE_PLOT_MIN_CELLS` is finally applied *in* the census (the leftover of
+V0) with the adapter's env override (`bedrock-adapter.mjs`, folded in as
+`limits.plotMinCells`). The payload also states the sensor's own limits
+(`limits`: radius, per-name cell cap, rescan throttle, survey radius, maximum
+distance), so "how much does this map cover" is answerable from the data.
+
+**Unknown contents is not an empty chest.** A storage row with
+`contentsKnown: false` is `contains: null`, `confidence: 0`,
+`missing: ['contents']`; an inspected row is `confidence: 1`. A stale item stays
+usable, but only through `planStorageSearch`, which answers `verify: true`: the
+ladder orders the walk, it does not license belief.
+
+**Two protection lists, one of them wrong until now.** `DIG_PROTECTED`
+(`bedrock-adapter.mjs:98`) already covered farmland (`farmland$`), fences
+(`_fence$`), crops (`wheat$|carrots$|potatoes$|beetroot$`) and the village's
+built furniture, but it matched beds with `_bed$` — and the Bedrock block is
+named plain `bed`. A village bed was therefore diggable. It is now `(^|_)bed$`,
+which covers `bed` and the Java-style `oak_bed` while leaving the crop exemption
+at `:9145` intact (a *mature* crop must stay breakable or `harvest_<block>`
+could not work). The second list is the chain's own: no key returned by
+`farmOptionKeys` starts with `mine_` or `dig_`, and the test checks that against
+the source text of `village-survey.mjs` as well.
+
+`tests/village-honesty.test.mjs` (14 offline cases) covers all of it: a payload
+that reports data is never `checked: false`; a payload nobody looked at claims
+nothing; "looked and empty" names every rule below its `min`; confidence is the
+read share for plots, houses and pens; unknown contents is not an empty chest; a
+sub-threshold cluster is absent and counted in `ignored`; the thresholds travel;
+a stale memory is used only with `verify: true`; and `farmland`, `bed`,
+`oak_fence` and an immature `carrots` all stop `_digTargets` with a typed
+`protected_*` error while the chain still breaks the ripe crop it harvested and
+never the farmland underneath it.
 
 ## Register or sensor?
 

@@ -94,17 +94,33 @@ test('a plot knows its crop, its seed and how much is ripe', () => {
     immature: 1,
     unknown: 0,
     center: { x: 1, y: 64, z: 0 },
+    evidence: { cells: 4, ready: 3, immature: 1, unknown: 0 },
+    confidence: 1,
+    missing: [],
   }]);
   assert.equal(census.counts.crops, 4);
 });
 
 test('an unreadable maturity stays unknown, it is never guessed', () => {
-  const census = village({ wheat: [{ x: 0, z: 0 }, { x: 1, z: 0 }] });
-  assert.deepEqual(census.plots[0], { crop: 'wheat', seed: 'wheat_seeds', cells: 2, ready: 0, immature: 0, unknown: 2, center: { x: 1, y: 64, z: 0 } });
+  // `plotMinCells: 1` perché questo caso parla della maturità, non della soglia:
+  // un appezzamento vero ha almeno `VILLAGE_PLOT_MIN_CELLS` celle.
+  const census = village({ wheat: [{ x: 0, z: 0 }, { x: 1, z: 0 }] }, { limits: { plotMinCells: 1 } });
+  assert.deepEqual(census.plots[0], {
+    crop: 'wheat',
+    seed: 'wheat_seeds',
+    cells: 2,
+    ready: 0,
+    immature: 0,
+    unknown: 2,
+    center: { x: 1, y: 64, z: 0 },
+    evidence: { cells: 2, ready: 0, immature: 0, unknown: 2 },
+    confidence: 0,
+    missing: ['ripeness'],
+  });
 });
 
 test('plots of different crops never merge', () => {
-  const census = village({ carrots: [{ x: 0, z: 0 }], wheat: [{ x: 2, z: 0 }] });
+  const census = village({ carrots: [{ x: 0, z: 0 }], wheat: [{ x: 2, z: 0 }] }, { limits: { plotMinCells: 1 } });
   assert.deepEqual(census.plots.map(plot => plot.crop), ['carrots', 'wheat']);
   assert.deepEqual(census.plots.map(plot => plot.cells), [1, 1]);
 });

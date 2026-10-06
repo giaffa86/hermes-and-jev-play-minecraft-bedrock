@@ -27,7 +27,7 @@ import { matchesItemToken } from './human-questions.mjs';
 import { detectStructures } from './structures.mjs';
 // Il censimento del sito è una funzione pura (`village-survey.mjs`): l'adapter
 // raccoglie i fatti (celle, letti, contenitori, entità) e non decide nulla.
-import { surveyVillage, villageCensusNames, villageSweepConfig, VILLAGE_SURVEY_RADIUS } from './village-survey.mjs';
+import { surveyVillage, villageCensusNames, villageSweepConfig, VILLAGE_SURVEY_RADIUS, VILLAGE_PLOT_MIN_CELLS } from './village-survey.mjs';
 // V1 — la passata riusa il planner d'esplorazione ancorato (`planExplorationSweep`)
 // invece di avere una geometria propria: il piano è funzione di
 // `(anchor, visited, config)`, quindi la stessa area dà sempre la stessa spirale.
@@ -95,7 +95,7 @@ const TOOL_HARVEST_RANK = { wooden: 1, golden: 1, stone: 2, copper: 2, iron: 3, 
 const HARVEST_TOOL_RANK = { 941: 1, 956: 1, 946: 2, 951: 2, 961: 3, 966: 4, 971: 5 };
 // Blocchi funzionali o costruiti che dig_down non deve mai scavare per errore
 // (tavoli, contenitori, stazioni): il passo verrebbe rifiutato invece che distruggerli.
-const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|_bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$|farmland$|_fence$|_fence_gate$|wheat$|carrots$|potatoes$|beetroot$|melon_stem$|pumpkin_stem$|sweet_berry_bush$|nether_wart$|redstone_wire$|redstone_block$|lever$|_button$|pressure_plate$|_repeater$|_comparator$|observer$|piston$|dispenser$|dropper$|lamp$|daylight_detector$|tripwire_hook$|tripwire$|target$|crafter$|sculk$|sculk_vein$|sculk_catalyst$|sculk_sensor$|sculk_shrieker$|command_block$|structure_block$|structure_void$|jigsaw$|barrier$|bedrock$|end_crystal$|fire$|soul_fire$|beehive$|bee_nest$|campfire$)/;
+const DIG_PROTECTED = /(_table$|chest$|furnace$|smoker$|barrel$|shulker_box$|hopper$|anvil$|brewing_stand$|beacon$|loom$|stonecutter$|grindstone$|lectern$|composter$|cauldron$|bell$|(^|_)bed$|_sign$|_banner$|_skull$|_head$|flower_pot$|_pot$|respawn_anchor$|torch$|lantern$|_planks$|_slab$|_stairs$|_wool$|glass$|bricks$|_concrete$|terracotta$|carpet$|farmland$|_fence$|_fence_gate$|wheat$|carrots$|potatoes$|beetroot$|melon_stem$|pumpkin_stem$|sweet_berry_bush$|nether_wart$|redstone_wire$|redstone_block$|lever$|_button$|pressure_plate$|_repeater$|_comparator$|observer$|piston$|dispenser$|dropper$|lamp$|daylight_detector$|tripwire_hook$|tripwire$|target$|crafter$|sculk$|sculk_vein$|sculk_catalyst$|sculk_sensor$|sculk_shrieker$|command_block$|structure_block$|structure_void$|jigsaw$|barrier$|bedrock$|end_crystal$|fire$|soul_fire$|beehive$|bee_nest$|campfire$)/;
 // Redstone (R0): un circuito non è un ostacolo da scavare ma un impianto della
 // base. I minerali di redstone restano **fuori** da DIG_PROTECTED (si estraggono
 // con `mine_redstone_ore`), i componenti no.
@@ -207,6 +207,10 @@ const CONTAINER_TTL_MS = 5 * 60 * 1000;
 // `observe()` la legge a ogni passo del controller.
 const VILLAGE_RESCAN_MS = +(process.env.VILLAGE_RESCAN_MS || 60000);
 const VILLAGE_CELL_CAP = +(process.env.VILLAGE_CELL_CAP || 64);
+// Sotto questa soglia un grappolo di colture non è un appezzamento: il default
+// vive nel modulo puro (`village-survey.mjs`), così la regola e chi la applica
+// non possono divergere.
+const VILLAGE_PLOT_MIN = +(process.env.VILLAGE_PLOT_MIN_CELLS || VILLAGE_PLOT_MIN_CELLS);
 // V1 — i tre limiti della passata, indipendenti: il primo raggiunto vince.
 //   * VILLAGE_SURVEY_MS    = cooldown fra due passate (non un tetto a una passata);
 //   * VILLAGE_SURVEY_CELLS = budget di *esplorazione*: quante celle la passata può
@@ -1457,11 +1461,21 @@ export class BedrockAdapter {
         survey: histogram,
         dimension: this.dimension,
         scanned: stats?.scanned ?? null,
-        limits,
+        limits: { plotMinCells: VILLAGE_PLOT_MIN, ...limits },
       }),
       at: now,
       origin: this.position ? { x: this.position.x, y: this.position.y, z: this.position.z } : null,
       blocks: stats ? { distinct: stats.distinct, truncated: stats.truncated, capped: stats.capped.length > 0, cappedNames: stats.capped } : null,
+      // I limiti del *sensore*, separati dalle soglie del censimento
+      // (`thresholds` nel payload puro): il raggio caricato e il tetto per nome
+      // sono la forma del fatto, non una regola di clustering.
+      limits: {
+        radius: STRUCTURE_RADIUS,
+        cellCap: VILLAGE_CELL_CAP,
+        rescanMs: VILLAGE_RESCAN_MS,
+        surveyRadius: VILLAGE_SURVEY_RADIUS,
+        maxDistance: VILLAGE_SURVEY_MAX_DISTANCE,
+      },
     };
     this._villageCache = { at: now, payload };
     return payload;

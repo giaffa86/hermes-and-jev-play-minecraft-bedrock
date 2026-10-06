@@ -451,9 +451,7 @@ storage, so the chain ends at the plot instead of guessing a chest.
   `scoreStructures(...)`, and the census calls the same rule, so
   `NOT_FOUND`/`CANDIDATE`/`CONFIRMED` can never drift from
   `GET /observe.structures`. `tests/village-survey.test.mjs` (16 cases) covers
-  the pure half. Still open here: the `VILLAGE_PLOT_MIN_CELLS` threshold is not
-  applied (a cluster is reported with its count and the threshold stays the
-  caller's decision), and the memory-first read below is not landed.
+  the pure half. Still open here: the memory-first read below is not landed.
 - **Two inputs the detector needs and the pens must not get (landed).**
   `entities` is the detector's entity evidence (`observe().entities`, villagers
   included) and is a *different list* from `farmAnimals`, which lives in the
@@ -813,6 +811,61 @@ stored and nothing ripe closes as "nothing to do" instead of looping.
   was measured instead of implying it is still true (`memory.md` already calls
   this `known`/`stale`/`invalid`).
 
+**Landed (2026-10-06)** — honesty as a structure of the payload, and the two
+protection lists the recon depends on:
+
+- **Confidence is the share of the fact that was read, never an estimate.**
+  Each house, plot, pen and storage row carries `confidence` (`shareOf`, a
+  rounded ratio, `null` when the denominator is 0), `evidence` (the numbers that
+  produced it: `{beds, doors, containers}` for a house, `{cells, ready,
+  immature, unknown}` for a plot, `{animals, adults, babies, fenced}` for a pen)
+  and `missing` (a named hole: `occupancy`, `door`, `container`, `ripeness`,
+  `fence`, `contents`). A house with one unread bed out of two is `confidence:
+  0.5` and says `missing: ['occupancy']` — it does not round up to "a free bed
+  exists". `detection.confidence` reuses the detector's own formula
+  (`structures.mjs:226`), so `CANDIDATE` legitimately carries a number < 0.5.
+- **Below threshold is absent, not guessed — and it is visible.** A crop cluster
+  under `VILLAGE_PLOT_MIN_CELLS` produces no plot, and the count of clusters that
+  were dropped is reported in `ignored.plots`; an animal the scan could not
+  locate is `ignored.animals`, and a storage row without coordinates is
+  `ignored.containers`. Without `ignored`, "seen and below the threshold" would
+  look identical to "never looked". For the same reason `checked` is now
+  `observed || scanned > 0`: a payload that reports a cell, an animal or a
+  container has been looked at by definition, and `survey.scanned` is
+  `max(scanned, cells)` so a counter can never claim to have read less than the
+  payload reports. A payload that was never looked at names **no** missing
+  marker (`missing` is gated on `checked`): a hole is relative to a measurement,
+  and with no measurement there is nothing to be missing relative to.
+- **`thresholds` travels with the facts.** `{houseRadius, plotRadius, penRadius,
+  plotMinCells, maxCells}` is in the payload, so a reader re-derives the same
+  clusters instead of guessing the rules from prose, and `VILLAGE_PLOT_MIN_CELLS`
+  is applied in the census (the V0 note above is closed) with the adapter's
+  `VILLAGE_PLOT_MIN_CELLS` env override folded in as `limits.plotMinCells`.
+- **A storage row says whether its contents are known.** `contentsKnown: false`
+  is `contains: null`, `confidence: 0`, `missing: ['contents']` — an unopened
+  chest is never an empty one — and `contentsKnown: true` is `confidence: 1`.
+  A stale item is still *usable*, but only with `verify: true` from
+  `planStorageSearch`: the ladder orders the walk, it does not license belief.
+- **Two protection lists, one of them fixed here.** `DIG_PROTECTED`
+  (`bedrock-adapter.mjs:98`) already covered farmland (`farmland$`), fences
+  (`_fence$`), crops (`wheat$|carrots$|potatoes$|beetroot$`) and the built
+  furniture — but it matched beds with `_bed$`, and the Bedrock block is named
+  plain `bed`, so **a village bed was diggable**. It is now `(^|_)bed$`, which
+  covers `bed` and the Java-style `oak_bed` without touching the crop exemption
+  at `:9145` (a *mature* crop must stay breakable, or `harvest_<block>` could not
+  work). The second list is the chain's: `farmOptionKeys` contains no `mine_`/
+  `dig_` key, checked by the test against the source text.
+- `tests/village-honesty.test.mjs` (14 offline cases): a payload that reports
+  data is never `checked: false`; a payload nobody looked at claims nothing (no
+  state, no evidence, no `missing`); "looked and empty" names every rule below
+  its `min`; confidence is the read share for plots, houses and pens; unknown
+  contents is not an empty chest; a crop cluster below the threshold is absent
+  and counted in `ignored`; the thresholds travel; a stale memory is used only
+  with `verify: true`; no destructive key exists in the recon path; and
+  `farmland`, `bed`, `oak_fence` and an immature `carrots` all stop `_digTargets`
+  with a typed `protected_*` error while the chain still breaks the ripe crop it
+  harvested and never the farmland under it.
+
 **Test**: `tests/village-honesty.test.mjs` — a stale record is never used
 without verification; `checked: false` is impossible on a payload that reports
 data; `missing` names a rule below its `min`; nothing in the recon path emits a
@@ -848,7 +901,7 @@ timestamp truthfully.
 
 | Level | What | File |
 |---|---|---|
-| pure | Clustering (houses, plots, pens), thresholds, `missing`, empty input | `tests/village-survey.test.mjs` |
+| pure | Clustering (houses, plots, pens), thresholds, `confidence`/`evidence`/`missing`, `ignored`, empty input | `tests/village-survey.test.mjs` |
 | unit | **Register read**: memory-first without a live survey, `source`/`status`/`observedAt`, live beats remembered, `findEntities` pens survive a restart | `tests/village-register.test.mjs` |
 | unit | **The ladder**: known-contents first, discovered-uninspected second, local scan third, sweep last; a discovery write never erases contents learned earlier | `tests/village-register.test.mjs` |
 | pure | Two-depth TTLs: a discovery row survives an inspection-TTL expiry; an inspection row is `stale` while its discovery is still fresh | `tests/village-register.test.mjs` |
@@ -857,7 +910,7 @@ timestamp truthfully.
 | unit | Deposit target from memory vs cache, stale re-read, fallback | `tests/bedrock-storage-memory.test.mjs` |
 | unit | **Landed (10)**: farm-order classification vs the collect path, chain closing on delta, adapter's food-reserve exemption | `tests/controller-farm-order.test.mjs` |
 | unit | Reconciliation with `GET /observe.structures` and the chore layer | `tests/village-labor.test.mjs` (extension) |
-| unit | Protection: beds/farmland/fences/crops intact, no villager | `tests/village-honesty.test.mjs` |
+| unit | **Landed (14)**: honesty (confidence = read share, `missing` gated on `checked`, `ignored` for below-threshold), stale memory only with `verify`, no destructive key, `bed`/`farmland`/`fence`/immature crop protected | `tests/village-honesty.test.mjs` |
 | live | One sweep > one shot; second sweep adds nothing; `deposit_carrot` after restart lands in the right chest; `@bot raccogli le carote` A/B | host, bounded round |
 | live | **The chest ladder**: an order for a known item goes straight to the known chest; with only unopened chests known it inspects them; with nothing known it scans locally; and only an empty local area triggers a sweep | host, bounded round |
 
