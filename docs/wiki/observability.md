@@ -57,7 +57,11 @@ container (`hermes-jev-bedrock`, `/app/runs`) — a place nobody on the host can
 read. `run-paths.mjs` resolves the path instead: `RUNS_DIR` (default `runs`) is
 the root, `RUN_ID` the subdirectory (`runDir()`), and every entry point uses it
 (`bedrock-harness.mjs`, `controller.mjs`, `harness.mjs`, the `explore-*.mjs`
-drivers).
+drivers). Every one of them has to import it (`import { runDir } from
+'./run-paths.mjs'`): the three exploration drivers were the only files that used
+`runDir` without the import and no test loaded them, so
+`tests/run-paths.test.mjs` now reads the six entry points as text and fails if a
+call site has no matching import.
 
 Mount a host directory on `RUNS_DIR` and the ledger of a run is on the host the
 moment it is written; without the mount the numbers still exist, but only inside

@@ -4,7 +4,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runsRoot, runDir } from '../run-paths.mjs';
 import { createRunLedger, readRunFacts } from '../run-ledger.mjs';
 
@@ -38,4 +39,21 @@ test('a ledger written through RUNS_DIR is readable from outside the harness', (
   assert.equal(facts.ledger.failed, 1);
   assert.deepEqual(facts.ledger.refusals, { busy: 1 });
   assert.equal(facts.summary.run, 'demo');
+});
+
+test('every entry point that resolves a run directory imports the resolver', () => {
+  // I driver M1/M2/M4 non sono caricati dalla suite: un `runDir` senza import
+  // resta un ReferenceError al primo avvio (`explore.mjs`, `explore-find.mjs` e
+  // `explore-replay.mjs` sono rimasti così per un giro). Questo test li legge
+  // come testo e pretende che ogni funzione usata sia importata.
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const files = ['harness.mjs', 'bedrock-harness.mjs', 'controller.mjs', 'explore.mjs', 'explore-find.mjs', 'explore-replay.mjs'];
+  for (const file of files) {
+    const source = readFileSync(join(root, file), 'utf8');
+    for (const name of ['runDir', 'runsRoot']) {
+      if (!new RegExp(`\\b${name}\\s*\\(`).test(source)) continue;
+      const imported = new RegExp(`import\\s*\\{[^}]*\\b${name}\\b[^}]*\\}\\s*from\\s*'\\./run-paths\\.mjs'`).test(source);
+      assert.ok(imported, `${file} usa ${name} ma non lo importa da run-paths.mjs`);
+    }
+  }
 });

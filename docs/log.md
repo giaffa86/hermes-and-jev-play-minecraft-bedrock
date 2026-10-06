@@ -1,5 +1,15 @@
 # Log
 
+## [2026-10-06] fix | The exploration drivers never imported the run resolver
+
+The `RUNS_DIR` plumbing replaced the hardcoded `runs/<id>` in every entry point
+with `runDir(RUN)`, but the three exploration drivers (`explore.mjs`,
+`explore-find.mjs`, `explore-replay.mjs`) never got the import: they would have
+died with `ReferenceError: runDir is not defined` at the first line after the
+constants. Nothing caught it because the suite loads neither of them — a static
+check in `tests/run-paths.test.mjs` now reads all six entry points and asserts
+that every `runDir`/`runsRoot` call site imports it from `run-paths.mjs`.
+
 ## [2026-10-06] fix | The crafting grid learns what it placed, and a rejected variant no longer stops the search
 
 Run 2 of the diamond mission failed on `craft_torch` twice with a bare

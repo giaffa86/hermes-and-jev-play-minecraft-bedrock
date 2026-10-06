@@ -7,6 +7,7 @@
 //   RUN_ID=exp-find TARGET='block:oak_log' node explore-find.mjs
 //
 import { appendFileSync, mkdirSync } from 'node:fs';
+import { runDir } from './run-paths.mjs';
 
 const HARNESS = process.env.HARNESS || 'http://127.0.0.1:3077';
 const RUN = process.env.RUN_ID || 'explore-find';

@@ -9,6 +9,7 @@
 //   RUN_ID=exp-replay MISSION_ID=mission_find_biome_xyz node explore-replay.mjs
 //
 import { appendFileSync, mkdirSync } from 'node:fs';
+import { runDir } from './run-paths.mjs';
 
 const HARNESS = process.env.HARNESS || 'http://127.0.0.1:3077';
 const RUN = process.env.RUN_ID || 'explore-replay';
