@@ -1,5 +1,34 @@
 # Log
 
+## [2026-10-06] deploy | HEAD meets the live container
+
+The five debrief fixes were on `main` (`84192dd`, `27bf89b`, `e913e04`, `71d0c8b`)
+while the bot kept running the 05/10 image, so the deployed code and the repo said
+different things (the live build had `craft_iron_pickaxe` but no `escort_to`, no
+`observe().kit`, no `GET /stats`, no run ledger). Aligned.
+
+- **Drift measured first**: local vs the VM's copy of the repo by
+  `rsync -ani --checksum` (~280 entries), and the running image by sha256 —
+  `bedrock-adapter.mjs` live `5e1b7279…` against HEAD `d0b6dacc…`. The VM
+directory is a **plain copy** (its `.git` is a leftover gitdir file pointing at a
+  local worktree path), so no `git pull` there: files are synced, the image is
+  rebuilt.
+- **Before touching anything**: no controller and no HTTP client (`ss -tn | grep
+  3077`), only `node bedrock-harness.mjs`; the previous image was tagged
+  `hermes-jev-bedrock-rollback-20261006` (`9fa732c59504`) for a one-command
+  rollback.
+- **Deploy**: rsync of HEAD with `.env`, `.private`, `runs`, `nmp-cache` excluded,
+  then `docker compose build && docker compose up -d` (container recreated
+  11:19 CEST). Verified after: the five key files' sha256 equal HEAD's, `GET
+  /stats` answers (`{"run":"demo","pid":1,"attempts":0…}`), `/observe` shows the
+  bot reconnected at the same position, and `observe().kit` is present. The
+  in-memory plan was lost with the old process (`plan: null`), which is expected:
+  a restarted harness has to be given a plan again.
+- **What this does not prove**: the escort is still untested with a real human
+  (row 47.52 of [verification](wiki/verification.md) keeps its residual), and the
+  run ledger starts empty — its numbers only exist for runs started after this
+  deploy.
+
 ## [2026-10-06] feat | An escort order makes the bot lead, not follow
 
 The owner's third question in the 06/10 debrief — *"se ti chiedo di guidarmi fino
