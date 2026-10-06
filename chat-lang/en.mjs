@@ -54,6 +54,7 @@ export default Object.freeze({
   no_armor: "I have no armor in my inventory, I can't equip myself",
   no_item: "I have no {word} in my inventory, I can't throw it away",
   no_drop: "I don't see {word} on the ground, I can't pick it up",
+  farm_nothing: 'nothing to do right now ({word}): nothing ripe within reach and nothing to put away',
   list_or: ' or ',
 
   greet: 'Hi {name}! I am Hermes, the house bot. Give me a task by writing in chat: ' +
@@ -64,6 +65,7 @@ export default Object.freeze({
   'fallback.equip': 'I put on the armor I have in my inventory (helmet, chestplate, leggings, boots)',
   'fallback.drop': 'I throw {word} out of my inventory',
   'fallback.collect': 'I pick {word} up from the ground',
+  'fallback.farm': 'I harvest {word} from the field, replant it and put the produce away',
 
   'phrase.equip': 'putting on the armor',
   'phrase.drop': 'throwing {word} away',

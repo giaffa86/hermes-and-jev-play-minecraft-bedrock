@@ -3979,3 +3979,47 @@ container kept running the image deployed at 11:19. Both are closed here.
 - Still open: the farm-order classifier (V3), the memory-first read
   (`villageRegister`), the `VILLAGE_PLOT_MIN_CELLS` threshold and the four-case
   live row.
+## [2026-10-06] feat | The farm order is a chain, and it closes on a delta
+
+- `farmOrderFromText` (`controller-decisions.mjs`, pure, next to
+  `isDropOrder`/`isEquipOrder`) classifies the order that started this roadmap:
+  a crop token plus a farm verb emits
+  `plan.farm = {crop, block, seed, word, replant, store, field}` instead of being
+  read as a pick-up-from-the-ground. It returns `null` — the order stays with
+  the planner — when a number is present ("raccogli 4 carote"), when the verb is
+  `cattura` and when the token is not a crop. `ITEM_WORDS` now knows carrot,
+  wheat and beetroot in all five languages (accent-free patterns, because
+  `normalizeForMatching:321` strips them).
+- The ambiguity is settled by evidence, not by wording: the farm branch sits
+  before the collect branch in `humanCommandPlan` and defers to it only when a
+  drop of *that* crop is really on the ground. A crop named in front of a field
+  is never a `no_drop` refusal and never an LLM call.
+- `farmStep(farm, obs, options, {progress, maxHarves})` picks one step per
+  decision: `collect_drop` → `harvest_<block>` (offered by the harness only with
+  a ripe reachable crop, capped by `DEFAULT_FARM_MAX_HARVES = 8`) →
+  `plant_<seed>` (only after a harvest that reported `replanted.ok !== true`, so
+  an order never seeds the whole village) → `deposit_<crop>` / `dump_inventory`.
+- The chain closes on a **delta**: `farmSnapshot` records the crop held and the
+  crop already in known containers at plan time, `farmStored` sums
+  `observe().containers` ∪ `observe().storage.known` deduplicated by position,
+  and `farmFulfilled` = "the container grew and the backpack did not". A `null`
+  step closes the goal — "nothing to do" before any work, a measured outcome
+  (`produce_stored` / `produce_not_stored`) after it.
+- The food reserve no longer holds the harvest hostage:
+  `_depositableItems({reserve, exempt})` exempts `plan.farm.crop` by default and
+  the deposit section of `options()` offers that crop even though `_isValuable`
+  does not match it — the offer and the action that executes it read the same
+  rule. `farmOptionKeys` joins the protected keys of `/options`, because
+  `plant_*`, `deposit_*` and `dump_inventory` carry intent `unknown` and an
+  emergency would otherwise hide the steps the human asked for.
+- `tests/controller-farm-order.test.mjs` (10 cases) covers the classifier, the
+  step order (carrots in the backpack with no drop ⇒ `harvest_carrots`), the
+  cap, the delta gating, the two-source dedupe and the adapter's exemption.
+  Full suite **1713/1713**.
+- `docs/raw/VILLAGE_RECON_ROADMAP.md` V3 gains its landed block and the plan
+  field's real shape (`block`, `seed`, `word`, `store: null`, `before`);
+  `docs/wiki/village-recon.md` gains "the farm order, a chain that closes on a
+  delta". Gap 2 is closed on both halves.
+- Still open: V4 (honesty, protection), the four-case chest ladder and the
+  farm-order A/B on the host, plus the memory-first read (`villageRegister`) and
+  the `VILLAGE_PLOT_MIN_CELLS` threshold.

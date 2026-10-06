@@ -59,6 +59,7 @@ export default Object.freeze({
   no_armor: 'non ho armatura in inventario, non posso equipaggiarmi',
   no_item: 'non ho {word} in inventario, non posso gettarlo',
   no_drop: 'non vedo {word} a terra, non posso raccoglierlo',
+  farm_nothing: 'niente da fare adesso ({word}): nessuna pianta matura a tiro e niente da mettere via',
   list_or: ' o ',
 
   // --- proactive greeting (human-greeting.mjs) ---
@@ -71,6 +72,7 @@ export default Object.freeze({
   'fallback.equip': "mi metto l'armatura che ho in inventario (elmo, corazza, gambali, stivali)",
   'fallback.drop': "butto via {word} dall'inventario",
   'fallback.collect': 'raccolgo {word} da terra',
+  'fallback.farm': 'mieto {word} dal campo, ripianto e metto via il raccolto',
 
   // --- the goal in progress, described to a human ---
   'phrase.equip': "indossare l'armatura",

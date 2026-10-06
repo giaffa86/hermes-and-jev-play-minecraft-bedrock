@@ -8,7 +8,8 @@
 
 import { keyMatchesIntents } from './survival/intents.mjs';
 import { oreValue, ORE_OPTION_PRIORITY_MIN_VALUE } from './ore-value.mjs';
-import { matchItemWordText, matchesItemToken } from './human-questions.mjs';
+import { matchItemWordText, matchesItemToken, normalizeForMatching } from './human-questions.mjs';
+import { cropBlockForItem, seedForCrop } from './bedrock-survival.mjs';
 
 export const DEFAULT_MAX_OPTIONS = 12;
 export const DEFAULT_ANTI_LOOP_THRESHOLD = 3;
@@ -273,6 +274,156 @@ export function collectFulfilled (collect, obs) {
   if (!token) return false;
   return tokenInventoryTotal(obs?.inventory, token) > Number(collect?.beforeTotal || 0);
 }
+
+// I verbi di fattoria: raccogliere/mietere una coltura. "cattura" non c'e':
+// catturare e' sempre un pickup da terra, mietere no. Gli accenti sono gia'
+// tolti da `normalizeForMatching` (`recolte`, `cosecha`).
+const FARM_VERB = /\b(raccogli|raccogliere|raccoglili|mieti|mietere|raccatta|harvest|reap|pick|collect|gather|recolte\w*|recoge\w*|cosech\w*|ernte\w*)\b/;
+// "metti il raccolto nel baule piu' vicino" vs il baule che gia' contiene il
+// raccolto (il default: `_depositTargetFor` preferisce quello).
+const FARM_NEAREST = /\b(p[iu]u?\s+vicin[oa]|vicin[oa]|nearest|closest|cercano|mas\s+cercano|n[aä]chste\w*)\b/;
+const FARM_NO_STORE = /\b(senza|non|no|without)\b[^.]*\b(mett\w*|deposit\w*|baule|scrigni?o|chest|store)\b/;
+const FARM_NO_REPLANT = /\b(senza|non|no|without)\b[^.]*\b(rimpiant\w*|ripiant\w*|replant\w*|resow\w*)\b/;
+
+// Un ordine di fattoria: mietere (e ripiantare, e mettere via) *una coltura
+// nominata*. E' il classificatore deterministico che sta accanto a
+// `isDropOrder`/`isEquipOrder`: "raccogli le carote" davanti a un campo e' un
+// ordine di fattoria, non un pickup da terra, e non deve finire in `no_drop`
+// ne' in una chiamata al planner. Restano al planner i casi in cui l'umano
+// fissa una quota ("raccogli 4 carote") e tutto cio' che non nomina una
+// coltura del gioco (`cropBlockForItem` e' la guardia).
+export function farmOrderFromText (message) {
+  const text = normalizeForMatching(message);
+  if (!text || !FARM_VERB.test(text)) return null;
+  if (COLLECT_GATHER_VERB.test(text) && ANY_NUMBER.test(text)) return null;
+  const item = matchItemWordText(text, { names: [] });
+  const crop = item?.token ?? null;
+  const block = cropBlockForItem(crop);
+  if (!block) return null;
+  const seed = seedForCrop(block);
+  let store = 'known';
+  if (FARM_NO_STORE.test(text)) store = null;
+  else if (FARM_NEAREST.test(text)) store = 'nearest';
+  return {
+    crop,
+    block,
+    seed,
+    word: item?.word ?? crop,
+    replant: !FARM_NO_REPLANT.test(text),
+    store,
+    field: null,
+  };
+}
+
+// Quante mietiture al massimo in un ordine: il campo puo' essere grande, ma
+// un ordine di chat resta bounded (l'harness continua a offrire
+// `harvest_<coltura>` finche' c'e' una pianta matura a tiro).
+export const DEFAULT_FARM_MAX_HARVES = 8;
+
+// Quali passi della catena sono possibili *adesso*, secondo l'harness.
+// L'ordine e': il drop del raccolto a terra (prima che sparisca), la mietitura
+// della coltura matura, la semina di compensazione, il deposito del raccolto.
+// Ogni passo esiste solo se `/options` lo offre: il controller non inventa key.
+export function farmStep (farm, obs, options = [], { progress = null, maxHarves = DEFAULT_FARM_MAX_HARVES } = {}) {
+  if (!farm?.crop) return null;
+  let offered = null;
+  if (options instanceof Set) offered = options;
+  else offered = new Set((options || []).map(option => (typeof option === 'string' ? option : option?.key)).filter(Boolean));
+  const crop = farm.crop;
+  const block = farm.block ?? cropBlockForItem(crop);
+  const seed = farm.seed ?? seedForCrop(block);
+  // 1. Il raccolto e' a terra: si raccoglie prima che sparisca (allora l'ordine
+  //    e' davvero un pickup, e il passo resta nel vocabolario del drop).
+  const ground = (obs?.drops || []).filter(drop => drop?.item && matchesItemToken(drop.item, crop));
+  if (ground.length && offered.has('collect_drop')) return { key: 'collect_drop', phase: 'collect' };
+  // 2. Mietitura: l'harness offre `harvest_<blocco>` solo con una pianta matura
+  //    raggiungibile, quindi la sua presenza *e'* la prova che c'e' da mietere.
+  const harvestKey = block ? `harvest_${block}` : null;
+  if (harvestKey && offered.has(harvestKey) && (progress?.harvests ?? 0) < maxHarves) {
+    return { key: harvestKey, phase: 'harvest' };
+  }
+  // 3. Semina di compensazione: `harvest_<coltura>` ripianta da se' quando ha un
+  //    seme; si semina qui solo quando l'ultima mietitura non c'e' riuscita,
+  //    cosi' un ordine non semina il villaggio intero.
+  const plantKey = seed ? `plant_${seed}` : null;
+  if (farm.replant !== false && plantKey && offered.has(plantKey) && progress?.needsPlant === true) {
+    return { key: plantKey, phase: 'plant' };
+  }
+  // 4. Deposito: solo il raccolto *guadagnato* in questo ordine (il delta
+  //    rispetto allo snapshot iniziale), mai le scorte che c'erano gia'.
+  const held = Number(obs?.inventory?.[crop] ?? 0);
+  const start = Number(farm.before?.inventory?.[crop] ?? 0);
+  if (farm.store && held > start) {
+    const depositKey = `deposit_${crop}`;
+    const preferred = farm.store === 'nearest' ? ['dump_inventory', depositKey] : [depositKey, 'dump_inventory'];
+    const found = preferred.find(key => offered.has(key));
+    if (found) return { key: found, phase: 'store' };
+  }
+  return null;
+}
+
+// Quanto raccolto di questa coltura risulta *depositato* (delta rispetto allo
+// snapshot iniziale). La lettura e' del harness: contenuti noti della cache
+// (`observe().containers`) piu' il registro (`observe().storage.known`),
+// deduplicati per posizione. Un contenitore ispezionato due volte non conta
+// due volte, e un contenuto mai letto non conta affatto.
+export function farmStored (farm, obs) {
+  const crop = farm?.crop ?? null;
+  if (!crop) return 0;
+  const rows = [
+    ...(obs?.containers || []).filter(row => row?.position && row?.contents),
+    ...((obs?.storage?.known) || []).filter(row => row?.position && row?.contains),
+  ];
+  const seen = new Set();
+  let total = 0;
+  for (const row of rows) {
+    const key = `${row.position.x},${row.position.y},${row.position.z}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const contents = row.contents ?? row.contains ?? {};
+    total += Number(contents?.[crop] ?? 0);
+  }
+  return total;
+}
+
+// Lo snapshot prima dell'ordine: inventario (delta del raccolto) piu' quanto
+// raccolto era gia' nei bauli noti (delta del deposito).
+export function farmSnapshot (obs, crop) {
+  return {
+    inventory: { [crop]: Number(obs?.inventory?.[crop] ?? 0) },
+    contained: farmStored({ crop }, obs),
+    at: Date.now(),
+  };
+}
+
+// Un ordine di fattoria e' chiuso quando il raccolto e' finito *nel baule*: il
+// contenuto noto e' cresciuto e in zaino non ne resta piu' del necessario (il
+// seme di una rimpiantatura e' 1 pezzo). L'evidenza e' un delta di stato, mai
+// la parola del modello.
+export function farmFulfilled (farm, obs) {
+  const crop = farm?.crop ?? null;
+  if (!crop) return false;
+  const stored = farmStored(farm, obs) - Number(farm.before?.contained ?? 0);
+  const held = Number(obs?.inventory?.[crop] ?? 0) - Number(farm.before?.inventory?.[crop] ?? 0);
+  return stored > 0 && held <= 0;
+}
+
+// L'esito misurato di un ordine di fattoria: quanto raccolto e' entrato negli
+// scrigni e quanto e' rimasto in zaino, per l'avviso in chat e per i log.
+export function farmOutcome (farm, obs) {
+  const crop = farm?.crop ?? null;
+  if (!crop) return { crop: null, held: 0, stored: 0, gained: 0 };
+  const stored = farmStored(farm, obs) - Number(farm.before?.contained ?? 0);
+  const held = Number(obs?.inventory?.[crop] ?? 0);
+  const gained = Number(obs?.inventory?.[crop] ?? 0) - Number(farm.before?.inventory?.[crop] ?? 0) + stored;
+  return { crop, held, stored, gained };
+}
+
+// Le key del vocabolario del harness che un ordine di fattoria puo' usare
+// vivono in `farmOptionKeys` (`bedrock-survival.mjs`): le usa la rotta
+// `/options` del harness per tenere l'ordine umano al riparo dal filtro di
+// emergenza, perche' `plant_*`, `deposit_*` e `dump_inventory` hanno intento
+// ignoto.
 
 // Consecutive trailing executions of `key` without progress. A successful
 // action (stagnant: false) or a different key resets the streak.

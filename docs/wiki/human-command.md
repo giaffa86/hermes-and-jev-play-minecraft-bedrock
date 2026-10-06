@@ -783,6 +783,16 @@ accounting problem (what left the inventory), **catching** is a search problem
   `collect_order {error:'no_matching_drop'}`, the human is told (`no_item`,
   `no_drop`) and the run ends with the same reason — no mining detour, no
   exhausted budget, no "maybe it worked".
+- **A named crop is not an inventory order.** Before the collect branch,
+  `humanCommandPlan` asks `farmOrderFromText` (see
+  [village-recon](village-recon.md)) whether the order names a *crop* with a
+  farm verb ("raccogli le carote", "mieti il grano e rimpiantalo"): that is a
+  `plan.farm` chain (`harvest_*` → `plant_*` → `deposit_*`) closing on a state
+  delta, not a pickup. The collect branch still wins whenever a drop of that
+  crop is really on the ground — the wording is identical, the evidence is not —
+  so `no_drop` can no longer be the answer to a field standing right there. A
+  quoted number ("raccogli 4 carote") still means gathering a quota, and stays
+  with the planner.
 - **An open human order survives the emergency filter.** `drop_item` and
   `collect_drop` are protected keys alongside the follower of "seguimi", via
   `humanOrderProtectedKeys(plan)` in `survival/resolver.mjs` — the policy lives
@@ -920,9 +930,9 @@ quieter hello is preferred (still an open question).
   (`ITEM_WORDS`/`matchItemWordText`/`matchesItemToken`) the inventory orders
   (M9) and the adapter share.
 - `controller-decisions.mjs` — the deterministic order detectors (`isDropOrder`,
-  `isCollectOrder`, `dropCountFromText`) and their success criteria
-  (`inventoryMatchingToken`, `tokenInventoryTotal`, `dropFulfilled`,
-  `collectFulfilled`).
+  `isCollectOrder`, `dropCountFromText`, `farmOrderFromText`) and their success
+  criteria (`inventoryMatchingToken`, `tokenInventoryTotal`, `dropFulfilled`,
+  `collectFulfilled`, `farmStep`, `farmFulfilled`).
 - `survival/resolver.mjs` — `humanOrderProtectedKeys(plan)`: the keys an open
   human order keeps even under the emergency filter (`follow_player`/
   `seek_player`, `drop_item`, `collect_drop`).
@@ -943,7 +953,7 @@ quieter hello is preferred (still an open question).
 - `minecraft-data` `bedrock/1.26.51/protocol.json` — `packet_text` fields
   (`source_name`, `type`, `message`, `xuid`, …); `packet_add_player` (`username`).
 - Related wiki: [overview](overview.md), [headless-client](headless-client.md),
-  [open-questions](open-questions.md).
+  [village-recon](village-recon.md), [open-questions](open-questions.md).
 
 ### Exact food quantities and observed names
 

@@ -13,7 +13,8 @@ The analogy is a robot vacuum: the map is drawn on a slow pass, and every later
 task is a route over known cells rather than a new exploration.
 
 Status: **V0 model + census + read path + V1/V2 storage path + the V1 sweep action
-landed (2026-10-06); the farm order is still spec.** `world-memory.mjs` keeps discovery and inspection as
++ the V3 farm order landed (2026-10-06); V4 (honesty, protection) and the live
+rounds are still spec.** `world-memory.mjs` keeps discovery and inspection as
 two facts with two clocks, the rung-2 query exists, and the storage matcher is a
 family match instead of a name whitelist (`0650877`); the adapter now **writes** a
 discovery while the bot walks (`_surveyStorage`, `_rememberStorageDiscovery`) and
@@ -28,9 +29,12 @@ gathers the census's own bounded cell scan and publishes it as
 `observe().village` / `GET /observe.village?force=1`. The **sweep action**
 followed: `survey_village` walks the general planner's plan (no second engine),
 keeps three independent limits and writes a register that makes the next pass —
-and a pass after a restart — cheap. What is still missing is the farm-order
-classifier (V3) and the live four-case round. Everything else on this roadmap is
-spec.
+and a pass after a restart — cheap. The **farm order** followed: `plan.farm` is
+classified from a crop family plus a farm verb, and the controller drives the
+chain (`harvest` → `plant` → `deposit`) one bounded step at a time against
+`/options`, closing on a state delta. What is still missing is V4 (honesty,
+protection) and the live rounds (the farm-order A/B and the four-case chest
+ladder). Everything else on this roadmap is spec.
 Everything it builds on (the histogram survey, the marker detector, the container
 memory, the harvest/plant/deposit actions, the village chores) already exists and
 is listed below as the baseline; the two real gaps are the aggregation and the
@@ -84,7 +88,9 @@ while opening a container persists its contents through
 `bedrock-adapter.mjs:7056` → `rememberContainer`, the **deposit** target
 (`_depositTargetFor:7000`) reads only the runtime cache (`_cachedContainers:7041`,
 TTL 5 min): after a restart the bot forgets *which* chest holds the carrots,
-even though the memory still knows.
+even though the memory still knows. **V3 closed the first half** (the words are
+now classified by evidence rather than by the backpack, see below) and the
+ladder closed the second (`_storageSearchPlan` reads memory before the world).
 
 ### Gap 3 — the memory is written and then not read
 
@@ -240,6 +246,61 @@ the cooldown. The `'radius'` stop remains the *planner's* own guard
 (`tests/exploration-sweep.test.mjs`): `villageSweepConfig` derives the ring count
 from the bound, so the assigned area closes with `'exhausted'` rather than being
 truncated by construction.
+
+### What landed (2026-10-06): the farm order, a chain that closes on a delta
+
+The order that motivated this whole roadmap is now a deterministic plan field
+instead of a coincidence of words. `farmOrderFromText`
+(`controller-decisions.mjs`) sits next to `isDropOrder`/`isEquipOrder`, reads a
+crop token (carrot, wheat, beetroot — `ITEM_WORDS` now knows them in five
+languages) plus a farm verb, and emits `plan.farm = {crop, block, seed, word,
+replant, store, field, before}`. It returns `null` — leaving the order to the
+planner — when a number is present ("raccogli 4 carote"), when the verb is
+`cattura` (a capture, not a harvest) and when the named token is not a crop. The
+ambiguity of Gap 2 is therefore settled by **evidence**: `isCollectOrder` still
+wins when a drop of that crop is really on the ground, otherwise a crop named in
+front of a field is a farm order. No LLM call, no `no_drop` for the field
+standing right there.
+
+The chain is one step per decision, chosen against `/options` — the harness
+remains the authority on what is legal *now*:
+
+| Step | Key | Fires when |
+|---|---|---|
+| 1. pickup | `collect_drop` | a drop of *that crop* is on the ground |
+| 2. harvest | `harvest_<block>` | the harness offers it (ripe, reachable) and `harvests < DEFAULT_FARM_MAX_HARVES` (8) |
+| 3. replant | `plant_<seed>` | the last harvest reported `replanted.ok !== true` — never "seed the whole village" |
+| 4. store | `deposit_<crop>` (`store: 'known'`) / `dump_inventory` (`'nearest'`) | `held > before.inventory[crop]` |
+
+A `null` step is not an error: at the first decision it means "nothing to do"
+(the human gets a one-line reply instead of a refusal), after some work it means
+the chain is finished, and the outcome is measured — `produce_stored` or
+`produce_not_stored`.
+
+**The delta is the acceptance criterion.** `farmSnapshot` records, when the plan
+is created, how much of the crop the bot holds and how much of it already sits
+in known containers; `farmStored` sums `observe().containers` and
+`observe().storage.known` deduplicated by position (a chest read twice is not
+counted twice) and `farmFulfilled` requires the container to have grown **and**
+the backpack not to. Putting away carrots that were already there is not a
+harvest. The plan is logged with `deterministic: 'farm'`, and `farmOptionKeys`
+joins `humanOrderProtectedKeys` in the emergency filter, because `plant_*`,
+`deposit_*` and `dump_inventory` carry intent `unknown` and would otherwise be
+hidden exactly when the human's order is the last thing the bot should keep
+doing.
+
+**One policy, two readers.** The food reserve (`DEPOSIT_KEEP_RESERVE`, 16)
+keeps carrots and potatoes in the backpack as emergency food — which would make
+the harness offer `dump_inventory` and then refuse it as "nothing worth
+storing". `_depositableItems({reserve, exempt})` now exempts `plan.farm.crop` by
+default, and the deposit section of `options()` offers that crop even though
+`_isValuable` (ingots, ores, gems) does not match it: the offer and the action
+that executes it read the same rule.
+
+`tests/controller-farm-order.test.mjs` (10 offline cases) covers the classifier,
+the step order — including the case that used to fail, carrots in the backpack
+with no drop ⇒ `harvest_carrots` — the harvest cap, the delta gating, the dedupe
+of the two content sources and the adapter's exemption policy.
 
 ## Register or sensor?
 

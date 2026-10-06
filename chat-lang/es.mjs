@@ -54,6 +54,7 @@ export default Object.freeze({
   no_armor: 'no tengo armadura en el inventario, no puedo equiparme',
   no_item: 'no tengo {word} en el inventario, no puedo tirarlo',
   no_drop: 'no veo {word} en el suelo, no puedo recogerlo',
+  farm_nothing: 'nada que hacer por ahora ({word}): nada maduro a mano y nada que guardar',
   list_or: ' o ',
 
   greet: '¡Hola {name}! Soy Hermes, el bot de la casa. Dame una tarea escribiendo en el chat: ' +
@@ -64,6 +65,7 @@ export default Object.freeze({
   'fallback.equip': 'me pongo la armadura que tengo en el inventario (casco, peto, grebas, botas)',
   'fallback.drop': 'tiro {word} de mi inventario',
   'fallback.collect': 'recojo {word} del suelo',
+  'fallback.farm': 'cosecho {word} del campo, lo replanto y guardo la cosecha',
 
   'phrase.equip': 'ponerme la armadura',
   'phrase.drop': 'tirar {word}',

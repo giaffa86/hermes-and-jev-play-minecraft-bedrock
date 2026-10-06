@@ -19,6 +19,7 @@
 import { createServer } from 'node:http';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { BedrockAdapter } from './bedrock-adapter.mjs';
+import { farmOptionKeys } from './bedrock-survival.mjs';
 import { constructionResponse } from './construction-api.mjs';
 import { createWorldMemory } from './world-memory.mjs';
 import { createRunLedger } from './run-ledger.mjs';
@@ -305,8 +306,13 @@ server = createServer(async (req, res) => {
       const offered = adapter.options();
       // Un ordine umano aperto resta valido anche in emergenza: il governor non
       // puo' togliere l'inseguitore che l'utente ha chiesto, ne' l'azione con
-      // cui ha ordinato di buttare via o raccogliere qualcosa.
-      const humanOrderKeys = humanOrderProtectedKeys(obs.plan);
+      // cui ha ordinato di buttare via, raccogliere o lavorare un campo
+      // (`plant_*` e `deposit_*` hanno intento ignoto: senza la lista di
+      // `farm` il filtro le toglierebbe mentre l'umano ha chiesto quei passi).
+      const humanOrderKeys = [
+        ...humanOrderProtectedKeys(obs.plan),
+        ...farmOptionKeys(obs.plan?.farm ?? {}),
+      ];
       const restricted = filterOptionsForGovernor(offered, survival, { protectedKeys: humanOrderKeys });
       response = [200, {
         options: restricted.options,

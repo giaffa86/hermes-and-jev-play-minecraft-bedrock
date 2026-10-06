@@ -119,6 +119,12 @@ const ITEM_WORDS = [
   [/\b(pagnott(a|e)|pane|bread|pains?|pan(es)?|brot(e)?)\b/, 'bread'],
   [/\b(patat[ae]\s+(cott[ae]|al\s+forno)|baked\s+potato(?:es)?|baked_potato)\b/, 'baked_potato'],
   [/\b(patat[ae]|potato(?:es)?)\b/, 'potato'],
+  // Le famiglie di colture: "raccogli le carote" deve risolvere alla carota
+  // anche quando in zaino e a terra non ce n'e' nessuna (e' il classificatore
+  // di fattoria a decidere che si tratta di mietere un campo, non di un pickup).
+  [/\b(carot(a|e|ina|ine)|carrot(?:s)?|carottes?|zanahorias?|karotte(n)?|mohre(n)?)\b/, 'carrot'],
+  [/\b(gran(o|i)|wheat|ble|trigo|weizen)\b/, 'wheat'],
+  [/\b(barbabietol(a|e)|beetroot(?:s)?|betteraves?|remolachas?)\b/, 'beetroot'],
   [/\b(mel(a|e)|apple|pommes?|manzanas?|apfel)\b/, 'apple'],
   [/\b(terr(a|e)|dirt|terres?|tierras?|erde(n)?)\b/, 'dirt'],
   [/\b(pietr(a|e)|stone|pierres?|piedras?|stein(e)?)\b/, 'stone'],
@@ -490,6 +496,18 @@ export function renderNoItem ({ from, item = '', lang = DEFAULT_LANG, template =
 export const NO_DROP_TEMPLATE = t(DEFAULT_LANG, 'no_drop');
 
 export function renderNoDrop ({ from, item = '', lang = DEFAULT_LANG, template = t(lang, 'no_drop'), maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
+  const answer = renderReply(template, { word: item });
+  return renderAnswer({ from, answer, lang, maxLength });
+}
+
+// Un ordine di fattoria che non ha niente da fare *adesso*: nessuna pianta
+// matura a tiro, nessun raccolto in zaino da mettere via. Si dice all'umano
+// invece di girare a vuoto o — peggio — leggere "raccogli le carote" come un
+// pickup da terra e rispondere che non vede carote (`no_drop`), che davanti a
+// un campo e' falso.
+export const FARM_NOTHING_TEMPLATE = t(DEFAULT_LANG, 'farm_nothing');
+
+export function renderFarmNothing ({ from, item = '', lang = DEFAULT_LANG, template = t(lang, 'farm_nothing'), maxLength = DEFAULT_REPLY_MAX_LENGTH } = {}) {
   const answer = renderReply(template, { word: item });
   return renderAnswer({ from, answer, lang, maxLength });
 }

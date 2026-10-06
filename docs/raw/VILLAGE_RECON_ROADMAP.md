@@ -403,11 +403,17 @@ clock-free, and `"time"` is stamped by whoever walks.
 
 ```jsonc
 // set by the chat-order classifier, never by the model
-"farm": { "crop": "carrot", "replant": true, "store": "known" | "nearest", "field": null }
+"farm": { "crop": "carrot", "block": "carrots", "seed": "carrot", "word": "carote",
+          "replant": true, "store": "known" | "nearest" | null, "field": null,
+          "before": { "inventory": { "carrot": 3 }, "contained": 0, "at": 0 } }
 ```
 
 The controller drives the chain step by step against `GET /options`; the
-harness still decides which of the three steps is legal *now*.
+harness still decides which of the three steps is legal *now*. Two fields carry
+the intent's **evidence** rather than its wording: `word` is the token the human
+used (what the chat reply echoes back) and `before` is the state snapshot the
+closing delta is measured against. `store: null` means the order declined
+storage, so the chain ends at the plot instead of guessing a chest.
 
 ### New env vars
 
@@ -725,13 +731,57 @@ merely in the nearest one), and `/observe.deposit.target` shows
   `isCollectOrder` keeps winning only when the named item actually exists as a
   drop; a crop named when no such drop exists becomes a farm order (never an
   LLM call, never the `no_drop` refusal for a field standing right there).
-- The controller drives the chain against `/options`: `harvest_<crop>` →
+- The controller drives the chain against `/options`: `harvest_<block>` →
   `plant_<seed>` → `deposit_<item>`/`dump_inventory`, one bounded action at a
   time, ending on a **state delta** (`choreGain`-style: crop gained, seed spent,
   container content increased) rather than on the model's word.
 - `plan.farm` is protected from the emergency filter the same way
   `humanOrderProtectedKeys` protects a drop/collect order, and it is what the
   chore layer already does autonomously — the order simply makes it explicit.
+
+**Landed (2026-10-06)** — the classifier and the chain, both deterministic and
+offline-tested:
+
+- `farmOrderFromText(message)` in `controller-decisions.mjs` (pure, next to
+  `isDropOrder`/`isEquipOrder`) reads a crop token through `matchItemWordText`
+  (which now knows carrot, wheat and beetroot in five languages) plus a farm
+  verb, and returns `{crop, block, seed, word, replant, store, field}`. It
+  refuses — returns `null`, so the order stays with the planner — as soon as a
+  number is present ("raccogli 4 carote"), when the verb is `cattura` (a
+  capture, not a harvest) and when the named token is not a crop at all. That
+  is what leaves the existing semantics of "raccogli X" intact.
+- `farmStep(farm, obs, options, {progress, maxHarves})` picks at most one step
+  per decision, in this order: `collect_drop` (only when a drop of *that* crop
+  is on the ground), `harvest_<block>` (the harness offers it only with a ripe,
+  reachable crop, so its presence *is* the evidence), `plant_<seed>` (only when
+  the last harvest reported `replanted.ok !== true` — otherwise the order would
+  seed the whole village) and finally the deposit (`deposit_<crop>` for
+  `store: 'known'`, `dump_inventory` for `'nearest'`). `null` means "nothing
+  legal now" and closes the goal.
+- **The chain closes on a delta, not on a count.** `farmSnapshot` records the
+  crop held and the crop already inside known containers when the plan is
+  created, and the deposit step fires only while `held >
+  before.inventory[crop]`: those three carrots that were in the backpack before
+  the order are never "the harvest", so a run cannot claim success by putting
+  away what it already had. `farmStored` deduplicates `observe().containers`
+  against `observe().storage.known` by position (a chest read twice is not
+  counted twice) and `farmFulfilled` = "the container grew **and** the backpack
+  did not".
+- **The food reserve does not hold the harvest hostage.**
+  `_depositableItems({reserve, exempt})` in `bedrock-adapter.mjs` exempts
+  `plan.farm.crop` by default, and the deposit section of `options()` offers
+  that crop even though `_isValuable` (ingots, ores, gems) does not match it.
+  Without the exemption the option would be offered and then refused by the
+  policy that decides what is worth storing; offer and action now read the same
+  rule.
+- **The emergency filter knows the farm vocabulary.** `farmOptionKeys` in
+  `bedrock-survival.mjs` joins the protected keys of `/options`, because
+  `plant_*`, `deposit_*` and `dump_inventory` carry intent `unknown` and an
+  emergency would otherwise hide the very steps the human asked for.
+- `tests/controller-farm-order.test.mjs` (10 offline cases): the classifier,
+  the step order (including "carrots in the backpack and no drop ⇒ harvest"),
+  the cap `DEFAULT_FARM_MAX_HARVES = 8`, the delta gating, the dedupe of the
+  two content sources and the adapter's exemption policy.
 
 **Test**: `tests/controller-farm-order.test.mjs` — "raccogli le carote" with
 carrots in the inventory is *not* a collect order when no carrot drop exists;
@@ -805,7 +855,7 @@ timestamp truthfully.
 | pure | **Landed**: `villageSweepConfig` → `planExplorationSweep` (anchor first, derived rings, JSON serialise/reload, `visited` shrinks the plan, `no_anchor`), waypoint budget ≠ census budget | `tests/village-sweep.test.mjs` |
 | unit | Sweep budget (**cells and time**, first limit wins), second-pass idempotence **including a restart between the two passes**, protected-block detour, refusal vs `truncated` | `tests/village-sweep.test.mjs` (action half, open) |
 | unit | Deposit target from memory vs cache, stale re-read, fallback | `tests/bedrock-storage-memory.test.mjs` |
-| unit | Farm-order classification vs the collect path, chain closing on delta | `tests/controller-farm-order.test.mjs` |
+| unit | **Landed (10)**: farm-order classification vs the collect path, chain closing on delta, adapter's food-reserve exemption | `tests/controller-farm-order.test.mjs` |
 | unit | Reconciliation with `GET /observe.structures` and the chore layer | `tests/village-labor.test.mjs` (extension) |
 | unit | Protection: beds/farmland/fences/crops intact, no villager | `tests/village-honesty.test.mjs` |
 | live | One sweep > one shot; second sweep adds nothing; `deposit_carrot` after restart lands in the right chest; `@bot raccogli le carote` A/B | host, bounded round |

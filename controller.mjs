@@ -30,13 +30,14 @@ import {detectEvents} from './world-events.mjs';
 import {emergencyGoalFor, DEFAULT_EMERGENCY_COOLDOWN_MS} from './emergency-goals.mjs';
 import {
   buildCriteria, buildDecisionInstructions, collectFulfilled, detectRepeatedAction, dropCountFromText, dropFulfilled, escortFulfilled, filterOptions,
+  farmFulfilled, farmOrderFromText, farmOutcome, farmSnapshot, farmStep,
   inventoryMatchingToken, isCollectOrder, isDropOrder, isEquipOrder, isEscortOrder, isStopOrder, matchesItemToken, orderItem, tokenInventoryTotal,
   withStickyEscort, withStickyFollow,
-  progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
+  progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_FARM_MAX_HARVES, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
 import {planGreetings, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
 import {orderAck, orderOutcome, lostNotice, escortWaiting, mountWaitingShore, isSelfTriggering, normalizePrefixes, matchChatPrefix, selfPrefixes, renderReply, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
-import {answerIntent, renderAnswer, renderNoArmor, renderNoDrop, renderNoItem, renderUnrouted, looksLikeSmallTalk} from './human-questions.mjs';
+import {answerIntent, renderAnswer, renderFarmNothing, renderNoArmor, renderNoDrop, renderNoItem, renderUnrouted, looksLikeSmallTalk} from './human-questions.mjs';
 import {resolveQuestionIntent, DEFAULT_INTENT_TIMEOUT_MS, DEFAULT_INTENT_MIN_P} from './chat-intent.mjs';
 import {composeChatReply, chatLlmConfig, compactChatFacts, createChatMemory} from './chat-llm.mjs';
 import {chatLangConfig, t, languageName, LANGS} from './chat-i18n.mjs';
@@ -556,6 +557,27 @@ async function humanCommandPlan (obs, entry) {
     log('plan', {plan, ms: 0, source: 'human', deterministic: 'drop'});
     return plan;
   }
+  // "raccogli le carote" / "mieti il grano e rimpiantalo e mettilo nel baule":
+  // mietere una coltura nominata e' un ordine di fattoria — una catena bounded
+  // (i drop, la mietitura, la rimpiantatura, il deposito) chiusa su un delta di
+  // stato — non un pickup da terra. Il pickup vince solo se il raccolto
+  // nominato e' *davvero* a terra: li' l'ordine e' raccogliere quello che si
+  // vede, e la cache dei drop e' la prova. Senza questa distinzione le stesse
+  // parole davanti a un campo finivano in `no_drop` ("non vedo carote a
+  // terra") o in una chiamata al planner che mina al posto di raccogliere.
+  const farm = farmOrderFromText(entry.message);
+  if (farm && !(obs.drops || []).some(d => d.item && matchesItemToken(d.item, farm.crop))) {
+    const plan = {
+      objective: t(CHAT_LANG, 'fallback.farm', {word: farm.word ?? farm.crop}),
+      targets: {},
+      waypoint: null,
+      follow: null,
+      farm: {...farm, before: farmSnapshot(obs, farm.crop)},
+      notes: `human:${entry.from} farm:${farm.crop}`,
+    };
+    log('plan', {plan, ms: 0, source: 'human', deterministic: 'farm'});
+    return plan;
+  }
   // "cattura i diamanti" / "raccogli la spada": raccogli da terra l'oggetto
   // caduto. La lista degli item nasce dai drop che il bot vede adesso
   // (`observe().drops`); se non ne vede nessuno il piano resta vuoto e l'ordine
@@ -1022,6 +1044,10 @@ const goalMet = (obs, plan, skillStatus) => {
   // ancorati al delta dell'inventario, non a un target del planner.
   if (plan.drop) return dropFulfilled(plan.drop, obs);
   if (plan.collect) return collectFulfilled(plan.collect, obs);
+  // Un ordine di fattoria ("raccogli le carote, rimpianta e metti nel baule")
+  // e' chiuso quando il raccolto *guadagnato* e' finito negli scrigni noti: il
+  // delta del contenuto, non un target del planner.
+  if (plan.farm) return farmFulfilled(plan.farm, obs);
   // I piani "seguimi" sono aperti: terminano solo con un nuovo ordine o a fine
   // budget, mai da soli (non hanno target/waypoint terminali).
   if (plan.follow) return false;
@@ -1065,7 +1091,7 @@ const goalMet = (obs, plan, skillStatus) => {
 // stesso guardiano vale nel loop del goal e quando un goal sospeso viene
 // rivalutato prima della ripresa.
 const planIsOpen = (plan) => !plan.follow && !plan.need && !plan.recover && !plan.skill &&
-  !plan.drop && !plan.collect &&
+  !plan.drop && !plan.collect && !plan.farm &&
   !Object.keys(plan.targets || {}).length && !Object.keys(TARGETS).length &&
   !plan.waypoint && !WAYPOINT;
 
@@ -1347,7 +1373,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // Un goal autonomo/emergenza è ancorato al suo predicato di successo
   // (bisogno o recupero loot): non va sostituito da un nuovo piano, o si perde
   // l'ancoraggio e il goal non si chiude. Si salta il replan.
-  if (replanReason && (plan.need || plan.recover || plan.construction || plan.drop || plan.collect)) {
+  if (replanReason && (plan.need || plan.recover || plan.construction || plan.drop || plan.collect || plan.farm)) {
     log('replan_skipped', {step, reason: replanReason, need: plan.need ?? null, recover: plan.recover === true});
     replanReason = null;
   }
@@ -1650,6 +1676,39 @@ for (let step = 1; step <= maxSteps; step++) {
   } else if (!collectKey) {
     lastCollectKey = null;
   }
+  // Ordine di fattoria ("raccogli le carote, rimpianta e metti il raccolto nel
+  // baule"): una catena bounded e deterministica — i drop del raccolto a terra,
+  // la mietitura, la rimpiantatura di compensazione, il deposito — in cui ogni
+  // passo esiste solo se `/options` lo offre (l'harness resta il padrone della
+  // validita'). Nessuna chiamata al modello.
+  const farmAction = !needKey && !pursuitKey && !lostWaitKey && !lostHold && !equipKey && !dropKey && !collectKey
+    ? farmStep(plan.farm, obs, filtered.options, {progress: plan.farm?.state ?? null, maxHarves: DEFAULT_FARM_MAX_HARVES})
+    : null;
+  const farmKey = farmAction?.key ?? null;
+  if (plan.farm && !farmKey) {
+    // Niente da fare *adesso*: nessuna pianta matura a tiro, nessun raccolto
+    // guadagnato da mettere via. Se la catena non ha ancora lavorato e' un
+    // ordine a vuoto: si dice all'umano (non si risponde "non vedo carote a
+    // terra" davanti a un campo, e non si lascia il goal aperto a girare). Se
+    // ha lavorato, l'ordine e' finito e l'esito e' il delta *misurato*.
+    const worked = (plan.farm.state?.harvests ?? 0) > 0 || plan.farm.state?.moved === true;
+    const outcome = farmOutcome(plan.farm, obs);
+    if (!worked) {
+      console.log('FARM ORDER: niente da fare adesso');
+      log('farm_order', {step, key: null, error: 'nothing_to_do', crop: plan.farm.crop, ...outcome});
+      await replyChat(renderFarmNothing({from: goal.humanOrder?.from ?? null, item: plan.farm.word ?? plan.farm.crop, maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG}), {context: 'farm_nothing', prefixes: CHAT_PREFIXES});
+      failureReason = 'nothing_to_do';
+      runExitCode = 2;
+      break;
+    }
+    console.log(`FARM ORDER: catena finita (${plan.farm.crop})`, JSON.stringify(outcome));
+    log('farm_order', {step, key: null, done: true, crop: plan.farm.crop, ...outcome});
+    // Il raccolto non e' finito negli scrigni (nessun deposito a tiro, o
+    // contenuto noto invariato): l'ordine non si dichiara riuscito.
+    failureReason = outcome.stored > 0 ? 'produce_stored' : 'produce_not_stored';
+    if (outcome.stored <= 0) runExitCode = 2;
+    break;
+  }
   // Provviste per una costruzione: la regola sta nell'harness (inventario ->
   // bauli -> natura, mai costruzioni) e qui si esegue soltanto, senza chiedere
   // al modello. Il passo vale solo se l'harness lo offre davvero.
@@ -1680,6 +1739,8 @@ for (let step = 1; step <= maxSteps; step++) {
     ? {key: dropKey, reason: 'drop_order', source: 'drop_order'}
     : collectKey
     ? {key: collectKey, reason: 'collect_order', source: 'collect_order'}
+    : farmKey
+    ? {key: farmKey, reason: `farm_order:${plan.farm?.crop ?? ''}:${farmAction?.phase ?? ''}`, source: 'farm_order'}
     : craftKey
     ? {key: craftKey, reason: `craft_source:${craftStep.source}:${craftKey}`, source: 'craft_source'}
     : (CONTROLLER === 'jev' ? await jevDecide(obs, filtered.options, decisionPlan) : await hermesDecide(obs, filtered.options, decisionPlan));
@@ -1689,7 +1750,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // lo stato desiderato (l'umano e' li'), non un loop da punire con l'anti-loop.
   // Ne' una ricerca ne' un'attesa di recupero sono stagnazione: la prima ha un
   // bersaglio verificato dall'harness, la seconda e' il tempo che l'umano torni.
-  chosenFingerprint = pursuitKey || escortKey || mountKey || lostWaitKey || craftKey || equipKey || dropKey || collectKey ? null : progressFingerprint(obs, plan);
+  chosenFingerprint = pursuitKey || escortKey || mountKey || lostWaitKey || craftKey || equipKey || dropKey || collectKey || farmKey ? null : progressFingerprint(obs, plan);
   const actStarted = Date.now();
   let result = await api('POST', '/act', {key});
   // `busy` non è un verdetto sull'azione: il harness sta ancora eseguendo
@@ -1720,12 +1781,30 @@ for (let step = 1; step <= maxSteps; step++) {
     await api('POST', '/mission/action', {missionId: goal.missionId, actionType: key, outcome: result.ok ? 'ok' : (result.error ?? 'failed'), startedAt: actStarted, completedAt: Date.now(), data: {position: obs.position, dimension: obs.dimension}}).catch(() => {});
   }
   console.log(`#${step} ${key} ->`, JSON.stringify(result));
+  // Il progresso della catena di fattoria: quante mietiture sono andate a
+  // segno, se l'ultima ha ripiantato da se' (se no, il passo successivo semina)
+  // e se qualcosa e' stato messo via. Lo stato vive nel piano, cosi' un ordine
+  // nuovo (che lo ricrea) riparte da zero e un resume non eredita i contatori
+  // di un altro ordine.
+  if (plan.farm && farmKey && farmAction) {
+    const state = plan.farm.state ?? (plan.farm.state = {harvests: 0, needsPlant: false, moved: false});
+    if (farmAction.phase === 'harvest') {
+      state.harvests += 1;
+      state.needsPlant = result?.replanted?.ok !== true;
+      state.replanted = result?.replanted?.ok ?? null;
+    } else if (farmAction.phase === 'plant') {
+      state.needsPlant = false;
+    } else if (farmAction.phase === 'store') {
+      state.moved = true;
+    }
+    log('farm_step', {step, key: farmKey, phase: farmAction.phase, ok: !!result?.ok, error: result?.error ?? null, harvests: state.harvests, needsPlant: state.needsPlant, replanted: state.replanted ?? null});
+  }
   // Inseguimento gia' soddisfatto (azione rientrata subito): si attende prima di
   // rileggere lo stato, altrimenti il loop gira a vuoto per ore.
   // Un bisogno risolto in pochi ms (notte saltata) non deve far girare il loop
   // a vuoto; il fingerprint resta comunque contato per il bisogno, cosi' un
   // `sleep` che fallisce e si ripete finisce nell'anti-loop.
-  if ((pursuitKey || escortKey || mountKey || needKey || lostWaitKey || equipKey || dropKey || collectKey || craftKey) && result?.ok && (result.ms ?? 0) < 250) await delay(FOLLOW_IDLE_POLL_MS);
+  if ((pursuitKey || escortKey || mountKey || needKey || lostWaitKey || equipKey || dropKey || collectKey || farmKey || craftKey) && result?.ok && (result.ms ?? 0) < 250) await delay(FOLLOW_IDLE_POLL_MS);
   if ((goal.follow || goal.escort) && step >= maxSteps) {
     // Il budget si rinnova finche' l'ordine umano resta aperto: l'impegno
     // finisce con un altro ordine (o con un'emergenza che preempta il goal).

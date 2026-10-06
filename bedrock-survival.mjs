@@ -315,6 +315,35 @@ export function seedForCrop (crop) {
   return SEED_FOR_CROP[String(crop).replace(/^minecraft:/, '')] || null;
 }
 
+// Il blocco-coltura di un item raccolto: "carrot" → "carrots", "wheat" →
+// "wheat" (per il grano il seme ha un nome diverso — `wheat_seeds` — quindi
+// `cropForSeed` da solo non basta). `null` quando l'item non è una coltura:
+// è la guardia che distingue "raccogli le carote" (mietere un campo) da
+// "raccogli il piccone" (raccogliere un oggetto).
+export function cropBlockForItem (item) {
+  const name = String(item ?? '').replace(/^minecraft:/, '');
+  if (isCropBlock(name)) return name;
+  return cropForSeed(name);
+}
+
+// Le key del vocabolario del harness che un ordine di fattoria può usare: la
+// mietitura e la semina della coltura nominata, il deposito dello stesso
+// raccolto, la raccolta del drop e — se l'ordine chiede di mettere via — il
+// deposito generico. Una lista sola, così chi protegge l'ordine dal filtro di
+// emergenza (`humanOrderProtectedKeys`) e chi guida la catena parlano delle
+// stesse key. Quali di queste esistano davvero lo dice solo `/options`.
+export function farmOptionKeys ({ crop = null, store = null } = {}) {
+  const block = cropBlockForItem(crop);
+  const seed = block ? seedForCrop(block) : null;
+  return [
+    ...(block ? [`harvest_${block}`] : []),
+    ...(seed ? [`plant_${seed}`] : []),
+    ...(crop ? [`deposit_${crop}`] : []),
+    'collect_drop',
+    ...(store ? ['dump_inventory'] : []),
+  ];
+}
+
 export function cropMaxGrowth (name) {
   return CROP_MAX_GROWTH[String(name).replace(/^minecraft:/, '')] ?? null;
 }

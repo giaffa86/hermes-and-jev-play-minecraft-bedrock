@@ -313,8 +313,10 @@ never on generic building blocks.
 
 What the histogram cannot answer — which house has a free bed, which plot is the
 carrot field and how much of it is ripe, which chest already holds carrots — is
-planned as an aggregated **village register** built from this same survey and
-written to world memory: see [village reconnaissance](village-recon.md).
+what the aggregated **village census** answers: the same survey plus a bounded
+cluster pass, published as `observe().village` and gathered on foot by the
+`survey_village` sweep; the farm order that reads it (`plan.farm`) now closes on
+a state delta. See [village reconnaissance](village-recon.md).
 
 ### Hazards and rules (unchanged)
 

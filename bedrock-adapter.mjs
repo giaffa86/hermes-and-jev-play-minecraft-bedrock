@@ -5005,6 +5005,11 @@ export class BedrockAdapter {
     // Deposito: gli oggetti di valore verso lo scrigno noto (o vicino) più
     // prossimo, e — da M3c — una sola azione che scarica tutto il raccolto
     // (`dump_inventory`) nello scrigno giusto per quell'item.
+    // Un ordine di fattoria chiede di mettere via *il raccolto*: la riserva di
+    // cibo non lo trattiene (altrimenti il bot mieterebbe e il deposito non
+    // sarebbe nemmeno offerto) e il deposito mirato vale anche per un raccolto
+    // che non è "prezioso" (`_isValuable` guarda lingotti, minerali e gemme).
+    const farmCrop = this.plan?.farm?.crop ?? null;
     const depositable = this._depositableItems();
     const depositTarget = cached.find(c => !this._reachabilityUsable() || this.approachReachable(c.position)) || reachableStorage[0];
     if (depositTarget && depositable.length) {
@@ -5016,8 +5021,10 @@ export class BedrockAdapter {
     }
     if (depositTarget) {
       let depositOffered = 0;
-      for (const item of Object.keys(this.inventory)) {
-        if (!this._isValuable(item) || !(this.inventory[item] > 0)) continue;
+      const wanted = [...new Set([...(farmCrop ? [farmCrop] : []), ...Object.keys(this.inventory)])]
+        .filter(item => item === farmCrop || this._isValuable(item));
+      for (const item of wanted) {
+        if (!(this.inventory[item] > 0)) continue;
         o.push({ key: `deposit_${item}`, description: `Deposit ${this.inventory[item]} ${item} into the ${depositTarget.type} at ${JSON.stringify(depositTarget.position)}` });
         if (++depositOffered >= 6) break;
       }
@@ -7318,14 +7325,23 @@ export class BedrockAdapter {
   }
 
   // Cosa è disposto a mettere via adesso: tutto ciò che non è nell'elenco di
-  // rispetto, o che ne supera la riserva. Nessun I/O e nessun pathfinding: la
-  // raggiungibilità dello scrigno la decide chi offre l'azione.
-  _depositableItems ({ reserve = DEPOSIT_KEEP_RESERVE } = {}) {
+  // rispetto, o che ne supera la riserva. Il raccolto di un ordine di fattoria
+  // (`plan.farm.crop`) è esente dalla riserva: l'umano ha chiesto di metterlo
+  // via, quindi né la politica del deposito né l'azione che la esegue possono
+  // trattenerlo (altrimenti l'opzione `dump_inventory` verrebbe offerta e poi
+  // rifiutata con `nothing_to_deposit`). L'esenzione si può passare a mano
+  // (`exempt`) per i test. Nessun I/O e nessun pathfinding: la raggiungibilità
+  // dello scrigno la decide chi offre l'azione.
+  _depositableItems ({ reserve = DEPOSIT_KEEP_RESERVE, exempt = undefined } = {}) {
+    const farmCrop = this.plan?.farm?.crop ?? null;
+    const free = exempt === undefined
+      ? new Set(farmCrop ? [farmCrop] : [])
+      : new Set(exempt || []);
     const out = [];
     for (const [item, count] of Object.entries(this.inventory || {})) {
       const held = Number(count) || 0;
       if (held <= 0) continue;
-      const kept = this._isKeptItem(item);
+      const kept = this._isKeptItem(item) && !free.has(item);
       if (kept && held <= reserve) continue;
       out.push({ item, count: kept ? held - reserve : held });
     }
