@@ -179,3 +179,166 @@ export function summarizeSculk ({ sensors = [], shriekers = [], blocks = [], poi
     vibrationRisk: point ? vibrationRisk(point, sensors, { radius }) : null,
   };
 }
+
+// ---- W2: pathfinding silenzioso ---------------------------------------------
+// Una cella dentro la sfera di un sensore non e' "vietata per decreto" — a
+// volte e' l'unico passaggio — ma costa come `SENSOR_CELL_COST` celle sicure:
+// un giro largo viene preferito, un passaggio obbligato viene accettato e
+// dichiarato (`maxRisk`), invece di essere nascosto. Una cella che porta uno
+// shrieker e' invece vietata e basta: lo shrieker shrieka anche accovacciati, e
+// non c'e' modo di attraversarla in silenzio. Un salto o una caduta vibrano (W0),
+// ma contano solo *dentro* una sfera: ogni cella entrata porta il proprio rischio,
+// quindi un movimento rumoroso fra due celle silenziose resta silenzioso — non
+// c'e' nessun sensore che possa sentirlo.
+export const SENSOR_CELL_COST = 50;
+export const STEALTH_MAX_NODES = 4096;
+
+// Costo e ammissibilita' di una cella per il pianificatore silenzioso.
+export function stealthCellCost ({ cell, sensors = [], shriekers = [], radius = VIBRATION_RADIUS } = {}) {
+  if (!cell) return { blocked: true, reason: 'no_cell', cost: null, risk: null, nearest: null };
+  const standing = shriekerVerdict(cell, shriekers);
+  if (standing.blocked) return { blocked: true, reason: standing.reason, cost: null, risk: 0, nearest: null, shrieker: standing.shrieker };
+  const risk = vibrationRisk(cell, sensors, { radius });
+  const count = risk.count ?? 0;
+  return { blocked: false, reason: null, cost: 1 + count * SENSOR_CELL_COST, risk: count, nearest: risk.nearest };
+}
+
+// A* puro: `neighbors(node)` produce `{x, y, z, cost}` in sola camminata (nessuno
+// scavo, nessun piazzamento: la rotta silenziosa non puo' contenere un rumore) e
+// `cellCost(cell)` decide costo e ammissibilita' di ogni cella *entrata*.
+// Ritorna `null` se la destinazione non e' raggiungibile, altrimenti
+// `{path, cost, maxRisk, riskCell}` con il percorso che parte dalla partenza.
+export function astarStealth ({ start, goal, neighbors, cellCost, maxNodes = STEALTH_MAX_NODES } = {}) {
+  if (!start || !goal || typeof neighbors !== 'function' || typeof cellCost !== 'function') return null;
+  const keyOf = cell => `${cell.x},${cell.y},${cell.z}`;
+  const heuristic = cell => Math.abs(cell.x - goal.x) + Math.abs(cell.z - goal.z) + 0.4 * Math.abs(cell.y - goal.y);
+  const costOf = cell => {
+    const verdict = cellCost(cell) ?? {};
+    return { blocked: verdict.blocked === true, cost: Number.isFinite(verdict.cost) ? verdict.cost : 1, risk: Number.isFinite(verdict.risk) ? verdict.risk : null };
+  };
+  const startKey = keyOf(start), goalKey = keyOf(goal);
+  const open = [];
+  const push = (node, f) => {
+    open.push({ node, f });
+    let i = open.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (open[p].f <= open[i].f) break;
+      [open[p], open[i]] = [open[i], open[p]];
+      i = p;
+    }
+  };
+  const pop = () => {
+    const top = open[0];
+    const last = open.pop();
+    if (open.length) {
+      open[0] = last;
+      let i = 0;
+      for (;;) {
+        let c = 2 * i + 1;
+        if (c >= open.length) break;
+        if (c + 1 < open.length && open[c + 1].f < open[c].f) c++;
+        if (open[i].f <= open[c].f) break;
+        [open[i], open[c]] = [open[c], open[i]];
+        i = c;
+      }
+    }
+    return top.node;
+  };
+  const gScore = new Map([[startKey, 0]]);
+  const cameFrom = new Map();
+  const closed = new Set();
+  push(start, heuristic(start));
+  let expanded = 0;
+  while (open.length && expanded < maxNodes) {
+    const current = pop();
+    const currentKey = keyOf(current);
+    if (closed.has(currentKey)) continue;
+    closed.add(currentKey);
+    expanded++;
+    if (currentKey === goalKey) return buildStealthRoute(cameFrom, current, start, cellCost);
+    for (const candidate of neighbors(current) || []) {
+      const nbKey = keyOf(candidate);
+      if (closed.has(nbKey)) continue;
+      const verdict = costOf(candidate);
+      if (verdict.blocked) continue;
+      const tentative = (gScore.get(currentKey) ?? Infinity) + (Number.isFinite(candidate.cost) ? candidate.cost : 1) + verdict.cost - 1;
+      if (tentative < (gScore.get(nbKey) ?? Infinity)) {
+        gScore.set(nbKey, tentative);
+        cameFrom.set(nbKey, current);
+        push(candidate, tentative + heuristic(candidate));
+      }
+    }
+  }
+  return null;
+}
+
+// Ricostruisce il percorso dalla partenza e calcola il rischio massimo incontrato
+// (`riskCell` e' la cella che lo produce: l'operatore vede *dove* il piano non e'
+// silenzioso, invece di un verdetto senza indirizzo).
+function buildStealthRoute (cameFrom, node, start, cellCost) {
+  const path = [{ x: node.x, y: node.y, z: node.z }];
+  let key = `${node.x},${node.y},${node.z}`;
+  while (key !== `${start.x},${start.y},${start.z}`) {
+    const prev = cameFrom.get(key);
+    if (!prev) break;
+    path.push({ x: prev.x, y: prev.y, z: prev.z });
+    key = `${prev.x},${prev.y},${prev.z}`;
+  }
+  path.reverse();
+  let cost = 0, maxRisk = 0, riskCell = null;
+  for (const cell of path) {
+    const verdict = cellCost(cell) ?? {};
+    cost += Number.isFinite(verdict.cost) ? verdict.cost : 1;
+    const risk = Number.isFinite(verdict.risk) ? verdict.risk : 0;
+    if (risk > maxRisk) { maxRisk = risk; riskCell = { ...cell }; }
+  }
+  return { path, cost: +cost.toFixed(2), maxRisk, riskCell };
+}
+
+// Piano silenzioso: la rotta verso la destinazione e, se richiesta, la rotta di
+// ritorno. La seconda non e' il primo percorso al contrario (una caduta si fa in
+// un senso solo): si ripianifica verso l'uscita, e se non esiste il piano si
+// rifiuta per intero — un'andata senza ritorno non e' un piano, e' una trappola.
+export function planStealthRoute ({ start, goal, exit = null, neighbors, cellCost, maxNodes = STEALTH_MAX_NODES, maxRisk = 0 } = {}) {
+  const inbound = astarStealth({ start, goal, neighbors, cellCost, maxNodes });
+  if (!inbound) return { ok: false, error: 'no_stealth_route', reason: 'unreachable', from: start, to: goal, maxRisk: null, exit: null };
+  if (inbound.maxRisk > maxRisk) {
+    return { ok: false, error: 'no_stealth_route', reason: 'risk', from: start, to: goal, maxRisk: inbound.maxRisk, riskCell: inbound.riskCell, exit: null };
+  }
+  if (!exit) return { ok: true, cells: inbound.path, cost: inbound.cost, maxRisk: inbound.maxRisk, riskCell: inbound.riskCell, sneak: true, exit: null };
+  const back = astarStealth({ start: inbound.path[inbound.path.length - 1], goal: exit, neighbors, cellCost, maxNodes });
+  if (!back) return { ok: false, error: 'no_exit_route', reason: 'unreachable', from: start, to: goal, maxRisk: inbound.maxRisk, exit };
+  if (back.maxRisk > maxRisk) {
+    return { ok: false, error: 'no_exit_route', reason: 'risk', from: start, to: goal, maxRisk: back.maxRisk, riskCell: back.riskCell, exit };
+  }
+  return {
+    ok: true,
+    cells: inbound.path,
+    cost: inbound.cost,
+    maxRisk: inbound.maxRisk,
+    riskCell: inbound.riskCell,
+    sneak: true,
+    exit: { cells: back.path, cost: back.cost, maxRisk: back.maxRisk, riskCell: back.riskCell, target: exit },
+  };
+}
+
+// Forma compatta di un piano per la log (la rotta intera resta nel piano, qui si
+// dichiarano lunghezza e rischio: quello che l'operatore deve poter leggere).
+export function summarizeStealthPlan (plan) {
+  if (!plan) return null;
+  if (plan.ok === false) {
+    return { ok: false, error: plan.error, reason: plan.reason ?? null, maxRisk: plan.maxRisk ?? null, riskCell: plan.riskCell ?? null, cells: null, exit: null };
+  }
+  return {
+    ok: true,
+    cells: plan.cells?.length ?? 0,
+    cost: plan.cost ?? null,
+    maxRisk: plan.maxRisk ?? null,
+    sneak: plan.sneak === true,
+    from: plan.cells?.[0] ?? null,
+    to: plan.cells?.[plan.cells.length - 1] ?? null,
+    exit: plan.exit ? { cells: plan.exit.cells?.length ?? 0, cost: plan.exit.cost ?? null, maxRisk: plan.exit.maxRisk ?? null, target: plan.exit.target ?? null } : null,
+  };
+}
+

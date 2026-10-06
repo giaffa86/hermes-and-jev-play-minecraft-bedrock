@@ -21,23 +21,32 @@ material selection and controller integration. ⏳ Real BDS placement, edge move
 procurement and cleanup require a scoped round in an approved test area.
 No live construction success is claimed.
 
-## Deep Dark / Warden (W0 and W1 only)
+## Deep Dark / Warden (W0, W1 and W2)
 
-⚠️ [Deep Dark stealth](deep-dark.md): **W0 (vibration awareness) and W1
-(sneak-walk as a real mode) are implemented and unit-tested (06/10/2026), never
-live.** The pure model is `bedrock-vibration.mjs` (`VIBRATION_RADIUS = 8`,
-`vibrationRisk`, `pointSegmentDistance`, `shriekerVerdict`, `wardenWarning`,
-`classifySneakSpeed`), the census is `_sculkCensus` with `observe().sculk` /
-`GET /observe.sculk`, the whole `SCULK_FAMILY` is in `DIG_PROTECTED`, a `dig_*`
-inside a sensor sphere is refused with `vibration_risk_<label>`, and `sneak_to`
-walks crouched with the speed measured from the server (`not_sneaking` above the
-sneak ceiling, `no_measurement` with no real step) — 25 offline cases
-(`tests/vibration.test.mjs`, `tests/bedrock-vibration-adapter.test.mjs`);
-`BEDROCK.md` carries the `sneak_to` row.
+⚠️ [Deep Dark stealth](deep-dark.md): **W0 (vibration awareness), W1
+(sneak-walk as a real mode) and W2 (vibration-cost stealth pathfinding) are
+implemented and unit-tested (06/10/2026), never live.** The pure model is
+`bedrock-vibration.mjs` (`VIBRATION_RADIUS = 8`, `vibrationRisk`,
+`pointSegmentDistance`, `shriekerVerdict`, `wardenWarning`, `classifySneakSpeed`,
+plus `stealthCellCost`/`astarStealth`/`planStealthRoute` for W2), the census is
+`_sculkCensus` with `observe().sculk` / `GET /observe.sculk`, the whole
+`SCULK_FAMILY` is in `DIG_PROTECTED`, a `dig_*` inside a sensor sphere is refused
+with `vibration_risk_<label>`, and `sneak_to` walks crouched with the speed
+measured from the server (`not_sneaking` above the sneak ceiling,
+`no_measurement` with no real step). Since W2 the crouched walk is also
+*planned*: `sneak_to`/`walk_stealthy` walks a route whose every cell is outside
+every known sensor sphere and whose return leg has been re-planned before the
+bot moves (`_stealthRoute` keeps it for W3's `escape_deep_dark`), refusing the
+whole action as `no_stealth_route`/`no_exit_route`/`sculk_unknown` when that
+cannot be promised; placing inside a sphere is refused (`vibration_risk_place`)
+and mining prefers a silent target or fails as `vibration_risk_mine`. 41 offline
+cases (`tests/vibration.test.mjs`, `tests/bedrock-stealth-route.test.mjs`,
+`tests/bedrock-vibration-adapter.test.mjs`); `BEDROCK.md` carries the `sneak_to`
+and `walk_stealthy` rows.
 
-❌ W2–W6 are spec: no stealth pathfinding, no shrieker/Warden *tactic* (the
-Warden is seen by the census but the survival layer still flees), no underground
-3D navigation, no `find_deep_dark`. The `ancient_city` marker rule exists
+❌ W3–W6 are spec: no shrieker/Warden *tactic* (the Warden is seen by the census
+but the survival layer still flees), no underground 3D navigation, no
+`find_deep_dark`. The `ancient_city` marker rule exists
 (`structures.mjs:84-96`) but has never fired live, and nothing here is
 live-verified: the Bedrock numbers (8-block sphere, player-vibration relay,
 sneak silence, 3-shriek summon) must be probed before they are trusted, and the

@@ -32,7 +32,7 @@ import { loadCircuits, planCircuit, circuitSiteBlocked, circuitSafety, forbidden
 import { REDSTONE_ORES, REDSTONE_COMPONENTS, REDSTONE_HAZARDS, REDSTONE_SCAN_RADIUS, REDSTONE_SCAN_LIMIT, blockProperties, redstoneView, isRedstoneComponent, isRedstoneOre, isRedstoneInput, inputOn, componentAt, activeOutputs, summarizeRedstone, isRepeater, facingOf, facingMatches, normalizeFacing, repeaterDelay, PLACEMENT_YAW_STEPS } from './bedrock-redstone.mjs';
 import { isFireBlock, summarizePortals, summarizeHazards, projectileIncoming, gazedAtEnderman, netherHazard, isProjectileType, isEndermanType, waterEvaporates, bedsExplode, isNetherDimension, isEndDimension, isNetherLike, landingHazard, maxFallDepth, isFlammableBlock, pickHubBlock, shellCells, netherHubPlan, DEFAULT_NETHER_RADIUS, DEFAULT_NETHER_LIMIT, planPortalFrame, checkPortalFrame, portalSiteBlocked, portalFrameCandidates, projectileVelocity, dodgeCandidates, breaksLine, isPiglinType, goldArmorWorn, piglinNeutral, barterTarget, isBarterReward, BARTER_INGOT, BARTER_RANGE, PORTAL_BLOCK, PORTAL_FRAME_BLOCK, PORTAL_IGNITER, PORTAL_FRAME_NEEDS_FULL, PORTAL_FRAME_NEEDS_MINIMAL, portalBlockName, endermanAimPoint, isPumpkinMask, pumpkinMaskWorn, isEnderPearl, ENDERMAN_GAZE_TOLERANCE_DEG, isBlazeType, coverCandidates, blazeTactics, blazeRodProgress, BLAZE_RANGE, BLAZE_RETREAT_HEALTH, BLAZE_ROD, COVER_RADIUS } from './bedrock-nether.mjs';
 import { END_DIMENSION, END_PORTAL, END_PORTAL_FRAME, EYE_OF_ENDER, BLAZE_POWDER, BLAZE_ROD_ITEM, ENDER_EYE_FRAME_TOTAL, STRONGHOLD_RADIUS, EYE_READINGS_MAX, POWDER_PER_ROD, isEyeSignalType, frameHasEye, frameStatus, eyeCraftPlan, eyeReading, triangulateStronghold, bossVerdict, endSummary } from './bedrock-end.mjs';
-import { VIBRATION_RADIUS, SHRIEK_WINDOW_MS, SNEAK_SPEED_FACTOR, SCULK_FAMILY, SCULK_SENSORS, SCULK_SHRIEKERS, isSculkFamily, sensorPhase, shriekerState, vibrationRisk, shriekerVerdict, wardenWarning, classifySneakSpeed, summarizeSculk } from './bedrock-vibration.mjs';
+import { VIBRATION_RADIUS, SHRIEK_WINDOW_MS, SNEAK_SPEED_FACTOR, SCULK_FAMILY, SCULK_SENSORS, SCULK_SHRIEKERS, isSculkFamily, sensorPhase, shriekerState, vibrationRisk, shriekerVerdict, wardenWarning, classifySneakSpeed, summarizeSculk, stealthCellCost, planStealthRoute, summarizeStealthPlan } from './bedrock-vibration.mjs';
 const require = createRequire(import.meta.url);
 const bedrock = require('bedrock-protocol');
 const { NethernetClient } = require('bedrock-protocol/src/nethernet');
@@ -509,6 +509,7 @@ export class BedrockAdapter {
     this._sneakDeclared = false;       // ultimo `sneaking` mandato nei player_auth_input
     this._stealthSneaking = false;     // sneak di navigazione silenziosa (W1)
     this._lastSneak = null;            // ultima misura di velocità sneak (verdetto dal server)
+    this._stealthRoute = null;         // ultima rotta silenziosa pianificata + rotta di ritorno (W2)
     this.offhand = null;               // { name, count } dell'offhand (scudo), conferma dal server
     this.shieldUp = false;             // l'ultimo frame auth dichiarava l'uso dell'item
     this._ridingForward = false;       // vettore avanti continuo mentre cavalca
@@ -1581,7 +1582,7 @@ export class BedrockAdapter {
   }
 
   _sneakView () {
-    return { active: !!this._stealthSneaking, declared: !!this._sneakDeclared, last: this._lastSneak };
+    return { active: !!this._stealthSneaking, declared: !!this._sneakDeclared, last: this._lastSneak, route: this._stealthRouteView() };
   }
 
   // Rischio di vibrazione in una cella: `null` se il censimento non è pronto o non
@@ -1592,6 +1593,68 @@ export class BedrockAdapter {
     if (!census.ready || !census.sensorRows?.length) return null;
     const risk = vibrationRisk(cell, census.sensorRows, { radius: VIBRATION_RADIUS });
     return risk.count > 0 ? risk : null;
+  }
+
+  // ---- Deep Dark (W2 di docs/raw/DEEP_DARK_ROADMAP.md) ------------------------
+  // Pianificatore silenzioso: lo stesso A* della camminata, ma con il costo delle
+  // vibrazioni al posto di quello uniforme. La rotta e' fatta di sole celle
+  // percorribili a piedi (nessuno scavo, nessun piazzamento: la rotta *e'* il
+  // silenzio) e non si promette su un mondo che non si e' ancora guardato:
+  // senza censimento pronto l'errore tipizzato e' `sculk_unknown`.
+  _stealthPlanner () {
+    const census = this._sculkCensus();
+    if (!census.ready) return { ok: false, error: 'sculk_unknown', ready: false };
+    const sensors = census.sensorRows ?? [];
+    const shriekers = census.shriekerRows ?? [];
+    return {
+      ok: true,
+      ready: true,
+      sensors: sensors.length,
+      shriekers: shriekers.length,
+      cellCost: cell => stealthCellCost({ cell, sensors, shriekers }),
+      neighbors: node => this._neighbors(node),
+    };
+  }
+
+  // La cella dei piedi del bot: e' anche la destinazione del ritorno ("torna da
+  // dove sei venuto"). Il ritorno si **ripianifica** invece di essere l'andata al
+  // contrario: una caduta si fa in un senso solo, e una rotta che scende non e'
+  // una rotta che risale.
+  _stealthStartCell () {
+    const feet = this._feet ?? this.position;
+    if (!feet) return null;
+    return { x: Math.floor(feet.x), y: Math.floor(feet.y + 0.1), z: Math.floor(feet.z) };
+  }
+
+  _planStealthRoute (start, goal, { exit = null, maxRisk = 0 } = {}) {
+    const planner = this._stealthPlanner();
+    if (!planner.ok) return { ok: false, error: planner.error, from: start, to: goal, exit: null };
+    const plan = planStealthRoute({ start, goal, exit, neighbors: planner.neighbors, cellCost: planner.cellCost, maxRisk });
+    return { ...plan, sensors: planner.sensors, shriekers: planner.shriekers };
+  }
+
+  // Il piano accettato resta come memoria della missione: e' la rotta di ritorno
+  // che W3 (`escape_deep_dark`) dovra' ripercorrere restando accovacciato.
+  _rememberStealthRoute (plan, goal) {
+    this._stealthRoute = plan?.ok
+      ? { cells: plan.cells, maxRisk: plan.maxRisk, exit: plan.exit, goal, at: Date.now() }
+      : null;
+    return this._stealthRoute;
+  }
+
+  _stealthRouteView () {
+    const route = this._stealthRoute;
+    if (!route) return null;
+    return {
+      cells: route.cells?.length ?? 0,
+      maxRisk: route.maxRisk ?? null,
+      goal: route.goal ?? null,
+      at: route.at ?? null,
+      ageMs: route.at ? Date.now() - route.at : null,
+      exit: route.exit
+        ? { cells: route.exit.cells?.length ?? 0, maxRisk: route.exit.maxRisk ?? null, target: route.exit.target ?? null }
+        : null,
+    };
   }
 
   // ---- M2: respirare e gestire una discesa -----------------------------------
@@ -3981,6 +4044,7 @@ export class BedrockAdapter {
       // quando un warden è nei paraggi, non aggiungerla: qui viene offerta
       // accanto all'originale e il rifiuto `not_sneaking` arriva dall'esito.
       o.push({ key: 'sneak_to', description: `Sneak-walk to planner waypoint ${JSON.stringify(this.plan.waypoint)} (silent step; refused as \`not_sneaking\` if the server still moves at walk speed)` });
+      o.push({ key: 'walk_stealthy', description: `Alias of sneak_to: crouch along a route whose every cell stays outside every sculk sensor sphere (refused as \`no_stealth_route\`/\`no_exit_route\`/\`sculk_unknown\` when it cannot be promised)` });
     }
     // Comando umano "seguimi": plan.follow = gamertag del giocatore da seguire.
     const follow = this._playerByName(this.plan?.follow);
@@ -4826,17 +4890,20 @@ export class BedrockAdapter {
         result = { ok: true };
       } else if (key === 'goto_waypoint' && this.resourceSites.pending) {
         result = await this.resourceSites.navigate(this.resourceSites.pending, context);
-      } else if (key === 'sneak_to' && this.plan?.waypoint) {
+      } else if ((key === 'sneak_to' || key === 'walk_stealthy') && this.plan?.waypoint) {
         // W1: come `goto_waypoint` ma accovacciato. Il silenzio si verifica sul
         // movimento vero: se il server muove comunque a velocità di cammino lo
         // sneak non è stato accettato e il passo è rumoroso, quindi il risultato
         // è un rifiuto tipizzato e non un successo presunto.
+        // W2: e la rotta stessa deve essere silenziosa (nessuna cella dentro la
+        // sfera di un sensore, ritorno pianificato): se non lo è l'azione si
+        // rifiuta invece di camminarci.
         const w = this.plan.waypoint;
         const target = { x: w.x, y: Number.isFinite(w.y) ? w.y : (this.position?.y ?? 70), z: w.z };
         if (this.riding) {
           result = { ok: false, error: 'riding', hint: 'dismount before sneaking' };
         } else {
-          const moveResult = await this._moveTo(target, 2, 45000, { sneak: true, verticalTolerance: Number.isFinite(w.y) ? 1 : null });
+          const moveResult = await this._moveTo(target, 2, 45000, { sneak: true, stealth: true, verticalTolerance: Number.isFinite(w.y) ? 1 : null });
           const measured = this._lastSneak;
           result = measured?.ok === false
             ? { ok: false, error: 'not_sneaking', measured, path: moveResult }
@@ -4878,6 +4945,8 @@ export class BedrockAdapter {
         const { ready } = isCropBlock(blockName) ? this._harvestableCrops(found) : { ready: found };
         const target = this._pickMineTarget(ready);
         if (!target) {
+          const noisy = this._vibrationBlockedTarget(ready);
+          if (noisy) throw new Error(`vibration_risk_mine: ${blockName} at ${noisy.position.x},${noisy.position.y},${noisy.position.z} (${noisy.sensors} sculk sensor(s) in range)`);
           throw new Error(isCropBlock(blockName) && found.length
             ? `crop_not_mature: ${blockName}`
             : `no reachable ${blockName} found nearby`);
@@ -7534,6 +7603,17 @@ export class BedrockAdapter {
       opts.guard?.();
     };
     guard();
+    // W2: piazzare è una vibrazione come scavare. Dentro la sfera di un sensore
+    // sculk il piazzamento si rifiuta: la promessa di silenzio vale più del muro.
+    // `opts.allowVibrationRisk` esiste per i piazzamenti che *devono* avvenire
+    // comunque (barricata difensiva, uscita dall'acqua) e lo dichiarano.
+    if (!opts.allowVibrationRisk) {
+      const noise = this._vibrationRiskAt(target);
+      if (noise) {
+        this.log('vibration_risk_place', { item: itemName, block: blockName, position: { ...target }, sensors: noise.count });
+        return { ok: false, error: 'vibration_risk_place', block: blockName, position: { ...target }, sensors: noise.count, nearest: noise.nearest };
+      }
+    }
     // R6: alcuni blocchi non si piazzano mai, qualunque sia il chiamante — TNT e
     // trappole trasformano un cantiere in un incidente, i blocchi di comando non
     // sono nemmeno parte del gioco sulla base (`allow-cheats=false`).
@@ -8511,7 +8591,22 @@ export class BedrockAdapter {
   _pickMineTarget (blocks) {
     const candidates = (blocks || []).filter(b => b?.diggable && !this._gatherProtected(b));
     if (!candidates.length) return null;
-    return candidates.find(b => this._blockInReach(b)) || candidates.find(b => this._blockExposed(b)) || null;
+    // W2: scavare dentro la sfera di un sensore sculk è una vibrazione, quindi si
+    // sceglie un bersaglio silenzioso quando esiste. Se non esiste, il chiamante
+    // usa `_vibrationBlockedTarget` per dire *perché* ("c'era ma era rumoroso" non
+    // è "non c'era").
+    const quiet = candidates.filter(b => !this._vibrationRiskAt(b.position));
+    return quiet.find(b => this._blockInReach(b)) || quiet.find(b => this._blockExposed(b)) || null;
+  }
+
+  // Primo bersaglio di scavo rifiutato *solo* per il rischio di vibrazione.
+  _vibrationBlockedTarget (blocks) {
+    for (const b of blocks || []) {
+      if (!b?.diggable || this._gatherProtected(b)) continue;
+      const noise = this._vibrationRiskAt(b.position);
+      if (noise) return { block: b.name ?? null, position: b.position, sensors: noise.count, nearest: noise.nearest };
+    }
+    return null;
   }
 
   // Una coltura acerba non si raccoglie: distruggerla non dà semi né raccolto
@@ -10398,7 +10493,7 @@ export class BedrockAdapter {
     }
   }
 
-  async _moveTo (target, stopDistance = 1.5, timeoutMs = 30000, { signal = null, verticalTolerance = null, arrivalVerticalTolerance = 3, preciseArrival = false, sneak = false } = {}) {
+  async _moveTo (target, stopDistance = 1.5, timeoutMs = 30000, { signal = null, verticalTolerance = null, arrivalVerticalTolerance = 3, preciseArrival = false, sneak = false, stealth = false } = {}) {
     this._constructionSneaking = false;
     signal ??= this._actionScope?.getStore()?.signal;
     if (signal?.aborted) throw new Error('action_cancelled');
@@ -10431,21 +10526,41 @@ export class BedrockAdapter {
       const skipDistance = node => Math.hypot(node.x + 0.5 - target.x, node.z + 0.5 - target.z);
       let chosen = null;
       let bestPartial = null;
-      for (const goal of candidates) {
-        const path = this._findPath(start, goal);
-        if (!path || !path.length) continue;
-        const end = path.at(-1);
-        if (end.x !== goal.x || end.y !== goal.y || end.z !== goal.z) {
-          // Percorso parziale: conserva il più lungo come ripiego (sezioni non ancora caricate).
-          if (!bestPartial || path.length > bestPartial.path.length) bestPartial = { goal, path };
-          continue;
+      if (stealth) {
+        // W2: la rotta silenziosa si pianifica, non si spera. Il piano si rifiuta
+        // per intero (`no_stealth_route`, `no_exit_route`, `sculk_unknown`) se una
+        // cella sta dentro la sfera di un sensore o se manca il ritorno: mai una
+        // scorciatoia rumorosa presa perché "più corta".
+        const exit = this._stealthStartCell();
+        const ordered = candidates.slice().sort((a, b) => skipDistance(a) - skipDistance(b));
+        let refusal = null;
+        for (const goal of ordered) {
+          const plan = this._planStealthRoute(start, goal, { exit });
+          if (!plan.ok) { refusal ??= plan; continue; }
+          chosen = { goal, path: plan.cells, plan };
+          break;
         }
-        if (chosen && skipDistance(goal) >= skipDistance(chosen.goal)) continue;
-        chosen = { goal, path };
+        if (!chosen) throw new Error(refusal?.error ?? 'no_stealth_route');
+      } else {
+        for (const goal of candidates) {
+          const path = this._findPath(start, goal);
+          if (!path || !path.length) continue;
+          const end = path.at(-1);
+          if (end.x !== goal.x || end.y !== goal.y || end.z !== goal.z) {
+            // Percorso parziale: conserva il più lungo come ripiego (sezioni non ancora caricate).
+            if (!bestPartial || path.length > bestPartial.path.length) bestPartial = { goal, path };
+            continue;
+          }
+          if (chosen && skipDistance(goal) >= skipDistance(chosen.goal)) continue;
+          chosen = { goal, path };
+        }
+        if (!chosen) chosen = bestPartial;
+        if (!chosen) throw new Error('path_failed');
       }
-      if (!chosen) chosen = bestPartial;
-      if (!chosen) throw new Error('path_failed');
       const { goal, path } = chosen;
+      // La rotta (e la sua via di ritorno) si ricorda appena accettata: se il
+      // Warden arrivasse a metà strada, la fuga deve avere qualcosa da ripercorrere.
+      if (chosen.plan) this._rememberStealthRoute(chosen.plan, goal);
       // L'arrivo si misura sulla cella che il percorso raggiunge davvero, non sulla
       // y chiesta dal planner: `goto_waypoint` la congela dalla posizione di
       // partenza, quindi un dislivello > 3 blocchi — uscire da una grotta verso il
@@ -10460,7 +10575,15 @@ export class BedrockAdapter {
       this._stopMotion();
       if (outcome === 'goal' && chosen !== bestPartial) {
         const distance = Math.hypot(this.position.x - target.x, this.position.y - target.y, this.position.z - target.z);
-        return { ok: true, distance: +distance.toFixed(2), pathNodes: path.length, goal: { x: goal.x, y: goal.y, z: goal.z } };
+        return {
+          ok: true,
+          distance: +distance.toFixed(2),
+          pathNodes: path.length,
+          goal: { x: goal.x, y: goal.y, z: goal.z },
+          // W2: cosa è stato camminato, in forma leggibile (celle, rischio massimo,
+          // rotta di ritorno): l'operatore vede il piano, non solo l'arrivo.
+          ...(chosen.plan ? { stealth: true, plan: summarizeStealthPlan(chosen.plan), route: this._stealthRouteView() } : {}),
+        };
       }
       if (outcome === 'timeout') {
         const position = { ...this._feet };

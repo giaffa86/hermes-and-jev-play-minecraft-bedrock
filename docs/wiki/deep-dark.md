@@ -6,7 +6,7 @@ every step outside the sculk sensors' hearing, never trigger a shrieker, and —
 the Warden is summoned anyway — leave crouched along a stored return route
 instead of running or fighting.
 
-Status: **W0 and W1 implemented and unit-tested (06/10/2026)**; W2–W6 are
+Status: **W0, W1 and W2 implemented and unit-tested (06/10/2026)**; W3–W6 are
 spec. Nothing here is collaudato live: the vibration model (8-block sphere,
 player-vibration relay, sneak silence) and the shriek level have never been
 observed on the real BDS. Full raw source:
@@ -102,11 +102,20 @@ Re-verification needed against the deployed Bedrock build; the current reference
   assumed; a track with no real step is `no_measurement`, not a silent success.
   Action `sneak_to` (offered next to `goto_waypoint`, `riding` refusal) +
   `GET /observe.sneak`.
-- **W2 — Stealth pathfinding.** `planStealthRoute(from, to, world)`: high cost
-  inside a sensor sphere, shrieker cells forbidden, no digging and no placing
-  inside the Deep Dark (both vibrate), and a `no_stealth_route` refusal instead
-  of a route through the hearing. A **return route must exist before entering**
-  and is stored with the mission.
+- **W2 — Stealth pathfinding. ✅ implemented and unit-tested (06/10/2026).**
+  The planner is pure (`SENSOR_CELL_COST = 50` per risky cell, shrieker cells
+  forbidden, `astarStealth` + `planStealthRoute` in `bedrock-vibration.mjs`) and
+  the adapter feeds it the census (`_stealthPlanner` → `sculk_unknown` when the
+  world was never scanned) and the walk graph (`_neighbors`, so a route can only
+  contain steps, never a break or a placement). The exit route is **re-planned**,
+  not the inbound path reversed (a fall works one way only), and a plan without
+  one is refused as `no_exit_route`; a plan crossing a sphere is refused as
+  `no_stealth_route` and never silently shortened. The accepted plan stays in
+  `_stealthRoute` (mission memory for W3's `escape_deep_dark`) and travels back in
+  the result as `{cells, maxRisk, sneak: true, exit}`; `_placeAtCell` refuses
+  `vibration_risk_place` and the `mine_<block>` branch refuses
+  `vibration_risk_mine` unless a silent target exists. Actions: `sneak_to` /
+  `walk_stealthy`.
 - **W3 — Shrieker/Warden warning.** `shriekLevel` (shrieking transitions +
   Darkness, lower bound if the server hides the warning level), `wardenWarning`
   verdicts `clear`/`warning`/`summoned`, and the tactic: freeze and leave
@@ -130,7 +139,7 @@ Re-verification needed against the deployed Bedrock build; the current reference
 |---|---|---|---|
 | W0 | Vibration awareness | Pure vibration model + whole `SCULK_FAMILY` in `DIG_PROTECTED` + `vibration_risk_<label>` + `/observe.sculk`. | ✅ implemented, unit-tested (11 pure + 8 adapter cases); never live |
 | W1 | Sneak-walk as a real mode | Persistent sneak flag, speed verdict measured from the server (`not_sneaking`), `sneak_to`, `/observe.sneak`. | ✅ implemented, unit-tested (6 adapter cases); never live |
-| W2 | Stealth pathfinding | Vibration cost, forbidden shrieker cells, no dig/place in the Deep Dark, mandatory return route, `no_stealth_route`. | ❌ spec |
+| W2 | Stealth pathfinding | Vibration cost, forbidden shrieker cells, walk-only routes (no dig/place by construction), mandatory re-planned return route, `no_stealth_route`/`no_exit_route`. | ✅ implemented, unit-tested (11 pure + 5 adapter cases); never live |
 | W3 | Shrieker/Warden warning | `shriekLevel` verdicts and the crouched-escape tactic; the governor must block the generic flee for a Warden. | ❌ spec |
 | W4 | Underground 3D navigation | Pillar/bridge/tunnel with the fluid checks, `find_deep_dark` and the descent/return routes. | ❌ spec |
 | W5 | Darkness, kit, mission | Darkness as a proximity warning, the declared kit + escape budget, `reach_deep_dark`, `CURRICULUM=deep_dark`. | ❌ spec |

@@ -159,7 +159,7 @@ test('the sculk view reports sensors, shriekers, darkness and the risk on the bo
   assert.equal(view.level, 0);
   assert.equal(view.warning.verdict, 'clear');
   assert.equal(view.vibrationRisk.count, 1, 'sensore inattivo a 3 blocchi: scavare lì vibra comunque');
-  assert.deepEqual(view.sneak, { active: false, declared: false, last: null });
+  assert.deepEqual(view.sneak, { active: false, declared: false, last: null, route: null });
   // La vista dedicata può forzare il censimento; `family` è il vocabolario chiuso.
   assert.ok(view.scanned >= 3);
 });
@@ -289,9 +289,118 @@ test('sneak_to refuses while riding instead of walking the mount', async () => {
 test('the silent variant is offered next to goto_waypoint', () => {
   const { adapter } = sculkAdapter();
   adapter.plan = { waypoint: { x: 100, y: 72, z: 148 } };
-  const keys = adapter.options().map(option => option.key);
+  const options = adapter.options();
+  const keys = options.map(option => option.key);
   assert.ok(keys.includes('goto_waypoint'));
   assert.ok(keys.includes('sneak_to'));
+  assert.ok(keys.includes('walk_stealthy'), 'W2: la rotta silenziosa si può chiedere per nome');
+  const stealthy = options.find(option => option.key === 'walk_stealthy');
+  assert.match(stealthy.description, /no_stealth_route/, 'la descrizione dice come si rifiuta');
   adapter.plan = null;
   assert.ok(!adapter.options().map(option => option.key).includes('sneak_to'));
+});
+
+// ---- W2: rotta silenziosa ----------------------------------------------------
+// Il mondo finto di `sculkAdapter` non ha una topologia: per provare la *catena*
+// (censimento -> costo -> piano -> risultato) si sostituiscono `_neighbors` e
+// `_findGoalNodes` con una corsia, e `_startMotion` con un movimento che arriva.
+// Così il test dice se il piano è silenzioso, non se il server sa camminare.
+function stealthLane ({ sensors = [] } = {}) {
+  const { adapter } = sculkAdapter({ cells: sensors });
+  adapter.client = {};
+  adapter._authTickInterval = 1;
+  adapter._startNode = () => ({ x: 92, y: 72, z: 148 });
+  adapter._findGoalNodes = () => [{ x: 96, y: 72, z: 148 }];
+  adapter._neighbors = node => [
+    { x: node.x + 1, y: node.y, z: node.z, cost: 1 },
+    { x: node.x - 1, y: node.y, z: node.z, cost: 1 },
+  ].filter(cell => cell.x >= 92 && cell.x <= 96 && cell.z === 148);
+  // Come il vero `_startMotion`: il tracciato vive dentro `_motion`, così
+  // `_stopMotion` lo chiude e la misura arriva (qui: zero passi).
+  adapter._startMotion = async function () { this._motion = { track: this._motionTrack, index: 0 }; return 'goal'; };
+  return adapter;
+}
+
+test('walk_stealthy walks a planned route and carries the plan in the result', async () => {
+  // Il sensore c'è ma è 28 blocchi sopra: nessuna cella della corsia è nella sfera.
+  const adapter = stealthLane({ sensors: [sensorAt(95, 100, 148)] });
+  adapter.plan = { waypoint: { x: 96, y: 72, z: 148 } };
+  const result = await adapter._runAction('walk_stealthy');
+  assert.equal(result.ok, true);
+  assert.equal(result.stealth, true);
+  assert.equal(result.plan.cells, 5, 'la corsia è lunga cinque celle');
+  assert.equal(result.plan.maxRisk, 0);
+  assert.equal(result.plan.sneak, true);
+  assert.deepEqual(result.plan.from, { x: 92, y: 72, z: 148 });
+  assert.deepEqual(result.plan.to, { x: 96, y: 72, z: 148 });
+  assert.equal(result.plan.exit.cells, 5, 'il ritorno è pianificato, non sperato');
+  assert.deepEqual(result.plan.exit.target, { x: 92, y: 72, z: 148 });
+  // Nessun passo è stato misurato (`_startMotion` è finto): l'esito è un
+  // successo di rotta, non una dichiarazione di silenzio.
+  assert.equal(result.sneak.error, 'no_measurement');
+  const view = adapter._sneakView();
+  assert.equal(view.route.cells, 5);
+  assert.equal(view.route.maxRisk, 0);
+  assert.equal(view.route.exit.cells, 5);
+  assert.equal(view.active, false, 'il tracciato è chiuso a fine movimento');
+});
+
+test('walk_stealthy refuses the whole walk when the lane crosses a sensor sphere', async () => {
+  const adapter = stealthLane({ sensors: [sensorAt(95, 72, 148)] });
+  adapter.plan = { waypoint: { x: 96, y: 72, z: 148 } };
+  adapter._startMotion = async () => assert.fail('una rotta rumorosa non si cammina');
+  const result = await adapter._runAction('walk_stealthy');
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'no_stealth_route');
+  assert.equal(adapter._stealthRouteView(), null, 'nessuna rotta da ripercorrere: non se ne è accettata una');
+});
+
+test('a stealth route is not promised on a world that was never scanned', async () => {
+  const adapter = stealthLane({ sensors: [sensorAt(95, 72, 148)] });
+  adapter.world.loaded = new Set();
+  adapter.plan = { waypoint: { x: 96, y: 72, z: 148 } };
+  adapter._startMotion = async () => assert.fail('senza censimento non si promette silenzio');
+  const result = await adapter._runAction('sneak_to');
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'sculk_unknown');
+});
+
+test('placing inside a sensor sphere is refused, and the refusal is the vibration one', async () => {
+  const { adapter } = sculkAdapter({ cells: [sensorAt(92, 72, 145)] });
+  const clickPos = { x: 0.5, y: 1, z: 0.5 };
+  const support = { x: 92, y: 71, z: 148 };
+  const risky = await adapter._placeAtCell('torch', 'torch', { x: 92, y: 72, z: 148 }, support, 1, clickPos, { projectId: 'test' });
+  assert.equal(risky.ok, false);
+  assert.equal(risky.error, 'vibration_risk_place');
+  assert.equal(risky.sensors, 1);
+  assert.deepEqual(risky.position, { x: 92, y: 72, z: 148 });
+  // Stessa chiamata, ma il rischio è dichiarato accettato: si arriva al
+  // controllo successivo, quindi il rifiuto di prima era davvero la vibrazione.
+  const allowed = await adapter._placeAtCell('torch', 'torch', { x: 92, y: 72, z: 148 }, support, 1, clickPos, { projectId: 'test', allowVibrationRisk: true });
+  assert.equal(allowed.error, 'construction_inventory_stale');
+  // E fuori dalla sfera non c'è nessun rifiuto di vibrazione.
+  const outside = await adapter._placeAtCell('torch', 'torch', { x: 92, y: 72, z: 160 }, support, 1, clickPos, { projectId: 'test' });
+  assert.equal(outside.error, 'construction_inventory_stale');
+});
+
+test('mining picks a silent target, and names the noisy one when there is no choice', async () => {
+  const ore = position => ({ ...solid('diamond_ore'), name: 'diamond_ore', position });
+  const noisy = ore({ x: 92, y: 72, z: 149 });
+  const quiet = ore({ x: 92, y: 72, z: 152 });
+  // Fuori dalla sfera, a portata e senza sensori: si sceglie quello.
+  const near = sculkAdapter({ cells: [quiet] }).adapter;
+  assert.equal(near._pickMineTarget([quiet]), quiet, 'silenzioso e a portata: si scava');
+  // Dentro la sfera: il bersaglio rumoroso non si sceglie mai.
+  const { adapter } = sculkAdapter({ cells: [sensorAt(92, 72, 145)] });
+  assert.equal(adapter._pickMineTarget([noisy]), null);
+  const blocked = adapter._vibrationBlockedTarget([noisy]);
+  assert.equal(blocked.block, 'diamond_ore');
+  assert.equal(blocked.sensors, 1);
+  assert.deepEqual(blocked.position, { x: 92, y: 72, z: 149 });
+  // E l'azione dice *perché* non c'è un bersaglio, invece di "non trovato".
+  const caused = sculkAdapter({ cells: [sensorAt(92, 72, 145), noisy] }).adapter;
+  caused._mineBlock = async () => assert.fail('nulla si scava dentro la sfera');
+  const result = await caused._runAction('mine_diamond_ore');
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'vibration_risk_mine: diamond_ore at 92,72,149 (1 sculk sensor(s) in range)');
 });

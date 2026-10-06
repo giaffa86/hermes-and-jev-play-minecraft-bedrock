@@ -18,18 +18,26 @@ Sources: `.private/ROADMAP.md`, `.private/GOAL.md`, `.private/JEV-TASK.md`,
 
 ## Deep Dark follow-up (06/10)
 
-[Deep Dark stealth](deep-dark.md) **W0 and W1 are implemented and unit-tested**
-(25 offline cases in `tests/vibration.test.mjs` and
+[Deep Dark stealth](deep-dark.md) **W0, W1 and W2 are implemented and
+unit-tested** (41 offline cases in `tests/vibration.test.mjs`,
+`tests/bedrock-stealth-route.test.mjs` and
 `tests/bedrock-vibration-adapter.test.mjs`): a pure vibration model
 (`bedrock-vibration.mjs` — 8-block sphere, `vibrationProfile`, `wardenWarning`,
-`classifySneakSpeed`), the sculk census with `observe().sculk`/`GET /observe.sculk`,
-the whole `SCULK_FAMILY` in `DIG_PROTECTED` with a typed `vibration_risk_<label>`
-refusal for a `dig_*` inside a sensor sphere, and `sneak_to`/`/observe.sneak`,
+`classifySneakSpeed`, plus the W2 cost model
+`stealthCellCost`/`astarStealth`/`planStealthRoute`), the sculk census with
+`observe().sculk`/`GET /observe.sculk`, the whole `SCULK_FAMILY` in
+`DIG_PROTECTED` with a typed `vibration_risk_<label>` refusal for a `dig_*`
+inside a sensor sphere, and `sneak_to`/`walk_stealthy` plus `/observe.sneak`,
 where the silence is verified from the speed the server accepted
-(`not_sneaking` above the sneak ceiling, `no_measurement` with no real step).
-Merged suite: **1569/1569**. Not deployed and never live-verified — every Bedrock
-number is from the reference, and no Deep Dark is loaded in reach; W2–W6 (stealth
-pathfinding, the Warden tactic, underground 3D navigation, `find_deep_dark`)
+(`not_sneaking` above the sneak ceiling, `no_measurement` with no real step) and
+the route is planned so that no cell of it lies inside a sensor sphere —
+refused whole as `no_stealth_route`/`no_exit_route`/`sculk_unknown`, with the
+return leg re-planned before the walk and kept in `_stealthRoute` for W3 — and
+where building and mining refuse a vibrating target (`vibration_risk_place`,
+`vibration_risk_mine`).
+Merged suite: **1585/1585**. Not deployed and never live-verified — every Bedrock
+number is from the reference, and no Deep Dark is loaded in reach; W3–W6 (the
+Warden tactic, underground 3D navigation, `find_deep_dark`)
 remain spec. The bot stays OFF.
 
 ## Apiculture follow-up (04/10)

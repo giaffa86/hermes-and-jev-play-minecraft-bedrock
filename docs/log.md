@@ -1,5 +1,34 @@
 # Log
 
+## [2026-10-06] feat | Deep Dark W2: a route that stays outside every sensor sphere
+
+The Deep Dark roadmap (`docs/raw/DEEP_DARK_ROADMAP.md`) got its third milestone.
+**W2** adds the pure planner to `bedrock-vibration.mjs` — `SENSOR_CELL_COST = 50`,
+`stealthCellCost({cell, sensors, shriekers, radius})` (a cell with a shrieker under
+it is forbidden, every other cell costs more the more sensors hear it),
+`astarStealth({start, goal, neighbors, cellCost, maxNodes})` and
+`planStealthRoute({start, goal, exit, neighbors, cellCost, maxNodes, maxRisk})`,
+which refuses the whole plan as `no_stealth_route` (reason `risk`) instead of
+walking through a hearing, and asks for a return route **before** the bot moves:
+the exit leg is re-planned towards the exit rather than being the inbound path
+reversed (a fall works one way only), and its absence is its own refusal,
+`no_exit_route`. The adapter feeds the planner the census (`_stealthPlanner`,
+`sculk_unknown` when the world was never scanned) and its walking-only neighbour
+generator, so a route can only contain steps — no digging and no placing can
+appear in one by construction. `sneak_to` gains the alias `walk_stealthy`; the
+accepted plan travels back in the result as `{cells, maxRisk, sneak: true, exit}`
+and stays in `_stealthRoute` as mission memory for W3's `escape_deep_dark`. Two
+more refusals close the vibration leaks around the walk: `_placeAtCell` refuses a
+target inside a sphere (`vibration_risk_place`, with an explicit
+`allowVibrationRisk` escape) and the `mine_<block>` branch refuses a noisy target
+(`vibration_risk_mine: <block> at x,y,z (N sculk sensor(s) in range)`) after
+`_pickMineTarget` preferred a silent one. Tests: 11 pure cases in
+`tests/bedrock-stealth-route.test.mjs` and 5 adapter cases in
+`tests/bedrock-vibration-adapter.test.mjs`; merged suite **1585/1585**. Still
+never live: the W2 acceptance is a two-sensor corridor whose plan must come back
+with `maxRisk: 0` and no sensor phase activation, and the world holds no loaded
+Deep Dark.
+
 ## [2026-10-06] feat | Deep Dark W0/W1: a vibration model and a sneak that is verified
 
 The Deep Dark roadmap (`docs/raw/DEEP_DARK_ROADMAP.md`) got its first two

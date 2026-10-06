@@ -2,8 +2,9 @@
 
 > Raw source (spec). Synthesis and milestone status in
 > [`wiki/deep-dark.md`](../wiki/deep-dark.md).
-> Status: **W0 (vibration awareness) and W1 (sneak-walk verified from the measured
-> speed) implemented and unit-tested (06/10/2026), never live; W2–W6 spec** (the
+> Status: **W0 (vibration awareness), W1 (sneak-walk verified from the measured
+> speed) and W2 (vibration-cost stealth pathfinding with a mandatory exit route)
+> implemented and unit-tested (06/10/2026), never live; W3–W6 spec** (the
 > milestone status is tracked in the wiki page, not here).
 > Code references: `bedrock-adapter.mjs`, `bedrock-world.mjs`,
 > `bedrock-survival.mjs`, `structures.mjs`, `exploration.mjs`, `circuits.mjs`,
@@ -206,6 +207,31 @@ same route measures the walk rate. Never claim stealth from the request alone.
 - The plan reports `{cells, maxRisk, sneak: true, exit}` so the harness can show
   the operator what will be walked.
 
+**Implemented (06/10/2026).** `bedrock-vibration.mjs` exports
+`SENSOR_CELL_COST = 50`, `stealthCellCost({cell, sensors, shriekers, radius})`,
+`astarStealth({start, goal, neighbors, cellCost, maxNodes})`,
+`planStealthRoute({start, goal, exit, neighbors, cellCost, maxNodes, maxRisk})`
+and `summarizeStealthPlan(plan)`; the adapter wires it through `_stealthPlanner`
+(the census as the cost source, `sculk_unknown` when the world was never
+scanned), `_planStealthRoute`, `_rememberStealthRoute`/`_stealthRouteView` and
+`_moveTo(..., { stealth: true })`. Three deviations from the text above, all of
+them narrowing: (a) the planner is pure and takes `neighbors`/`cellCost`
+callbacks instead of a `world` — the adapter owns the walk graph and the census,
+the planner owns the cost; (b) "no digging and no placing inside the Deep Dark"
+holds **by construction**, because the neighbour generator is walking-only, so no
+break or placement can appear in a route at all — the two refusals that do exist
+live at `_placeAtCell` (`vibration_risk_place`, with an `allowVibrationRisk`
+escape for placements that must happen anyway) and at the `mine_<block>` branch
+(`vibration_risk_mine: <block> at x,y,z (N sculk sensor(s) in range)`, with
+`_pickMineTarget` preferring a silent target when one exists); (c) the exit route
+is **re-planned** towards the exit instead of being the inbound path reversed (a
+fall works one way only), and a missing exit is its own typed refusal
+`no_exit_route`. The action alias is `walk_stealthy`; the last accepted plan stays
+in `_stealthRoute` as mission memory for W3's `escape_deep_dark`. Tests: 11 pure
+cases in `tests/bedrock-stealth-route.test.mjs` plus 5 adapter cases in
+`tests/bedrock-vibration-adapter.test.mjs`; merged suite **1585/1585**. The live
+acceptance row below is still pending: the world has no loaded Deep Dark.
+
 **Test**: `tests/bedrock-stealth-route.test.mjs` — a route that would shorten
 through a sensor sphere is either detoured or refused, never shortened; a
 shrieker cell is forbidden; the exit route is present in every accepted plan.
@@ -315,6 +341,7 @@ induced with a shrieker, which is exactly what W3 forbids without consent).
 | pure | Vibration radius/segment risk, shrieker cell verdict, warning threshold, decay | `tests/bedrock-vibration.test.mjs` |
 | pure | Sneak speed classifier + input flags | `tests/bedrock-motion.test.mjs` |
 | pure | Stealth route cost, refusal and exit invariant | `tests/bedrock-stealth-route.test.mjs` |
+| unit | `walk_stealthy` plan pass-through and `sculk_unknown`, `vibration_risk_place`/`vibration_risk_mine` refusals | `tests/bedrock-vibration-adapter.test.mjs` |
 | pure | Warden verdict transitions and anti-run tactic | `tests/bedrock-warden.test.mjs` |
 | pure | 3D route (tunnel/bridge/pillar), protected block refusal | `tests/bedrock-3d-nav.test.mjs` |
 | unit | `DIG_PROTECTED` covers the whole `SCULK_FAMILY`; `FORBIDDEN_BLOCKS` unchanged | `tests/bedrock-dig.test.mjs` |
