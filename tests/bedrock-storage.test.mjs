@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { BedrockAdapter } from '../bedrock-adapter.mjs';
+import { storageBlockNames } from '../storage-blocks.mjs';
 
 // Registry item: iron_ingot 458, gold_ingot 425, dirt 3, oak_planks 5.
 function storageAdapter () {
@@ -516,7 +517,10 @@ test('the storage scan asks for more than the nearest handful per name', () => {
     return [];
   };
   adapter._findNearbyStorageBlocks();
-  assert.equal(calls.length, 4, 'un giro per ogni nome di contenitore');
+  // I nomi concreti sono i quattro base più le 16 tinte di shulker: la scansione
+  // fa un giro per nome, quindi il numero lo decide il matcher, non il test.
+  assert.equal(calls.length, storageBlockNames().length, 'un giro per ogni nome di contenitore');
+  assert.deepEqual([...new Set(calls.map(c => c.name))], storageBlockNames());
   for (const call of calls) {
     assert.ok(call.count >= 16, `troppi pochi blocchi per nome: ${call.name} ${call.count}`);
   }

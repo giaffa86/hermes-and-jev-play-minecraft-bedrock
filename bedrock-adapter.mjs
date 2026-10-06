@@ -25,6 +25,8 @@ import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
 // cui il controller ha capito l'ordine.
 import { matchesItemToken } from './human-questions.mjs';
 import { detectStructures } from './structures.mjs';
+import { planStorageSearch, STORAGE_RUNG, STORAGE_STEP } from './storage-ladder.mjs';
+import { storageBlockNames, isStorageBlock } from './storage-blocks.mjs';
 import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, swimInputFlags, deepWaterColumns, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT, LAVA_CONTACT_RANGE } from './bedrock-fluids.mjs';
 import { AirMeter, MAX_AIR, airSeconds } from './bedrock-air.mjs';
 import { normalizeEffectName, waterBreathingSources, divePlan, underwaterWork, CONDUIT_BLOCK, CONDUIT_RANGE } from './bedrock-dive.mjs';
@@ -154,12 +156,21 @@ const SMELT_RECIPES = {
 // Contenitori di stoccaggio: bauli, bauli-trappola, botti e shulker (opzionale).
 // La window_type Bedrock per baule/botte è 'container'; lo slot nelle richieste
 // stack usa ContainerSlotType 7 ('container') per i bauli e 58 ('barrel') per le botti.
-const STORAGE_BLOCKS = ['chest', 'trapped_chest', 'barrel', 'shulker_box'];
+// L'elenco *non* è una whitelist scritta qui: vive in `storage-blocks.mjs`, che
+// conosce la famiglia degli shulker tinti (una lista di nomi esatti li rendeva
+// invisibili al censimento) e resta estendibile senza toccare la scoperta.
+const STORAGE_BLOCKS = storageBlockNames();
 // `world.findBlocks` si ferma a N blocchi per nome: con una parete di scrigni il
 // sesto più vicino nascondeva gli altri (live 03/10: la cassa del ferro a
 // (90,73,160) non compariva stando a due blocchi, e il take rispondeva
 // `item_not_in_container` su una cache piena).
 const STORAGE_SCAN_PER_NAME = 24;
+// V1 — la *scoperta* di un contenitore ("qui c'è un baule", non "dentro c'è
+// questo") è un fatto a sé: ha il suo throttle e il suo raggio. Vive dentro
+// `_rememberDiscoveries()`, già throttled per chunk, e costa una lettura in
+// memoria dei chunk caricati.
+const STORAGE_DISCOVERY_RESCAN_MS = +(process.env.STORAGE_DISCOVERY_RESCAN_MS || 60000);
+const STORAGE_DISCOVERY_RADIUS = +(process.env.STORAGE_DISCOVERY_RADIUS || 32);
 // Le letture sono un'azione sola: si leggono i N più vicini, non tutti. Il
 // limite tiene il costo dell'azione sotto il minuto: live 03/10 con 16
 // contenitori la lettura è durata 142 s e il server ha chiuso la sessione
@@ -1276,6 +1287,9 @@ export class BedrockAdapter {
         const moved = last ? Math.hypot(last.position.x - pos.x, last.position.z - pos.z) : Infinity;
         if (moved >= CHECKPOINT_MIN_DISTANCE) this.memory.addCheckpoint(this.missionId, pos, { biome });
       }
+      // Contenitori visibili: registrati come *scoperte* (dove sono, non cosa
+      // contengono) — è la sorgente del gradino 2 della scala del deposito.
+      this._surveyStorage();
       // Strutture/ambienti nell'area caricata (throttled a livello di metodo).
       this._surveyStructures();
     } catch (error) {
@@ -3961,6 +3975,9 @@ export class BedrockAdapter {
         readAt: c.readAt,
         contents: c.contents,
       })),
+      // V1: il registro dei contenitori (scoperte e ispezioni) e la scala del
+      // deposito. `checked: false` significa "non ho mai guardato".
+      storage: this._storageView(),
       // M3c: cosa il bot è disposto a mettere via e dove andrebbe. È la stessa
       // politica di `dump_inventory`, così controller e chore non la duplicano.
       deposit: this._depositState(),
@@ -7025,25 +7042,171 @@ export class BedrockAdapter {
     return out;
   }
 
-  // Il baule giusto per un item: prima quello che lo contiene già — accorpare
-  // una risorsa dove vive è ciò che farebbe una persona — poi il più vicino fra
-  // i raggiungibili.
-  _depositTargetFor (itemName = null, { position = null, cachedOnly = false } = {}) {
-    const wanted = c => !position || (c.position.x === position.x && c.position.y === position.y && c.position.z === position.z);
+  _samePosition (a, b) {
+    if (!a || !b) return false;
+    return Math.round(a.x) === Math.round(b.x)
+      && Math.round(a.y) === Math.round(b.y)
+      && Math.round(a.z) === Math.round(b.z);
+  }
+
+  // V1 — la *scoperta* di un contenitore: "qui c'è un baule", mai "dentro c'è
+  // questo". `contentsKnown: false` non tocca gli archi `contains` né
+  // `inspectedAt`, quindi un censimento non può cancellare quello che una
+  // lettura precedente aveva imparato (V0, `rememberContainer`). Senza questo
+  // scrittore il gradino 2 della scala (`containersToInspect`) restava vuoto:
+  // l'unico writer era l'apertura (`_setContainerContents`).
+  _rememberStorageDiscovery (block) {
+    if (!this.memory || !block?.position || !block?.name) return false;
+    if (!isStorageBlock(block.name)) return false;
+    try {
+      this.memory.rememberContainer({
+        type: block.name,
+        position: block.position,
+        contentsKnown: false,
+        source: 'discovered',
+      });
+      return true;
+    } catch (error) {
+      this.log('memory_error', { message: error.message });
+      return false;
+    }
+  }
+
+  // Censimento dei contenitori visibili: una passata sui blocchi di stoccaggio
+  // nell'area caricata, ognuno registrato come *scoperta*. Throttled: camminare
+  // non deve costare una riga per blocco (una scoperta vale 6 h, un minuto di
+  // ri-scansione è abbondante).
+  _surveyStorage ({ radius = STORAGE_DISCOVERY_RADIUS, force = false } = {}) {
+    const now = Date.now();
+    if (!force && now - (this._storageSurveyAt ?? 0) < STORAGE_DISCOVERY_RESCAN_MS) return this._storageSurvey;
+    if (!this.spawned || !this.position || !this.memory) return this._storageSurvey;
+    this._storageSurveyAt = now;
+    const blocks = this._findNearbyStorageBlocks(radius);
+    let discovered = 0;
+    for (const block of blocks) if (this._rememberStorageDiscovery(block)) discovered += 1;
+    this._storageSurvey = {
+      at: now,
+      radius,
+      scanned: blocks.length,
+      discovered,
+      // Bounded: serve a `observe().storage`, non è un inventario.
+      positions: blocks.slice(0, 8).map(b => ({ type: b.name, position: b.position })),
+    };
+    if (discovered) this.log('storage_discovered', { scanned: blocks.length, discovered, radius });
+    return this._storageSurvey;
+  }
+
+  // La scala del deposito (V2) sui fatti del registro: il primo gradino è un
+  // contenitore che *contiene già* l'item (accorpare una risorsa dove vive), il
+  // secondo uno scoperto e mai aperto (un'apertura costa meno di un cammino
+  // verso un posto ignoto). È una decisione, non una scansione: nessun accesso
+  // al mondo e nessun pathfinding oltre il filtro di raggiungibilità; il
+  // ripiego locale lo sceglie chi chiama.
+  _storageSearchPlan (itemName, { position = null, memory = true, from = null } = {}) {
+    const usable = this._reachabilityUsable();
+    const here = from ?? this.position ?? null;
+    const admissible = row => Boolean(row?.position)
+      && (!position || this._samePosition(row.position, position))
+      && !this._inOpenFailureCooldown(row.position);
+    const decorate = row => ({
+      ...row,
+      distance: this._pointDistance(row.position),
+      reachable: !usable || this.approachReachable(row.position),
+    });
+    let known = [];
+    let toInspect = [];
+    if (memory && this.memory) {
+      try {
+        known = this.memory.containersWithItem(itemName, { from: here, includeStale: true });
+        toInspect = this.memory.containersToInspect({ from: here, limit: 16 });
+      } catch (error) {
+        this.log('memory_error', { message: error.message });
+      }
+    }
+    return planStorageSearch({
+      item: itemName,
+      known: known.filter(admissible).map(decorate),
+      toInspect: toInspect.filter(admissible).map(decorate),
+      // Il ripiego locale non è una riga di registro: `_depositTargetFor` lo
+      // sceglie dopo, e nessuna ricognizione parte da un deposito.
+      local: [],
+      canSweep: false,
+      verifyStale: true,
+      from: here,
+    });
+  }
+
+  // Il baule giusto per un item, risalendo la scala del registro prima di
+  // guardare il mondo: (1) un contenitore *ricordato* che contiene già l'item,
+  // (2) uno *scoperto e mai aperto*, (3) la cache runtime (letto negli ultimi
+  // 5 minuti) e un blocco visibile adesso — quest'ultimo viene anche *scoperto*,
+  // così il registro impara dove sono i bauli mentre il bot lavora.
+  // Un bersaglio con `verify: true` è memoria stantia: l'apertura rilegge il
+  // contenuto reale prima di dichiarare il deposito.
+  _depositTargetFor (itemName = null, { position = null, cachedOnly = false, memory = true } = {}) {
+    const wanted = c => !position || this._samePosition(c.position, position);
     const reachable = c => !this._reachabilityUsable() || this.approachReachable(c.position);
-    const cached = this._cachedContainers().filter(c => wanted(c) && reachable(c));
+    const plan = this._storageSearchPlan(itemName, { position, memory });
+    const chosen = plan.target;
+    if (chosen) {
+      const remembered = chosen.rung === STORAGE_RUNG.KNOWN_ITEM || chosen.rung === STORAGE_RUNG.INSPECT;
+      const fromMemory = remembered
+        ? this._rememberedStorage({ reachableOnly: false }).find(c => this._samePosition(c.position, chosen.position))
+        : null;
+      const fromCache = this._cachedContainers().find(c => this._samePosition(c.position, chosen.position));
+      return {
+        key: this._containerCacheKey(chosen.position),
+        type: chosen.type || fromMemory?.type || fromCache?.type || 'chest',
+        position: chosen.position,
+        contents: { ...(fromMemory?.contents ?? fromCache?.contents ?? {}) },
+        distance: chosen.distance ?? this._pointDistance(chosen.position),
+        remembered,
+        rung: chosen.rung,
+        step: chosen.step,
+        verify: chosen.verify === true,
+        stale: chosen.stale === true,
+        ladder: plan.ladder,
+        reason: plan.reason,
+      };
+    }
+    // Gradino 3 — la cache runtime (letta da poco) prima della scansione viva:
+    // nessun I/O, ed è la stessa fonte che il deposito usava prima di V2. Un
+    // contenitore appena fallito non si riprova per primo, ma resta l'ultima
+    // spiaggia (stessa regola di `_rememberedStorage`).
+    const cachedRows = this._cachedContainers().filter(c => wanted(c) && reachable(c));
+    const freshRows = cachedRows.filter(c => !this._inOpenFailureCooldown(c.position));
+    const cached = freshRows.length ? freshRows : cachedRows;
     if (cached.length) {
       const score = c => ((itemName && (c.contents?.[itemName] || 0) > 0) ? 100000 : 0) - (c.distance ?? 0);
-      return [...cached].sort((a, b) => score(b) - score(a))[0];
+      const best = [...cached].sort((a, b) => score(b) - score(a))[0];
+      return { ...best, remembered: false, rung: STORAGE_RUNG.LOCAL, step: STORAGE_STEP.NONE, verify: false, stale: false, ladder: plan.ladder, reason: plan.reason };
     }
     if (cachedOnly) return null;
     const block = this._findNearbyStorageBlocks().filter(b => wanted(b) && reachable(b))[0];
-    return block ? { key: this._containerCacheKey(block.position), type: block.name, position: block.position, contents: {} } : null;
+    if (!block) return null;
+    // Il baule che sto per aprire entra nel registro come *scoperta*: il
+    // contenuto lo scriverà l'apertura (`_setContainerContents`).
+    this._rememberStorageDiscovery(block);
+    return {
+      key: this._containerCacheKey(block.position),
+      type: block.name,
+      position: block.position,
+      contents: {},
+      distance: block.distance ?? this._pointDistance(block.position),
+      remembered: false,
+      rung: STORAGE_RUNG.LOCAL,
+      step: STORAGE_STEP.REMEMBER,
+      verify: false,
+      stale: false,
+      ladder: plan.ladder,
+      reason: plan.reason,
+    };
   }
 
   // Stato del deposito per observe(): quali item sono pronti e dove andrebbero.
-  // Solo cache (nessuna scansione del mondo): la raggiungibilità la verifica
-  // l'opzione, non l'osservazione.
+  // Nessuna scansione del mondo (la raggiungibilità la verifica l'opzione): la
+  // scala invece *sì*, perché il registro è memoria, non I/O — l'operatore deve
+  // poter vedere se il bersaglio è ricordato o soltanto indovinato.
   _depositState () {
     const items = this._depositableItems();
     const target = items.length ? this._depositTargetFor(items[0].item, { cachedOnly: true }) : null;
@@ -7051,9 +7214,56 @@ export class BedrockAdapter {
       items,
       total: items.reduce((sum, entry) => sum + entry.count, 0),
       target: target
-        ? { type: target.type, position: target.position, distance: target.distance ?? this._pointDistance(target.position) }
+        ? {
+            type: target.type,
+            position: target.position,
+            distance: target.distance ?? this._pointDistance(target.position),
+            remembered: target.remembered === true,
+            rung: target.rung ?? null,
+            step: target.step ?? null,
+            verify: target.verify === true,
+            stale: target.stale === true,
+          }
         : null,
+      // Ogni gradino non vuoto della scala: "non c'è" va *provato* da una scala
+      // vuota, non dedotto da un bersaglio mancante.
+      ladder: target?.ladder ?? null,
+      reason: target?.reason ?? null,
       at: Date.now(),
+    };
+  }
+
+  // Il registro dei contenitori come lo vede l'operatore: `checked: false`
+  // significa "non ho mai guardato" (diverso da "non c'è"), e la scala dice
+  // quale gradino potrebbe rispondere. Solo memoria: nessuna scansione.
+  _storageView () {
+    let known = [];
+    let toInspect = [];
+    if (this.memory) {
+      try {
+        known = this.memory.findContainers({ contentsKnown: true, limit: 16 });
+        toInspect = this.memory.containersToInspect({ limit: 16 });
+      } catch (error) {
+        this.log('memory_error', { message: error.message });
+      }
+    }
+    return {
+      checked: Boolean(this._storageSurveyAt),
+      survey: this._storageSurvey ?? null,
+      known: known.map(c => ({
+        position: c.position,
+        type: c.type,
+        contains: { ...(c.contents ?? {}) },
+        inspectedAt: c.inspectedAt ?? null,
+        status: c.status,
+      })),
+      toInspect: toInspect.map(c => ({
+        position: c.position,
+        type: c.type,
+        discoveredAt: c.discoveredAt ?? null,
+        discoveryStale: c.discoveryStale === true,
+        status: c.status,
+      })),
     };
   }
 
@@ -7322,10 +7532,25 @@ export class BedrockAdapter {
     }
   }
 
+  // Un bersaglio *ricordato* che non si apre non deve far fallire il deposito:
+  // una sola rilettura dal mondo vivo, poi si riferisce l'errore vero della
+  // destinazione scelta. L'apertura è la verifica della memoria stantia, quindi
+  // "la verifica è fallita" e "non si è aperto" sono lo stesso caso.
+  async _depositStackWithFallback (target, itemName, options = {}) {
+    const result = await this._depositStackInto(target, itemName, options);
+    if (result.ok || target.remembered !== true || result.error === 'missing_item') return result;
+    const fallback = this._depositTargetFor(itemName, { memory: false });
+    if (!fallback || this._samePosition(fallback.position, target.position)) return result;
+    // Il contenuto accumulato vale per il baule di prima: sul nuovo si riparte
+    // dalla lettura reale degli slot.
+    const retry = await this._depositStackInto(fallback, itemName, { ...options, base: null });
+    return retry.ok ? { ...retry, retriedAfterStale: true } : result;
+  }
+
   async _depositItem (itemName, { position = null } = {}) {
     const target = this._depositTargetFor(itemName, { position });
     if (!target) return { ok: false, error: 'container_not_found' };
-    const result = await this._depositStackInto(target, itemName);
+    const result = await this._depositStackWithFallback(target, itemName);
     delete result.contents; // stato interno del baule: non serve all'azione
     return result;
   }
@@ -7350,7 +7575,7 @@ export class BedrockAdapter {
         const held = this.inventory[entry.item] || 0;
         const keep = this._isKeptItem(entry.item) ? DEPOSIT_KEEP_RESERVE : 0;
         if (held <= keep) break;
-        const result = await this._depositStackInto(target, entry.item, {maxCount: held - keep, base: contents});
+        const result = await this._depositStackWithFallback(target, entry.item, {maxCount: held - keep, base: contents});
         if (!result.ok) {
           if (!moved.length) return result;
           this.log('container_dump_partial', { item: entry.item, error: result.error, moved: moved.length });
