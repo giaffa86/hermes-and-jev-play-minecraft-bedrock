@@ -3653,3 +3653,42 @@ these?): no, and here is what blocks it.**
   `tests/controller-session.test.mjs` asserts the current ordering); a
   depth-capped order silently degrades to the old reorientation; no live round
   with a real human yet.
+
+## [2026-10-06] deploy | The day's branches converge on `main`, and `main` goes to the container
+
+The 06/10 work grew on two branches from the same `main` (`60f6572`), while the
+container kept running the image deployed at 11:19. Both are closed here.
+
+- **Converged**: `feat/join-human-mount` (`2bdba00`: the mount join, the held
+  follow, the goal stack) merged as `52ce925`; `feat/village-discovery-inspection`
+  (`4693640`: the village reconnaissance spec and the V0 discovery/inspection
+  model) merged as `30f03b0`. One conflict, in `docs/log.md` (both branches
+  appended entries after the same point): resolved by interleaving the five
+  entries chronologically. `docs/village-recon-roadmap` (`aac821b`) is contained
+  in the second merge.
+- **Not merged, because superseded**: `fix/bed-access-sight` (`25ddc3b`) — the
+  same fix is already in `main` as `ce8582c` (same message, author and time), and
+  `main`'s adapter carries its identifiers (`requireLoaded`, `targetCell`,
+  `bed_access_unavailable`, `bed_click_obstructed`).
+- **Verified before touching the VM**: full suite on the merged tree **1647 pass,
+  0 fail** (`node --test tests/*.test.mjs`, 188 s) and `npm run wiki:lint` clean
+  (48 files, 697 relative links). Gate: no controller and no client on 3077
+  (`ss -tn | grep 3077` empty), only `node bedrock-harness.mjs`.
+- **Deploy**: the live image was tagged `hermes-jev-bedrock-rollback-20261006-premerge`
+  (`edcddf35eae0`) first; `rsync --checksum` of HEAD to the VM's project copy (a plain copy, not a
+  git clone) excluding `.git`, `.env`, `.private`,
+  `runs`, `nmp-cache`, `node_modules`, `memory`, `*.sqlite*` and `.pi` (50 files
+  updated; `.pi` holds the VM's own Pi goal state and must not be deleted), then
+  `docker compose build && docker compose up -d`.
+- **Verified after**: the sha256 of `bedrock-adapter.mjs` (`4b2591e7…`),
+  `world-memory.mjs` (`c4d0727a…`), `storage-ladder.mjs` (`39cb4da4…`),
+  `bedrock-mount-follow.mjs` (`afce4ac7…`) and `controller.mjs` (`fe810124…`)
+  inside the container equal HEAD's; `GET /stats` answers (run `demo`, uptime
+  44 s); `/observe` shows the bot reconnected in the overworld
+  (108.34/-0.38/230.47).
+- **What this does not prove**: the container now runs today's *code*, not
+  today's features *used live*. The village V0 is a data model with no HTTP route
+  and its two unwired steps (the discovery write, the deposit ladder) stay open;
+  no live read-only village round ran.
+- **Not pushed**: `main` is 151 commits ahead of `origin/main` and stays local —
+  nothing was pushed, and the privacy scrub on that history precedes any push.
