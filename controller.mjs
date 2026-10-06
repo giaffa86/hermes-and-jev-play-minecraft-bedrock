@@ -1763,7 +1763,14 @@ async function main () {
 
 // In session mode un SIGTERM/SIGINT deve salvare la coda prima di uscire.
 for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => { goalManager.flush(); process.exit(0); });
+  process.on(signal, () => {
+    // Un timeout di deploy uccide il processo prima del `run_end` normale: senza
+    // questa riga una run interrotta non lascia né passi né costo (06/10,
+    // `diamond-20261006-4`: ultimo record un `result`, nessun totale).
+    log('run_end', {steps: stepsUsed, totalCost, curriculum: CURRICULUM, goalId: goalManager.current?.id ?? null, signal, interrupted: true});
+    goalManager.flush();
+    process.exit(0);
+  });
 }
 
 await main();

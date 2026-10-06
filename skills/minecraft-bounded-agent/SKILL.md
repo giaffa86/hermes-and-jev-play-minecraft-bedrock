@@ -10,6 +10,7 @@ The harness (`harness.mjs`) runs a pure-Node Minecraft 1.16.5 server and one Min
 | Call | Meaning |
 |---|---|
 | `GET /observe` | compact state: position, health, food, inventory, nearby block distances, dropped items, current plan, last 8 actions |
+| `GET /stats` | **measured facts of this run**: attempts, executed, failures, refusals (`busy` is a lock, not an action), action seconds, wall clock, per-key counts |
 | `GET /options` | the actions that are **valid right now** (`key` + `description`). Nothing else is executable. |
 | `POST /act {"key"}` | execute exactly one action; returns `{ok, ...}` |
 | `POST /plan {"objective","targets","waypoint"}` | record the plan; the harness uses `targets`/`waypoint` to decide which options to offer |
@@ -20,6 +21,7 @@ The harness (`harness.mjs`) runs a pure-Node Minecraft 1.16.5 server and one Min
 2. Each step: `GET /options`, pick **one** key (never invent one), `POST /act`, read the result.
 3. Re-plan only at milestones: targets satisfied, waypoint reached, two consecutive failures, or every ~8 actions.
 4. Stop when the goal is met or the step budget is spent. Report the harness's returned facts only; do not infer state the harness did not report.
+5. **Every number you quote about a run must come from a file or a route you read in the same turn**: `GET /stats` while the harness runs, or `node tools/run-facts.mjs <run>` afterwards (`runs/<run>/actions.jsonl`, `summary.json`, `controller.jsonl`). Wall clock, action time and cost are measured there; a duration recalled from the conversation is not evidence (06/10/2026: an agent reported "7 minutes 17 seconds of active work" and no artifact contained that figure).
 
 ## Rules that came out of testing
 
@@ -28,6 +30,7 @@ The harness (`harness.mjs`) runs a pure-Node Minecraft 1.16.5 server and one Min
 - Mining options disappear once `plan.targets` are satisfied; keep `targets` accurate so the harness can do this.
 - Prefer `collect_drop` whenever a drop is listed; drops expire.
 - Use `Connection: close` on harness requests; long actions (pathfinding) outlive keep-alive sockets otherwise.
+- Never restate a capability as available because it is planned: check `GET /options` for the action key first (`escort_to`, `craft_bed`, `raise_shield` are offered only when their preconditions hold — a skill file or a roadmap page is not an offer).
 
 ## Controller choice
 

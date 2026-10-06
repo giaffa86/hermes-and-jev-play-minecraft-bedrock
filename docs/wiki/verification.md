@@ -205,7 +205,9 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 - **Goal-driven benchmarks** (proposal in [goal-achievement](goal-achievement.md)):
   never run end-to-end — 16 logs (wood live, target 16 not run);
   shelter + survive a night (`first_night`, not run); iron pickaxe (iron + smelt
-  live, milestone not run); 5 diamonds (not run); build + cross a Nether portal
+  live, milestone not run); 5 diamonds (**1 mined live on 06/10 by hand, the 5
+  still not run — and that run left no measurable metrics**, see
+  [observability](observability.md)); build + cross a Nether portal
   (`enter_nether`, not implemented).
 - **Nether / End** — portal locate/build/light/enter, Nether survival (ghast
   dodge, piglin bartering, enderman gaze), fortress/blaze, stronghold and End.
@@ -224,10 +226,12 @@ node --env-file=.env test-reconnect.mjs    # 3 logins / teardown
 | 47.47 | A container read skips the containers that just failed to open | `_readContainers` (candidate filter through `_inOpenFailureCooldown`, log `container_read_skipped`) in `bedrock-adapter.mjs` | ◑ | a read that ignores a cooled-down container; live timing of a read | **Offline (04/10)**: a new case in `tests/bedrock-storage.test.mjs` — with no recorded failure the read opens two containers, with the cooldown on one it opens only the healthy one (suite **1126/1126**). **Deploy**: adapter md5 `cb535ff974fb5b460fcd1fe0a617e6a7`, identical host/container, `docker restart`. **Live attempt (failed at the transport level, twice)**: the read walked into the known-bad cells, recorded `storage_open_failure` and returned `container_read_failed` after 33.5 s; the second read never ran because the session was already gone (`spawned:false`, `not_connected`, the BDS had entered the `connecterror:9` loop). Same failure as the 121 s read of the same day (two chests collected out of eight candidates) — the transport drops the session during long container work (row 47.34), so the improvement is unit-tested and deployed but **not live-proven**; the BDS and the container were restarted afterwards and the bot respawned at (88.67, 73.62, 157.81) with its inventory intact. |
 
 | 47.48 | Safe apiculture: honeycomb/honey harvest, feeding/breeding and bee crafts | `bedrock-bees.mjs`, `bedrock-adapter.mjs`, `GET /observe.bees`; [bee contract](bees.md) | ⚠️ | One bounded round at a full hive/nest with an existing supported lit campfire, shears or glass bottle; record harvest and inventory/drop evidence. Feeding, baby observation and crafting need their own live evidence. | **Offline 04/10**: 24 new bee tests, merged suite **1152/1152**. Real Bedrock palette states, conservative smoke gate, fresh pre-click checks, one interaction, product confirmation, disconnects, protected hives/campfires, mixed flowers and new-baby verification. Merged into `main` with the visibility/probe fixes from `5652045`; **not deployed or live-verified**, bot remains OFF. |
+| 47.49 | A run leaves its own numbers: the action ledger, `GET /stats` and `run-facts` | `run-ledger.mjs`, the `/act` route and `shutdown()` in `bedrock-harness.mjs`, the SIGTERM handler in `controller.mjs`, `tools/run-facts.mjs`; [observability](observability.md) | 🧪 | `node --test tests/run-ledger.test.mjs`, then one live harness run followed by `curl -s 127.0.0.1:3077/stats` and `node tools/run-facts.mjs <run>` | **Offline 06/10**: 3 cases (busy/not_connected counted as refusals and excluded from `actionMs`; append-only lines + `writeSummary`; `readRunFacts` over a controller run, an empty directory and a torn last line) — **3/3 pass**. **Why it exists**: the 06/10 diamond was mined by hand over `/act`, the run kept no `controller.jsonl`, and the agent that reported it answered *"circa 7 minuti e 17 secondi di lavoro attivo"* **without calling a tool**; nothing in `runs/construction-live-house/` contained that figure (the run is now correctly reported `verificabile: NO` by the CLI). Found by the same check: `diamond-20261006-4/controller.jsonl` has no `run_end` — the deploy timeout killed it — which is why the controller now flushes `run_end` on SIGTERM. **Residual**: the live half (`/stats`, `summary.json`, a killed run keeping its summary) needs one harness round; the model's own tokens/cost stay outside the harness. |
 
 ## Related pages
 
 - [roadmap](roadmap.md) — implementation status per `.private/` task.
+- [observability](observability.md) — what a run can prove about itself (ledger, `/stats`, `run-facts`).
 - [open-questions](open-questions.md) — blockers and verification gaps.
 - [companions](companions.md) — taming/riding companion animals.
 - [headless-client](headless-client.md) — how the bot perceives/acts.

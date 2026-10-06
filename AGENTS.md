@@ -106,6 +106,7 @@ Use `CONTROLLER=hermes` if you lack an OpenRouter key; it is slower and costlier
 - `wait` is offered only when nothing else is valid.
 - `collect_drop` is preferred by the controller logic whenever drops exist; drops expire.
 - The harness uses `Connection: close` on HTTP responses because long pathfinding actions can outlive keep-alive sockets.
+- **Every `/act` attempt is written to `runs/<run>/actions.jsonl`** (`run-ledger.mjs`): one append-only line per attempt with `ms`, `ok`, `error`, so a hand-driven run leaves the same measurable trail as a controller-driven one. `GET /stats` returns the aggregate, `shutdown()` writes `summary.json`, and `node tools/run-facts.mjs <run>` prints them for any run; `busy` refusals are counted separately and never as action time. The controller flushes a `run_end` (with `totalCost`) on SIGTERM too, so a killed run still reports its cost.
 - Pathfinding actions can take up to 45 s; the controller may appear idle while the harness is `busy`.
 - The bot join retries for ~30 s; if it fails, the world is likely still generating — just restart `harness.mjs`.
 
@@ -123,4 +124,5 @@ Use `CONTROLLER=hermes` if you lack an OpenRouter key; it is slower and costlier
 - **Never restart or rebuild the production container while a run is active**.
 - **In the base world**: never dig/break chests, tables, stations or built blocks (`DIG_PROTECTED` applies to `dig_down` and `dig_up`); prefer collecting/shearing over killing animals; never touch villagers.
 - **Before claiming a file is saved or a fix is done, verify it** (`ls`, `node --test`, `/observe`): no results announced without a check.
+- **Before quoting a number about a run** (duration, action count, cost), read it from a file in the same turn: `node tools/run-facts.mjs <run>`, `GET /stats` on a live harness, or `runs/<run>/{actions.jsonl,summary.json,controller.jsonl}`. A duration recalled from the conversation is not evidence — on 06/10/2026 an agent answered *"7 minutes and 17 seconds of active work"* for the diamond run and no artifact contained that figure (the run had been driven by hand over `/act`, which used to leave no ledger at all).
 - **Privacy audit before every push** (`git log -p origin/main..HEAD` + grep for gamertag/xuid/keys/cache).

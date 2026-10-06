@@ -1,5 +1,43 @@
 # Log
 
+## [2026-10-06] feat | A run leaves its own numbers
+
+The owner asked what the first-diamond run had cost. The diamond had been mined
+live that morning, but the run was driven **by hand over `/act`** by an agent
+session, so it left no `controller.jsonl` and no metrics; the agent answered
+*"circa 7 minuti e 17 secondi di lavoro attivo"* **without reading any file**, and
+nothing in `runs/construction-live-house/` could confirm or contradict it. The same
+turn claimed the bot would "accompany" the owner to the vein, which no action
+could do either.
+
+- **`run-ledger.mjs`**: `createRunLedger(dir)` appends one line per `POST /act` to
+  `runs/<run>/actions.jsonl` (`{t,key,ok,ms,error}`) and aggregates it;
+  `readRunFacts(dir)` reads a run back and reports whether it is verifiable at all.
+  A **refused** call is not work: `busy` (the adapter's lock), `not_connected`,
+  `dead` and `sleeping` are counted under `refusals` and never in
+  `actionSeconds` — the old failure mode of counting lock answers as steps is why
+  `tests/controller-busy.test.mjs` exists.
+- **Harness**: the `/act` route records the attempt, `GET /stats` returns the
+  aggregate (`pid`, `uptimeMs`, attempts, executed, failures, refusals, action
+  seconds, wall clock, per-key), and `shutdown()` writes `summary.json`, so a
+  killed run still has data on disk.
+- **Controller**: SIGINT/SIGTERM now logs `run_end` with `stepsUsed`/`totalCost`
+  before exiting (the deploy timeout that killed `diamond-20261006-4` left the last
+  record a `result` and no total).
+- **`tools/run-facts.mjs <run> [--json]`**: prints actions, action seconds, wall
+  clock, per-key counts, controller steps and `totalCost`; for a run with no ledger
+  it answers `verificabile: NO` instead of guessing.
+- **Rules**: `AGENTS.md` (operational safety + harness gotchas) and the
+  `minecraft-bounded-agent` skill now require every quoted number to come from a
+  file or route read in the same turn, and a capability to be checked in
+  `GET /options` before being described as available.
+- **Tests**: `tests/run-ledger.test.mjs`, 3 cases (busy/refused classification and
+  milliseconds; append-only lines plus `writeSummary`; `readRunFacts` over a
+  controller run with its `totalCost`, an empty directory and a torn last line).
+- **Wiki**: new page [observability](wiki/observability.md), row 47.49 of
+  [verification](wiki/verification.md), and the benchmark bullet now records the
+  live single diamond while keeping "5 diamonds" as not run.
+
 ## [2026-10-05] refactor | One chat catalogue file per language
 
 The owner's suggestion: *"ti consiglio di dividere le etichette in file dedicati di

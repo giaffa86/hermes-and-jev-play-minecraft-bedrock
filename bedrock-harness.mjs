@@ -1,5 +1,6 @@
 // Hermes Bedrock harness: un bot Bedrock reale + bounded-action HTTP API.
 //   GET  /observe  -> stato normalizzato del bot
+//   GET  /stats    -> numeri verificabili della run (azioni, tempo d'azione, orologio)
 //   GET  /options  -> azioni valide in questo momento
 //   POST /act {key} -> esegue un'azione
 //   POST /plan {objective, waypoint, targets} -> registra il piano corrente
@@ -20,6 +21,7 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import { BedrockAdapter } from './bedrock-adapter.mjs';
 import { constructionResponse } from './construction-api.mjs';
 import { createWorldMemory } from './world-memory.mjs';
+import { createRunLedger } from './run-ledger.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   evaluateSurvival, summarizeSurvival, loadSurvivalRules,
@@ -48,6 +50,11 @@ mkdirSync(`runs/${RUN}`, { recursive: true });
 // (live 04/10 con BEDROCK_META_LOG=1). Il replacer li serializza come stringhe.
 const bigintSafe = (key, value) => (typeof value === 'bigint' ? value.toString() : value);
 const eventLog = (type, data) => appendFileSync(`runs/${RUN}/events.jsonl`, JSON.stringify({ t: Date.now(), ...data, type }, bigintSafe) + '\n');
+// Ledger della run (06/10): un driver che guida `/act` a mano non lasciava nessun
+// numero — "7 minuti e 17 secondi di lavoro attivo" non era verificabile su nessun
+// file. Una riga append-only per tentativo sopravvive a un kill; gli aggregati
+// finiscono in `summary.json` allo shutdown e su `GET /stats`.
+const ledger = createRunLedger(`runs/${RUN}`);
 // R3: un cantiere redstone lascia un record per run, come le skill verificabili
 // (`skills.jsonl`): l'esito di un circuito si legge dal file e non dalla memoria
 // di chi lo ha lanciato.
@@ -151,6 +158,8 @@ async function shutdown () {
   server?.closeAllConnections();
   try { worldMemory.close(); console.log('world memory saved'); }
   catch (error) { console.error('world memory close failed:', error.message); }
+  const summary = ledger.writeSummary({ run: RUN, stoppedAt: Date.now() });
+  console.log(`run summary saved: ${summary.executed} actions, ${summary.actionSeconds}s of action, ${Math.round(summary.wallClockMs / 1000)}s wall clock`);
   try { await adapter.disconnect('harness shutdown'); }
   catch (error) { console.error('Shutdown failed:', error.message); process.exitCode = 1; }
 }
@@ -699,6 +708,7 @@ server = createServer(async (req, res) => {
         dryRun: payload.dryRun !== false,
       })];
     }
+    else if (req.method === 'GET' && req.url === '/stats') response = [200, { run: RUN, pid: process.pid, uptimeMs: Math.round(process.uptime() * 1000), ...ledger.summary() }];
     else if (req.method === 'POST' && req.url === '/plan') { adapter.setPlan(JSON.parse(body)); response = [200, { ok: true, plan: adapter.plan }]; }
     else if (req.method === 'POST' && req.url === '/say') {
       // Il bot scrive in chat (M5): unico modo per rispondere a un umano o
@@ -708,7 +718,11 @@ server = createServer(async (req, res) => {
     }
     else if (req.method === 'POST' && req.url === '/act') {
       const { key, position, maxCount } = JSON.parse(body);
+      // Il ledger misura il tentativo, non l'opinione del driver: `busy` resta un
+      // rifiuto del lock e non consuma tempo d'azione (run-ledger.mjs).
+      const started = Date.now();
       const result = await adapter.executeAction(key, { position, maxCount });
+      ledger.record({ key, ok: result?.ok === true, ms: Date.now() - started, error: result?.error ?? null });
       if (key?.startsWith('construction_')) appendFileSync(`runs/${RUN}/construction.jsonl`, JSON.stringify({ at: Date.now(), action: key, result, construction: adapter.construction.view() }) + '\n');
       // Ogni tentativo finisce nel registro: anche i rifiuti prima del cantiere
       // (materiali mancanti, sito occupato) servono a leggere la run dopo.
