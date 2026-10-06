@@ -1152,6 +1152,7 @@ let lostFollowSteps = 0;        // passi consecutivi con l'ordine "seguimi" aper
 let lostEscortSteps = 0;        // passi consecutivi con la scorta aperta ma senza traccia dell'umano
 let lostNoticeSent = false;     // l'avviso in chat e' uno per episodio, non uno per cooldown
 let lostHoldSteps = 0;          // passi di attesa a tracce perse (nessuna azione, nessun modello)
+let mountHoldSteps = 0;         // passi a bordo con l'umano (nessuna azione, nessun modello)
 let lastLostNoticeAt = 0;       // ultimo avviso "non ti vedo" (cooldown per episodio)
 // Il budget e' rinnovabile: un ordine "seguimi" aperto non si esaurisce con
 // MAX_STEPS azioni (l'impegno dura finche' non arriva un altro ordine).
@@ -1372,8 +1373,14 @@ for (let step = 1; step <= maxSteps; step++) {
   // Recupero dell'umano perso: con un ordine di follow aperto, se l'inseguimento
   // non e' piu' possibile si cammina verso l'ultima posizione nota (`seek_player`);
   // se non c'e' nemmeno quella si aspetta. Il bersaglio resta il goal, non il piano.
-  const seekKey = !needKey && goal.follow && filtered.options.some(o => o.key === 'seek_player') ? 'seek_player' : null;
-  const followKey = !needKey && goal.follow && filtered.options.some(o => o.key === 'follow_player') ? 'follow_player' : null;
+  // A bordo con l'umano il bot e' passeggero: la posizione la decide il server e
+  // l'unica discesa la decide chi guida. Finche' quello stato dura non c'e' nessun
+  // fallback di locomozione da offrire — inseguire a piedi un sedile non e'
+  // un'azione in ritardo, e' un'azione impossibile. Allo smontaggio lo stato torna
+  // `FOLLOWING` e i due rami qui sotto tornano disponibili da soli.
+  const mountRiding = !!goal.follow && obs.mountFollow?.state === 'RIDING_WITH_HUMAN';
+  const seekKey = !needKey && !mountRiding && goal.follow && filtered.options.some(o => o.key === 'seek_player') ? 'seek_player' : null;
+  const followKey = !needKey && !mountRiding && goal.follow && filtered.options.some(o => o.key === 'follow_player') ? 'follow_player' : null;
   // Scorta aperta: si cammina verso la meta e si aspetta chi resta indietro.
   // Anche qui la scelta e' deterministica (nessuna chiamata al modello): l'esito
   // lo misura l'harness (`busy` a parte, `escort_to` dice quanto ha aspettato).
@@ -1399,7 +1406,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // salirebbe su un'altra barca col ramo `mount_*` generico), che e' esattamente
   // il comportamento da chiudere. Non e' stagnazione: l'attesa a riva e' il
   // tempo che l'umano torni o liberi un posto.
-  const mountKey = !needKey && goal.follow && filtered.options.some(o => o.key === 'join_human_mount') ? 'join_human_mount' : null;
+  const mountKey = !needKey && !mountRiding && goal.follow && filtered.options.some(o => o.key === 'join_human_mount') ? 'join_human_mount' : null;
   if (mountKey && lastMountTarget !== goal.follow) {
     lastMountTarget = goal.follow ?? null;
     console.log(`MOUNT ORDER ${goal.follow}: sale sul mezzo dell'umano (nessuna chiamata al modello)`);
@@ -1415,7 +1422,25 @@ for (let step = 1; step <= maxSteps; step++) {
   } else if (obs.mountFollow?.state !== 'WAITING_AT_SHORE') {
     mountWaitingSent = false;
   }
-  const lostFollow = !!goal.follow && !needKey && !followKey;
+  // A bordo non c'e' nulla da decidere: il bot e' passeggero, la posizione la
+  // scrive il server. L'ordine resta aperto senza consumare budget e senza
+  // interrogare il modello (come l'attesa a tracce perse); un bisogno eseguibile
+  // — mangiare, curarsi — passa comunque prima: la sosta non e' un silenzio, e'
+  // l'unica azione sensata mentre si e' seduti.
+  if (mountRiding && !needKey) {
+    if (mountHoldSteps === 0) {
+      console.log(`MOUNT HOLD ${goal.follow}: a bordo con l'umano (aspetto che sbarchi)`);
+      log('mount_ride_hold', {step, target: goal.follow ?? null, reason: obs.mountFollow?.reason ?? null, mount: obs.mountFollow?.mount?.type ?? null, source: obs.mountFollow?.mount?.source ?? null});
+    }
+    mountHoldSteps += 1;
+    await delay(FOLLOW_IDLE_POLL_MS);
+    step -= 1; // un'attesa non consuma il budget: l'ordine deve restare aperto
+    continue;
+  }
+  mountHoldSteps = 0;
+  // Mentre si e' a bordo l'assenza di inseguimento non e' "umano perso": senza
+  // questa esclusione i passi a bordo farebbero partire l'avviso "dove sei?".
+  const lostFollow = !!goal.follow && !needKey && !mountRiding && !followKey;
   if (lostFollow) lostFollowSteps += 1; else lostFollowSteps = 0;
   if (needKey && lastNeedKey !== needKey) {
     lastNeedKey = needKey;

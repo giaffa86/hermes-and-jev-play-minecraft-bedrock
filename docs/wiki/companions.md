@@ -244,15 +244,27 @@ episode (`MOUNT_WAITING_COOLDOWN_MS`, default 60 s), instead of ~45 s of silent
 stalls. The typed reason stays in the logs (`mount_follow_state`,
 `join_human_mount_order`, `mount_waiting_shore`), not in chat.
 
+While the bot is a **passenger** the order stays open but idle: `mountRiding`
+(`obs.mountFollow.state === 'RIDING_WITH_HUMAN'`) suppresses `follow_player`,
+`seek_player` and `join_human_mount`, the ride is logged once as `mount_ride_hold`
+and consumes neither step budget nor a model call (an executable survival need
+still goes first), and the *lost human* notice is excluded — being carried is not
+"I lost you". On dismount the state is `FOLLOWING` again and the deterministic
+follow resumes by itself: the mission needs no second order, and getting off
+stays the rider's decision (`dismount` is never acted on its own).
+
 Tested offline: `tests/bedrock-mount-follow.test.mjs` (15 cases: capacity and
 seat table, every transition and exit reason, the priority order against
 `mount_boat`/`mount_donkey`/`mount_minecart`/`seek_player`/`goto_waypoint`/`wait`,
 the non-self link and flag, the dispatch that never falls back to `_mountVehicle`,
 the disabled-flag refusal with no packet written) and
-`tests/controller-mount-follow.test.mjs` (2 scripted-harness cases: the boarding
+`tests/controller-mount-follow.test.mjs` (3 scripted-harness cases: the boarding
 order is acted four times in a row while `mount_boat`/`follow_player`/
-`seek_player` stay unacted, and the shore line is said exactly once, with
-coordinates). **Live verification pending**, and the real join is still blocked on
+`seek_player` stay unacted; the shore line is said exactly once, with
+coordinates; and — with `follow_player`, `seek_player`, `mount_boat` and
+`dismount` all offered — the bot acts *nothing* while carried for four
+observations and then acts `follow_player` again on its own after the dismount).
+**Live verification pending**, and the real join is still blocked on
 the packet capture described in [open-questions](open-questions.md) §Mounting.
 
 ### 2026-10-04 (later): shearing verified live, taming blocked on fish

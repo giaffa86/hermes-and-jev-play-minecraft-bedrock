@@ -46,29 +46,42 @@ process.stdout.write(next);
 // `phase: 'join'` — l'umano e' in barca, c'e' un posto libero e l'opzione di
 // salita e' offerta accanto ai rami generici. `phase: 'shore'` — l'opzione non
 // c'e' piu' (join dietro flag spento, oppure posto occupato): resta solo
-// l'attesa, e il controller deve dire *dove* aspetta.
-function startMountHarness ({ phase = 'join', from = 'Ale', stopAfterActs = 4 } = {}) {
+// l'attesa, e il controller deve dire *dove* aspetta. `phase: 'ride'` — il bot e'
+// a bordo con l'umano per i primi `rideSteps` osservati, poi l'umano sbarca: la
+// posizione la scrive il server (nessuna azione), allo smontaggio l'ordine
+// riprende da solo.
+function startMountHarness ({ phase = 'join', from = 'Ale', stopAfterActs = 4, rideSteps = 4 } = {}) {
   return new Promise(resolve => {
     const calls = [];
     let observes = 0;
     let acts = 0;
     const followAt = Date.now();
     const stopAt = followAt + 1;
-    const mountView = () => ({
-      state: phase === 'join' ? 'JOINING_HUMAN_MOUNT' : 'WAITING_AT_SHORE',
-      action: phase === 'join' ? 'join' : 'wait',
-      reason: phase === 'join' ? 'human_mount_joinable' : 'join_disabled',
-      human: from,
-      attempts: 0,
-      attemptLimit: 2,
-      joinEnabled: phase === 'join',
-      mount: { type: 'oak_boat', runtimeId: '200', source: 'link', seats: 2, riders: 1, free: 1, joinable: true, reason: null, distance: 3 },
+    const riding = () => ({
+      state: 'RIDING_WITH_HUMAN', action: 'ride', reason: 'riding_with_human', human: from,
+      attempts: 0, attemptLimit: 2, joinEnabled: true,
+      mount: { type: 'oak_boat', runtimeId: '200', source: 'link', seats: 2, riders: 2, free: 0, joinable: false, reason: 'full', distance: 0.5 },
     });
+    const mountView = () => phase === 'ride'
+      ? (observes <= rideSteps
+          ? riding()
+          : { state: 'FOLLOWING', action: 'follow', reason: 'dismounted', human: from, attempts: 0, attemptLimit: 2, joinEnabled: true, mount: null })
+      : {
+          state: phase === 'join' ? 'JOINING_HUMAN_MOUNT' : 'WAITING_AT_SHORE',
+          action: phase === 'join' ? 'join' : 'wait',
+          reason: phase === 'join' ? 'human_mount_joinable' : 'join_disabled',
+          human: from,
+          attempts: 0,
+          attemptLimit: 2,
+          joinEnabled: phase === 'join',
+          mount: { type: 'oak_boat', runtimeId: '200', source: 'link', seats: 2, riders: 1, free: 1, joinable: true, reason: null, distance: 3 },
+        };
     const options = () => [
       ...(phase === 'join' ? [{ key: 'join_human_mount', description: "Board Ale's oak_boat (1 free seat(s) of 2, 3.0 blocks away, confirmed by the server link)" }] : []),
       { key: 'follow_player', description: `Follow ${from} (3.0 blocks away)` },
       { key: 'seek_player', description: `Search for ${from} near their last known position (3.0 blocks away)` },
       { key: 'mount_boat', description: 'Board the nearest boat (2.0 blocks away)' },
+      ...(phase === 'ride' ? [{ key: 'dismount', description: 'Get off the boat' }] : []),
       { key: 'wait', description: 'Wait for something to happen' },
     ];
     const observation = () => ({
@@ -129,7 +142,7 @@ const FOLLOW_PLAN = JSON.stringify({ objective: 'Follow Ale and stay close', tar
 const STOP_PLAN = JSON.stringify({ objective: 'fermati', targets: {}, waypoint: null, follow: null, notes: 'test' });
 const WAIT_DECISION = 'wait';
 
-const baseEnv = (runId, port, hermesPath) => ({
+const baseEnv = (runId, port, hermesPath, { maxSteps = 4 } = {}) => ({
   HARNESS: `http://127.0.0.1:${port}`,
   RUN_ID: runId,
   PATH: `${hermesPath}:${process.env.PATH}`,
@@ -138,7 +151,7 @@ const baseEnv = (runId, port, hermesPath) => ({
   IDLE_POLL_MS: '50',
   IDLE_TIMEOUT_MS: '2000',
   AUTONOMY: '',
-  MAX_STEPS: '4',
+  MAX_STEPS: String(maxSteps),
   REPLAN_EVERY: '2',
   FOLLOW_IDLE_POLL_MS: '20',
   ANTI_LOOP_THRESHOLD: '3',
@@ -215,6 +228,35 @@ test('when the bot cannot board it says where it waits, once, and does not chase
     assert.equal(waiting.length, 1, 'the wait is announced once, not at every step');
     assert.equal(waiting[0].reason, 'join_disabled', 'the typed reason stays in the logs, not in chat');
     assert.equal(waiting[0].mount, 'oak_boat');
+  } finally {
+    harness.server.close();
+  }
+});
+
+test('while the bot is carried it holds the order, and the follow resumes on dismount', async () => {
+  // Caso peggiore: a bordo il harness offre comunque `follow_player`,
+  // `seek_player`, `mount_boat` e perfino `dismount`. Il bot non deve fare nulla
+  // finche' e' seduto (nessuna azione, nessun modello) e deve riprendere a
+  // seguire appena l'umano sbarca — senza un secondo ordine dell'umano.
+  const harness = await startMountHarness({ phase: 'ride', rideSteps: 4, stopAfterActs: 5 });
+  const fake = fakeHermesQueue([INIT_PLAN, FOLLOW_PLAN, WAIT_DECISION, WAIT_DECISION, WAIT_DECISION]);
+  const runId = `test-mount-ride-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController(baseEnv(runId, harness.port, fake.dir, { maxSteps: 5 }));
+    assert.equal(code, 0, `the controller exits cleanly (stdout: ${stdout.slice(-400)})`);
+
+    const acts = harness.calls.filter(c => c.path === '/act').map(c => c.payload.key);
+    assert.ok(acts.length >= 3, `the follow resumed after the dismount (acts: ${JSON.stringify(acts)})`);
+    assert.equal(acts.every(k => k === 'follow_player'), true, `nothing runs but the resumed follow: ${JSON.stringify(acts)}`);
+    assert.equal(acts.includes('mount_boat'), false, 'the bot never boards a different boat');
+    assert.equal(acts.includes('dismount'), false, "getting off is the rider's decision, not the bot's");
+    assert.equal(acts.includes('join_human_mount'), false, 'the seat the human is in is not offered');
+
+    const events = readEvents(runId);
+    assert.equal(events.filter(e => e.type === 'mount_ride_hold').length, 1, 'the ride is announced once, not at every step');
+    assert.equal(events.some(e => e.type === 'follow_lost'), false, 'being carried is not "I lost you"');
+    assert.equal(events.some(e => e.type === 'mount_waiting_shore'), false, 'no shore line while sharing the boat');
+    assert.equal(events.filter(e => e.type === 'decision').length, 0, 'no model call while the order is deterministic');
   } finally {
     harness.server.close();
   }

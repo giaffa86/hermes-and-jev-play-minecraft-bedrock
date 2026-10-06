@@ -3491,3 +3491,27 @@ and tracked no weather at all.
   `tests/controller-mount-follow.test.mjs` (2 scripted-harness cases); full suite
   1602/1602. Synthesis in [companions](wiki/companions.md) (§2026-10-06) and
   [open-questions](wiki/open-questions.md) §Mounting.
+
+## [2026-10-06] feat | Riding as a passenger holds the follow order and resumes it
+
+- Gap closed after the mount-join commit: while the bot was a passenger with a
+  `follow me` order open, the controller still offered `follow_player`, so the
+  bot tried to walk after a boat it was sitting in (the harness answers
+  `riding`), and the steps without a pursued target could even start the
+  "where are you?" notice.
+- Fix in `controller.mjs`: `mountRiding` (`obs.mountFollow?.state ===
+  'RIDING_WITH_HUMAN'`) suppresses `follow_player`, `seek_player` and
+  `join_human_mount`, and excludes the step from `lostFollow`; while the state
+  lasts the controller holds (log `mount_ride_hold`, no action, no step budget,
+  no model call — a survival need still runs), mirroring the existing
+  `lostHold`/`escortHold` pattern. On dismount the state returns to `FOLLOWING`
+  and the deterministic follow resumes with no second order; `dismount` is never
+  acted on by the bot.
+- Deferred on purpose (owner's call): the shore *hold* primitive — the `ti
+  aspetto qui` line stays a separate mission, to be built when a reliable hold
+  exists.
+- Evidence: third scripted-harness case in
+  `tests/controller-mount-follow.test.mjs` (all four locomotion/exit options
+  offered while carried; nothing acted, one `mount_ride_hold`, no `follow_lost`,
+  then `follow_player` resumed) — 3/3; synthesis updated in
+  [companions](wiki/companions.md) §2026-10-06.
