@@ -1,5 +1,33 @@
 # Log
 
+## [2026-10-06] fix | `go_home` returns in hops when no direct path exists
+
+The second of the eight gaps the diamond mission exposed: from the mine bottom
+`go_home` answered `go_home_failed: path_failed` eight times in a row (once
+`movement timeout`), and the "1200 cells spanning the surface" the census
+reported were exactly the BFS limit (`reachableCells({ limit: 1200 })`) — a
+truncated set, not a route to the surface. Live, the human driving the bot
+returned it by walking waypoint hops by hand.
+
+`_goHome` now gives the direct `_moveTo` 60% of its budget and, when that does not
+arrive, hands the rest to `_homeHops`: a greedy walk over the *reachable* cells,
+where each hop is at most 24 blocks away and at least one block closer (3D) to
+home, and each hop is bounded to 12 s, so the 5000-node A* budget
+(`PATH_MAX_NODES`, `bedrock-adapter.mjs:78`) is never asked for a 50-block climb
+in one go. A hop that fails (`hop_failed`), a reachable set with nothing closer
+(`no_progress`) and a hop budget run out (`hop_budget_exhausted`) all come back
+with the trail of cells walked, and the success path says which mechanism
+returned the bot (`via: 'direct'` / `via: 'hops'`, with `partial` when it stopped
+short). The hop loop reads `_startNode()` and `reachableCells()` to choose, never
+moves the bot to measure, and a failure inside it is caught and folded into the
+`go_home_failed` error instead of escaping the action.
+
+`node --test tests/*.test.mjs` → 1753 pass; `tests/bedrock-go-home.test.mjs`
+covers the six cases (the direct path still wins, the hop chain out of a deep
+shaft, `no_progress`, the 24-block hop bound, a reachability failure reported
+instead of thrown, `maxHops`) and the four `go_home` tests in
+`tests/bedrock-survival.test.mjs` still pass unchanged.
+
 ## [2026-10-06] fix | `dig_up` stops depending on where the bot happens to look
 
 The first of the eight gaps the diamond mission exposed is the one that stranded

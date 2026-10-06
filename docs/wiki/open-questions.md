@@ -1144,7 +1144,16 @@ unit-test guesses.
   and later `go_home_failed: movement timeout` even after the reachable set had
   grown to 1200 cells spanning the surface. The return worked only by walking
   waypoint hops. Same family as the earlier "no real exploration / no long-path
-  planning" gap.
+  planning" gap. **Fixed (06/10/2026)**: 1200 *was* the BFS limit
+  (`reachableCells({ limit: 1200 })`), i.e. a truncated set, not a route to the
+  surface. `_goHome` now gives the direct `_moveTo` 60% of its budget and, when
+  that does not arrive, hands the rest to `_homeHops` — a greedy walk over the
+  reachable cells, each hop at most 24 blocks away and (3D) at least one block
+  closer to home, each hop bounded to 12 s so the 5000-node A* budget
+  (`PATH_MAX_NODES`) is never asked for a 50-block climb in one go. The result
+  says which mechanism worked (`via: 'direct'` / `via: 'hops'`) and a failed
+  return carries the trail of cells walked plus `no_progress` or
+  `hop_budget_exhausted`; `tests/bedrock-go-home.test.mjs`.
 - **`mine_<ore>` requires a *reachable* drop cell**, not just visibility:
   `{"ok":false,"error":"no reachable diamond_ore found nearby"}` while `/options`
   advertised `mine_diamond_ore at {"x":90,"y":11,"z":191} (11.7 blocks away,

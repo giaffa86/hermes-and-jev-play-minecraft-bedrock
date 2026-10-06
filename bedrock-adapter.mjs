@@ -12570,13 +12570,98 @@ export class BedrockAdapter {
     const home = this.home;
     const dist = Math.hypot(home.x - this.position.x, home.z - this.position.z);
     if (dist <= 2) return { ok: true, arrived: true, home, distance: +dist.toFixed(1) };
+    const startedAt = Date.now();
+    const budgetLeft = () => Math.max(0, timeoutMs - (Date.now() - startedAt));
+    let directError = null;
     try {
-      const moveResult = await this._moveTo(home, 2, timeoutMs);
+      const moveResult = await this._moveTo(home, 2, Math.max(5000, Math.round(timeoutMs * 0.6)));
       const remaining = Math.hypot(home.x - (this.position?.x ?? 0), home.z - (this.position?.z ?? 0));
-      return { ok: true, home, ...moveResult, distance: +remaining.toFixed(1) };
+      if (remaining <= 2) return { ok: true, home, ...moveResult, distance: +remaining.toFixed(1), via: 'direct' };
+      directError = `arrived ${remaining.toFixed(1)} blocks away`;
     } catch (error) {
-      return { ok: false, error: `go_home_failed: ${error.message}` };
+      directError = error.message;
     }
+    // Il percorso diretto non esiste: pozzo profondo, A* che esaurisce i 5000 nodi
+    // o nessuna rotta completa dentro le celle raggiungibili esplorate. Live il
+    // 06/10 `go_home` rispondeva `path_failed` otto volte dal fondo miniera e
+    // l'unico ritorno che ha funzionato sono state tappe di waypoint decise a
+    // mano; qui le tappe le sceglie il harness (docs/wiki/open-questions.md).
+    const budget = budgetLeft();
+    if (budget < 3000) return { ok: false, error: `go_home_failed: ${directError}` };
+    let hops = null;
+    try {
+      hops = await this._homeHops(home, { timeoutMs: budget });
+    } catch (error) {
+      hops = { ok: false, error: `hop_error: ${error.message}`, hops: 0, trail: [] };
+    }
+    if (hops.ok) {
+      const remaining = Math.hypot(home.x - (this.position?.x ?? 0), home.z - (this.position?.z ?? 0));
+      return {
+        ok: true,
+        partial: remaining > 2,
+        home,
+        via: 'hops',
+        hops: hops.hops,
+        trail: hops.trail,
+        distance: +remaining.toFixed(1),
+      };
+    }
+    return {
+      ok: false,
+      error: `go_home_failed: ${directError}`,
+      via: 'hops',
+      hops: hops.hops,
+      hopError: hops.error,
+      trail: hops.trail,
+    };
+  }
+
+  // Ritorno a tappe: cammina verso le celle *raggiungibili* che si avvicinano a
+  // casa, un pezzo corto alla volta (`hopRange` blocchi), invece di chiedere al
+  // pathfinder una rotta unica da 50-60 blocchi di dislivello che non trova.
+  // Ogni tappa resta dentro `hopTimeMs`, così il budget A* non si esaurisce, e la
+  // tappa deve far guadagnare almeno un blocco di distanza: senza progresso si
+  // ferma con `no_progress` invece di girare a vuoto.
+  async _homeHops (home, { timeoutMs = 20000, hopTimeMs = 12000, maxHops = 12, hopRange = 24 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    const trail = [];
+    const cellOf = () => {
+      const start = this._startNode ? this._startNode() : null;
+      return start ? { x: start.x, y: start.y, z: start.z } : null;
+    };
+    const d3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+    for (let hop = 0; hop < maxHops && Date.now() < deadline; hop++) {
+      const here = cellOf();
+      if (!here) return { ok: false, error: 'no_position', hops: trail.length, trail };
+      const hereDistance = d3(here, home);
+      if (hereDistance <= 2) return { ok: true, arrived: true, hops: trail.length, trail, distance: hereDistance };
+      const reach = this.reachableCells({ limit: 4000 });
+      let next = null;
+      let best = hereDistance - 1;
+      for (const key of reach?.cells ?? []) {
+        const [x, y, z] = String(key).split(',').map(Number);
+        if (![x, y, z].every(Number.isFinite)) continue;
+        const candidate = { x, y, z };
+        const distance = d3(candidate, home);
+        if (distance >= best) continue;
+        if (d3(candidate, here) > hopRange) continue;
+        best = distance;
+        next = candidate;
+      }
+      if (!next) return { ok: false, error: 'no_progress', hops: trail.length, trail, distance: hereDistance };
+      const goal = { x: next.x + 0.5, y: next.y, z: next.z + 0.5 };
+      try {
+        await this._moveTo(goal, 1.5, Math.min(hopTimeMs, Math.max(2000, deadline - Date.now())));
+      } catch (error) {
+        trail.push({ hop, from: here, goal: next, got: cellOf(), error: error.message });
+        return { ok: false, error: `hop_failed: ${error.message}`, hops: trail.length, trail };
+      }
+      trail.push({ hop, from: here, goal: next, distance: +best.toFixed(1) });
+    }
+    const last = cellOf();
+    const distance = last ? d3(last, home) : null;
+    if (distance !== null && distance <= 2) return { ok: true, arrived: true, hops: trail.length, trail, distance };
+    return { ok: false, error: 'hop_budget_exhausted', hops: trail.length, trail, distance };
   }
 
   // ---- armatura e porte (difesa) -------------------------------------------------------
