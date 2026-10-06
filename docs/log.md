@@ -3731,3 +3731,27 @@ container kept running the image deployed at 11:19. Both are closed here.
   classifier (V3) stay spec; the four-case live row ("find the iron in the
   chests") has not run — see [open-questions](wiki/open-questions.md) and
   [village-recon](wiki/village-recon.md).
+
+## [2026-10-06] deploy | V1+V2 reach the container, and the ladder shows up live
+
+- The container `hermes-jev-bedrock` was found **stopped** (`Exited (0)`, clean
+  shutdown in the log: "Disconnecting bot and waiting for NetherNet teardown /
+  world memory saved"), and its code did not coincide with `1388000`
+  (`bedrock-adapter.mjs` was still the previous deploy's `4b2591e7…`), so the
+  deploy was warranted.
+- `rsync --checksum --delete` moved 6 files whose content differed
+  (`bedrock-adapter.mjs`, `tests/bedrock-storage-memory.test.mjs`,
+  `tests/bedrock-storage.test.mjs`, the three docs) with no deletions;
+  `docker compose build && docker compose up -d` recreated the container.
+- Verified inside the container: `bedrock-adapter.mjs`
+  `95832b12fac231b099236644b92bdb14eca9cbde9c6d92c03f207b256f798bf8`,
+  `world-memory.mjs` `c4d0727a…`, `controller.mjs` `fe810124…`, `docs/log.md`
+  `3c9923a4…` — all equal to HEAD; API on `127.0.0.1:3077`, bot joined on the
+  first attempt.
+- **First live proof of the new path**: at startup `_surveyStorage()` scanned 26
+  storage blocks and wrote 26 discoveries; `observe().storage` reports
+  `known: 0`, `toInspect: 16` (nearest a chest at 92,73,165,
+  `discoveryStale: false`) and `observe().deposit.target` already walks the
+  ladder — rung 2, `step: "inspect"`, `reason: "discovered_not_inspected"`.
+  The four-case live row in [open-questions](wiki/open-questions.md) is now the
+  next thing to watch.
