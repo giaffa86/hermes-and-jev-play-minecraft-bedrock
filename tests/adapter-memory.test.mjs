@@ -68,6 +68,49 @@ test('the adapter records portals, resource sites and notable entities', () => {
   }
 });
 
+test('a resource site remembers the ore block itself, not the chunk centre', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'adapter-ore-pos-'));
+  try {
+    const memory = createWorldMemory({ dir, backend: 'json', logger: { warn () {} } });
+    const adapter = new BedrockAdapter({ logger: { log () {} }, memory });
+    adapter.position = { x: 108, y: 0, z: 230 }; // chunk (6,14), centro (104,·,232)
+    adapter.world = {
+      findBlocks: (name) => {
+        if (name === 'deepslate_diamond_ore') return [{ name, position: { x: 109, y: 0, z: 232 }, distance: 2.2 }];
+        if (name === 'deepslate_gold_ore') return [{ name, position: { x: 101, y: 2, z: 224 }, distance: 9.1 }];
+        return [];
+      },
+      blockAt: () => ({ name: 'deepslate' }),
+    };
+    adapter._rememberDiscoveries();
+    const sites = memory.findResources({ contains: 'diamond_ore' });
+    assert.equal(sites.length, 1, 'sito diamante registrato');
+    assert.deepEqual(sites[0].position, { x: 109, y: 0, z: 232 }, 'il filone esatto, non il centro del chunk');
+    assert.notDeepEqual(sites[0].position, { x: 104, y: 0, z: 232 });
+    assert.ok(sites[0].observations.includes('gold_ore'), 'anche l\'oro distante resta nel sito');
+    memory.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a resource site falls back to the chunk centre when no block resolves', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'adapter-ore-fallback-'));
+  try {
+    const memory = createWorldMemory({ dir, backend: 'json', logger: { warn () {} } });
+    const adapter = new BedrockAdapter({ logger: { log () {} }, memory });
+    adapter.position = { x: 108, y: 30, z: 230 };
+    adapter.world = { findBlocks: (name) => (name === 'coal_ore' ? [{ name }] : []), blockAt: () => null };
+    adapter._rememberDiscoveries();
+    const sites = memory.findResources({ contains: 'coal_ore' });
+    assert.equal(sites.length, 1);
+    assert.deepEqual(sites[0].position, { x: 104, y: 30, z: 232 }, 'centro chunk come ripiego');
+    memory.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('discovery scans run on a new chunk, not on every refresh', () => {
   const adapter = new BedrockAdapter({ logger: { log () {} }, memory: {} });
   let scans = 0;

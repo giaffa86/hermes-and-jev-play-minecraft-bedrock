@@ -1172,18 +1172,32 @@ export class BedrockAdapter {
       // Sito di risorse: ore osservate, dedup per chunk. Scansione autonoma (non
       // dipende da nearbyBlocks, che durante il pathfinding può essere stantio).
       const ores = new Set();
+      let nearest = null;
       for (const name of ['coal_ore', 'deepslate_coal_ore', 'iron_ore', 'deepslate_iron_ore',
         'copper_ore', 'deepslate_copper_ore', 'gold_ore', 'deepslate_gold_ore',
         'redstone_ore', 'deepslate_redstone_ore', 'lapis_ore', 'deepslate_lapis_ore',
         'diamond_ore', 'deepslate_diamond_ore', 'emerald_ore', 'deepslate_emerald_ore']) {
-        if (this.world.findBlocks(name, pos, 32, 1).length) ores.add(name.replace(/^deepslate_/, ''));
+        const found = this.world.findBlocks(name, pos, 32, 1)[0];
+        if (!found) continue;
+        ores.add(name.replace(/^deepslate_/, ''));
+        if (!found.position) continue; // visto in palette ma il blocco non è leggibile
+        // Il sito ricorda il *blocco* di minerale più vicino, non il centro del
+        // chunk: il centro sta a 8 blocchi di distanza e un `goto_waypoint` dalla
+        // memoria portava lì invece che sul filone (finding 06/10/2026: filone a
+        // z=232, memoria a z=231). Il centro resta solo come ripiego.
+        const distance = found.distance ?? Math.hypot(
+          found.position.x - pos.x, found.position.y - pos.y, found.position.z - pos.z,
+        );
+        if (!nearest || distance < nearest.distance) nearest = { ...found.position, distance };
       }
       if (ores.size) {
         const cx = Math.floor(pos.x / 16), cz = Math.floor(pos.z / 16);
         this.memory.rememberResourceSite({
           id: `resource_site_${cx}_${cz}`,
           kind: pos.y < 62 ? 'cave' : 'surface_ores',
-          position: { x: cx * 16 + 8, y: pos.y, z: cz * 16 + 8 },
+          position: nearest
+            ? { x: nearest.x, y: nearest.y, z: nearest.z }
+            : { x: cx * 16 + 8, y: pos.y, z: cz * 16 + 8 },
           observations: [...ores],
           source: 'observed',
         });
