@@ -58,11 +58,78 @@ export function productivityScore (entry) {
   return Math.round(confidence * (1 + Math.min(entry.found ?? 0, 10) / 10) * 1000) / 1000;
 }
 
+// Stato di conoscenza di un baule: tre domande distinte, tre risposte distinte.
+//   `contentsKnown`   → il contenuto è stato *misurato* almeno una volta?
+//   `inspectionStale` → la misura è vecchia abbastanza da non fidarsene più?
+//   `discoveryStale`  → è vecchio il *fatto che il baule esista*?
+// "mai ispezionato", "ispezionato e vuoto" e "ispezionato con contenuto" sono
+// perciò tre stati diversi, e nessuno dei tre significa "non so più dov'è".
+export const CONTAINER_INSPECTION_STATE = Object.freeze({
+  NEVER_INSPECTED: 'never_inspected', // scoperto, mai aperto
+  EMPTY: 'empty',                     // aperto, ed era vuoto
+  CONTENTS: 'contents',               // aperto, e conteneva qualcosa
+  STALE: 'stale',                     // aperto, ma la misura è troppo vecchia
+});
+
+// Proiezione di una riga `container` sui due fatti (discovery / inspection) e sui
+// loro due TTL. *Non* è un refresh: lo stale si calcola qui, in lettura, da
+// `discoveredAt`/`inspectedAt`, così non dipende da un timer né da `hydrate`.
+// Il record memorizzato resta storico; questa è la sua vista correntemente
+// deducibile.
+export function describeContainer (record, {
+  now = Date.now(),
+  inspectionStaleMs = 5 * 60 * 1000,
+  discoveryStaleMs = 6 * 60 * 60 * 1000,
+} = {}) {
+  if (!record || record.kind !== 'container') return null;
+  const contentsKnown = record.contentsKnown === true;
+  const contents = contentsKnown ? { ...(record.contents ?? {}) } : null;
+  // Righe scritte prima dei due fatti non hanno `inspectedAt`: per una riga che
+  // dichiara di conoscere il contenuto, l'ultima lettura è la migliore stima.
+  const inspectedAt = contentsKnown ? (record.inspectedAt ?? record.lastSeenAt ?? null) : null;
+  const discoveredAt = record.discoveredAt ?? record.lastSeenAt ?? null;
+  const inspectionAgeMs = inspectedAt == null ? null : Math.max(0, now - inspectedAt);
+  const discoveryAgeMs = discoveredAt == null ? null : Math.max(0, now - discoveredAt);
+  const inspectionStale = contentsKnown && inspectionStaleMs >= 0 && inspectionAgeMs > inspectionStaleMs;
+  const discoveryStale = discoveryStaleMs >= 0 && discoveryAgeMs > discoveryStaleMs;
+  const inspectionState = !contentsKnown
+    ? CONTAINER_INSPECTION_STATE.NEVER_INSPECTED
+    : inspectionStale
+      ? CONTAINER_INSPECTION_STATE.STALE
+      : Object.keys(contents).length ? CONTAINER_INSPECTION_STATE.CONTENTS : CONTAINER_INSPECTION_STATE.EMPTY;
+  const invalid = record.status === MEMORY_STATUS.INVALID;
+  // Lo stale è monotono: se qualcuno l'ha già marcato (`refreshStatuses`,
+  // `markStaleBefore`) quella è una scrittura, non un'ipotesi, e una lettura
+  // successiva con un orologio più indietro non deve promuoverlo a `known`.
+  const markedStale = record.status === MEMORY_STATUS.STALE;
+  return {
+    ...record,
+    contents,
+    contentsKnown,
+    inspectedAt,
+    discoveredAt,
+    inspectionAgeMs,
+    discoveryAgeMs,
+    inspectionStale,
+    discoveryStale,
+    inspectionState,
+    // Vale la pena aprirlo se non è mai stato aperto, o se la misura è scaduta.
+    needsInspection: inspectionState === CONTAINER_INSPECTION_STATE.NEVER_INSPECTED || inspectionState === CONTAINER_INSPECTION_STATE.STALE,
+    // Lo status derivato è quello che conta: se la discovery è vecchia il *posto*
+    // è stale anche quando il contenuto è fresco, perché la memoria è storica.
+    storedStatus: record.status,
+    status: invalid ? MEMORY_STATUS.INVALID : (inspectionStale || discoveryStale || markedStale ? MEMORY_STATUS.STALE : MEMORY_STATUS.KNOWN),
+  };
+}
+
 export class WorldMemory {
   constructor ({
     repo,
     // Un baule visto un po' di tempo fa è "stale" (da rileggere, non da fidarsi).
     containerStaleMs = 5 * 60 * 1000,
+    // Il *fatto che un baule esista* invecchia più lentamente del suo contenuto:
+    // un posto non si sposta, gli item sì. Due TTL, due domande.
+    containerDiscoveryStaleMs = 6 * 60 * 60 * 1000,
     // Un luogo regge più a lungo (le strutture non si spostano), ma resta storico.
     landmarkStaleMs = 6 * 60 * 60 * 1000,
     // Consolidamento episodico→semantico alla chiusura di una missione.
@@ -87,6 +154,7 @@ export class WorldMemory {
     this.repo = repo;
     this._chunkBuffer = new Map();   // chunk visitati in RAM, scritti in blocco
     this.containerStaleMs = containerStaleMs;
+    this.containerDiscoveryStaleMs = containerDiscoveryStaleMs;
     this.landmarkStaleMs = landmarkStaleMs;
     this.autoConsolidate = autoConsolidate;
     this.maxHintSources = maxHintSources;
@@ -171,32 +239,68 @@ export class WorldMemory {
     return `container_${p.x}_${p.y}_${p.z}`;
   }
 
-  rememberContainer ({ type = 'container', dimension = 'overworld', position, contents = {}, observedAt = null, source = 'read_container' }) {
+  // Due scritture distinte sullo stesso id spaziale (`containerId`):
+  //  - *discovery*  — "questo baule esiste qui". Non tocca mai i contenuti né gli
+  //    archi `contains`: aggiorna `type`/`position`/`discoveredAt`/`lastSeenAt`.
+  //  - *inspection* — "l'ho aperto e c'era questo". È l'unica che scrive
+  //    `contents`/`inspectedAt`/`contentsKnown` e rimaterializza gli archi.
+  // Il vecchio default `contents = {}` rendeva le due cose indistinguibili: una
+  // discovery senza payload sarebbe stata registrata come "baule vuoto" e
+  // `_materializeContains` (che invalida gli archi prima di ricostruirli) avrebbe
+  // cancellato il contenuto appreso. Un `contents` assente non è un contenuto
+  // vuoto: è l'assenza di una misura.
+  rememberContainer ({ type = 'container', dimension = 'overworld', position, contents = undefined, contentsKnown = undefined, observedAt = null, source = null }) {
     const now = observedAt ?? Date.now();
     const id = this.containerId(position);
     const existing = this.repo.get(id);
+    const hasPayload = contents !== undefined && contents !== null;
+    // `contentsKnown: false` degrada una scrittura con payload a discovery: il
+    // chiamante sta dicendo "questo non è il contenuto", non "è vuoto".
+    const inspection = contentsKnown === false ? false : hasPayload;
+    const knownBefore = existing?.contentsKnown === true;
+    const contentsState = inspection
+      ? { contents: { ...contents }, contentsKnown: true, inspectedAt: now }
+      : {
+          // Senza payload il contenuto non noto resta ignoto, e quello noto resta
+          // com'era: una discovery non è mai una smentita.
+          contents: knownBefore ? { ...(existing.contents ?? {}) } : null,
+          contentsKnown: knownBefore,
+          inspectedAt: existing?.inspectedAt ?? null,
+        };
     this.repo.upsert({
       id,
       kind: 'container',
       type,
       dimension,
       position: round(position),
-      contents: { ...contents },
+      ...contentsState,
       discoveredAt: existing?.discoveredAt ?? now,
       lastSeenAt: now,
-      confidence: 1,
-      status: MEMORY_STATUS.KNOWN,
-      tags: [],
-      source,
+      confidence: inspection ? 1 : (existing?.confidence ?? 1),
+      status: existing?.status === MEMORY_STATUS.INVALID ? MEMORY_STATUS.INVALID : MEMORY_STATUS.KNOWN,
+      tags: existing?.tags ?? [],
+      source: source ?? (inspection ? 'read_container' : 'discovered'),
     });
-    this._materializeContains(id, contents);
+    if (!inspection) return this._describeContainer(id, now);
+    this._materializeContains(id, contentsState.contents);
     // Il log conserva la lettura grezza (anche degli item spariti): gli archi sono
     // la proiezione, il log è la storia.
-    for (const [item, count] of Object.entries(contents || {})) {
+    for (const [item, count] of Object.entries(contentsState.contents)) {
       if (!count) continue;
-      this.observe({ subject: id, predicate: 'contains', object: item, observedAt: now, source, data: { count } });
+      this.observe({ subject: id, predicate: 'contains', object: item, observedAt: now, source: source ?? 'read_container', data: { count } });
     }
-    return this.repo.get(id);
+    return this._describeContainer(id, now);
+  }
+
+  // Vista derivata di un baule (stale calcolato ora, non da un timer).
+  _describeContainer (idOrRecord, now = Date.now()) {
+    const record = typeof idOrRecord === 'string' ? this.repo.get(idOrRecord) : idOrRecord;
+    if (!record) return null;
+    return describeContainer(record, {
+      now,
+      inspectionStaleMs: this.containerStaleMs,
+      discoveryStaleMs: this.containerDiscoveryStaleMs,
+    });
   }
 
   // Materializza gli archi `contains` dall'ultima osservazione: se un item non
@@ -210,24 +314,39 @@ export class WorldMemory {
     }
   }
 
-  findContainers ({ includeInvalid = false, includeStale = true, near = null, radius = null, limit = null } = {}) {
-    return this.repo.find({
-      kind: 'container',
-      includeInvalid,
-      statuses: includeStale ? null : [MEMORY_STATUS.KNOWN],
-      near,
-      radius,
-      limit,
-    });
+  // Lo stale si filtra *dopo* la descrizione, sul valore derivato: una riga mai
+  // passata da `refreshStatuses` non può più fingersi fresca solo perché nessuno
+  // ha idratato la memoria. `includeStale` è la stessa domanda di prima, con una
+  // risposta calcolata invece che memorizzata.
+  findContainers ({ includeInvalid = false, includeStale = true, contentsKnown = null, needsInspection = false, near = null, radius = null, limit = null, now = Date.now() } = {}) {
+    let rows = this.repo.find({ kind: 'container', includeInvalid: true, near, radius })
+      .map((record) => this._describeContainer(record, now))
+      .filter((r) => includeInvalid || r.status !== MEMORY_STATUS.INVALID)
+      .filter((r) => includeStale || r.status !== MEMORY_STATUS.STALE);
+    if (contentsKnown != null) rows = rows.filter((r) => r.contentsKnown === contentsKnown);
+    if (needsInspection) rows = rows.filter((r) => r.needsInspection);
+    if (near) rows.sort((a, b) => distance3d(a.position, near) - distance3d(b.position, near));
+    return limit != null ? rows.slice(0, limit) : rows;
   }
 
   // Quali bauli *ricordano* di contenere `item` (potrebbero essere stale: chi
   // chiama decide se verificare). Ordina per distanza da `from`.
-  containersWithItem (item, { from = null, includeStale = true } = {}) {
-    const matches = this.findContainers({ includeStale, near: from, radius: from ? 512 : null })
+  containersWithItem (item, { from = null, includeStale = true, now = Date.now() } = {}) {
+    const matches = this.findContainers({ includeStale, near: from, radius: from ? 512 : null, now })
       .filter((r) => (r.contents?.[item] || 0) > 0);
     if (from) matches.sort((a, b) => distance3d(a.position, from) - distance3d(b.position, from));
     return matches;
+  }
+
+  // Gradino 2 della scala: i bauli che vale la pena *aprire* — mai aperti, o
+  // aperti abbastanza tempo fa che la misura non vale più. Ordinati per distanza
+  // da `from` (il costo di raggiungimento lo verifica chi agisce: la memoria non
+  // conosce i path). `includeDiscoveryStale: false` risponde invece alla domanda
+  // "quali posti sono ancora recenti come luoghi?".
+  containersToInspect ({ from = null, radius = null, limit = null, includeDiscoveryStale = true, includeInvalid = false, now = Date.now() } = {}) {
+    const rows = this.findContainers({ includeInvalid, includeStale: true, needsInspection: true, near: from, radius, now })
+      .filter((r) => includeDiscoveryStale || !r.discoveryStale);
+    return limit != null ? rows.slice(0, limit) : rows;
   }
 
   removeContainer (id) {
@@ -1395,6 +1514,12 @@ export class WorldMemory {
 
   // Promuove a STALE ciò che è stato osservato troppo tempo fa. Non invalida
   // nulla: l'obsolescenza va *verificata*, non assunta.
+  //
+  // Non è l'unico modo di sapere che una riga è vecchia: i container hanno uno
+  // stale *calcolato in lettura* (`describeContainer`), quindi nessun timer è
+  // obbligatorio per loro. Questo resta per i landmark (che non hanno un secondo
+  // fatto da cui derivare lo stato) e come scrittura di comodo per chi vuole
+  // vedere lo stale anche nel record memorizzato.
   refreshStatuses (now = Date.now()) {
     this.repo.markStaleBefore({ kind: 'container', before: now - this.containerStaleMs });
     this.repo.markStaleBefore({ excludeKind: 'container', before: now - this.landmarkStaleMs });
