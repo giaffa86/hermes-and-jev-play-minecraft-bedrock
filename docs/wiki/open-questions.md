@@ -1239,3 +1239,62 @@ goal and both fixed with a regression test (see [log.md](../log.md), entry
   pins the three behaviours; a second hole (a **short** player snapshot wiping the
   mirror after a reconnect, now `inventory_snapshot_ignored`) is pinned in
   `tests/bedrock-inventory-mirror.test.mjs`.
+
+## The crafting grid and the torch the server refused (06/10/2026)
+
+`craft_torch` failed in run 2 of the diamond mission with a bare
+`craft_failed` (status 35) twice in a row, 7 s apart, at the same position — and
+the failure detail showed the adapter did not even know what it had put in the
+grid:
+
+```json
+{"item":"torch","network_id":1897,"width":1,"height":2,
+ "input":["name:minecraft:charcoal","name:minecraft:stick"],
+ "grid":[{"slot":30,"name":0,"count":1},{"slot":28,"name":0,"count":1}],
+ "status":35}
+```
+
+The two `place` requests into the grid had just been answered `{"statuses":["ok"]}`,
+and 40 ms earlier the same path had crafted `spruce_planks` (4) and `stick` (4)
+through the very same slots 30/28. So the layout and the tag matching are not the
+cause: `_ingredientMatches` already maps the `coals` tag onto `/^(coal|charcoal)$/`,
+and recipe 1897 names `charcoal` and `stick` explicitly.
+
+Three code-level defects were fixed (all with regression tests in
+`tests/bedrock-crafting.test.mjs`):
+
+- **The grid model never learned what it placed.** `_placeFromCursor` called
+  `_applyStackResponse(response)` **without** a `networkId`, and it runs right
+after `_clearCraftingGrid`, so the only identity a cell could record was
+  `network_id: 0` — the `name: 0` in the log above. It now passes the source
+  slot's `network_id` (read *before* the take: a one-item pile disappears from
+the slot and takes its id with it) and records the cell even when the response
+does not name it, logging `craft_grid_place` with `{gridSlot, item, count,
+  stackId, echoed, containers}`. `echoed: false` is the evidence that the server
+  is not echoing the `crafting_input` container back at all.
+- **A rejected variant stopped the search.** `_craftAttempt` returned on the
+  first `craft_failed`, so with two torch recipes declared by the server
+  (`tag:coals` 1896 and `name:charcoal` 1897) a refusal of 1897 meant 1896 was
+  never tried — even though the bot carried both coal and charcoal. It now keeps
+  the first failure and continues to the next candidate, returning it only when
+  no variant passes.
+- **A status 35 was never retried.** `craft_failed` joined the `syncable` set in
+  `_craftItem` (`missing_ingredients|craft_failed|take_failed_49/50|place_failed_49/50`),
+  so it gets **one** `_resyncByReconnect` and one more attempt. That is safe
+  because the `finally` of `_craftAttempt` already returns the grid to the pack
+  (`_clearCraftingGrid` + `_returnCursorToInventory`), so a retry re-reads the
+  world instead of replaying a stale model.
+
+`craft_failed_detail` now also carries `consumeStackIds` — the cell → stack id
+pairs actually sent in the `consume` actions — and each grid cell's `stack_id`.
+Together with `craft_grid_place` that is what a live round needs to answer the
+question the packets would answer.
+
+**Still open**: the 35 itself is not explained. `runs/demo-r2/events.jsonl` has
+no `packet`/`rx_hex` events in that window (`BEDROCK_PACKET_LOG=1`, which run 1
+had with `packet=179151`), and the torch is absent from the `recipe_sample`
+(720 rows covering only `wooden_pickaxe` and `stone_pickaxe`, i.e. its variants
+and their network ids are unknown). The decisive cheap experiment is to repeat
+`craft_torch` carrying **only** coal, then **only** charcoal: if the coals variant
+fails identically the problem is in the consume/stack-id path, if it passes the
+35 was the charcoal variant.

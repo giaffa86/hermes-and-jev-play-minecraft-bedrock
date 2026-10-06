@@ -6299,15 +6299,36 @@ export class BedrockAdapter {
     return this._cursor.stack_id;
   }
 
-  async _placeFromCursor (gridSlot, count, cursorStack) {
+  async _placeFromCursor (gridSlot, count, cursorStack, networkId = null) {
     const response = await this._sendStackRequest([{
       type_id: 'place', legacy_type_id: 1, count,
       source: this._slotInfo('cursor', 0, cursorStack),
       destination: this._slotInfo('crafting_input', gridSlot, this._craftingGrid.get(gridSlot)?.stack_id || 0),
     }]);
     if (String(response.status) !== 'ok' && response.status !== 0) throw new Error(`place_failed_${response.status}`);
-    this._applyStackResponse(response);
-    return this._responseSlotStack(response, 'crafting_input', gridSlot) ?? 0;
+    // `networkId` è l'item appena posato: senza, il modello della griglia resta
+    // `network_id: 0` (`name: 0` nei log) perché lo slot è appena stato svuotato
+    // da `_clearCraftingGrid` e la risposta di `place` può non nominare l'item
+    // (live 06/10: `craft_failed_detail` con `grid: [{slot:30,name:0},
+    // {slot:28,name:0}]` mentre l'adapter sapeva benissimo cosa aveva posato).
+    this._applyStackResponse(response, { networkId });
+    if (networkId && !this._craftingGrid.get(gridSlot)?.network_id) {
+      this._craftingGrid.set(gridSlot, {
+        network_id: networkId,
+        count,
+        stack_id: this._responseSlotStack(response, 'crafting_input', gridSlot) ?? 0,
+      });
+    }
+    const stackId = this._responseSlotStack(response, 'crafting_input', gridSlot);
+    // La griglia è la parte della finestra che il server non sempre rimanda:
+    // se non torna, il `consume` partirà con stack id 0 e la request verrà
+    // rifiutata. Questo log è la prova che serve al prossimo giro live.
+    this.log('craft_grid_place', {
+      gridSlot, item: this._slotItemName({ network_id: networkId }), count,
+      stackId: stackId ?? 0, echoed: stackId != null,
+      containers: (response.containers || []).map(c => c.slot_type?.container_id).filter(Boolean),
+    });
+    return stackId ?? 0;
   }
 
   async _clearCraftingGrid () {
@@ -6336,10 +6357,13 @@ export class BedrockAdapter {
       for (let unit = 0; unit < count; unit++) {
         const source = this._findSourceSlot(ingredient);
         if (source < 0) throw new Error('missing_ingredients');
+        // L'id dell'item va letto *prima* del take: una pila da 1 sparisce dallo
+        // slot e con lei il `network_id` che serve per etichettare la cella.
+        const sourceNetworkId = this.inventorySlots[source]?.network_id ?? null;
         // Mai riaprire l'inventario qui: chiuderebbe il banco da lavoro e la
         // griglia 3x3 sparirebbe dalla finestra corrente (status 55 live 03/10).
         const cursorStack = await this._takeToCursor(source, 1, { ensureInventory: false });
-        gridStackIds.set(gridSlot, await this._placeFromCursor(gridSlot, 1, cursorStack));
+        gridStackIds.set(gridSlot, await this._placeFromCursor(gridSlot, 1, cursorStack, sourceNetworkId));
       }
     }
     return gridStackIds;
@@ -8159,8 +8183,11 @@ export class BedrockAdapter {
     if (first.ok) return first;
     // Un pickup (anche auto) può fondersi con uno stack e cambiargli stack id:
     // take/place falliscono con 49/50 oppure i materiali mancano dagli slot.
-    // Una riconnessione riporta l'inventory_content completo dal server.
-    const syncable = /^(missing_ingredients|take_failed_(49|50)|place_failed_(49|50))$/.test(String(first.error));
+    // Un `craft_failed` (status 35) ha la stessa firma quando la griglia è
+    // tracciata male: il `finally` di `_craftAttempt` ha già rimesso gli
+    // ingredienti nello zaino, quindi il retry li riposa leggendo stack id
+    // freschi. Una riconnessione riporta l'inventory_content completo.
+    const syncable = /^(missing_ingredients|craft_failed|take_failed_(49|50)|place_failed_(49|50))$/.test(String(first.error));
     if (!syncable) return first;
     if (first.error === 'missing_ingredients' && !this._candidatesLookUntracked(candidates)) return first;
     try {
@@ -8209,6 +8236,7 @@ export class BedrockAdapter {
   }
 
   async _craftAttempt (itemName, candidates) {
+    let failure = null;
     for (const entry of candidates) {
       const recipe = this._recipeBody(entry);
       if (!recipe || !this._hasMaterials(recipe)) continue;
@@ -8222,25 +8250,33 @@ export class BedrockAdapter {
         const response = await this._sendStackRequest(actions, { outputs: true });
         const status = response.status;
         if (String(status) !== 'ok' && status !== 0) {
+          const consumeStackIds = [...gridStackIds].map(([gridSlot, stackId]) => ({ gridSlot, stackId }));
           this.log('craft_failed_detail', { detail: JSON.stringify({
             item: itemName, network_id: recipe.network_id, width: recipe.width, height: recipe.height,
             input: (recipe.input || []).map(i => i.type === 'valid' ? (i.descriptor_type === 'item_tag' ? `tag:${i.tag}` : `name:${i.name}`) : null),
-            grid: [...this._craftingGrid.entries()].map(([slot, entry]) => ({ slot, name: this.world.registry?.items[entry.network_id]?.name || entry.network_id, count: entry.count })),
+            grid: [...this._craftingGrid.entries()].map(([slot, entry]) => ({ slot, name: this.world.registry?.items[entry.network_id]?.name || entry.network_id, count: entry.count, stack_id: entry.stack_id ?? null })),
+            consumeStackIds,
             status,
           }) });
-          return { ok: false, error: 'craft_failed', status };
+          // Lo stesso item può avere più varianti (`tag:coals` e
+          // `name:charcoal`, come per le assi): il rifiuto di una variante non
+          // deve fermare la ricerca dell'altra. Il primo fallimento resta quello
+          // da riferire se nessuna passa.
+          failure ??= { ok: false, error: 'craft_failed', status };
+          continue;
         }
         this._applyStackResponse(response, { networkId: result.network_id });
         return { ok: true, crafted: itemName, count: result.count || 1 };
       } catch (error) {
-        return { ok: false, error: error.message };
+        failure ??= { ok: false, error: error.message };
+        continue;
       } finally {
         await this._clearCraftingGrid().catch(() => {});
         await this._returnCursorToInventory().catch(() => {});
         await this._closeContainer().catch(() => {});
       }
     }
-    return { ok: false, error: 'missing_ingredients' };
+    return failure || { ok: false, error: 'missing_ingredients' };
   }
 
   // ---- piazzamento blocchi -----------------------------------------------------------

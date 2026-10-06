@@ -20,6 +20,10 @@ function craftAdapter () {
       shaped(1218, 'minecraft:WorkBench_recipeId', 2, 2, [tag('planks'), tag('planks'), tag('planks'), tag('planks')], { networkId: 58, count: 1 }),
       shaped(1729, 'minecraft:wooden_pickaxe', 3, 3, [tag('planks'), tag('planks'), tag('planks'), null, name('stick'), null, null, name('stick'), null], { networkId: 312, count: 1 }),
       shaped(1586, 'minecraft:stone_pickaxe', 3, 3, [tag('stone_tool_materials'), tag('stone_tool_materials'), tag('stone_tool_materials'), null, name('stick'), null, null, name('stick'), null], { networkId: 345, count: 1 }),
+      // La torcia ha due varianti sul server (live 06/10: `craft_torch` falliva con
+      // status 35 scegliendo la 1897 anche con del coal in inventario).
+      shaped(1897, 'minecraft:torch', 1, 2, [name('charcoal'), name('stick')], { networkId: 50, count: 4 }),
+      shaped(1896, 'minecraft:torch', 1, 2, [tag('coals'), name('stick')], { networkId: 50, count: 4 }),
     ],
     shapeless_recipes: [],
   };
@@ -29,8 +33,9 @@ function craftAdapter () {
     ['crafting_table', [{ kind: 'shaped', network_id: 1218 }]],
     ['wooden_pickaxe', [{ kind: 'shaped', network_id: 1729 }]],
     ['stone_pickaxe', [{ kind: 'shaped', network_id: 1586 }]],
+    ['torch', [{ kind: 'shaped', network_id: 1897 }, { kind: 'shaped', network_id: 1896 }]],
   ]);
-  adapter.world.registry = { items: { 5: { name: 'oak_planks' }, 323: { name: 'stick' }, 58: { name: 'crafting_table' }, 312: { name: 'wooden_pickaxe' }, 345: { name: 'stone_pickaxe' } } };
+  adapter.world.registry = { items: { 4: { name: 'cobblestone' }, 5: { name: 'oak_planks' }, 17: { name: 'oak_log' }, 50: { name: 'torch' }, 58: { name: 'crafting_table' }, 302: { name: 'coal' }, 303: { name: 'charcoal' }, 312: { name: 'wooden_pickaxe' }, 323: { name: 'stick' }, 345: { name: 'stone_pickaxe' } } };
   return adapter;
 }
 
@@ -61,6 +66,21 @@ test('ingredient matching understands names and item tags', () => {
   assert.equal(adapter._ingredientMatches(tag('stone_tool_materials'), 'cobblestone'), true);
   assert.equal(adapter._ingredientMatches(tag('stone_tool_materials'), 'cobbled_deepslate'), true);
   assert.equal(adapter._ingredientMatches(tag('stone_tool_materials'), 'dirt'), false);
+  // Il tag `coals` è il motivo per cui una torcia può essere craftata col carbone
+  // minerale invece che col charcoal (varianti diverse sul server).
+  assert.equal(adapter._ingredientMatches(tag('coals'), 'coal'), true);
+  assert.equal(adapter._ingredientMatches(tag('coals'), 'charcoal'), true);
+  assert.equal(adapter._ingredientMatches(tag('coals'), 'stick'), false);
+});
+
+test('the torch recipe lays the fuel over the stick in the inventory grid', () => {
+  const adapter = craftAdapter();
+  const torch = recipe(adapter, 1897);
+  assert.deepEqual([0, 1].map(i => adapter._gridSlotFor(torch, i, false)), [30, 28]);
+  assert.deepEqual(
+    adapter._planGrid(torch, false).map(({ gridSlot, ingredient }) => [gridSlot, ingredient.descriptor_type]),
+    [[30, 'name'], [28, 'name']],
+  );
 });
 
 test('stone tool recipes accept cobblestone through the vanilla item tag', () => {
@@ -243,11 +263,90 @@ test('craft resyncs when a take fails on a stale stack id', async () => {
 
 test('craft failures unrelated to sync are returned as-is', async () => {
   const adapter = craftAdapter();
-  adapter._craftAttempt = async () => ({ ok: false, error: 'craft_failed', status: 35 });
+  // 35 (`craft_failed`) è nella lista syncable da quando la torcia ha mostrato la
+  // griglia tracciata male: qui serve un errore che non lo è.
+  adapter._craftAttempt = async () => ({ ok: false, error: 'place_failed_55' });
   adapter._resyncByReconnect = async () => { throw new Error('should not reconnect'); };
   const result = await adapter._craftItem('stone_pickaxe');
-  assert.equal(result.error, 'craft_failed');
-  assert.equal(result.status, 35);
+  assert.equal(result.error, 'place_failed_55');
+});
+
+test('a craft the server rejects with 35 is retried once after a resync', async () => {
+  const adapter = craftAdapter();
+  let attempts = 0; let resyncs = 0;
+  adapter._craftAttempt = async () => (++attempts === 1
+    ? { ok: false, error: 'craft_failed', status: 35 }
+    : { ok: true, crafted: 'stone_pickaxe', count: 1 });
+  adapter._resyncByReconnect = async () => { resyncs++; };
+  const result = await adapter._craftItem('stone_pickaxe');
+  assert.equal(result.ok, true);
+  assert.equal(attempts, 2);
+  assert.equal(resyncs, 1);
+});
+
+test('a placed grid ingredient is named from the source slot, not from the response', async () => {
+  const adapter = craftAdapter();
+  const logs = [];
+  adapter.log = (type, data) => logs.push({ type, ...data });
+  adapter._takeToCursor = async () => 77;
+  // Il server accetta il place ma non rimanda la griglia: il modello locale deve
+  // comunque sapere *cosa* è stato posato (live: `grid: [{slot:30,name:0}]`).
+  adapter._sendStackRequest = async () => ({ status: 'ok', containers: [{ slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 0 }] }] });
+  adapter._craftingGrid.clear();
+  const stackId = await adapter._placeFromCursor(30, 1, 77, 303);
+  assert.equal(stackId, 0, 'senza eco della griglia non c è uno stack id da consumare');
+  assert.equal(adapter._craftingGrid.get(30).network_id, 303);
+  assert.equal(adapter._craftingGrid.get(30).count, 1);
+  const place = logs.find(l => l.type === 'craft_grid_place');
+  assert.equal(place.echoed, false);
+  assert.equal(place.item, 'charcoal');
+  assert.deepEqual(place.containers, ['cursor']);
+});
+
+test('a rejected craft reports the grid it built and the stack ids it consumed', async () => {
+  const adapter = craftAdapter();
+  const logs = [];
+  adapter.log = (type, data) => logs.push({ type, ...data });
+  adapter.inventorySlots = [
+    { network_id: 303, name: 'charcoal', count: 1, stack_id: 11 },
+    { network_id: 323, name: 'stick', count: 2, stack_id: 12 },
+  ];
+  adapter._ensureInventoryOpen = async () => {};
+  adapter._clearCraftingGrid = async () => { adapter._craftingGrid.clear(); };
+  adapter._returnCursorToInventory = async () => {};
+  adapter._closeContainer = async () => {};
+  adapter._placeGridIngredients = async () => {
+    adapter._craftingGrid.set(30, { network_id: 303, count: 1, stack_id: 55 });
+    adapter._craftingGrid.set(28, { network_id: 323, count: 1, stack_id: 57 });
+    return new Map([[30, 55], [28, 57]]);
+  };
+  adapter._sendStackRequest = async () => ({ status: 35 });
+  const result = await adapter._craftAttempt('torch', adapter.recipes.get('torch'));
+  assert.deepEqual(result, { ok: false, error: 'craft_failed', status: 35 });
+  const detail = JSON.parse(logs.find(l => l.type === 'craft_failed_detail').detail);
+  assert.equal(detail.status, 35);
+  assert.deepEqual(detail.grid.map(g => [g.slot, g.name, g.stack_id]), [[30, 'charcoal', 55], [28, 'stick', 57]]);
+  assert.deepEqual(detail.consumeStackIds, [{ gridSlot: 30, stackId: 55 }, { gridSlot: 28, stackId: 57 }]);
+});
+
+test('a rejected recipe variant does not stop the other variants of the same item', async () => {
+  const adapter = craftAdapter();
+  adapter.inventorySlots = [
+    { network_id: 303, name: 'charcoal', count: 1, stack_id: 11 },
+    { network_id: 323, name: 'stick', count: 2, stack_id: 12 },
+  ];
+  adapter._ensureInventoryOpen = async () => {};
+  adapter._clearCraftingGrid = async () => { adapter._craftingGrid.clear(); };
+  adapter._returnCursorToInventory = async () => {};
+  adapter._closeContainer = async () => {};
+  adapter._placeGridIngredients = async () => new Map([[30, 55], [28, 57]]);
+  let calls = 0;
+  adapter._sendStackRequest = async () => (++calls === 1
+    ? { status: 35 }
+    : { status: 'ok', containers: [{ slot_type: { container_id: 'crafting_output' }, slots: [{ slot: 50, count: 4, item_stack_id: 99 }] }] });
+  const result = await adapter._craftAttempt('torch', adapter.recipes.get('torch'));
+  assert.equal(calls, 2, 'la seconda variante (tag coals) viene provata');
+  assert.deepEqual(result, { ok: true, crafted: 'torch', count: 4 });
 });
 
 test('craft does not reconnect when materials are genuinely missing', async () => {

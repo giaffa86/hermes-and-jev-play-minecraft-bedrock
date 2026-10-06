@@ -61,6 +61,33 @@ crafting tables or glass can never appear in a `mine_*` option, and
 
 The legacy rule string remains `inventory_first_then_chests_never_buildings`; the detailed sourcing order above governs selection.
 
+## The crafting grid is a model of the server's window
+
+The 2×2 grid inside the inventory (slots 30/28/31/29) and the 3×3 table grid
+(`_gridSlotFor`) exist **client-side only**: the adapter has to remember what it
+put there, because the BDS does not reliably echo the `crafting_input` container
+in `item_stack_response`. Two consequences, both fixed on 06/10/2026 after
+`craft_torch` failed twice with `craft_failed` (status 35) in the live run 2:
+
+- `_placeFromCursor(gridSlot, count, cursorStack, networkId)` now receives the
+  source slot's `network_id` (read *before* the take, since a one-item pile
+  disappears from the slot) and records the cell with it instead of with
+  `network_id: 0`. It also logs `craft_grid_place` with
+  `{gridSlot, item, count, stackId, echoed, containers}`, so the next live round
+  can tell whether the server echoes the grid at all.
+- `_craftAttempt` no longer stops on the first failed candidate: an item can have
+  several recipes (`torch` has both `name:charcoal` 1897 and `tag:coals` 1896),
+  and a refusal of one variant must not hide the other. It keeps the first
+  failure, tries the rest, and reports `craft_failed_detail` with the grid
+  (including each cell's `stack_id`) and the `consumeStackIds` actually sent.
+- A `craft_failed` (35) is now in the `syncable` retry set of `_craftItem`, like
+  the `take_failed_49/50` and `place_failed_49/50` of a stale stack id: one
+  `_resyncByReconnect` plus one attempt. This is safe because the `finally` of
+  `_craftAttempt` returns the grid to the pack before the retry.
+
+The layout itself was never the bug: the stick recipe is a 1×2 in the same slots
+30/28 and crafted fine 40 ms before the failure.
+
 ## Food is not crafting
 
 Eggs are **not** food in Bedrock: they are an ingredient (cake, pumpkin pie), so
@@ -89,6 +116,13 @@ Pufferfish (Poison II, one minute) and golden apples stay out of both lists.
   `craft_wooden_pickaxe`) with a single planner call, and a step the harness does
   not offer is left to the planner instead of being forced.
 - Full suite at the time: **1287 pass / 0 fail**.
+- `tests/bedrock-crafting.test.mjs` (23 cases) also pins the grid machinery:
+  the torch 1×2 layout in the inventory grid (30/28), `_ingredientMatches` on the
+  `coals` tag (coal **and** charcoal, not stick), a placement whose response does
+  not echo the grid still naming the cell from the source slot, the status-35
+  failure carrying `consumeStackIds`, a rejected variant falling through to the
+  next one, and the one-shot resync retry on `craft_failed`. The fixture
+  `craftAdapter()` declares both torch recipes, as the server does.
 
 Live verification is still pending (the rule has not been deployed): the live
 round would be a chat order such as *"@bot costruisci un piccone di legno"* with

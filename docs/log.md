@@ -1,5 +1,49 @@
 # Log
 
+## [2026-10-06] fix | The crafting grid learns what it placed, and a rejected variant no longer stops the search
+
+Run 2 of the diamond mission failed on `craft_torch` twice with a bare
+`craft_failed` (status 35), the two `place` requests into the grid having just
+been answered `{"statuses":["ok"]}` and `craft_spruce_planks`/`craft_stick`
+having succeeded 40 ms earlier through the very same slots 30/28. The failure
+detail named the real problem: `"grid":[{"slot":30,"name":0,"count":1},
+{"slot":28,"name":0,"count":1}]` — the adapter did not know which item it had
+put in its own grid.
+
+`_placeFromCursor` called `_applyStackResponse(response)` **without** a
+`networkId`, and it runs immediately after `_clearCraftingGrid`, so a cell could
+only ever record `network_id: 0` (`name: 0` in the log). It now takes the source
+slot's `network_id` — read *before* the take, because a one-item pile disappears
+from the slot and takes its id with it — passes it to `_applyStackResponse`,
+records the cell even when the server does not echo `crafting_input`, and logs
+`craft_grid_place` with `{gridSlot, item, count, stackId, echoed, containers}`
+(`echoed: false` is the proof that the grid is not coming back).
+
+Two more defects came out of the same failure. `_craftAttempt` **returned** on the
+first `craft_failed`, so with two torch recipes declared by the server
+(`name:charcoal` 1897 and `tag:coals` 1896) a refusal of the chosen variant meant
+the other was never tried, even with coal in the pack; it now remembers the first
+failure longer and continues through the candidates, reporting
+`craft_failed_detail` with the grid's `stack_id`s and the `consumeStackIds`
+actually sent. And `craft_failed` joined the `syncable` set of `_craftItem`
+(`missing_ingredients|craft_failed|take_failed_49/50|place_failed_49/50`), so a 35
+gets **one** `_resyncByReconnect` and one more attempt — safe because the
+`finally` of `_craftAttempt` already returns the grid to the pack, so the retry
+re-reads the world instead of replaying a stale model.
+
+`tests/bedrock-crafting.test.mjs` (23 pass) now declares both torch recipes in
+`craftAdapter()` and pins: the 1×2 torch layout (30/28), `_ingredientMatches` on
+the `coals` tag (coal and charcoal, not stick), a placement named from the source
+slot when the response does not echo the grid, the status-35 detail with
+`consumeStackIds`, the variant fallthrough, and the one-shot resync retry. The
+case that asserted *"craft failures unrelated to sync are returned as-is"* now
+uses `place_failed_55`, since 35 is syncable by design.
+
+The root cause of the 35 is **not** proven: `runs/demo-r2/events.jsonl` has no
+packet log in that window (`BEDROCK_PACKET_LOG=1` gives `packet`/`rx_hex`; run 1
+had `packet=179151`) and the torch was never sampled in `recipe_sample`. The
+cheap decisive live test is a `craft_torch` with only coal, then only charcoal.
+
 ## [2026-10-06] fix | The deposit is a postcondition: read the chest back, not the response
 
 Run 2 of the diamond mission failed on the cheapest step it had (`deposit_diamond`,
