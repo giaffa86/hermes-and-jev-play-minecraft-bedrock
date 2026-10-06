@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import {
   perceive, threatSeverity, assessRisk, deriveNeeds, evaluateSurvival, summarizeSurvival,
   loadSurvivalRules, validateRules, evaluateCondition, ruleMatches, keyMatchesIntents,
+  filterOptionsForGovernor, optionIntents,
 } from '../survival/index.mjs';
 
 const RULES_URL = new URL('../knowledge/survival-rules.json', import.meta.url);
@@ -211,6 +212,59 @@ test('governor treats a close creeper as an emergency even at full health', () =
   assert.equal(result.rule, 'creeper_immediate');
   assert.deepEqual(result.allowedIntents, ['escape', 'shelter']);
   assert.equal(result.preferredSkills[0], 'escape_hostile');
+});
+
+test('an armed bot keeps fight among the emergency intents', () => {
+  // La soglia di emergenza e' anche la soglia di ammissione degli intenti
+  // (`EMERGENCY_PRIORITY`): finche' nessuna regola >= 95 nominava `fight`,
+  // `attack_<tipo>` spariva dalle opzioni in ogni emergenza, anche con un ostile
+  // addosso e una spada in zaino. Scenario live 06/10/2026: vita bassa piu'
+  // scheletro a distanza di mischia.
+  const skeleton = { type: 'skeleton', kind: 'mob', hostile: true, distance: 4, position: { x: 4, y: 63, z: 0 } };
+  const armed = evaluateSurvival(observation({ health: 8, inventory: { iron_sword: 1 }, entities: [skeleton] }), { rules });
+  assert.equal(armed.mode, 'emergency');
+  assert.ok(armed.matchedRules.includes('hostile_melee_armed'), 'con un\'arma in zaino la regola di mischia si accende');
+  assert.ok(armed.allowedIntents.includes('fight'), 'con un\'arma in zaino si può rispondere');
+  assert.ok(armed.allowedIntents.includes('escape'));
+
+  const unarmed = evaluateSurvival(observation({ health: 8, entities: [skeleton] }), { rules });
+  assert.equal(unarmed.mode, 'emergency');
+  assert.ok(!unarmed.allowedIntents.includes('fight'), 'senza arma l\'emergenza resta una fuga');
+
+  // A vita piena l'aggiunta non cambia nulla per chi non ha un'arma: resta la
+  // regola di cautela preesistente (escape/fight, nessuna restrizione di intenti).
+  const unarmedFullHealth = evaluateSurvival(observation({ entities: [skeleton] }), { rules });
+  assert.equal(unarmedFullHealth.mode, 'caution');
+  assert.equal(unarmedFullHealth.rule, 'hostile_close');
+  assert.equal(unarmedFullHealth.allowedIntents, null);
+});
+
+test('the shield is still usable in an emergency (its keys mean shelter)', () => {
+  // Visto live il 06/10/2026: frecce di uno scheletro, vita sotto 10, e lo scudo
+  // non compariva fra le opzioni perché `raise_shield` non aveva un intento e il
+  // filtro lo trattava come `unknown`.
+  const verdict = evaluateSurvival(observation({
+    health: 8,
+    entities: [{ type: 'skeleton', kind: 'mob', hostile: true, distance: 6, position: { x: 6, y: 63, z: 0 } }],
+  }), { rules });
+  assert.equal(verdict.mode, 'emergency');
+  assert.equal(verdict.rule, 'low_health_near_hostile');
+  for (const key of ['raise_shield', 'equip_shield', 'lower_shield']) {
+    assert.ok(optionIntents(key).includes('shelter'), `${key} resta una difesa in emergenza`);
+  }
+  const options = [
+    { key: 'raise_shield', description: 'x' },
+    { key: 'flee', description: 'x' },
+    { key: 'mine_dirt', description: 'x' },
+    { key: 'wait', description: 'x' },
+  ];
+  const restricted = filterOptionsForGovernor(options, verdict);
+  const keys = restricted.options.map(option => option.key);
+  assert.ok(keys.includes('raise_shield'), 'lo scudo non si toglie proprio quando arriva la freccia');
+  assert.ok(keys.includes('flee'));
+  assert.ok(!keys.includes('mine_dirt'));
+  assert.ok(!keys.includes('wait'), 'wait non è mai una risposta in emergenza');
+  assert.deepEqual(restricted.removed.map(removed => removed.key), ['mine_dirt', 'wait']);
 });
 
 test('governor asks for shelter at night without a bed', () => {

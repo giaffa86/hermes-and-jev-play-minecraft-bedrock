@@ -147,6 +147,14 @@
       "preferredSkills": ["escape_hostile"]
     },
     {
+      "id": "hostile_melee_armed",
+      "priority": 95,
+      "when": { "hostileWithin": 5, "weaponInInventory": true },
+      "intents": ["fight", "escape"],
+      "objective": "A hostile is in melee range and a weapon sits in the bag: fighting it back is an option, not only running. Escape stays ahead of it when the key is offered.",
+      "preferredSkills": ["escape_hostile"]
+    },
+    {
       "id": "wounded",
       "priority": 70,
       "when": { "healthMax": 14 },

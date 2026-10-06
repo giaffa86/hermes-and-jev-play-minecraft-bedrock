@@ -37,6 +37,30 @@ deterministic verdict from the observation. In `emergency` it:
 - makes the harness restrict `/options` to `allowedIntents` (it removes keys,
   it never adds any).
 
+In `emergency` the admitted intents are the ones named by the rules with
+`priority >= EMERGENCY_PRIORITY` (`survival/governor.mjs`, 95): a rule below that
+threshold can raise a *caution* but its intents never survive the filter. Two
+consequences surfaced live on 06/10/2026 against a skeleton shooting from inside
+the base (see [log.md](../log.md), entry *Three defects from the diamond
+mission*):
+
+- **`fight` was unreachable.** The only rule naming it was `hostile_close`
+  (`knowledge/survival-rules.json`, priority 80), so `attack_<mob>` disappeared
+  from `/options` in *every* emergency — including the one caused by that same
+  hostile standing at melee distance. Fixed by `hostile_melee_armed`
+  (`priority: 95`, `when: { hostileWithin: 5, weaponInInventory: true }`,
+  `intents: ["fight", "escape"]`, `preferredSkills: ["escape_hostile"]`): with a
+  sword or an axe in the bag, fighting back is admitted; `escape` stays first, so
+  the ladder still prefers `flee` over `attack_<mob>`.
+- **The shield was always removed.** `equip_shield`/`raise_shield`/`lower_shield`
+  had no entry in `KEY_INTENTS`, so `optionIntents()` answered `unknown` and the
+  filter dropped them exactly when a projectile is incoming. They now mean
+  `shelter` (`survival/intents.mjs`) — the passive defence a closed door gives.
+
+Both behaviours are pinned by `tests/survival-governor.test.mjs` (*an armed bot
+keeps fight among the emergency intents*, *the shield is still usable in an
+emergency*).
+
 This is the right place for **sub-second reactions** inside the current goal
 (flee from a creeper, eat, dodge). The goal's identity does not change.
 

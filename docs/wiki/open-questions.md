@@ -1143,7 +1143,13 @@ unit-test guesses.
   opportunity)`. Digging closer first is mandatory. And a *distant* ore attempt is
   actively harmful: 10 consecutive `mine_diamond_ore` calls returned
   `block_still_present` while the bot walked to the ore and fell back down the
-  shaft.
+  shaft. **Fixed (06/10/2026)**: `mineTargetReachable()` (`bedrock-adapter.mjs`) is
+  now the single predicate shared by `_pickMineTarget` (which decides what
+  `/options` offers) and `_mineBlock` (which executes) — mineable means in reach
+  (`MINE_REACH = 5.1`) or a reachable cell within `MINE_APPROACH_RANGE = 2.5` — and
+  the executor answers `mine_target_unreachable` with the measured distance
+  instead of sending a break from out of range.
+  `tests/bedrock-mining-reach.test.mjs`.
 - **`deposit_<item>` names one container and uses another.** The offered key read
   `deposit_diamond | Deposit 2 diamond into the 201 at {"x":105,"y":72,"z":138}`
   but the action performed went to (91,73,160), because the description uses the
@@ -1172,3 +1178,30 @@ unit-test guesses.
 - **`equip_armor` failed once** with `armor_equip_failed` while the bot held
   `golden_leggings` and `observe().armor` stayed empty. Only one attempt was made;
   not reproduced.
+
+## Death, the inventory mirror and the skeleton defense (06/10/2026)
+
+Two more defects from the same mission, both seen *after* the audit rejected the
+goal and both fixed with a regression test (see [log.md](../log.md), entry
+*Three defects from the diamond mission*).
+
+- **`recover_loot` duplicated the inventory.** `take_item_entity` confirms a
+  pickup the BDS never echoes back in `inventory_content`, so the adapter keeps
+  `this.pickups` as a mirror next to the inventory slots. Nothing cleared either
+  on death, so after a death the same item was counted again (`iron_ingot`
+  64 → 128, `coal` 64 → 128, `diamond` 3 → 5) and the subsequent deposit could
+  never succeed (`take_failed_49`): the mirrored count and the real stack
+  disagreed. Fixed: the death branch of `_onOwnHealth` calls
+  `_forgetDroppedInventory('death')` (logged as `inventory_mirror_reset`, with the
+  forgotten map), and a **full** 36-slot player snapshot absorbs the pickups
+  (`_absorbPickups`, `pickups_absorbed`) while an empty snapshot never does.
+  `tests/bedrock-inventory-mirror.test.mjs` pins the seven behaviours, including
+  a pickup after the death counting from zero (2, not 5).
+- **A skeleton inside the spawn house produced a death loop.** 5 deaths, hp 0,
+  mode `emergency`, and the killer standing 3.3 blocks away with arrows landing;
+  it was indoors, so daylight never burned it. The two harness-side causes of the
+  bot not answering are fixed in [emergency](emergency.md) (`fight` was
+  unreachable under the emergency filter, the shield was always removed).
+  *Left open*: nothing makes the bot leave the mob's reach on respawn, and a
+  skeleton that camps a spawn point is still a death loop — that needs a
+  "respawn, then immediately move and fight" policy, not another option filter.

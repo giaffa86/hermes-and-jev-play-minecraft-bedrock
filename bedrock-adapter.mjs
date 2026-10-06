@@ -67,6 +67,8 @@ const WADE_SPEED_FACTOR = +(process.env.WADE_SPEED_FACTOR || 0.5);
 // Il commercio si apre solo a distanza di braccio: a 4.3 blocchi il server non
 // apre la finestra (live 04/10/2026, `trade_not_opened` con mano vuota e niente
 // sneak, mentre un umano attaccato al villager commercia senza problemi).
+const MINE_REACH = 5.1;          // portata di scavo misurata dagli occhi (l'unico numero: opzioni ed esecutore)
+const MINE_APPROACH_RANGE = 2.5; // quanto vicino deve esistere una cella raggiungibile perché valga la pena avvicinarsi
 const TRADE_APPROACH_RANGE = 2.5;
 const GRAVITY = 0.08;           // blocchi per tick^2
 const JUMP_VELOCITY = 0.42;     // impulso verticale di un salto
@@ -970,17 +972,7 @@ export class BedrockAdapter {
           });
           // La griglia di crafting arriva come contenuto separato (container
           // crafting_input): non è l'inventario del giocatore e non va copiato.
-          const slotList = packet.input || packet.contents || [];
-          const isPlayerContainer = containerId == null || containerId === 'hotbar' || containerId === 'inventory' || containerId === 'hotbar_and_inventory';
-          // Alcuni sync etichettano il contenuto del giocatore con un container
-          // inatteso ma 36 slot pieni: accettali; gli stessi pacchetti vuoti
-          // vanno applicati solo se non c'è nulla da perdere (altrimenti wipe).
-          const isFullPlayerInventory = slotList.length === 36 && slotList.some(s => s?.network_id);
-          const clearWhenEmpty = slotList.length === 36 && !this.inventorySlots.some(s => s?.network_id);
-          if (containerId !== 'crafting_input' && (isPlayerContainer || isFullPlayerInventory || clearWhenEmpty)) {
-            this.inventorySlots = slotList;
-            this._refreshInventory();
-          }
+          this._applyPlayerInventorySnapshot(packet.input || packet.contents || [], { containerId });
         }
         // Il contenuto del container aperto è la verità sulla griglia di crafting.
         if (this._openContainer && packet.window_id === this._openContainer.id && Array.isArray(packet.input)) {
@@ -1063,7 +1055,7 @@ export class BedrockAdapter {
         }
       });
 
-      const findDrop = packet => this.drops.find(d => String(d.runtime_id) === String(packet.runtime_entity_id) || String(d.id) === String(packet.runtime_entity_id));
+      const findDrop = packet => this._findDropPacket(packet);
       this.client.on('move_entity', (packet) => {
         const drop = findDrop(packet);
         if (drop && packet.position) drop.position = packet.position;
@@ -1078,19 +1070,7 @@ export class BedrockAdapter {
           z: packet.z ?? drop.position.z,
         };
       });
-      this.client.on('take_item_entity', (packet) => {
-        const drop = findDrop(packet);
-        // BDS con inventario server-authoritative non invia un aggiornamento di
-        // inventario al pickup: la conferma take_item_entity è la fonte più
-        // aggiornata disponibile, quindi il conteggio viene aggiornato subito.
-        const target = packet.target ?? packet.runtime_entity_id;
-        if (drop && String(target) === String(client.entityId)) {
-          const name = drop.item;
-          this.pickups[name] = (this.pickups[name] || 0) + (drop.count || 1);
-          this._refreshInventory();
-        }
-        this.drops = this.drops.filter(d => String(d.runtime_id) !== String(packet.runtime_entity_id) && String(d.id) !== String(packet.runtime_entity_id));
-      });
+      this.client.on('take_item_entity', packet => this._onTakeItemEntity(packet));
 
       this.client.on('remove_entity', (packet) => {
         this.drops = this.drops.filter(d => d.id !== packet.entity_id_self);
@@ -1655,6 +1635,84 @@ export class BedrockAdapter {
       const name = item.name || this.world.registry?.items[item.network_id]?.name || `item_${item.network_id}`;
       this.inventory[name] = (this.inventory[name] || 0) + amount;
     }
+  }
+
+  // Conferma del pickup di un item entity: BDS con inventario server-authoritative
+  // non invia un aggiornamento di slot al pickup, quindi la stima `pickups` si
+  // aggiorna qui. Il drop raccolto esce dalla lista in ogni caso (l'entità non
+  // esiste più), quindi un pacchetto ripetuto non conta due volte.
+  _onTakeItemEntity (packet) {
+    const drop = this._findDropPacket(packet);
+    const target = packet.target ?? packet.runtime_entity_id;
+    const mine = !!drop && String(target) === String(this.client?.entityId);
+    if (mine) {
+      const name = drop.item;
+      this.pickups[name] = (this.pickups[name] || 0) + (drop.count || 1);
+      this._refreshInventory();
+    }
+    this.drops = this.drops.filter(d => String(d.runtime_id) !== String(packet.runtime_entity_id) && String(d.id) !== String(packet.runtime_entity_id));
+    return drop
+      ? { ok: true, taken: mine, item: drop.item, count: drop.count || 1, inventory: this.inventory }
+      : { ok: false, error: 'unknown_drop', inventory: this.inventory };
+  }
+
+  _findDropPacket (packet) {
+    return this.drops.find(d => String(d.runtime_id) === String(packet.runtime_entity_id) || String(d.id) === String(packet.runtime_entity_id));
+  }
+
+  // Alla morte il server fa cadere tutto l'inventario del giocatore: lo specchio
+  // locale va svuotato subito, altrimenti i drop raccolti al sito di morte si
+  // sommano a un inventario che il server ha già svuotato e il conteggio
+  // raddoppia. Visto live il 06/10 sulla missione diamanti: `iron_ingot` 64→128,
+  // `coal` 64→128, `diamond` 3→5 — e da lì il deposito in loop con
+  // `take_failed_49`, perché l'aggregato gonfiato chiedeva al cursore uno stack
+  // che il server non aveva.
+  _forgetDroppedInventory (reason = 'death') {
+    const forgotten = { ...this.inventory };
+    this.pickups = {};
+    this.inventorySlots = [];
+    this._refreshInventory();
+    this.log('inventory_mirror_reset', {
+      reason,
+      forgotten: Object.entries(forgotten)
+        .filter(([, count]) => count > 0)
+        .map(([item, count]) => `${item}:${count}`)
+        .join(' ') || null,
+    });
+    return forgotten;
+  }
+
+  // La stima `pickups` è superata da uno snapshot completo dell'inventario del
+  // giocatore: sommarla allo snapshot è l'altra faccia dello stesso doppio
+  // conteggio (slot: `diamond 2`, pickups: `diamond 3` → aggregato 5). Uno
+  // snapshot *vuoto* non assorbe nulla: può essere un sync stantio e non deve
+  // azzerare un pickup appena fatto.
+  _absorbPickups (reason = 'inventory_snapshot') {
+    const absorbed = Object.entries(this.pickups).filter(([, count]) => count > 0);
+    if (!absorbed.length) return null;
+    this.pickups = {};
+    this.log('pickups_absorbed', {
+      reason,
+      absorbed: absorbed.map(([item, count]) => `${item}:${count}`).join(' '),
+    });
+    return Object.fromEntries(absorbed);
+  }
+
+  // Contenuto della finestra del giocatore in `inventory_content`: è la verità sugli
+  // slot e arriva come risposta del server a una nostra richiesta (`open_inventory`
+  // o un resync), quindi è più fresco della stima `pickups`.
+  _applyPlayerInventorySnapshot (slotList, { containerId = null } = {}) {
+    const isPlayerContainer = containerId == null || containerId === 'hotbar' || containerId === 'inventory' || containerId === 'hotbar_and_inventory';
+    // Alcuni sync etichettano il contenuto del giocatore con un container
+    // inatteso ma 36 slot pieni: accettali; gli stessi pacchetti vuoti
+    // vanno applicati solo se non c'è nulla da perdere (altrimenti wipe).
+    const isFullPlayerInventory = slotList.length === 36 && slotList.some(s => s?.network_id);
+    const clearWhenEmpty = slotList.length === 36 && !this.inventorySlots.some(s => s?.network_id);
+    if (containerId === 'crafting_input' || !(isPlayerContainer || isFullPlayerInventory || clearWhenEmpty)) return false;
+    this.inventorySlots = slotList;
+    if (isFullPlayerInventory) this._absorbPickups('inventory_snapshot');
+    this._refreshInventory();
+    return true;
   }
 
   // ---- ricette -----------------------------------------------------------------------
@@ -9138,7 +9196,7 @@ export class BedrockAdapter {
   _blockInReach (candidate) {
     if (!this.position || !candidate?.position) return false;
     const p = candidate.position;
-    return Math.hypot(this.position.x - (p.x + 0.5), this.position.y - (p.y + 0.5), this.position.z - (p.z + 0.5)) <= 5.1;
+    return Math.hypot(this.position.x - (p.x + 0.5), this.position.y - (p.y + 0.5), this.position.z - (p.z + 0.5)) <= MINE_REACH;
   }
 
   _blockExposed (candidate) {
@@ -9151,8 +9209,20 @@ export class BedrockAdapter {
     return false;
   }
 
-  // Sceglie il candidato più vicino già a portata oppure, se nessuno lo è, il
-  // primo con una faccia scoperta: un blocco sepolto non è minabile senza scavare.
+  // Predicato unico del bersaglio di scavo: il blocco è rompibile *adesso* (a
+  // portata dagli occhi, `MINE_REACH`) oppure *dopo essersi avvicinati*, se
+  // esiste una cella raggiungibile entro `MINE_APPROACH_RANGE`. `options()` e
+  // l'esecutore scelgono il bersaglio con lo stesso `_pickMineTarget`, quindi il
+  // verdetto è uno solo: ciò che non è minabile non viene nemmeno offerto.
+  // Fail-open quando la componente raggiungibile non è affidabile (posizione
+  // ignota, componente troncata): filtreremmo su una stima, non su un fatto.
+  mineTargetReachable (candidate) {
+    if (!candidate?.position) return false;
+    if (this._blockInReach(candidate)) return true;
+    if (!this._reachabilityUsable()) return true;
+    return this.approachReachable(candidate.position, { range: MINE_APPROACH_RANGE, dy: 2 });
+  }
+
   _gatherProtected (block) {
     if (!block?.position) return true;
     const pos = block.position, key = `${pos.x},${pos.y},${pos.z}`;
@@ -9173,7 +9243,15 @@ export class BedrockAdapter {
     // usa `_vibrationBlockedTarget` per dire *perché* ("c'era ma era rumoroso" non
     // è "non c'era").
     const quiet = candidates.filter(b => !this._vibrationRiskAt(b.position));
-    return quiet.find(b => this._blockInReach(b)) || quiet.find(b => this._blockExposed(b)) || null;
+    // Solo bersagli minabili: già a portata, altrimenti con una faccia scoperta e
+    // raggiungibile a piedi. Il secondo ripiego era «qualunque faccia scoperta»,
+    // anche a 10 blocchi dietro un muro: l'opzione veniva offerta e ogni
+    // tentativo tornava `block_still_present`. Un blocco sepolto resta escluso
+    // (per raggiungerlo serve prima `dig_down`), come prima di questa modifica.
+    const usable = quiet.filter(b => this.mineTargetReachable(b));
+    return usable.find(b => this._blockInReach(b))
+      || usable.find(b => this._blockExposed(b))
+      || null;
   }
 
   // Primo bersaglio di scavo rifiutato *solo* per il rischio di vibrazione.
@@ -9541,7 +9619,7 @@ export class BedrockAdapter {
     // Approach only outside survival mining reach, measured from the eyes.
     const dist = Math.hypot(this.position.x - (pos.x + 0.5),
       this.position.y - (pos.y + 0.5), this.position.z - (pos.z + 0.5));
-    if (dist > 5.1) {
+    if (dist > MINE_REACH) {
       const dx = this.position.x - pos.x;
       const dz = this.position.z - pos.z;
       const approach = { x: this.position.x, y: this.position.y, z: this.position.z };
@@ -9552,7 +9630,18 @@ export class BedrockAdapter {
         approach.x = pos.x + 0.5;
         approach.z = pos.z + (dz > 0 ? 1.3 : -0.3);
       }
-      await this._moveTo(approach, 0.4, timeoutMs);
+      const arrived = await this._moveTo(approach, 0.4, timeoutMs);
+      // `_moveTo` può fallire in silenzio (cava sotto un pavimento, muro in mezzo):
+      // senza questa guardia la rottura partiva da fuori portata e ogni tentativo
+      // tornava `block_still_present` senza mai dire *perché*. Stesso metro di
+      // `_blockInReach`: un blocco non minabile non si rompe, si dichiara.
+      const afterApproach = Math.hypot(this.position.x - (pos.x + 0.5),
+        this.position.y - (pos.y + 0.5), this.position.z - (pos.z + 0.5));
+      if (afterApproach > MINE_REACH) {
+        const detail = { block: blockData.name, position: pos, distance: +afterApproach.toFixed(2), arrived: !!arrived };
+        this.log('mine_target_unreachable', detail);
+        return { ok: false, error: 'mine_target_unreachable', ...detail };
+      }
     }
     if (!this.client) throw new Error('disconnected during approach');
 
@@ -11886,6 +11975,10 @@ export class BedrockAdapter {
           attempts: 0,
         };
       }
+      // Il server ha appena fatto cadere l'intero inventario: lo specchio locale
+      // deve svuotarsi qui, non quando il pickup lo ritrova (altrimenti il
+      // conteggio raddoppia: vedi `_forgetDroppedInventory`).
+      this._forgetDroppedInventory('death');
       this.log('death', { deaths: this.deaths, position: this.pos(), site: this.deathSite?.position ?? null });
     } else if (this.health > 0 && this.dead) {
       this.dead = false;

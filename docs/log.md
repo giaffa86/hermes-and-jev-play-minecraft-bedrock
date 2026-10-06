@@ -1,5 +1,42 @@
 # Log
 
+## [2026-10-06] fix | Three defects from the diamond mission: the inventory mirror, the mining reach, the emergency fight
+
+The audit of the diamond goal returned `verdict: disapproved`, and the two hours
+that followed it (not recorded in the goal ledger) had exposed three defects
+nobody had written down. All three are fixed with a regression test;
+`node --test tests/*.test.mjs` → 1744 pass.
+
+- **The inventory mirror duplicated loot after a death.** `take_item_entity`
+  confirms a pickup the BDS never echoes back in `inventory_content`, so the
+  adapter mirrors it in `this.pickups`; nothing cleared the mirror on death, so
+  the same items were counted twice (`iron_ingot` 64 → 128, `diamond` 3 → 5) and
+  the following deposit could not exist (`take_failed_49`). The death branch of
+  `_onOwnHealth` now calls `_forgetDroppedInventory('death')`
+  (`inventory_mirror_reset`), a full 36-slot snapshot absorbs the pickups
+  (`_absorbPickups`) and an empty one never does.
+  `tests/bedrock-inventory-mirror.test.mjs` (7 tests).
+- **The mining reach is one number shared by the offer and the executor.**
+  `/options` advertised a `diamond_ore` 11.7 blocks away, the executor walked,
+  failed silently and sent the break anyway, so ten consecutive calls returned
+  `block_still_present` (353 failed actions out of 678 in the run).
+  `mineTargetReachable()` (`MINE_REACH` 5.1, `MINE_APPROACH_RANGE` 2.5) is used by
+  both `_pickMineTarget` and `_mineBlock`, and the executor answers
+  `mine_target_unreachable` with the distance.
+  `tests/bedrock-mining-reach.test.mjs` (8 tests).
+- **An armed bot could neither fight nor raise its shield in an emergency.** The
+  emergency filter admits only the intents of rules with `priority >= 95`, and the
+  only rule naming `fight` was `hostile_close` (80): `attack_<mob>` was removed in
+  *every* emergency, including the skeleton loop that killed the bot five times at
+  its spawn point. `equip_shield`/`raise_shield`/`lower_shield` had no intent at
+  all (`unknown`, so always filtered). New rule `hostile_melee_armed` (95,
+  `hostileWithin: 5` + `weaponInInventory`, `escape` still first) and the three
+  shield keys now mean `shelter` ([emergency](wiki/emergency.md)). The death loop
+  itself stays open: nothing yet moves the bot out of a camper's reach on respawn.
+- `goal_*.jsonl` (pi session logs, personal data) is gitignored, and the
+  post-audit defects are written down in [open-questions](wiki/open-questions.md):
+  the goal ledger stopped at 18:02 while the checkpoint kept updating to 20:12.
+
 ## [2026-10-06] run | Diamond mission end to end: village recon, the village mine channel, two diamonds, the deposit
 
 The first full hand-driven mission against the live Bedrock world (CT 108),

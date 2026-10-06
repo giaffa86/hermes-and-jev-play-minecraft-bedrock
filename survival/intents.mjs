@@ -30,6 +30,13 @@ const KEY_INTENTS = {
   close_door: ['shelter'],
   barricade: ['shelter'],
   equip_armor: ['heal'],
+  // Difesa passiva: lo scudo ferma le frecce, quindi in emergenza e' una forma di
+  // riparo (`shelter`) come una porta chiusa. Senza queste voci le tre key
+  // restavano `unknown` e il filtro del governor le toglieva proprio quando
+  // arriva la freccia (visto live il 06/10/2026 contro uno scheletro).
+  equip_shield: ['shelter', 'heal'],
+  raise_shield: ['shelter'],
+  lower_shield: ['shelter'],
   place_torch: ['build', 'shelter'],
   eat: ['eat', 'heal'],
   sleep: ['sleep', 'heal'],

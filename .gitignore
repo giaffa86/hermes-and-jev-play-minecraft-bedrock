@@ -20,3 +20,6 @@ memory/**
 
 # Stato locale degli agenti (non parte del progetto)
 .pi/
+
+# Log di sessione dei goal (contengono dati personali: mai committarli)
+goal_*.jsonl
