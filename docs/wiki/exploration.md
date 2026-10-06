@@ -315,7 +315,8 @@ never on generic building blocks.
 
 - **Deep Dark / Warden**: shriekers summon the Warden. Default is **observe and
   report** from a safe distance, never trigger more shriekers or loot without an
-  escape route.
+  escape route. The stealth execution (sneak route, vibration model, escape
+  tactic) is specced in [deep-dark](deep-dark.md) — not implemented.
 - **Spawners**: do **not** break a base's spawner without consent; for exploration,
   record it and optionally disable it with light on request. Mob/XP farming is a
   separate, gated milestone. Mineshaft cave-spider spawners are lethal in tight
@@ -487,3 +488,4 @@ advanced navigation) depends on.
 - [ai-player-roadmap](ai-player-roadmap.md) — persistent-agent roadmap (world awareness, navigation).
 - [roadmap](roadmap.md) — consolidated status ("no real exploration" not implemented).
 - [open-questions](open-questions.md) — design limitation: no real exploration.
+- [deep-dark](deep-dark.md) — Deep Dark stealth roadmap (sculk vibrations, sneak, Warden).

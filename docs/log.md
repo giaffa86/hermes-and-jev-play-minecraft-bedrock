@@ -1,5 +1,31 @@
 # Log
 
+## [2026-10-06] ingest | Deep Dark stealth roadmap: sculk sensors, shriekers and the Warden
+
+Spec for crossing a Deep Dark / Ancient City sculk field without waking the
+Warden, tracked as [`docs/raw/DEEP_DARK_ROADMAP.md`](raw/DEEP_DARK_ROADMAP.md)
+and synthesized in [deep-dark](wiki/deep-dark.md). The answer to "can the bot
+navigate the sculk field and avoid the Warden?" is **no, not today** — and the
+roadmap records why, from the code: the `ancient_city` marker rule
+(`structures.mjs:86-96`) has never fired live, `deep_dark` is only an alias
+(`exploration.mjs:19`) with no `find_deep_dark` action, `DIG_PROTECTED`
+(`bedrock-adapter.mjs:85`) and `FORBIDDEN_BLOCKS` (`circuits.mjs:79,87`) protect
+sculk blocks from *breaking* but not from *being heard*, sneak exists only as a
+construction input (`bedrock-adapter.mjs:10188-10204`, cleared by `_moveTo` at
+`:10203-10204`), the Darkness effect is parsed but unused
+(`bedrock-adapter.mjs:1526`) and the Warden is a generic hostile with the wrong
+flee (`bedrock-survival.mjs:17,37,44-46`).
+
+The seven milestones are W0 vibration awareness (`bedrock-vibration.mjs` +
+`GET /observe.sculk`, full `SCULK_FAMILY` in `DIG_PROTECTED`), W1 verified
+sneak-walk (authoritative speed vs the sneak ceiling, typed `not_sneaking`), W2
+vibration-cost stealth pathfinding with a mandatory return route, W3 shrieker
+and Warden warning with the anti-run tactic, W4 underground 3D navigation +
+`find_deep_dark`, W5 Darkness/kit/escape budget, W6 limits (never loot, never a
+Warden in the shared world without consent, no client-side silence trick).
+Nothing is implemented or live-verified; the Bedrock numbers must be re-probed
+before the model is trusted.
+
 ## [2026-10-06] deploy | HEAD meets the live container
 
 The five debrief fixes were on `main` (`84192dd`, `27bf89b`, `e913e04`, `71d0c8b`)

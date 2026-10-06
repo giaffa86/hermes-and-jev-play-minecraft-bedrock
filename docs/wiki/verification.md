@@ -21,6 +21,16 @@ material selection and controller integration. ⏳ Real BDS placement, edge move
 procurement and cleanup require a scoped round in an approved test area.
 No live construction success is claimed.
 
+## Deep Dark / Warden (spec only)
+
+❌ [Deep Dark stealth](deep-dark.md): no vibration model, no sneak movement
+mode, no shrieker/Warden logic, no underground 3D navigation. The
+`ancient_city` marker rule exists (`structures.mjs:86-96`) but has never fired
+live, and `DIG_PROTECTED` (`bedrock-adapter.mjs:85`) keeps the bot from
+*breaking* sculk, not from *being heard*. Nothing is live-verified and none of
+W0–W6 is implemented; the Bedrock numbers (8-block sphere, player-vibration
+relay, 3-shriek summon) must be re-probed first.
+
 ## How to run
 
 **Close-out policy (04/10): bot OFF by default.** Restart only for a precise,

@@ -19,6 +19,7 @@ never committed.
 | `docs/raw/REDSTONE_ROADMAP.md` | `docs/raw/` | Redstone roadmap (Italian): component sensing, oriented placement, switches/delay lines/observers/hoppers, declarative circuit blueprints, verification/teardown, R0–R6. |
 | `docs/raw/GOAL_ACHIEVEMENT_MINECRAFT.txt` | `docs/raw/` | Proposal (Italian): goal-driven agentic gameplay — pipeline, Goal Contract, task graph + primitive skills, suspend/resume, semantic goals, 5 progressive benchmarks. |
 | `docs/raw/NETHER_ROADMAP.md` | `docs/raw/` | Nether/End roadmap (Italian): portal locate/build, Nether survival, ghast dodge, piglin bartering, enderman gaze, fortress/blaze, stronghold/End/dragon, N0–N7. |
+| `docs/raw/DEEP_DARK_ROADMAP.md` | `docs/raw/` | Deep Dark stealth roadmap (English): sculk sensor vibration model, verified sneak-walk, vibration-cost stealth pathfinding, shrieker/Warden warning, the escape tactic, underground 3D navigation and `find_deep_dark` (W0–W6). |
 | `docs/raw/evidence/` | `docs/raw/evidence/` | JSONL evidence from early harness runs. |
 
 ## Source code (authoritative for behaviour)
