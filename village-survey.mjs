@@ -22,8 +22,26 @@
 //   - the census never guesses: a crop whose maturity the observer could not
 //     read stays `unknown`, and a field the input does not carry stays `null`.
 
-import { isCropBlock, seedForCrop, isFarmAnimalType } from './bedrock-survival.mjs';
+import { isCropBlock, seedForCrop, isFarmAnimalType, CROP_BLOCKS } from './bedrock-survival.mjs';
 import { detectStructures, scoreStructures } from './structures.mjs';
+
+// Le famiglie che il censimento sa cercare *per nome*: `findBlocks` vuole un nome
+// esatto, quindi la lista dei recinti non è una whitelist scritta qui (11 legni,
+// il muro di mattoni del Nether, le cancellate) ma i nomi che la survey ha già
+// visto, filtrati per famiglia. Letti e colture sono invece nomi di gioco.
+const VILLAGE_FENCE = /fence|_wall$/;
+
+export function isVillageFenceName (name) {
+  return VILLAGE_FENCE.test(nameOf(name));
+}
+
+// Names the census has to scan for cells, given the names a `surveyBlocks` pass
+// saw in the area. Sorted and de-duplicated so the scan order is deterministic.
+export function villageCensusNames (surveyed = []) {
+  const names = ['bed', ...CROP_BLOCKS];
+  for (const name of surveyed || []) if (isVillageFenceName(name)) names.push(nameOf(name));
+  return [...new Set(names)].sort();
+}
 
 export const VILLAGE_HOUSE_RADIUS = 8;
 export const VILLAGE_PLOT_RADIUS = 4;
@@ -84,6 +102,14 @@ const planar = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 
 // Deterministic order: an input order must never change the census.
 const byPosition = (a, b) => (a.position.z - b.position.z) || (a.position.x - b.position.x) || (a.position.y - b.position.y);
+const cellKey = position => `${Math.round(position.x)},${Math.round(position.y)},${Math.round(position.z)}`;
+// Una cella riporta un booleano solo quando l'osservazione lo sa: `null` è
+// "non lo so", un fatto diverso da `false`.
+const triState = value => {
+  if (value === true) return true;
+  if (value === false) return false;
+  return null;
+};
 
 // Greedy chaining: a row joins the first group of the same key with a member
 // within `radius`. Deterministic given a sorted input, and it follows the shape
@@ -113,8 +139,8 @@ function nearbyCells (nearby) {
       rows.push({
         name,
         position,
-        mature: cell?.mature === true ? true : (cell?.mature === false ? false : null),
-        occupied: cell?.occupied === true ? true : (cell?.occupied === false ? false : null),
+        mature: triState(cell?.mature),
+        occupied: triState(cell?.occupied),
       });
     }
   }
@@ -122,18 +148,38 @@ function nearbyCells (nearby) {
 }
 
 // `observe().bed` knows whether a bed is occupied; when it is available it
-// replaces the bed cells seen in `nearby` (never doubles them).
+// *enriches* the bed cells seen in `nearby`. Enrich, never replace: the list may
+// be capped by whoever read it (the adapter asks the world for N beds), and a
+// capped list must never shrink a census taken over the whole radius.
 function withBeds (cells, beds) {
   if (!Array.isArray(beds) || !beds.length) return cells;
   const rows = beds
-    .map(bed => ({ position: pos(bed?.position), occupied: bed?.occupied === true ? true : (bed?.occupied === false ? false : null) }))
+    .map(bed => ({ position: pos(bed?.position), occupied: triState(bed?.occupied) }))
     .filter(bed => bed.position)
     .map(bed => ({ name: 'bed', position: bed.position, mature: null, occupied: bed.occupied }));
-  return [...cells.filter(cell => !/bed$/.test(cell.name)), ...rows].sort(byPosition);
+  const index = new Map(rows.map(row => [cellKey(row.position), row]));
+  const placed = new Set();
+  const out = [];
+  for (const cell of cells) {
+    const key = cellKey(cell.position);
+    const row = /bed$/.test(cell.name) ? index.get(key) : null;
+    if (row) { out.push(row); placed.add(key); continue; }
+    out.push(cell);
+  }
+  for (const row of rows) {
+    const key = cellKey(row.position);
+    if (placed.has(key)) continue;
+    placed.add(key);
+    out.push(row);
+  }
+  return out.sort(byPosition);
 }
 
 // The detector wants the histogram shape `surveyBlocks` produces; the census has
-// cell lists, so it builds it here instead of asking the caller for both.
+// cell lists, so it builds it here instead of asking the caller for both. A
+// world survey, when the executor has one, is *merged in*: its counts are the
+// whole radius's, while the cell lists are bounded (capped per name), and the
+// verdict must not get smaller because the census could not read every cell.
 function histogramOf (cells) {
   const survey = new Map();
   for (const cell of cells) {
@@ -142,6 +188,32 @@ function histogramOf (cells) {
     else survey.set(cell.name, { count: 1, first: { ...cell.position } });
   }
   return survey;
+}
+
+function entriesOf (survey) {
+  if (survey instanceof Map) return survey.entries();
+  return Object.entries(survey ?? {});
+}
+
+// Merge a world survey (`surveyBlocks().names`) into the census histogram. The
+// counts are the whole radius's, the cell lists are bounded per name: the verdict
+// must not shrink just because the census could not read every cell, and the
+// detector must see the same numbers `GET /observe.structures` saw.
+function mergeHistogram (histogram, survey) {
+  if (!survey) return histogram;
+  for (const [name, row] of entriesOf(survey)) {
+    const key = nameOf(name);
+    const count = Number.isFinite(row?.count) ? row.count : null;
+    const first = pos(row?.first);
+    const existing = histogram.get(key);
+    if (!existing) {
+      histogram.set(key, { count: count ?? 1, first });
+      continue;
+    }
+    if (count != null) existing.count = Math.max(existing.count, count);
+    if (!existing.first) existing.first = first;
+  }
+  return histogram;
 }
 
 function countFor (verdict, label) {
@@ -251,9 +323,15 @@ function pensOf (entities, cells, radius) {
  * @param {object}   input
  * @param {object}   input.nearby       `observe().nearby`: block name → cells `{position, mature}`
  * @param {Array}    input.farmAnimals  `observe().farmAnimals`: `[{type, position, baby}]`
+ * @param {Array}    [input.entities]   `observe().entities`: the detector's entity evidence (villagers
+ *   included). It is a *different* list from `farmAnimals`: the pens read the livestock, the detector
+ *   reads villagers. Defaults to `farmAnimals` so a caller with one list does not have to invent two.
  * @param {Array}    [input.beds]       `observe().bed`: `[{position, occupied}]` (richer than `nearby`)
  * @param {Array}    [input.containers] storage register rows (`position`, `type`, contents)
  * @param {object}   [input.anchor]     known village anchor (`{x,y,z}`), e.g. from world memory
+ * @param {Map|object} [input.survey]   `surveyBlocks().names`: the executor's histogram. Its
+ *   counts are the whole radius's, while the cell lists are bounded per name: merging the two
+ *   keeps the verdict (and the anchor's `first` position) identical to `GET /observe.structures`.
  * @param {string}   [input.dimension]  default `overworld`
  * @param {number}   [input.scanned]    how many cells the executor looked at
  * @param {object}   [input.limits]     `{houseRadius, plotRadius, penRadius, maxCells}`
@@ -262,9 +340,11 @@ function pensOf (entities, cells, radius) {
 export function surveyVillage ({
   nearby = {},
   farmAnimals = [],
+  entities = null,
   beds = null,
   containers = [],
   anchor = null,
+  survey = null,
   dimension = 'overworld',
   scanned = null,
   limits = {},
@@ -282,10 +362,13 @@ export function surveyVillage ({
   const animals = farmAnimals.filter(entity => isFarmAnimalType(entity?.type));
   const known = anchor ? pos(anchor) : null;
 
-  const histogram = histogramOf(cells);
-  const detected = detectStructures({ survey: histogram, entities: farmAnimals, position: known, dimension })
+  const histogram = mergeHistogram(histogramOf(cells), survey);
+  // The detector's entity evidence (villagers) is not the livestock list: a village
+  // confirms on villagers even when every animal in sight belongs to a pen.
+  const entityRows = entities ?? farmAnimals;
+  const detected = detectStructures({ survey: histogram, entities: entityRows, position: known, dimension })
     .find(found => found.type === 'village') ?? null;
-  const verdict = scoreStructures({ survey: histogram, entities: farmAnimals, dimension })
+  const verdict = scoreStructures({ survey: histogram, entities: entityRows, dimension })
     .find(score => score.type === 'village') ?? null;
 
   const houses = housesOf(cells, storage, houseRadius);
@@ -293,11 +376,12 @@ export function surveyVillage ({
   const pens = pensOf(animals, cells, penRadius);
 
   const checked = scanned == null ? (cells.length > 0 || animals.length > 0 || storage.length > 0) : scanned > 0;
-  const state = !checked
-    ? null
-    : detected ? VILLAGE_DETECTION_STATE.CONFIRMED
-      : verdict?.matched.length ? VILLAGE_DETECTION_STATE.CANDIDATE
-        : VILLAGE_DETECTION_STATE.NOT_FOUND;
+  let state = null;
+  if (checked) {
+    if (detected) state = VILLAGE_DETECTION_STATE.CONFIRMED;
+    else if (verdict?.matched.length) state = VILLAGE_DETECTION_STATE.CANDIDATE;
+    else state = VILLAGE_DETECTION_STATE.NOT_FOUND;
+  }
 
   const site = known ?? detected?.position ?? houses[0]?.anchor ?? null;
   const ordered = site

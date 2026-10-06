@@ -3890,3 +3890,52 @@ container kept running the image deployed at 11:19. Both are closed here.
   (`villageRegister`), the `VILLAGE_PLOT_MIN_CELLS` threshold (cells are
   reported now, the threshold is not applied), the `survey_village` action and
   the four-case live row.
+
+## [2026-10-06] feat | The village census reaches a client, and its scan has no name whitelist
+
+- **Two inputs the detector wants and the pens must not receive.**
+  `surveyVillage` gains `entities` and `survey`. `entities` is the detector's
+  entity evidence (`observe().entities`, villagers included) and is a *different
+  list* from `farmAnimals`, which lives in the pens: the live path fed the
+  livestock to `detectStructures`, so a real village could never reach
+  `CONFIRMED`. `survey` is the executor's own `surveyBlocks().names` histogram,
+  merged into the census histogram: its **counts** cover the whole radius while
+  the cell lists are capped per name, so the verdict, the `evidence` numbers and
+  the anchor stay identical to `GET /observe.structures` while `counts` keeps
+  describing the cells the census could actually cluster. `withBeds` now
+  *enriches* (`observe().bed` adds `occupied`) instead of replacing the bed
+  cells: a capped bed list must never shrink a census.
+- Pure exports that make the scan possible without a whitelist:
+  `villageCensusNames(surveyed)` returns `bed` + `CROP_BLOCKS` + the names the
+  survey says are fences (`isVillageFenceName`, `VILLAGE_FENCE =
+  /fence|_wall$/`), deduplicated and ordered — the fence family is **discovered**
+  from the histogram. `CROP_BLOCKS` is now exported by `bedrock-survival.mjs`
+  instead of being private, `cellKey` and `triState` keep the pure code free of
+  nested ternaries.
+- Adapter: `_villageCells({point, radius = STRUCTURE_RADIUS, limit})` runs one
+  `world.surveyBlocks` pass to learn which names exist and then
+  `world.findBlocks(name, point, 48, VILLAGE_CELL_CAP)` (64) for `bed`, the crops
+  and those fences, reading maturity per cell via `cropMaturity` with a
+  live-column fallback — unreadable stays `null`, never guessed. A name that hits
+  the cap is declared in `blocks.cappedNames` (`blocks.capped: true`): that count
+  is a lower bound, not a measurement. `_villageView({force, limits})` memoizes
+  the census for `VILLAGE_RESCAN_MS` (60000) and publishes it as
+  `observe().village` and `GET /observe.village?force=1`, adding `at`, `origin`
+  and `blocks` to the pure payload.
+- `observe().nearby` is a **sample**, not a census: it is built with
+  `findBlocks(name, position, 96, 4)`, four cells per name, while the live village
+  holds thirty beds. So the read path does not read it, and
+  `tests/village-view.test.mjs` (6 adapter cases, no server) leaves it empty on
+  purpose: cells come from the world, the detector reads the villagers while the
+  cattle is a pen, memoization answers without re-reading while `force` re-reads,
+  the per-name cap is declared (70 beds ⇒ `cappedNames: ['bed']`, `counts.beds:
+  64`), the register arrives with both states ordered from the anchor, and an
+  adapter with nothing to read says `checked: false, state: null`.
+- `tests/village-survey.test.mjs` grows to 16 cases: `entities` is the detector's
+  evidence and `farmAnimals` are the pens, a world survey keeps the counts (the
+  evidence can read `beds 30` while `counts.beds` stays 2 and the anchor comes
+  from the survey), and a capped bed list enriches without shrinking (six beds
+  stay six). Full suite **1694/1694**, `npm run wiki:lint` clean.
+- Still open: the `survey_village` action (rung 4) and the four-case live row, the
+  memory-first read (`villageRegister`) and the `VILLAGE_PLOT_MIN_CELLS`
+  threshold.

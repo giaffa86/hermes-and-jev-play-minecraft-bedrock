@@ -12,8 +12,8 @@ consulted as a lookup — and the one spoken order it exists to serve:
 The analogy is a robot vacuum: the map is drawn on a slow pass, and every later
 task is a route over known cells rather than a new exploration.
 
-Status: **V0 model + census + V1/V2 storage path landed (2026-10-06); the sweep
-action and the farm order are still spec.** `world-memory.mjs` keeps discovery and inspection as
+Status: **V0 model + census + read path + V1/V2 storage path landed
+(2026-10-06); the sweep action and the farm order are still spec.** `world-memory.mjs` keeps discovery and inspection as
 two facts with two clocks, the rung-2 query exists, and the storage matcher is a
 family match instead of a name whitelist (`0650877`); the adapter now **writes** a
 discovery while the bot walks (`_surveyStorage`, `_rememberStorageDiscovery`) and
@@ -23,9 +23,11 @@ the **deposit** decision climbs the ladder before looking at the world
 `observe().deposit`. The **census** is now a pure module (`village-survey.mjs`)
 that calls the detector's own rule instead of a copy, and the sweep is wired as a
 **configuration** of the general planner (`villageSweepConfig` →
-`planExplorationSweep`, 7 offline cases). What is still missing is the bounded
-sweep itself (`survey_village`, rung 4), the farm-order classifier (V3) and the
-live four-case round. Everything else on this roadmap is spec.
+`planExplorationSweep`, 7 offline cases). The **read path** followed: the adapter
+gathers the census's own bounded cell scan and publishes it as
+`observe().village` / `GET /observe.village?force=1`. What is still missing is the
+bounded sweep itself (`survey_village`, rung 4), the farm-order classifier (V3)
+and the live four-case round. Everything else on this roadmap is spec.
 Everything it builds on (the histogram survey, the marker detector, the container
 memory, the harvest/plant/deposit actions, the village chores) already exists and
 is listed below as the baseline; the two real gaps are the aggregation and the
@@ -102,11 +104,12 @@ is still rebuilt from the loaded radius on every call.
 
 ### What landed (2026-10-06): a pure census, and the sweep as a configuration
 
-Three things stopped being spec and became code:
+Four things stopped being spec and became code:
 
 - **The census is pure.** `village-survey.mjs` exports
-  `surveyVillage({nearby, farmAnimals, beds, containers, anchor, dimension,
-  scanned, limits})`, consuming the observation the adapter already produces and
+  `surveyVillage({nearby, farmAnimals, entities, beds, containers, anchor,
+  survey, dimension, scanned, limits})`, consuming the observation the adapter
+  already produces and
   returning `{checked, anchor, houses, plots, pens, storage, missing, detection,
   counts, survey}`. Deterministic, clock-free, I/O-free: the same observation
   yields the same census, even through a shuffled input. Houses are bed clusters
@@ -122,6 +125,16 @@ Three things stopped being spec and became code:
   and the `missing` list cannot drift from `GET /observe.structures`. `checked`
   is the honest half: `false` with `detection.state: null` means *nobody looked*,
   which is a different fact from `NOT_FOUND` (*looked and empty*).
+- **Two inputs the detector wants and the pens must not receive.** `entities` is
+  the detector's entity evidence (`observe().entities`, villagers included) and is
+  a *different list* from `farmAnimals`, which lives in the pens: feeding the
+  livestock to `detectStructures` meant a real village could never reach
+  `CONFIRMED`. `survey` is the executor's own histogram: its **counts** cover the
+  whole radius while the cell lists are capped per name, so the verdict, the
+  `evidence` numbers and the anchor stay identical to `GET /observe.structures`
+  while `counts` keeps describing the cells the census could actually cluster.
+  And a capped bed list *enriches* the census (`observe().bed` adds `occupied`)
+  instead of replacing its cells: it must never shrink it.
 - **The sweep is a configuration, not a second engine.**
   `villageSweepConfig({anchor, radius, spacing, visited})` returns exactly the
   input of `planExplorationSweep` (`exploration.mjs`): the anchor from the
@@ -134,11 +147,42 @@ Three things stopped being spec and became code:
   counts the **blocks** one waypoint's census may scan, while the planner's
   waypoint budget is the spiral itself.
 
-Tests: `tests/village-survey.test.mjs` (13 cases) and
-`tests/village-sweep.test.mjs` (7 offline cases). Still open in this milestone:
-`GET /observe.village`, the memory-first read (`villageRegister`), the
+Tests: `tests/village-survey.test.mjs` (16 cases), `tests/village-sweep.test.mjs`
+(7 offline cases) and `tests/village-view.test.mjs` (6 cases, the read path).
+Still open in this milestone: the memory-first read (`villageRegister`), the
 `VILLAGE_PLOT_MIN_CELLS` threshold (a cluster is reported with its count, the
 threshold is left to the caller), and the live rows.
+
+### What landed (2026-10-06): the read path — a census the adapter can publish
+
+The pure census had no way to reach a client: `observe()` had no village field,
+and `observe().nearby` is a *sample*, not a census (`bedrock-adapter.mjs:1145`):
+`findBlocks(name, position, 96, 4)` keeps **four cells per name**, and the live
+village has thirty beds. So the adapter owns a bounded scan of its own:
+
+- `_villageCells({point, radius, limit})` runs one `world.surveyBlocks` pass to
+  learn **which names exist** — the fence family is discovered from that
+  histogram, never from a whitelist — then `world.findBlocks(name, point, 48,
+  VILLAGE_CELL_CAP)` for `bed`, the crop blocks and those fences. Maturity is read
+  per cell (`cropMaturity`, with a live-column fallback); unreadable stays `null`,
+  never guessed.
+- A name that hits the per-name cap is **declared** in `blocks.cappedNames`
+  (with `blocks.capped: true`): that count is a lower bound, not a measurement.
+- `_villageView({force, limits})` memoizes the census for `VILLAGE_RESCAN_MS`
+  (60 s) and feeds it the cells, the livestock, the entities (villagers), the beds
+  with occupancy, the storage register (`known` → `contentsKnown: true`,
+  `toInspect` → `contentsKnown: false`), the detected village's anchor, the survey
+  histogram and the scanned count; it adds `at`, `origin` and `blocks` to the pure
+  payload. It is exposed as `observe().village` (memoized, so the hot `observe()`
+  costs one scan a minute) and as `GET /observe.village?force=1`.
+
+`tests/village-view.test.mjs` covers the collection rather than the arithmetic:
+cells come from the world and not from the sample (the observation's `nearby` is
+empty on purpose in the test), the detector reads the villagers while the cattle
+is a pen, the per-name cap is declared (70 beds in the world ⇒ `cappedNames:
+['bed']`, `counts.beds: 64`), the register arrives with both states and ordered
+from the anchor, and an adapter with nothing to read answers `checked: false,
+state: null` — *not looked* is not *looked and empty*.
 
 ## Register or sensor?
 

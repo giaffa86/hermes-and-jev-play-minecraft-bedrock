@@ -199,7 +199,9 @@ const SEED_TO_CROP = {
   nether_wart: 'nether_wart',
 };
 
-const CROP_BLOCKS = new Set(Object.values(SEED_TO_CROP));
+// Crop block names, for callers that need to *scan* the world by name (a census),
+// not only to ask `isCropBlock(name)` about a block they already hold.
+export const CROP_BLOCKS = new Set(Object.values(SEED_TO_CROP));
 
 export function isFarmAnimalType (type) {
   return FARM_ANIMAL_TYPES.has(normalizeEntityType(type));

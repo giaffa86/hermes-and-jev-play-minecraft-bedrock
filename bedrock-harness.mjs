@@ -218,6 +218,13 @@ server = createServer(async (req, res) => {
         try { adapter._surveyStructures({ force: true, radius, limit }); } catch (e) { error = e.message; }
       }
       response = [200, { ok: !error, error, structures: adapter.structures ?? [], survey: adapter._structureSurvey ?? null }];
+    } else if (req.method === 'GET' && req.url.startsWith('/observe.village')) {
+      // Censimento del sito (V0): case, appezzamenti, recinti, depositi e
+      // l'evidenza del detector sullo stesso metodo. La vista è memoizzata
+      // (throttle `VILLAGE_RESCAN_MS`), `?force=1` rifà subito lo scan.
+      const u = new URL(req.url, 'http://x');
+      const force = /^(1|true|on)$/i.test(u.searchParams.get('force') ?? '');
+      response = [200, { ok: true, village: adapter._villageView({ force }) }];
     } else if (req.method === 'GET' && req.url.startsWith('/observe.fluids')) {
       // Fluidi (M0 di docs/wiki/fluids.md): stato delle celle del bot + censimento
       // di acqua/lava nell'area caricata. Il censimento è in cache, `?force=1` lo

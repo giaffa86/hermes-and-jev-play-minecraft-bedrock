@@ -25,6 +25,9 @@ import { VALUABLE_ORE_NAMES, oreValue } from './ore-value.mjs';
 // cui il controller ha capito l'ordine.
 import { matchesItemToken } from './human-questions.mjs';
 import { detectStructures } from './structures.mjs';
+// Il censimento del sito è una funzione pura (`village-survey.mjs`): l'adapter
+// raccoglie i fatti (celle, letti, contenitori, entità) e non decide nulla.
+import { surveyVillage, villageCensusNames } from './village-survey.mjs';
 import { planStorageSearch, STORAGE_RUNG, STORAGE_STEP } from './storage-ladder.mjs';
 import { storageBlockNames, isStorageBlock } from './storage-blocks.mjs';
 import { summarizeFluids, fluidCells, fluidHazard, fluidKind, rankEscapeCells, digFluidRisk, swimInputFlags, deepWaterColumns, DEFAULT_FLUID_RADIUS, DEFAULT_FLUID_LIMIT, LAVA_CONTACT_RANGE } from './bedrock-fluids.mjs';
@@ -194,6 +197,12 @@ const STORAGE_READ_WALK_MS = 8000;
 const STORAGE_TAKE_WALK_MS = 75000;
 // TTL della cache contenitori: altri giocatori possono cambiare le scorte.
 const CONTAINER_TTL_MS = 5 * 60 * 1000;
+// V0 — il censimento del sito è un fatto da *sito*, non da istante: si legge una
+// volta e si riusa. Celle bounded (un tetto per nome: un campo di grano da 300
+// celle non deve mangiare il budget del censimento) e vista memoizzata, perché
+// `observe()` la legge a ogni passo del controller.
+const VILLAGE_RESCAN_MS = +(process.env.VILLAGE_RESCAN_MS || 60000);
+const VILLAGE_CELL_CAP = +(process.env.VILLAGE_CELL_CAP || 64);
 // M3c — cosa non finisce mai nello scrigno: gli strumenti e l'equipaggiamento con
 // cui il bot lavora, torce e stazioni portatili, le sementi, e una riserva di
 // cibo. `_depositableItems()` è la politica unica, letta sia da `dump_inventory`
@@ -401,6 +410,7 @@ export class BedrockAdapter {
     this.structures = [];          // strutture rilevate nell'ultima ricognizione (M5/M6)
     this._structureSurvey = null;  // riassunto dell'ultima ricognizione (per /observe)
     this._structureSurveyAt = 0;
+    this._villageCache = null;     // ultima vista del sito (V0): memoizzata, vedi _villageView()
     this._fluidScan = null;        // censimento acqua/lava nell'area caricata (M0)
     this._fluidScanAt = 0;
     // W0: censimento sculk (sensori, shrieker, celle della famiglia) e livello di
@@ -1348,6 +1358,92 @@ export class BedrockAdapter {
       this.log('structure_survey_failed', { message: error.message });
     }
     return this.structures;
+  }
+
+  // Le celle che il censimento sa leggere: letti, colture e recinti. La survey
+  // dice *quali nomi esistono* nell'area (i recinti sono una famiglia, non un
+  // nome) e `findBlocks` ne prende le posizioni, con un tetto per nome. Quando un
+  // nome tocca il tetto il conteggio è un minimo, non un fatto: la vista lo dice
+  // (`blocks.capped`), invece di far sembrare il mondo più piccolo di com'è.
+  _villageCells ({ point = null, radius = STRUCTURE_RADIUS, limit = STRUCTURE_SURVEY_LIMIT } = {}) {
+    const center = point ?? this.position;
+    if (!center || !this.world?.findBlocks) return { cells: {}, histogram: null, stats: null };
+    let stats = null;
+    let histogram = null;
+    let names = villageCensusNames([]);
+    if (typeof this.world?.surveyBlocks === 'function') {
+      try {
+        const survey = this.world.surveyBlocks(center, radius, { limit });
+        if (typeof survey?.names?.keys === 'function') histogram = survey.names;
+        if (histogram) names = villageCensusNames([...histogram.keys()]);
+        stats = { scanned: survey?.scanned ?? 0, distinct: survey?.distinct ?? 0, truncated: survey?.truncated === true };
+      } catch (error) {
+        this.log('village_survey_failed', { message: error.message });
+      }
+    }
+    const cells = {};
+    const capped = [];
+    for (const name of names) {
+      let found = [];
+      try { found = this.world.findBlocks(name, center, radius, VILLAGE_CELL_CAP) || []; } catch { found = []; }
+      if (!found.length) continue;
+      if (found.length >= VILLAGE_CELL_CAP) capped.push(name);
+      cells[name] = found.map(block => ({
+        name,
+        position: block.position,
+        mature: isCropBlock(name) ? this._cropMature(block) : null,
+      }));
+    }
+    return { cells, histogram, stats: stats ? { ...stats, capped } : null };
+  }
+
+  // Maturità di una cella di coltura. `cropMaturity` può non sapere (blocco non
+  // ancora materializzato): allora si rilegge la colonna viva, e se nemmeno
+  // quella risponde la cella resta `unknown` — mai indovinata.
+  _cropMature (block) {
+    const read = candidate => {
+      try { return cropMaturity(candidate); } catch { return null; }
+    };
+    let state = read(block);
+    if ((!state || typeof state.mature !== 'boolean') && block?.position && typeof this.world?.blockAt === 'function') {
+      try { state = read(this.world.blockAt(block.position)); } catch { state = null; }
+    }
+    return state && typeof state.mature === 'boolean' ? state.mature : null;
+  }
+
+  // V0 — la vista del sito: un censimento *puro* (`village-survey.mjs`) alimentato
+  // da fatti raccolti qui (celle, letti con occupazione, contenitori del registro,
+  // entità). `entities` è l'evidenza del detector (villager inclusi) e resta
+  // distinta da `farmAnimals`, che vive nei recinti. È memoizzata perché
+  // `observe()` la legge a ogni passo: `force` rifà subito lo scan (diagnostica).
+  _villageView ({ force = false, limits = {} } = {}) {
+    const now = Date.now();
+    if (!force && this._villageCache && now - this._villageCache.at < VILLAGE_RESCAN_MS) return this._villageCache.payload;
+    this._surveyStructures({ force });
+    const { cells, histogram, stats } = this._villageCells({});
+    const storage = this._storageView();
+    const payload = {
+      ...surveyVillage({
+        nearby: cells,
+        farmAnimals: this._nearbyFarmAnimals(24),
+        entities: this._nearbyEntities(24),
+        beds: this._findBeds(),
+        containers: [
+          ...storage.known.map(row => ({ ...row, contentsKnown: true })),
+          ...storage.toInspect.map(row => ({ position: row.position, type: row.type, contains: null, contentsKnown: false, status: row.status })),
+        ],
+        anchor: this.structures?.find(found => found.type === 'village')?.position ?? null,
+        survey: histogram,
+        dimension: this.dimension,
+        scanned: stats?.scanned ?? null,
+        limits,
+      }),
+      at: now,
+      origin: this.position ? { x: this.position.x, y: this.position.y, z: this.position.z } : null,
+      blocks: stats ? { distinct: stats.distinct, truncated: stats.truncated, capped: stats.capped.length > 0, cappedNames: stats.capped } : null,
+    };
+    this._villageCache = { at: now, payload };
+    return payload;
   }
 
   _refreshInventory () {
@@ -3992,6 +4088,7 @@ export class BedrockAdapter {
       nearby: this.nearbyBlocks,
       structures: this.structures.slice(0, 8),
       structureSurvey: this._structureSurvey,
+      village: this._villageView(),
       fluids,
       dive: this._diveView({ fluids }),
       lava: this._lavaView(),

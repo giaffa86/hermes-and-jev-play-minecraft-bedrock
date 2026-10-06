@@ -415,6 +415,8 @@ harness still decides which of the three steps is legal *now*.
 | `VILLAGE_SURVEY_RADIUS` | `48` | Block bound of one village sweep, measured from the anchor (same reach as `STRUCTURE_RADIUS`). |
 | `VILLAGE_SURVEY_SPACING` | `24` | Side of one spiral cell of the walk: finer than the bound, so a village is a handful of waypoints. The planner's ring count is derived from these two (`floor(radius / (spacing * √2))`), never set by hand. |
 | `VILLAGE_SURVEY_MAX_MS` | `120000` | **Execution budget**: wall-clock ceiling of one sweep. Pathfinding, detours, chunk loading and obstacles make the cell count a poor proxy for cost, so this limit is not derivable from `VILLAGE_SURVEY_CELLS` and vice versa; the first of the two reached wins (initial value, to be tuned by the first live sweep). |
+| `VILLAGE_RESCAN_MS` | `60000` | **Throttle of the view** (`GET /observe.village`, `observe().village`): the census is a fact of a *site*, not of an instant, so it is read once and reused. It is not the sweep cooldown (`VILLAGE_SURVEY_MS`), which bounds a whole mission. |
+| `VILLAGE_CELL_CAP` | `64` | Cell cap **per block name** of the view's scan (`findBlocks` returns at most N). A name that hits it is reported in `blocks.cappedNames`: its count is a lower bound, never a measurement. |
 | `VILLAGE_HOUSE_RADIUS` | `8` | Radius that clusters beds/containers into one house. |
 | `VILLAGE_PLOT_MIN_CELLS` | `4` | Below this a crop cluster is not a plot. |
 | `VILLAGE_MEMORY_TTL_MS` | `86400000` | After this a village fact is `stale` and must be re-read before it is depended on. |
@@ -428,7 +430,8 @@ harness still decides which of the three steps is legal *now*.
 **Deliverable**
 
 - New pure module `village-survey.mjs`: `surveyVillage({nearby, farmAnimals,
-  beds, containers, anchor, dimension, scanned, limits})` → the payload above.
+  entities, beds, containers, anchor, survey, dimension, scanned, limits})` → the
+  payload above.
   Deterministic, no I/O, no clock, no LLM. **Landed**: the signature consumes the
   observation shape the adapter already produces (`nearby` cells with `mature`,
   `farmAnimals`, `bed`, the storage register) and it does not reimplement the
@@ -437,10 +440,22 @@ harness still decides which of the three steps is legal *now*.
   `scoreStructure(def, {blockRows, entityRows, dimension})` and
   `scoreStructures(...)`, and the census calls the same rule, so
   `NOT_FOUND`/`CANDIDATE`/`CONFIRMED` can never drift from
-  `GET /observe.structures`. `tests/village-survey.test.mjs` (13 cases) covers
+  `GET /observe.structures`. `tests/village-survey.test.mjs` (16 cases) covers
   the pure half. Still open here: the `VILLAGE_PLOT_MIN_CELLS` threshold is not
   applied (a cluster is reported with its count and the threshold stays the
-  caller's decision), and everything below is not landed.
+  caller's decision), and the memory-first read below is not landed.
+- **Two inputs the detector needs and the pens must not get (landed).**
+  `entities` is the detector's entity evidence (`observe().entities`, villagers
+  included) and is a *different list* from `farmAnimals`, which lives in the
+  pens: the live path used to feed `farmAnimals` to `detectStructures`, so a real
+  village could never reach `CONFIRMED` (no villagers in the livestock list).
+  `survey` is the executor's own `surveyBlocks().names` histogram, merged into the
+  census histogram: its *counts* are the whole radius's while the cell lists are
+  capped per name, so the verdict, the `evidence` numbers and the anchor's `first`
+  position stay identical to `GET /observe.structures` — and `counts` keeps
+  describing the cells the census could actually cluster. `withBeds` now
+  *enriches* the bed cells (`observe().bed` carries `occupied`) instead of
+  replacing them: a capped bed list must never shrink a census.
 - Clustering rules, each with its own `evidence` and threshold: house = a bed or
   a container plus its reachable surroundings within `VILLAGE_HOUSE_RADIUS`;
   plot = ≥ `VILLAGE_PLOT_MIN_CELLS` cells of the same crop family with a shared
@@ -448,7 +463,25 @@ harness still decides which of the three steps is legal *now*.
 - Adapter: extend the structure view (`_surveyStructures:1279`) into a village
   view and expose `GET /observe.village` (additive; `observe().village`), always
   with `checked: true` when a survey ran, so an empty village is not confused
-  with "not looked".
+  with "not looked". **Landed (the read path)**: `_villageCells({point, radius,
+  limit})` is the census's own bounded scan — one `world.surveyBlocks` pass for
+  the names that exist (the fence family is discovered from it, never from a
+  whitelist) plus `world.findBlocks(name, point, STRUCTURE_RADIUS,
+  VILLAGE_CELL_CAP)` for `bed`, the crop blocks (`CROP_BLOCKS`) and those fences,
+  maturity read per cell via `cropMaturity` with a live-column fallback
+  (unreadable stays `null`, never guessed). `_villageView({force, limits})`
+  memoizes the census for `VILLAGE_RESCAN_MS`, feeds it the cells, the livestock,
+  the entities (villagers), the beds with occupancy, the storage register
+  (`known` → `contentsKnown: true`, `toInspect` → `contentsKnown: false`), the
+  anchor of the detected village, the survey histogram and the scanned count; it
+  adds `at`, `origin` and `blocks` (`{distinct, truncated, capped, cappedNames}`)
+  to the pure payload. `observe().village` carries it (memoized, so the hot
+  `observe()` costs one scan a minute) and `GET /observe.village?force=1` re-reads
+  on demand. `tests/village-view.test.mjs` (6 cases) covers the collection: cells
+  from the world and not from the `observe().nearby` sample (4 per name), the
+  detector reading villagers, memoization and `force`, the per-name cap declared,
+  the register's two states, and "not looked" staying `checked: false,
+  state: null`.
 - **Memory-first read (the actual deliverable).** A `villageRegister({near,
   dimension, includeStale, limit})` read that answers from WorldMemory first and
   falls back to the live radius, merging the two with an explicit `source`:

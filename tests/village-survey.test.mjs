@@ -150,6 +150,51 @@ test('the cell budget truncates deterministically', () => {
   assert.equal(census.survey.truncated, true);
 });
 
+test('the detector reads entities, the pens read the livestock', () => {
+  // Un villaggio confermato da due villager: il detector non guarda il bestiame,
+  // e le mucche restano una pertinenza (il recinto), non evidenza di villaggio.
+  const census = village(
+    { bell: [{ x: 0, z: 0 }], bed: [{ x: 2, z: 0 }, { x: 3, z: 0 }], composter: [{ x: 1, z: 1 }] },
+    { entities: [villager(2, 2), villager(4, 2)], farmAnimals: [{ type: 'cow', position: { x: 8, y: 64, z: 8 } }] },
+  );
+  assert.equal(census.detection.state, VILLAGE_DETECTION_STATE.CONFIRMED);
+  assert.deepEqual(census.detection.evidence, ['bell 1', 'beds 2', 'workstations 1', 'villagers 2']);
+  assert.equal(census.counts.animals, 1, 'la mucca è un recinto');
+  assert.deepEqual(census.pens.map(pen => pen.animals[0].type), ['cow']);
+});
+
+test('a world survey keeps the detector counts while the cells stay bounded', () => {
+  // Il mondo ha trenta letti, il censimento ne ha potuti leggere due: il verdetto
+  // (e l'ancora) devono restare quelli della survey, o il sito sembrerebbe più
+  // piccolo di com'è. `counts` invece dice quante celle il censimento ha in mano.
+  const survey = new Map([
+    ['bell', { count: 1, first: { x: 0, y: 66, z: 4 } }],
+    ['bed', { count: 30, first: { x: 1, y: 64, z: 4 } }],
+    ['composter', { count: 2, first: { x: 2, y: 64, z: 5 } }],
+    ['grass_path', { count: 306, first: { x: 0, y: 64, z: 0 } }],
+  ]);
+  const census = village(
+    { bed: [{ x: 1, z: 4 }, { x: 2, z: 4 }] },
+    { survey, entities: [villager(1, 5), villager(2, 5)], scanned: 4000 },
+  );
+  assert.equal(census.detection.state, VILLAGE_DETECTION_STATE.CONFIRMED);
+  assert.ok(census.detection.evidence.includes('beds 30'), `evidenza ${census.detection.evidence.join(', ')}`);
+  assert.equal(census.counts.beds, 2, 'le celle riportate restano quelle lette');
+  assert.deepEqual(census.anchor, { x: 0, y: 66, z: 4 }, 'ancora della survey, non delle due celle');
+});
+
+test('a capped bed list enriches and never shrinks the census', () => {
+  const rows = [0, 2, 4, 6, 8, 10].map(x => ({ x, z: 0 }));
+  const census = village({ bed: rows }, {
+    beds: [
+      { position: { x: 0, y: 64, z: 0 }, occupied: false },
+      { position: { x: 2, y: 64, z: 0 }, occupied: true },
+    ],
+  });
+  assert.equal(census.counts.beds, 6, 'sei letti restano sei anche se la lista con occupazione ne porta due');
+  assert.equal(census.houses.length, 1);
+});
+
 test('the same observation in another order is the same census', () => {
   const forward = village({
     bed: [{ x: 0, z: 0 }, { x: 2, z: 0 }],
