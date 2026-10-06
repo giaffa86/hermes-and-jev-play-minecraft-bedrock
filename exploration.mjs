@@ -116,6 +116,57 @@ export function planExplorationStep ({ mission, currentPosition, currentBiome, v
   return { action: 'move', waypoint };
 }
 
+// ---- Gradino 4: una passata bounded attorno a un anchor -----------------------------
+//
+// Il planner M1 sa dire qual è il prossimo chunk inesplorato; una *passata* (sweep)
+// è la stessa spirale con due cose in più: un limite geometrico **ancorato** e dei
+// budget. Fuori da qui restano di proposito il tempo di esecuzione (lo misura chi
+// cammina) e la posizione del bot: la causa di stop è funzione di
+// (anchor, visited, config), quindi la stessa passata si riproduce dopo un reload.
+export const SWEEP_STOP = Object.freeze({
+  CELLS: 'cells',         // budget di esplorazione esaurito
+  RADIUS: 'radius',       // bordo geometrico raggiunto: c'è ancora lavoro oltre
+  EXHAUSTED: 'exhausted', // nessuna cella non visitata: il censimento è completo
+});
+
+export function planExplorationSweep ({ anchor = null, visited = [], spacing = 96, maxRadius = 24, cells = null, radius = null } = {}) {
+  const config = { spacing, maxRadius, cells, radius };
+  if (!anchor) {
+    return { ok: false, error: 'no_anchor', anchor: null, config, waypoints: [], next: null, planned: 0, truncated: false, stoppedBy: null, boundary: null, remaining: null, complete: false };
+  }
+  const seen = visited instanceof Set ? visited : new Set(visited);
+  const waypoints = [];
+  let pendingBeyond = 0;
+  let truncated = false;
+  let stoppedBy = SWEEP_STOP.EXHAUSTED;
+  for (const o of spiralOffsets(maxRadius)) {
+    const point = { x: Math.round(anchor.x + o.dx * spacing), z: Math.round(anchor.z + o.dz * spacing) };
+    if (seen.has(chunkKey(point.x, point.z))) continue;
+    // Distanza planare dall'anchor: condizione geometrica pura. Mai la posizione
+    // del bot, che renderebbe la stessa passata diversa da un riavvio all'altro.
+    const distance = Math.hypot(point.x - anchor.x, point.z - anchor.z);
+    if (radius !== null && distance > radius) { pendingBeyond++; continue; }
+    if (cells !== null && waypoints.length >= cells) { truncated = true; stoppedBy = SWEEP_STOP.CELLS; break; }
+    waypoints.push({ ...point, distance: Math.round(distance * 100) / 100 });
+  }
+  if (!truncated && pendingBeyond > 0) { truncated = true; stoppedBy = SWEEP_STOP.RADIUS; }
+  return {
+    ok: true,
+    anchor: { ...anchor },
+    config,
+    waypoints,
+    next: waypoints[0] ?? null,
+    planned: waypoints.length,
+    truncated,
+    stoppedBy,
+    // Il censimento può essere completo *dentro* il raggio e comunque troncato:
+    // `pendingBeyond` è il lavoro non visitato che resta fuori dal bordo.
+    boundary: radius !== null ? { limit: SWEEP_STOP.RADIUS, maxDistance: radius, pendingBeyond } : null,
+    remaining: cells !== null ? Math.max(0, cells - waypoints.length) : null,
+    complete: !truncated,
+  };
+}
+
 // ---- M4: observable targets (blocks / entities) ------------------------------------
 //
 // Cercare un *oggetto osservabile* è la stessa missione dell'M1 con un target

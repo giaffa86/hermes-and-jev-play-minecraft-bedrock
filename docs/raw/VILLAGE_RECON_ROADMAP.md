@@ -353,7 +353,9 @@ already offers (`harvest_*`, `plant_*`, `deposit_*`, `dump_inventory`).
                "animals": [{ "type": "cow", "adults": 2, "babies": 1 }] }],
   "storage":[{ "position": {...}, "type": "chest", "contains": { "carrot": 12 },
                "rememberedAt": 0, "status": "known" }],
-  "survey": { "scanned": 0, "truncated": false, "stoppedBy": null, "elapsedMs": 0, "at": 0 },
+  "survey": { "scanned": 0, "truncated": false, "elapsedMs": 0, "at": 0,
+              // "cells" | "radius" | "time" | "exhausted"; null when there was no sweep
+              "stoppedBy": null },
   "missing": ["bell (0/1)"],
   "detection": { "state": "CONFIRMED",   // NOT_FOUND | CANDIDATE | CONFIRMED
                  "evidence": ["beds 2/2", "workstations 1/1", "villagers 3/2"] }
@@ -367,12 +369,23 @@ villagers), and `evidence` lists what justified the step. Nothing in this
 vocabulary can be produced by a world query — the position comes from the
 observation, which is why `/locate` stays out of scope.
 
-**Refusal and truncation are two different facts.** `truncated: true` (with
-`stoppedBy`: `"cells"` / `"time"` / `"distance"`) describes the census that *was*
-returned — the sweep ran out of one of its budgets and says which. A typed
-refusal (`village_too_far`, `survey_budget_exhausted`) is the *action result*: the
-mission could not proceed at all. Keeping them apart is what lets the controller
-reason without parsing strings.
+**Refusal and truncation are two different facts.** `truncated: true` describes
+the census that *was* returned — the sweep stopped before the spiral was walked
+out, and `stoppedBy` says which cause fired: `"cells"` (the exploration budget),
+`"radius"` (the bound was reached with unvisited cells still outside it),
+`"time"` (the executor's wall-clock budget). A spiral walked out to its end is
+`"exhausted"` with `truncated: false`. A typed refusal (`village_too_far`,
+`survey_budget_exhausted`) is the *action result*: the mission could not proceed
+at all. Keeping them apart is what lets the controller reason without parsing
+strings.
+
+**The bound is anchored; the clock is not part of the plan.** The geometric limit
+is a pure function of `(anchor, visited, config)`: the distance is measured from
+the anchor, never from the bot's current position, so the same state produces the
+same next waypoint and the same stop cause after a restart (serialise the state,
+reload it, re-plan: same answer). The wall-clock budget is deliberately *not* an
+input to the planner — `planExplorationSweep` in `exploration.mjs` is pure and
+clock-free, and `"time"` is stamped by whoever walks.
 
 ### New memory records
 
@@ -501,8 +514,15 @@ runtime cache is.
   Cells are a poor proxy for cost: at 4096 cells pathfinding, detours, chunk
   loading and obstacles can cost very different amounts of real time, so neither
   budget implies the other. Termination is deterministic — the sweep stops at
-  whichever limit is reached first and reports `stoppedBy` (`"cells"`,
-  `"time"`, `"distance"`).
+  whichever limit is reached first and reports `stoppedBy`: `"cells"` (the
+  exploration budget), `"radius"` (the anchored bound was reached with unvisited
+  cells still outside it) or `"exhausted"` (the spiral inside the bound is fully
+  walked, `truncated: false`). The wall-clock budget is stamped by the executor
+  as `"time"`: `planExplorationSweep` in `exploration.mjs` is pure and
+  clock-free, the bound is measured **from the anchor**, and the bot's position
+  is not an input — so `(anchor, visited, config)` reproduces the same next
+  waypoint and the same stop cause after a restart. **Landed**:
+  `tests/exploration-sweep.test.mjs` (9 offline cases).
 - **A refusal is not a truncation.** `truncated: true` describes the census that
   was returned; a typed refusal (`village_too_far`, `survey_budget_exhausted`) is
   the action result and means the mission **could not proceed** (no anchor,
@@ -517,9 +537,14 @@ runtime cache is.
 - The sweep result is a mission (`rememberStructure`/checkpoints already exist),
   so a run interrupted by death resumes instead of restarting.
 
-**Test**: `tests/village-sweep.test.mjs` — the cell budget stops the walk and
-reports `truncated` with `stoppedBy: 'cells'`; the execution budget stops it with
-`stoppedBy: 'time'` while cells are still unscanned; a second sweep over a fully
+**Test**: the planner half is landed and offline in
+`tests/exploration-sweep.test.mjs` — the same `(anchor, visited, config)` gives
+the same plan and the same stop cause, including through a JSON
+serialise/reload, and an anchor-relative bound never depends on the bot.
+`tests/village-sweep.test.mjs` adds the action half — the cell budget stops the
+walk and reports `truncated` with `stoppedBy: 'cells'`; the geometric bound stops
+it with `stoppedBy: 'radius'` while unvisited cells remain outside; the execution
+budget stops it with `stoppedBy: 'time'` while cells are still unscanned; a second sweep over a fully
 scanned ring plans zero movement; **a restart between the first and the second
 sweep still plans zero movement** (idempotence must come from `visitedChunks`
 plus the register, never from RAM alone); a protected block in the way is never

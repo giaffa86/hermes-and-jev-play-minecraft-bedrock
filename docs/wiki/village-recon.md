@@ -255,7 +255,13 @@ order the register exists to record would be inverted.
   between sweeps, `VILLAGE_SURVEY_CELLS` the *exploration* budget and
   `VILLAGE_SURVEY_MAX_MS` the *execution* budget — cells are a poor proxy for
   cost, so neither budget implies the other, and the sweep stops deterministically
-  at whichever is reached first, reporting `truncated: true` + `stoppedBy`. A
+  at whichever is reached first, reporting `truncated: true` + `stoppedBy`
+  (`cells` / `radius` / `time`; `exhausted` when the spiral was walked out, which
+  is `truncated: false`). The bound is measured **from the anchor** and the
+  planner (`planExplorationSweep` in `exploration.mjs`, landed offline in
+  `tests/exploration-sweep.test.mjs`) is pure and clock-free: the same
+  `(anchor, visited, config)` gives the same next waypoint and the same stop cause
+  after a reload, and `time` is an executor-side stamp. A
   typed refusal (`village_too_far`, `survey_budget_exhausted`) is a different fact:
   the mission could not proceed. `DIG_PROTECTED` is a **global invariant**, not
   survey logic: the route may detour or refuse, never dig; villages, beds,

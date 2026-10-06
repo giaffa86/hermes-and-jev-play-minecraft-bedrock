@@ -3815,3 +3815,33 @@ container kept running the image deployed at 11:19. Both are closed here.
   evidence, inverting the order the register exists to record.
 - Also fixed a stale line reference: `unexploredFrontier` is
   `world-memory.mjs:631`, not `:512`.
+
+## [2026-10-06] feat | The sweep planner is anchored, pure and reproducible (rung 4, milestone 1)
+
+- `exploration.mjs` gains `planExplorationSweep({ anchor, visited, spacing,
+  maxRadius, cells, radius })` and `SWEEP_STOP` (`cells` / `radius` /
+  `exhausted`): the M1 spiral, bounded by an **anchored** geometric limit and a
+  cell budget, returning the ordered waypoints (`{ x, z, distance }`) plus
+  `next`, `truncated`, `stoppedBy`, `boundary.pendingBeyond` and `remaining`.
+- **The bound is geometric and anchored.** `distance` is measured from the
+  anchor, never from the bot, and the planner takes neither the clock nor the
+  current position as input — `(anchor, visited, config)` reproduces the same plan
+  and the same stop cause after a serialise/reload, which is the acceptance
+  criterion of this milestone. `time` stays an executor-side stamp, because a
+  clock in the plan would make the same state produce different answers.
+- **No second spiral.** The planner shares `spiralOffsets`/`chunkKey` with
+  `nextExplorationWaypoint`, and a test pins the equivalence (`cells: 1`,
+  `radius: null` → the same next waypoint as the single-step planner), so
+  `find_biome` and `find_structure` inherit whatever this gains instead of
+  growing a parallel path.
+- `tests/exploration-sweep.test.mjs` (9 offline cases): determinism and
+  serialise/reload, anchor-relative bound (the diagonals outside the radius stay
+  out), the cell budget, an exhausted spiral, a radius stop carrying
+  `pendingBeyond`, the spiral order preserved, `visited` as a `Set`, and
+  `no_anchor` as a refusal rather than a truncated census. The four exploration
+  test files: 32 tests, 0 fail.
+- Next, in the order approved: the village census (`village-survey.mjs`), then
+  `survey_village` as a configuration of this planner, then the action-level
+  tests and the live row. The spec now uses `radius` where it used to say
+  `distance` (the old name was ambiguous: travelled distance, or from the bot?),
+  and says explicitly that `time` is stamped by the executor.
