@@ -20,8 +20,16 @@ burning the budget, carrying `details` (`from`, `position`, `pathNodes`,
 `/act` result now carry `_moveTo`'s `error.details`, which both used to drop: the
 next live failure names where the bot stopped instead of only how the error is
 called. Six offline cases in `tests/bedrock-storage-walk.test.mjs`, suite
-1799/1799. No live round yet — the fix is measured against the artifacts above,
-not yet against a fresh failure.
+1799/1799.
+
+**Deployed 07/10, 08:12:37Z**: `hermes-jev-bedrock` restarted with the adapter of
+this commit (`sha256 3ecc04c6…`, restarts 0, no controller running at the stop).
+The regression check is live: `take_iron_ingot` from the chest at (91,73,160) →
+`{"ok":true,"count":64,"ms":6380}`. The stall verdict itself is **not yet
+exercised live**: the bot sits at the village and `go_home` now answers
+`arrived` immediately because `home` is the spawn of the current adapter
+session (91.5,74.62,163.5), so the sealed-pocket target is gone. The next long
+walk that stalls is the live proof, and it will name its own position.
 
 ## [2026-10-07] fix | The loot comes back with the gear: recover_loot re-arms
 
