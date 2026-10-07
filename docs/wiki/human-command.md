@@ -997,7 +997,15 @@ explicit marker list, the reasoned system line with 220 tokens, the extra facts)
 `tests/human-greeting.test.mjs` (the greeting teaches the marker in five
 languages, the configured word wins over the language's own, and the line stays
 under the adapter's 256-character ceiling).
-Never exercised in-game, and never against a real provider.
+**Deployed and exercised against the real provider (2026-10-07).** Per the
+owner's report the marker, the M7 engine and the rest of `fix/told-parse-guards`
+are live: a normal answer came back in **868 ms** and a reasoned one in **886 ms**
+in Italian. The chat line runs with **thinking disabled**
+(`{"thinking":{"type":"disabled"}}`) because with the default thinking on
+DeepSeek `deepseek-flash` the reply was **empty** (`finish_reason: 'length'`);
+«ragiona» raises the budget to 2000 tokens instead. What the unit tests cannot
+cover and is still open: the wording in the other four languages and the real
+cost of a long answer.
 
 *Numbering*: M12 is the second slice the owner asked for on 2026-10-07. It is the
 piece of M7 that the deployed configuration had switched off: with a key the

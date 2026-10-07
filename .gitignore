@@ -21,5 +21,9 @@ memory/**
 # Stato locale degli agenti (non parte del progetto)
 .pi/
 
+# Vim swap files (file di lavoro locali, mai parte del progetto)
+*.swp
+*.swo
+
 # Log di sessione dei goal (contengono dati personali: mai committarli)
 goal_*.jsonl

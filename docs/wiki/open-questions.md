@@ -5,7 +5,7 @@ and `docs/raw/SURVIVAL-INTELLIGENCE.md` (Verification status). For the per-
 capability collaudo checklist (done / pending live), see
 [verification](verification.md).
 
-Last lint: 2026-10-04.
+Last lint: 2026-10-07.
 
 ## Promoted follow-up tasks (2026-10-04)
 
@@ -1532,12 +1532,16 @@ The four defects the owner found by reading the live chat are fixed and each is
 pinned by a test that fails without its edit ([verification](verification.md)
 47.60, [CHAT-REPLY-TRUTH](../raw/CHAT-REPLY-TRUTH.md)). What is still open:
 
-- **Nothing is deployed.** The controller fixes (the order-target floor, the
-  sender, the rate-limit retry, the parser guards) live in the controller, so a
-  controller restart ships them; the ore alert lives in the **adapter and the
-  harness**, so it needs a `hermes-jev-bedrock` restart — the bot leaves and
-  rejoins (~30 s) and a BDS restart is sometimes needed for the stale peer
-  state. The two are separate deploys and neither has run.
+- **The deploy has now run, except the ore alert.** Per the owner's report of
+  2026-10-07 the chat engine **M7 is on for the first time** together with
+  «ragiona» (M12) and the rest of branch `fix/told-parse-guards`: the controller
+  fixes (the order-target floor, the sender, the rate-limit retry, the parser
+  guards) ship with a controller restart, and that restart has happened. The ore
+  alert lives in the **adapter and the harness**: its code is already copied into
+  `hermes-jev-bedrock:/app`, but the **running process still predates it**, so it
+  needs a `hermes-jev-bedrock` container restart (the bot leaves and rejoins
+  ~30 s, and a BDS restart is sometimes needed for stale peer state). It has NOT
+  been restarted — the owner decides when.
 - **The order-target floor is a cap, not a proof.** If the planner empties
   `plan.targets`, the order falls back to the targets it was born with; but a
   goal whose original order had no numeric target at all («seguimi») still
@@ -1548,20 +1552,32 @@ pinned by a test that fails without its edit ([verification](verification.md)
   between two alerts) has never been read in game: the timing during a follow
   and the wording in the other languages are unverified, and the alert only
   speaks for ores the census already found (`ORE_ALERT_RANGE`, default 32).
-- **«ragiona» has never met a real provider.** The marker, the stripped
-  sentence, the reasoned prompt and the 220-token budget are unit-tested, but no
-  call has ever left the machine: the real cost of a long answer, a model that
-  ignores the one-line rule and the quality of the German/Spanish wording are
-  open. The word list (`DEFAULT_REASON_MARKERS`) is a starting point, not a
-  translation review, and `CHAT_REASON` follows M7: with no key there is no
-  reasoned answer at all.
-- **M7 was off in production.** The controller environment had no
-  `DEEPSEEK_API_KEY` and no `CHAT_LLM_*`, so every "frase fatta" the owner read
-  was the deployed configuration, not a defect. `CHAT_LLM_API_KEY` is the
-  canonical name (`DEEPSEEK_API_KEY` is the legacy alias still honoured by
-  `chatLlmKey`, and asserted by `tests/chat-llm.test.mjs`); a production env
-  should carry only the canonical one.
+- **«ragiona» has now met a real provider (in Italian only).** The marker, the
+  stripped sentence, the reasoned prompt and the token budget are unit-tested
+  and the owner reports a live end-to-end Italian round against the real
+  provider: a normal answer in 868 ms and a reasoned one in 886 ms. With thinking
+  left on the line came back **empty** (`finish_reason: 'length'`), so the client
+  now sends `{"thinking":{"type":"disabled"}}` for the chat line (the greeting
+  does not pay for reasoning) while «ragiona» raises the budget to 2000 tokens.
+  What is still open: the German/Spanish/French wording, the word list
+  (`DEFAULT_REASON_MARKERS`) as a translation review, and the real cost of a long
+  answer. `CHAT_REASON` follows M7: with no key there is no reasoned answer at
+  all.
+- **M7 was off in production, and is now on.** The controller environment used
+  to have no `DEEPSEEK_API_KEY` and no `CHAT_LLM_*`, so every "frase fatta" the
+  owner read *then* was the deployed configuration, not a defect. The active
+  configuration reported on 2026-10-07 is the intended one:
+  `CHAT_LLM_URL=https://api.deepseek.com/chat/completions`,
+  `CHAT_LLM_MODEL=deepseek-flash`, `CHAT_LLM_THINKING=off`. `CHAT_LLM_API_KEY` is
+  the canonical name (`DEEPSEEK_API_KEY` is the legacy alias still honoured by
+  `chatLlmKey`, and asserted by `tests/chat-llm.test.mjs`): keep the alias
+  commented in `.env` and carry only the canonical one in a production env.
 - **`saySmart` never sees a rejection.** `replyChat` retries once on
   `rate_limited`; two messages inside `CHAT_MIN_INTERVAL_MS` still lose the
   second one if the retry also lands inside the window (the backoff is bounded
   at `CHAT_REPLY_RETRY_MAX_MS`, 4000).
+- **Two circuit blueprints are orphans.** The R0 inventory
+  (`node tools/capability-inventory.mjs`) reports `auto_door` and `delay_line` as
+  `buildable` blueprints that no skill declares as a success criterion
+  (`success.circuitBuilt.id`), so no milestone can currently ask for them. Either
+  wire them into a skill/milestone or document them as unused fixtures.

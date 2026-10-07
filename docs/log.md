@@ -1,5 +1,60 @@
 # Log
 
+## [2026-10-07] docs | La roadmap del layer di ragionamento, corretta contro il codice (R0 implementata)
+
+Richiesta dell'utente: *"scrivi roadmap correggendo le inesattezze su questa attività"*,
+poi *"continua e poi passa all'implementazione"*. Due bozze italiane mai lette contro il
+codice (`docs/raw/roadmap_reasoning_avanzato.md`, 2295 righe, e
+`docs/raw/clarification_missing_information_phase.md`, 736 righe) descrivevano un
+**compilatore semantico**: richiesta umana → LLM → `CapabilityPlan` → validazione **MCP** →
+capability tipizzate su Jev. Verificato in repo: **MCP non esiste** (nessuna dipendenza,
+nessun server, nessun identificatore fuori dalle due bozze: `grep -rl MCP` colpisce solo
+loro e un `package-lock.json` transitivo) e **`CapabilityPlan`/`CapabilityRegistry` non
+esistono**. Altre correzioni registrate: Hermes è uno *strategic replanner* (un piano JSON
+piatto, non un planner gerarchico); Jev sceglie **una** key da `/options` e non esegue
+missioni; l'attuatore è `bedrock-adapter.mjs` (client bedrock-protocol), non
+`bedrockflayer`; **`ragiona` (M12) è implementato e deployato ma è un marker di risposta,
+non un planner** (viene tolto prima della dedup key e del router, non instrada nulla, non
+tocca il piano: `controller.mjs:1148-1176`, `chat-llm.mjs:88`); i due esempi di chiarimento
+della bozza B sono **sbagliati per questo repo** («portami del cibo» e il baule multiplo
+sono già risolti in modo deterministico — `_depositTargetFor` punteggia un contenitore che
+già tiene l'oggetto `+100000`, poi la distanza).
+
+Prodotto: [ROADMAP_refactoring_reasoning.md](raw/ROADMAP_refactoring_reasoning.md)
+(inglese, sostituisce le due bozze) con un **registro di correzioni** (20 voci, ognuna con
+l'evidenza di codice) e milestone **R0–R7** in un namespace separato (M0–M12 collide con le
+milestone chat già in uso). Pagine wiki: nuova
+[reasoning-roadmap.md](wiki/reasoning-roadmap.md), [sources.md](sources.md) (le tre fonti),
+[index.md](index.md), [open-questions.md](wiki/open-questions.md) (le voci obsolete su
+deploy, M7 e «ragiona» corrette con il report del 07/10) e [human-command.md](wiki/human-command.md)
+(M12, ora esercitato dal provider reale: 868 ms normale, 886 ms ragionata, thinking
+`disabled` perché con il thinking attivo la riga tornava vuota, `finish_reason:'length'`).
+
+**R0 implementata**: `tools/capability-inventory.mjs` legge come un'unica cosa la
+superficie reale — 22 intenti (`survival/intents.mjs`), la mappa key→intento
+(`KEY_INTENTS` + `PREFIX_INTENTS`), 42 skill in 6 domini (`loadGameplaySkills`), 8 blueprint
+di circuiti (`loadCircuits`), 20 milestone e 8 goal (`knowledge/progression.json`), 27
+criteri (`CRITERIA_KEYS`) — e la **controlla**: un intento di skill fuori vocabolario, una
+milestone senza skill, un `requires`/goal che non risolve, un `circuitBuilt.id` senza
+blueprint sono errori; un blueprint `buildable` che nessuna skill costruisce è un warning.
+Questo è il "registry" delle bozze senza la finzione MCP. `npm run inventory`, test in
+`tests/capability-inventory.test.mjs`. Prossime: R1 piano tipizzato (`subgoal`+`steps`),
+R2 gate di chiarimento dietro `CHAT_CLARIFY` (le bozze hanno ragione solo su questo),
+R3 traccia strutturata, R4 fallimenti tipizzati, R5 goal compositi, R6 scenari golden, R7
+condizionale.
+
+## [2026-10-07] lint | Roadmap corretta contro il codice, R0, e voci obsolete allineate
+
+Lint dopo l'ingest della roadmap corretta (R0 implementata). Nessun errore: le tre fonti
+grezze sono in `docs/sources.md`, `wiki/reasoning-roadmap.md` e in `docs/index.md`, nessuna
+pagina orfana, link relativi validi, formato del log rispettato, `Last lint` allineato.
+Aggiornate le voci obsolete di `docs/wiki/open-questions.md` (deploy dei fix chat e di M7,
+«ragiona» contro il provider reale, alias `DEEPSEEK_API_KEY` vs `CHAT_LLM_API_KEY`) e la
+chiusura di M12 in `docs/wiki/human-command.md`. Resta aperto e non verificato da questa
+sessione: l'ore alert (M11) è copiato in `hermes-jev-bedrock:/app` ma il processo in
+esecuzione lo precede, quindi serve il riavvio del container del bot — decisione
+**dell'utente**, non presa qui.
+
 ## [2026-10-07] deploy | Il bridge Docker faceva cadere la sessione Bedrock: host networking
 
 Il wedge di trasporto della spedizione `diamond-20261007-1` aveva una causa fuori dal

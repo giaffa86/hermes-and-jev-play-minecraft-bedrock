@@ -155,6 +155,17 @@ export function optionIntents (key) {
   return ['unknown'];
 }
 
+// Vocabolario **dichiarato** delle key di /options: le key note e i prefissi,
+// ciascuno con i suoi intenti. Non e' la verita' runtime — `/options` resta
+// autoritativo — ma il vocabolario che il mapping conosce, esposto per
+// l'inventario delle capability (tools/capability-inventory.mjs, R0).
+export function declaredOptionVocabulary () {
+  return {
+    keys: Object.keys(KEY_INTENTS).sort().map(key => ({ key, intents: optionIntents(key) })),
+    patterns: PREFIX_INTENTS.map(([pattern, intents]) => ({ pattern: pattern.source, intents: [...intents] })),
+  };
+}
+
 export function intentMatchesKey (intent, key) {
   return optionIntents(key).includes(intent);
 }
