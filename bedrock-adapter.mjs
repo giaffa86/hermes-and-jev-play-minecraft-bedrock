@@ -13075,6 +13075,10 @@ export class BedrockAdapter {
         failures.push({ item: piece.name, slot: piece.armorSlot, stage: 'take', error: error.message });
         continue;
       }
+      // La finestra aperta al momento del `place` e' la variabile che conta (uno
+      // status 50 = FailedToValidateDstSlot): la si registra invece di dedurla
+      // per timestamp dagli eventi `container_open`.
+      const openAtPlace = this._openContainer ? { id: this._openContainer.id, type: this._openContainer.type } : null;
       let place = null;
       const attempts = [];
       // Un solo ripiego con il cursore ancora carico: un place rifiutato non
@@ -13096,6 +13100,7 @@ export class BedrockAdapter {
           attempt,
           cursor_stack_id: this._cursor?.stack_id ?? null,
           cursorStack,
+          openContainer: openAtPlace,
         });
       }
       if (!place || (String(place.status) !== 'ok' && place.status !== 0)) {
@@ -13106,6 +13111,7 @@ export class BedrockAdapter {
           stage: 'place',
           status: attempts[attempts.length - 1]?.status ?? 'timeout',
           attempts,
+          openContainer: openAtPlace,
         });
         continue;
       }
@@ -14237,6 +14243,7 @@ export class BedrockAdapter {
       if (reason === 'missing_ingredients') return { ok: false, error: 'missing_shield' };
       return { ok: false, error: `shield_take_failed_${reason.replace(/^take_failed_/, '')}` };
     }
+    const openAtPlace = this._openContainer ? { id: this._openContainer.id, type: this._openContainer.type } : null;
     const attempts = [];
     let place = null;
     for (const slot of [OFFHAND_SLOT, OFFHAND_FALLBACK_SLOT]) {
@@ -14256,12 +14263,13 @@ export class BedrockAdapter {
         destination: `offhand/${slot}`,
         cursor_stack_id: this._cursor?.stack_id ?? null,
         cursorStack,
+        openContainer: openAtPlace,
       });
     }
     if (!place || (String(place.status) !== 'ok' && place.status !== 0)) {
       await this._returnCursorToInventory().catch(() => {});
       const last = attempts[attempts.length - 1] ?? { status: 'timeout' };
-      return { ok: false, error: `shield_place_failed_${last.status}`, attempts };
+      return { ok: false, error: `shield_place_failed_${last.status}`, attempts, openContainer: openAtPlace };
     }
     this._applyStackResponse(place);
     this._cursor = null;

@@ -101,6 +101,7 @@ test('a refused armor place is typed with the status and never fakes a worn piec
       { attempt: 1, destination: 'armor/2', status: 50 },
       { attempt: 2, destination: 'armor/2', status: 50 },
     ],
+    openContainer: null,
   }]);
   assert.equal(adapter.armor.leggings, null, 'nessun pezzo indossato inventato');
   const places = adapter.stackRequests.filter(a => a[0].type_id === 'place' && a[0].destination.slot_type.container_id === 'armor');
@@ -194,4 +195,62 @@ test('no armor in the aggregate and no armor in the slots is not a resync', asyn
   const result = await adapter._equipArmor();
   assert.deepEqual(result, { ok: false, error: 'no_armor_in_inventory' });
   assert.equal(adapter.resyncs, 0);
+});
+
+// Il run 1 del 06/10 ha lasciato un `armor_place_failed` con status 50 senza
+// modo di sapere *quale* finestra fosse aperta: l'ipotesi (una finestra aperta
+// al momento del place) andava dedotta per timestamp dagli eventi
+// `container_open`. Il payload la nomina. Nel caso vero la finestra e' quella
+// che apre il take stesso (`_takeToCursor` -> `_ensureInventoryOpen`), non
+// quella presente all'ingresso dell'azione (che il guard chiude).
+test('a refused armor place names the window that was open at the place', async () => {
+  const logs = [];
+  const adapter = armorAdapter({ placeFailures: 2, logs });
+  adapter.inventorySlots[4] = { network_id: 88, name: 'golden_leggings', count: 1, stack_id: 12 };
+  adapter._ensureInventoryOpen = async () => { adapter._openContainer = { id: 13, type: 'inventory' }; };
+
+  const result = await adapter._equipArmor();
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'armor_place_failed_50');
+  assert.deepEqual(result.failures[0].openContainer, { id: 13, type: 'inventory' },
+    'il fallimento nomina la finestra aperta al momento del place');
+  const failed = logs.filter(l => l.type === 'armor_place_failed');
+  assert.equal(failed.length, 2);
+  assert.deepEqual(failed.map(l => l.openContainer),
+    [{ id: 13, type: 'inventory' }, { id: 13, type: 'inventory' }]);
+});
+
+// Lo stesso payload per lo scudo: il suo rifiuto del run 1 era `offhand/0` con
+// la finestra del giocatore aperta, e il numero dello slot non e' mai stato
+// l'unica spiegazione possibile.
+test('a refused shield place names the window that was open at the place', async () => {
+  const logs = [];
+  const adapter = armorAdapter({ logs });
+  adapter.inventory = { shield: 1 };
+  adapter.inventorySlots[2] = { network_id: 66, name: 'shield', count: 1, stack_id: 4 };
+  adapter._sendStackRequest = async (actions) => {
+    const action = actions[0];
+    if (action.type_id === 'take') {
+      return {
+        status: 'ok',
+        containers: [
+          { slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 1, item_stack_id: CURSOR_STACK }] },
+          { slot_type: { container_id: 'hotbar_and_inventory' }, slots: [{ slot: 2, count: 0, item_stack_id: 0 }] },
+        ],
+      };
+    }
+    return { status: 50, containers: [] };
+  };
+  adapter._ensureInventoryOpen = async () => { adapter._openContainer = { id: 2, type: 'inventory' }; };
+  adapter._waitOffhandConfirm = async () => ({ confirmedBy: 'none' });
+
+  const result = await adapter._equipShield(10);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'shield_place_failed_50');
+  assert.deepEqual(result.openContainer, { id: 2, type: 'inventory' });
+  const failed = logs.filter(l => l.type === 'shield_place_failed');
+  assert.deepEqual(failed.map(l => [l.destination, l.openContainer]),
+    [['offhand/1', { id: 2, type: 'inventory' }], ['offhand/0', { id: 2, type: 'inventory' }]]);
 });
