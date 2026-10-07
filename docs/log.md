@@ -4719,5 +4719,77 @@ refusal. Docs touched: [TOLD-FACTS](raw/TOLD-FACTS.md),
 [memory](wiki/memory.md#told-facts-what-a-human-said),
 [human-command](wiki/human-command.md#told-facts-m10-the-human-teaches-the-bot-remembers)
 §M10, [verification](wiki/verification.md) 47.58–47.59,
-[open questions](wiki/open-questions.md#told-facts-2026-10-07--never-live),
+[open questions](wiki/open-questions.md#told-facts-2026-10-07--live-over-http-the-in-game-chat-round-still-open),
 `AGENTS.md`, `BEDROCK.md`. The live **in-game** round is still open.
+
+## [2026-10-07] deploy | Told facts live on the production harness (`c70acc5`)
+
+Requested after the push: deploy the feature live. The production runtime on VM
+100 (`hermes-jev-bedrock`) matched `main` (`3c6122e`) file for file before the
+deploy — the md5 of `bedrock-harness.mjs`, `controller.mjs`, `memory-store.mjs`,
+`sqlite-memory.mjs`, `world-memory.mjs` and `chat-lang/{it,en,fr,es,de}.mjs` was
+identical in the container and in the committed base — so the branch could be
+laid down as a **targeted deploy** rather than a rebuild. `git archive`-style
+tree transfer of the eleven changed files (tarball 118840 byte, sha256
+`38c5dab0ab494f5aa979d5ab8a2d2f2cf43568a555176d8e645dc03a36ea48de`, served from
+the Proxmox host on port 8099), applied to both places the runtime lives: the
+container's `/app` (`docker cp` + `node --check` on all eleven files) and the VM
+source tree the controller mounts as `/app/project`. md5 host = container = VM
+tree for all eleven. Backups
+before touching anything: `/tmp/hermes-jev-bedrock-pre-c70acc5.tar.gz` (source
+tree, `.git`/`node_modules`/`runs`/`nmp-cache` excluded) and
+`/tmp/app-pre-c70acc5.tar.gz` (the nine replaced files out of the container).
+
+`docker restart hermes-jev-bedrock` (nothing else: the container's `/app` is not
+a bind mount, only `runs` and `nmp-cache` are). The restart alone did **not** let
+the bot in — `[connect] attempt 1..3 failed: connecterror:9` with the discovery
+answering `protocol 2193 / 1.26.52` — the known NetherNet failure, and the
+remedy that worked was the documented one: `pct exec 108 -- systemctl restart
+minecraft-bedrock` (the usual `rc=1` from the startup-check, systemd restarted
+it, `Started Minecraft Bedrock Server.`), after which the bot went in at attempt
+6 then attempt 1 of a later reconnect and BDS reported `players: 1`.
+
+Live round against the real world memory, bot connected, **no controller**
+(none was running before or after): the four writes and three reads behind
+`TOLD_FACTS`, all with `toldBy: 'Ale'`:
+
+- `POST /memory/tell/place` «campo di patate» at 92/74/169 → `created`,
+  `source: 'told'`, `permanent: true`, `historyCount: 0`; `GET /memory/places`
+  finds it by name; the **same phrase again** → `unchanged` and still
+  `historyCount: 0` (the last branch of the feature, exercised live);
+- the same name at 130/70/-240 → `corrected`, **same id**
+  (`campo_di_patate_92_74_169` — the id is identity, not position), position
+  moved, `historyCount: 1`, `previous` carrying the old position and `toldAt`;
+- `POST /memory/tell/contents` of 5 iron on a chest the bot had **already read**
+  (91/73/160, 411 iron observed) → the container keeps `source: 'discovered'` and
+  `permanent: false`, gains the label «baule di casa» and a separate claim
+  `verdict: 'unverified'`; `GET /memory/where?item=iron_ingot` still answers the
+  **observed** 411 for that chest, and the claim is readable through
+  `GET /memory/claims?containerId=container_91_73_160` — a human's statement did
+  not overwrite what the bot had read;
+- **persistence after restart**: the container was restarted again and the
+  corrected place (with its history) and the claim were both still there;
+- `POST /memory/tell/forget` → `status: 'invalid'` with `previous` returned,
+  out of `GET /memory/places`, still readable with `includeInvalid=1` —
+  invalidated, never deleted;
+- governance sanity after the deploy: `GET /options` → 25 keys, `GET /survival`
+  → `normal` (the harness's own paths are intact with the new code).
+
+Two test artefacts were left in the production memory and are disclosed rather
+than silently cleaned: the invalidated landmark `campo_di_patate_92_74_169`
+(status `invalid`, excluded from every read) and the label «baule di casa» plus
+the unverified iron claim on the container at 91/73/160 — the next real reading
+of that chest will confirm or contradict the claim, and a different name told by
+the human replaces the label. `CHAT_ALLOWLIST` is **not** set in the container's
+environment, so the sender gate on the writes is inert there (the route is as
+open as `/act` on the loopback API); the 403 was verified in the integration
+tests and in the local live round. Still open: the **in-game chat** round, which
+needs a human typing `@bot Ricorda che questo è il campo di patate` with a
+chat-enabled controller running (`CHAT_ALLOWLIST` is a *controller* variable —
+the harness alone never reads the chat). Docs touched:
+[TOLD-FACTS](raw/TOLD-FACTS.md),
+[verification](wiki/verification.md) 47.58–47.59,
+[open questions](wiki/open-questions.md#told-facts-2026-10-07--live-over-http-the-in-game-chat-round-still-open).
+Branch `feat/told-facts` = `c70acc5`, pushed to `origin`; the deploy was a
+targeted one, so `main` still carries the other session's uncommitted
+`bedrock-adapter.mjs` and was left alone.

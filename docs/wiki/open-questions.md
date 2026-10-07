@@ -1429,25 +1429,33 @@ and their network ids are unknown). The decisive cheap experiment is to repeat
 fails identically the problem is in the consume/stack-id path, if it passes the
 35 was the charcoal variant.
 
-## Told facts (2026-10-07) — never live
+## Told facts (2026-10-07) — live over HTTP, the in-game chat round still open
 
 The four memory operations and the movement order are implemented and
 unit-tested ([verification](verification.md) 47.58–47.59,
 [human command](human-command.md#told-facts-m10-the-human-teaches-the-bot-remembers),
 [TOLD-FACTS](../raw/TOLD-FACTS.md)). What is still open:
 
-- **No live round.** No sentence of this feature has been typed into a live
-  BDS: the chat *reply* path (`replyChat`, `saySmart`) is exercised with a
-  scripted harness, exactly as for the other chat milestones. The HTTP writes
-  **have** been driven live on 07/10 (harness only, no Minecraft server, a
-  temporary `MEMORY_DIR`): created → restarted → found again, corrected (same
-  id, `historyCount` 1), forgotten, and the correction seen in
-  `GET /memory/search` at the new position; the `CHAT_ALLOWLIST` gate answered
-  403 `told_sender_not_allowed` for a sender outside it. The live round still to
-  run: dictate a place at the botanist's own coordinates from **in-game chat**,
-  restart the bot, ask for it, correct it, and check that the answer names the
-  provenance — plus one claim on a chest the bot has already read (the label
-  must appear and the observed contents must stay).
+- **The in-game chat round.** The runtime is deployed on the production
+  harness (VM 100, `hermes-jev-bedrock`, commit `c70acc5`, 07/10 14:0x UTC) and
+  the feature was then driven **live against the real world memory** with the bot
+  connected to BDS 1.26.52: created at 92/74/169 → repeated (`unchanged`, no
+  history row) → corrected to 130/70/-240 (same id, `historyCount` 1,
+  `previous` kept) → **survived a container restart** → forgotten (`invalid`, out
+  of `/memory/places`, still there with `includeInvalid=1`); a claim of 5 iron on
+  a chest the bot had already read (91/73/160) added the label «baule di casa»
+  and a `unverified` claim while the observed 411 stayed and the container kept
+  `source: 'discovered'`/`permanent: false`; `/options` (25 keys) and `/survival`
+  still answered after the deploy. What has **not** run is the part only a human
+  can do: no sentence of this feature has been **typed into a live BDS**, so the
+  chat *reply* path (`replyChat`, `saySmart`) is still exercised with a scripted
+  harness, exactly as for the other chat milestones — dictate a place at the
+  speaker's own coordinates from in-game chat, restart the bot, ask for it,
+  correct it, and check that the answer names the provenance. The
+  `CHAT_ALLOWLIST` gate on the writes answered 403 `told_sender_not_allowed` for
+  a sender outside it in the integration tests and in the local live round; on
+  the production container `CHAT_ALLOWLIST` is **not** set, so the gate is inert
+  there (the route is as open as `/act` on the loopback API).
 - **`told_goto` still verifies a plain waypoint.** The plan carries
   `notes: human:<from> told_place:<id>`, but success is the ordinary arrival at
   the coordinates; nothing checks that the position the bot reached **is** the

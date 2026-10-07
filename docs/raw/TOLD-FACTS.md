@@ -199,11 +199,41 @@ Details that matter:
 | Navigation by name | `memory-told.test.mjs` + `controller-told-facts.test.mjs` (`told_goto` waypoint) |
 | The sentence in five languages | `memory-chat.test.mjs` (the three original phrases, negatives, bounds, formatting) |
 
+## Live deploy (07/10/2026, VM 100)
+
+The runtime was deployed on the production harness `hermes-jev-bedrock` (VM 100)
+as a **targeted deploy** of the eleven changed files on top of `main` (`3c6122e`,
+which the container matched file for file — md5 comparison), commit `c70acc5`,
+with `node --check` and md5 verification on all eleven in the container and in
+the VM source tree, and backups (`/tmp/hermes-jev-bedrock-pre-c70acc5.tar.gz`,
+`/tmp/app-pre-c70acc5.tar.gz`) before anything was replaced. The bot needed the
+documented `systemctl restart minecraft-bedrock` on CT 108 to get in; with it in
+the world, the round was driven live over HTTP against the **real** world
+memory:
+
+| Step | Live result |
+|---|---|
+| `tell/place` «campo di patate» at 92/74/169 | `created`, `source: 'told'`, `permanent: true`, `historyCount: 0`; found by `GET /memory/places?name=` |
+| the same phrase again | `unchanged`, `historyCount: 0` (a repeated fact writes nothing) |
+| the same name at 130/70/-240 | `corrected`, **same id**, `historyCount: 1`, `previous` with the old position |
+| container restart | place (with history) and claim still there — persistence |
+| `tell/contents` 5 iron on the chest at 91/73/160 (411 iron already **read**) | container keeps `source: 'discovered'`/`permanent: false`, gains the label «baule di casa» and a separate `unverified` claim; `GET /memory/where?item=iron_ingot` still answers the **observed** 411 |
+| `tell/forget` | `status: 'invalid'` + `previous`; out of `GET /memory/places`, present with `includeInvalid=1` |
+| `GET /options` / `GET /survival` | 25 keys / `normal` — the harness paths survived the deploy |
+
+Left in the production memory, disclosed rather than hidden: the invalidated
+test landmark and the label «baule di casa» plus the unverified iron claim on
+that chest (the next real reading confirms or contradicts it). On the container
+`CHAT_ALLOWLIST` is not set, so the sender gate on the writes is inert there.
+The **in-game chat** round is not covered by this: it needs a controller with
+`CHAT_ALLOWLIST` running and a human typing the sentence.
+
 ## Open points
 
-- **Never live.** No sentence in this list has been typed into a live BDS; the
-  chat *reply* path is the one every other milestone has also only
-  unit-tested (`replyChat`/`saySmart` are exercised with a scripted harness).
+- **Not typed in chat yet.** The live round above went over HTTP; no sentence in
+  this list has been typed into a live BDS, so the chat *reply* path is still the
+  one every other milestone has also only unit-tested (`replyChat`/`saySmart`
+  with a scripted harness).
 - **The console is a separate branch** (`feat/companion-webconsole`): the routes
   were designed to be callable by it, but nothing here imports it, and no code
   in this feature depends on it.
