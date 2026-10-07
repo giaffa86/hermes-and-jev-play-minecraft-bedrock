@@ -66,6 +66,7 @@ export default Object.freeze({
   'fallback.drop': 'je jette {word} de mon inventaire',
   'fallback.collect': 'je ramasse {word} par terre',
   'fallback.farm': 'je récolte {word} du champ, je replante et je range la récolte',
+  'fallback.goto_told': 'je vais à {name}',
 
   'phrase.equip': "mettre l'armure",
   'phrase.drop': 'jeter {word}',
@@ -132,4 +133,29 @@ export default Object.freeze({
   'kind.milk': 'du lait',
   'kind.honey': 'du miel',
   'kind.goods': "ce que j'ai ramassé",
+
+  // --- told facts: what a human dictated about the world (memory-chat.mjs).
+  // `{pos}` is "x, y, z" and `{dimension}` the dimension name, both composed by
+  // the caller: the catalogue never knows how Minecraft writes a coordinate. ---
+  told_place_ack: 'Enregistré : {label} à {pos}, {dimension}.',
+  told_container_ack: 'Enregistré : {label} à {pos}, {dimension}.',
+  told_contents_ack: "Noté : {item} dans le {label} à {pos}, {dimension}. Je ne l'ai pas vérifié.",
+  told_correct_ack: 'Mis à jour : {label} est maintenant à {pos}, {dimension} (avant : {from}).',
+  told_forget_ack: 'Oublié : {label}.',
+  told_where_place: '{label} est à {pos}, {dimension}{source}.',
+  told_source_told: " (tu me l'as dit)",
+  told_source_seen: " (je l'ai vu moi-même)",
+  told_where_item: '{label} à {pos}, {dimension} : {item}{count}{source}',
+  told_count: ' ×{n}',
+  told_claim_unverified: ' (non vérifié)',
+  told_claim_verified: ' (vérifié)',
+  told_where_none: "je ne sais pas où trouver {item} : je ne l'ai pas vu et personne ne me l'a dit",
+  told_ask_name: 'de quel lieu parles-tu ? Donne-moi un nom, par exemple « c\'est le champ de pommes de terre »',
+  told_ask_position: 'd\'accord, mais où est « {name} » ? Donne-moi les coordonnées (par exemple « coordonnées 120 64 -230 ») ou « où je suis maintenant » si tu es là',
+  told_ask_marker: 'j\'ai vu des nombres, mais pour les enregistrer comme coordonnées écris-les avec le mot « coordonnées » (par exemple « coordonnées {x} {y} {z} »)',
+  told_no_sender_position: 'je ne te vois pas : si c\'est toi qui es là, donne-moi les coordonnées (par exemple « coordonnées 120 64 -230 »)',
+  told_unknown_place: 'je n\'ai pas de lieu appelé « {name} ». Si tu voulais l\'enregistrer, dis-moi où il est',
+  told_ambiguous: 'j\'ai {count} lieux appelés « {name} » : {options}. Lequel ?',
+  told_memory_unavailable: 'je n\'arrive pas à lire ma mémoire maintenant ({reason})',
+  told_noun_container: 'coffre',
 });

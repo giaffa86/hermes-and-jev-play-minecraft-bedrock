@@ -102,6 +102,15 @@ CHAT_REPLY_MAX_LENGTH=180          # clamp on every outgoing reply
 CHAT_MAX_AGE_MS=300000             # an order older than this is dropped (chat_stale) after a restart
 CHAT_ECHO_WINDOW_MS=15000          # how long the bot recognises its own chat coming back from the server
 
+# Told facts (M10): the human can dictate a fact about the world and the bot
+# remembers who said it (source 'told', toldBy/toldAt). A named place has no
+# TTL; a chest's content is a partial claim, verified by the next real reading.
+# See docs/wiki/human-command.md and docs/raw/TOLD-FACTS.md.
+TOLD_FACTS=on                      # on/off; off answers 403 on POST /memory/tell/*
+# A write attributed to a sender (toldBy) is refused too when CHAT_ALLOWLIST is
+# set in the harness environment (403 told_sender_not_allowed): a dictated fact is
+# an order a human gives, so it passes the same gate.
+
 # Chat language (M7.2): every sentence the bot composes by itself (ack, outcome,
 # question answers, proactive greeting, refusals) comes from the chat-i18n.mjs
 # catalogue. The configured language does not depend on the LLM: without a key

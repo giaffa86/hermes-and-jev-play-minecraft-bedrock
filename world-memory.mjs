@@ -20,6 +20,11 @@ export const MEMORY_STATUS = Object.freeze({
   INVALID: 'invalid', // sappiamo che non è più valido
 });
 
+// Provenienza di un fatto *dettato* da un umano (chat o console), distinta da
+// `discovered`/`read_container`/`observed`: la memoria conserva chi lo ha detto e
+// non lo presenta mai come una misura del bot.
+export const TOLD_SOURCE = 'told';
+
 export const LANDMARK_KINDS = Object.freeze(['landmark', 'structure', 'home']);
 
 // Tipi indicizzati dall'indice vettoriale: solo luoghi/cose su cui si può pianificare.
@@ -33,8 +38,12 @@ export const VECTOR_KINDS = Object.freeze([
 // Predicati del log delle osservazioni e nodo-concetto in cui puntano: `contains`
 // (un contenitore/sito contiene una risorsa), `is_a` (un luogo è una struttura),
 // `in_biome`. Gli altri predicati trattano l'oggetto come id di nodo.
+// Predicato del log usato per i fatti *dettati* sui contenuti ("nel baule c'è
+// ferro"): resta un'osservazione con la sua provenienza, e il nodo-concetto è lo
+// stesso di `contains` (una risorsa), così i due si confrontano direttamente.
 export const OBSERVATION_CONCEPT_KINDS = Object.freeze({
   contains: 'resource',
+  claimed_contains: 'resource',
   is_a: 'structure',
   in_biome: 'biome',
 });
@@ -45,6 +54,41 @@ export function distance3d (a, b) {
 }
 
 const round = (p) => ({ x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
+
+const ARMOR_SUFFIX = /_(helmet|chestplate|leggings|boots)$/;
+
+// Il nome di un oggetto in memoria è quello Minecraft (`iron_ingot`), il token è
+// la parola normalizzata arrivata dall'umano (`iron`, `armor`). Il match è per
+// token separati da `_`, non per sottostringa: `stone` non deve confermare un
+// claim su `redstone`.
+export function matchesItemName (name, token) {
+  const value = String(name ?? '').toLowerCase();
+  const needle = String(token ?? '').toLowerCase();
+  if (!value || !needle) return false;
+  // `armor` è un gruppo: nessun item si chiama così.
+  if (needle === 'armor') return ARMOR_SUFFIX.test(value);
+  if (value === needle) return true;
+  return value.split('_').includes(needle);
+}
+
+// Nome umano di un luogo, normalizzato per il confronto: «Campo  di Patate» e
+// «campo di patate» sono lo stesso nome. Serve il confronto, non l'id: l'id è
+// `slugifyPlaceName`.
+export function foldPlaceName (name) {
+  return String(name ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+// Slug stabile per l'id di un luogo dettato («campo di patate» → `campo_di_patate`).
+export function slugifyPlaceName (name, { fallback = 'place' } = {}) {
+  const slug = foldPlaceName(name).replace(/ /g, '_').slice(0, 48);
+  return slug || fallback;
+}
 
 const TERMINAL_MISSION_STATES = new Set(['found', 'failed', 'cancelled']);
 
@@ -91,7 +135,11 @@ export function describeContainer (record, {
   const inspectionAgeMs = inspectedAt == null ? null : Math.max(0, now - inspectedAt);
   const discoveryAgeMs = discoveredAt == null ? null : Math.max(0, now - discoveredAt);
   const inspectionStale = contentsKnown && inspectionStaleMs >= 0 && inspectionAgeMs > inspectionStaleMs;
-  const discoveryStale = discoveryStaleMs >= 0 && discoveryAgeMs > discoveryStaleMs;
+  // Un fatto dettato e permanente (un luogo nominato da un umano) non invecchia:
+  // nessuna osservazione lo rinfrescherebbe, quindi un TTL lo declasserebbe solo
+  // perché è passato del tempo. Resta invalidabile a mano.
+  const permanent = record.permanent === true;
+  const discoveryStale = !permanent && discoveryStaleMs >= 0 && discoveryAgeMs > discoveryStaleMs;
   const inspectionState = !contentsKnown
     ? CONTAINER_INSPECTION_STATE.NEVER_INSPECTED
     : inspectionStale
@@ -117,6 +165,7 @@ export function describeContainer (record, {
     needsInspection: inspectionState === CONTAINER_INSPECTION_STATE.NEVER_INSPECTED || inspectionState === CONTAINER_INSPECTION_STATE.STALE,
     // Lo status derivato è quello che conta: se la discovery è vecchia il *posto*
     // è stale anche quando il contenuto è fresco, perché la memoria è storica.
+    permanent,
     storedStatus: record.status,
     status: invalid ? MEMORY_STATUS.INVALID : (inspectionStale || discoveryStale || markedStale ? MEMORY_STATUS.STALE : MEMORY_STATUS.KNOWN),
   };
@@ -149,6 +198,11 @@ export class WorldMemory {
     // (`STRUCTURE_RESCAN_MS` 60 s, censimento minerali ~15 s), altrimenti ogni
     // ciclo cade appena fuori e riparte la crescita. `0` disattiva il filtro.
     observationDedupeMs = 5 * 60 * 1000,
+    // Un fatto *dettato* su un contenuto ("nel baule c'è ferro") invecchia: dopo
+    // questo tempo va ri-verificato aprendo il baule. Il claim resta in memoria
+    // (con la data), ma smette di valere come se fosse fresco. `-1` lo rende
+    // permanente quanto il contenitore che descrive.
+    toldClaimStaleMs = 7 * 24 * 60 * 60 * 1000,
   } = {}) {
     if (!repo) throw new Error('WorldMemory needs a repository');
     this.repo = repo;
@@ -163,6 +217,7 @@ export class WorldMemory {
     this.vectorDims = vectorDims;
     this.maxVectorDocs = maxVectorDocs;
     this.observationDedupeMs = observationDedupeMs;
+    this.toldClaimStaleMs = toldClaimStaleMs;
     this._vector = null;        // VectorIndex o null
     this._vectorAt = 0;         // quando è stato costruito
     this._vectorDirty = false;  // una scrittura dopo l'ultima costruzione
@@ -175,7 +230,7 @@ export class WorldMemory {
     return `${type}_${p.x}_${p.y}_${p.z}`;
   }
 
-  rememberLandmark ({ id = null, type, kind = 'landmark', label = null, dimension = 'overworld', position, confidence = 1, tags = [], source = 'discovered' }) {
+  rememberLandmark ({ id = null, type, kind = 'landmark', label = null, dimension = 'overworld', position, confidence = 1, tags = [], source = 'discovered', toldBy = null, toldAt = null, permanent = false, history = null }) {
     if (!type) throw new Error('rememberLandmark needs a type');
     const now = Date.now();
     const key = id || this._landmarkId(type, position);
@@ -196,6 +251,16 @@ export class WorldMemory {
       // ri-osservazione: è derivata dagli episodi, non dall'ultima scansione.
       ...(existing?.productivity ? { productivity: existing.productivity } : {}),
       source,
+      // Provenienza "detto": chi lo ha detto e quando. `toldAt` è la data della
+      // *dichiarazione* (che per una correzione è diversa da `discoveredAt`).
+      toldBy: toldBy ?? existing?.toldBy ?? null,
+      toldAt: toldAt ?? existing?.toldAt ?? null,
+      // Un luogo dettato non ha TTL (`describeContainer`/`markStaleBefore` lo
+      // rispettano). Non è un default: `false` per i landmark osservati.
+      permanent: permanent === true || existing?.permanent === true,
+      // Storia delle posizioni precedenti (correzioni): "dov'era" è parte della
+      // storia del posto, e `lastSeenAt` da solo non distingue "rivisto" da "spostato".
+      history: history ?? existing?.history ?? null,
     };
     this.repo.upsert(record);
     return record;
@@ -232,6 +297,367 @@ export class WorldMemory {
     return this.repo.remove(id);
   }
 
+  // ---- fatti dettati (told facts) --------------------------------------------------
+  //
+  // Un fatto *detto* non è un fatto *osservato*: cambia la provenienza, non il
+  // valore. Tre conseguenze nel modello:
+  //  - un luogo dettato è `permanent`: non scade col tempo, perché nessuna
+  //    osservazione lo rinfrescherebbe (nessuno lo ri-visita per caso) e il nome
+  //    è quello che l'umano ha dato. Resta invalidabile a mano;
+  //  - un contenuto dettato è un *claim* parziale (`claimed_contains`, nel log
+  //    delle osservazioni), non un inventario: non scrive `contents` e non tocca
+  //    `contentsKnown`, quindi non può cancellare una misura osservata né fingere
+  //    di conoscerla. La lettura vera lo conferma o lo smentisce;
+  //  - correggere e dimenticare sono scritture di *stato* (nuova posizione con
+  //    storia, oppure `invalid`), mai `remove`: la memoria è storica.
+
+  // La provenienza di un fatto dettato, se ce n'è una.
+  toldFor (record) {
+    if (!record) return null;
+    if (record.source !== TOLD_SOURCE && record.toldBy == null) return null;
+    return {
+      source: record.source ?? null,
+      toldBy: record.toldBy ?? null,
+      toldAt: record.toldAt ?? null,
+      permanent: record.permanent === true,
+      history: record.history ? [...record.history] : [],
+    };
+  }
+
+  // «Questo è il campo di patate»: un luogo con un nome umano, permanente, con la
+  // provenienza di chi lo ha detto. L'id è derivato dal nome (e dalla posizione),
+  // così ripetere la stessa frase non crea un doppione ma aggiorna il posto.
+  rememberToldPlace ({ name, label = null, type = null, dimension = 'overworld', position, toldBy = null, toldAt = null, confidence = 1, tags = [], id = null }) {
+    if (!name) throw new Error('rememberToldPlace needs a name');
+    if (!position) throw new Error('rememberToldPlace needs a position');
+    const slug = type || slugifyPlaceName(name);
+    const record = this.rememberLandmark({
+      id: id || this._landmarkId(slug, position),
+      type: slug,
+      kind: 'landmark',
+      label: label ?? name,
+      dimension,
+      position,
+      confidence,
+      tags: ['told', ...tags],
+      source: TOLD_SOURCE,
+      toldBy,
+      toldAt: toldAt ?? Date.now(),
+      permanent: true,
+    });
+    this._touchVector();
+    return record;
+  }
+
+  // «L'ingresso della miniera ora è a…»: la stessa identità (`id`) si sposta, e la
+  // posizione precedente finisce in `history`. L'umano è autorevole su *dove* sta
+  // una cosa, anche quando il posto l'aveva trovato il bot: si conserva però la
+  // provenienza originale (`source`) e non si promuove a `permanent` un luogo solo
+  // osservato — una correzione non trasforma un'osservazione in un fatto dettato.
+  correctToldPlace (id, { position, dimension = null, label = null, toldBy = null, toldAt = null } = {}) {
+    const existing = this.getRecord(id);
+    if (!existing) throw new Error(`correctToldPlace: unknown record ${id}`);
+    if (!position) throw new Error('correctToldPlace needs a position');
+    const at = toldAt ?? Date.now();
+    const wasTold = existing.source === TOLD_SOURCE || existing.toldBy != null;
+    const history = [
+      ...(existing.history ?? []),
+      {
+        position: existing.position ?? null,
+        dimension: existing.dimension ?? null,
+        label: existing.label ?? null,
+        source: existing.source ?? null,
+        toldBy: existing.toldBy ?? null,
+        from: existing.lastSeenAt ?? existing.discoveredAt ?? null,
+        to: at,
+      },
+    ];
+    const record = this.rememberLandmark({
+      id: existing.id,
+      type: existing.type,
+      kind: existing.kind ?? 'landmark',
+      label: label ?? existing.label ?? null,
+      dimension: dimension ?? existing.dimension ?? 'overworld',
+      position,
+      confidence: existing.confidence ?? 1,
+      tags: existing.tags ?? [],
+      source: wasTold ? TOLD_SOURCE : (existing.source ?? undefined),
+      toldBy: toldBy ?? existing.toldBy ?? null,
+      toldAt: at,
+      permanent: wasTold ? true : existing.permanent === true,
+      history,
+    });
+    this._touchVector();
+    return record;
+  }
+
+  // Dimenticare è *invalidare*, non cancellare: il record esce da ricerche,
+  // risposte e navigazione (`includeInvalid: false` è il default ovunque), ma
+  // resta la storia di cosa il bot sapeva e di chi gliel'aveva detto.
+  forgetPlace (id, { reason = null, actor = null, at = null } = {}) {
+    const existing = this.getRecord(id);
+    if (!existing) return null;
+    const now = at ?? Date.now();
+    const record = {
+      ...existing,
+      status: MEMORY_STATUS.INVALID,
+      invalidReason: reason ?? existing.invalidReason ?? null,
+      invalidatedBy: actor ?? existing.invalidatedBy ?? null,
+      invalidatedAt: now,
+    };
+    this.repo.upsert(record);
+    this._touchVector();
+    return record;
+  }
+
+  // I luoghi dettati (permanenti), dal più recente.
+  toldPlaces ({ includeInvalid = false, limit = null } = {}) {
+    const rows = this.repo.find({ kinds: [...LANDMARK_KINDS, 'resource_site', 'portal', 'entity'], includeInvalid: true })
+      .filter((r) => r.permanent === true && r.source === TOLD_SOURCE && r.position && r.category !== 'conceptual')
+      .filter((r) => includeInvalid || r.status !== MEMORY_STATUS.INVALID)
+      .sort((a, b) => (b.toldAt ?? b.lastSeenAt ?? 0) - (a.toldAt ?? a.lastSeenAt ?? 0));
+    return limit != null ? rows.slice(0, limit) : rows;
+  }
+
+  // Ricerca per nome umano. Con più match non si sceglie: la disambiguazione è del
+  // chiamante (la chat chiede quale intende) — mai "il più vicino". Con
+  // `exact: true` contano solo i nomi uguali (non i contenuti parziali): è la
+  // modalità con cui si decide se una frase *corregge* un luogo esistente o ne
+  // crea uno nuovo ("campo" non deve spostare "campo di patate").
+  placesForName (name, { includeInvalid = false, toldOnly = false, limit = null, exact = false } = {}) {
+    const needle = foldPlaceName(name);
+    if (!needle) return [];
+    const named = (record) => [record.label, record.type, ...(record.tags ?? [])]
+      .filter((v) => typeof v === 'string')
+      .map(foldPlaceName);
+    const score = (record) => {
+      const words = named(record);
+      if (words.includes(needle)) return 2;
+      return words.some((w) => w.includes(needle)) ? 1 : 0;
+    };
+    return this.repo.find({ kinds: [...LANDMARK_KINDS, 'resource_site', 'portal', 'container', 'entity'], includeInvalid: true })
+      .filter((r) => r.category !== 'conceptual' && r.position)
+      .filter((r) => includeInvalid || r.status !== MEMORY_STATUS.INVALID)
+      .filter((r) => !toldOnly || r.permanent === true)
+      .map((r) => ({ record: r, score: score(r) }))
+      .filter((row) => row.score > (exact ? 1 : 0))
+      .sort((a, b) => b.score - a.score
+        || (b.record.permanent === true) - (a.record.permanent === true)
+        || (b.record.toldAt ?? b.record.lastSeenAt ?? 0) - (a.record.toldAt ?? a.record.lastSeenAt ?? 0))
+      .map((row) => row.record)
+      .slice(0, limit ?? Infinity);
+  }
+
+  // Risolve un nome umano in *un* luogo, senza mai scegliere fra più candidati:
+  // l'ambiguità la scioglie l'umano, non la distanza. Con `id` la ricerca è
+  // diretta. L'esito è esplicito (`found|ambiguous|unknown`) perché i chiamanti
+  // devono poter distinguere "non lo conosco" da "quale dei due?" e rispondere.
+  resolvePlace ({ name = null, id = null, exact = true, includeInvalid = false } = {}) {
+    if (id) {
+      const record = this.getRecord(id);
+      return record ? { action: 'found', place: record, candidates: [record] } : { action: 'unknown', place: null, candidates: [] };
+    }
+    if (!name) return { action: 'unknown', place: null, candidates: [] };
+    const matches = this.placesForName(name, { exact, limit: 10, includeInvalid });
+    if (!matches.length) return { action: 'unknown', place: null, candidates: [] };
+    if (matches.length > 1) return { action: 'ambiguous', place: null, candidates: matches };
+    return { action: 'found', place: matches[0], candidates: matches };
+  }
+
+  // «Ricordati che questo è il campo di patate» — la scrittura di un fatto
+  // dettato, con la regola di identità in un posto solo.
+  //
+  // Il nome è la chiave: se il bot ha *già* un luogo con quel nome, la frase lo
+  // sposta (identità e storia conservate), non crea un doppione. Se i luoghi con
+  // quel nome sono più d'uno non si sceglie — mai il più vicino — e non si scrive:
+  // `ambiguous` torna al chiamante, che chiede. `requireExisting` è la differenza
+  // fra ricordare e correggere: una correzione che non trova niente non inventa
+  // un luogo nuovo, risponde che non lo conosce.
+  //
+  // Ridire la stessa cosa non è una correzione: se il luogo risolto ha già quella
+  // posizione, quella dimensione e quel nome l'esito è `unchanged` e non si scrive
+  // nulla — una riga di storia per un fatto identico sporcherebbe la storia del
+  // luogo, e «ripeto la frase» è il caso più comune.
+  tellPlace ({ name, label = null, type = null, position, dimension = 'overworld', toldBy = null, toldAt = null, id = null, requireExisting = false } = {}) {
+    if (!name) throw new Error('tellPlace needs a name');
+    const at = toldAt ?? Date.now();
+    const resolved = this.resolvePlace({ name, id, exact: true });
+    if (resolved.action === 'ambiguous') return { action: 'ambiguous', place: null, previous: null, candidates: resolved.candidates };
+    if (resolved.action === 'unknown') {
+      // Una correzione che non trova niente non inventa un luogo nuovo.
+      if (requireExisting) return { action: 'unknown', place: null, previous: null, candidates: [] };
+      if (!position) throw new Error('tellPlace needs a position for a new place');
+      const place = this.rememberToldPlace({ name, label, type, dimension, position, toldBy, toldAt: at });
+      return { action: 'created', place, previous: null, candidates: [] };
+    }
+    const target = resolved.place;
+    const samePosition = Boolean(position && target.position) &&
+      position.x === target.position.x && position.y === target.position.y && position.z === target.position.z;
+    const sameDimension = (dimension ?? 'overworld') === (target.dimension ?? 'overworld');
+    const sameLabel = label == null ? true : label === (target.label ?? null);
+    if (samePosition && sameDimension && sameLabel) {
+      return { action: 'unchanged', place: target, previous: null, candidates: [] };
+    }
+    const previous = { position: target.position ?? null, dimension: target.dimension ?? null, label: target.label ?? null, toldAt: target.toldAt ?? null, source: target.source ?? null };
+    const place = this.correctToldPlace(target.id, { position, dimension, label, toldBy, toldAt: at });
+    // `candidates` è vuoto su un esito deciso: il luogo spostato è `place`, il suo
+    // stato precedente è `previous` — una lista di candidati qui inviterebbe il
+    // chiamante a pensare che ci sia ancora qualcosa da scegliere.
+    return { action: 'corrected', place, previous, candidates: [] };
+  }
+
+  // «Nel baule c'è del ferro»: un *claim*, non una lettura. Registra il baule se
+  // non lo conosce ancora (discovery: la posizione è un fatto, il contenuto no) e
+  // mette il claim nel log con provenienza, autore e data. Il claim è parziale:
+  // dice che quello c'è, non che quello è tutto.
+  claimToldContents ({ containerId = null, position = null, dimension = 'overworld', item, count = null, label = null, type = null, toldBy = null, toldAt = null } = {}) {
+    if (!item) throw new Error('claimToldContents needs an item');
+    const at = toldAt ?? Date.now();
+    let target = containerId ? this.getRecord(containerId) : null;
+    if (!target && position) target = this.repo.get(this.containerId(position));
+    if (target) {
+      // Il baule lo conosce già: il nome dato dall'umano si registra comunque — è
+      // così che un baule diventa "il baule di casa" — senza toccare né la
+      // provenienza del posto né l'inventario osservato (`contentsKnown: false`
+      // degrada la scrittura a discovery).
+      if (label || type) {
+        target = this.rememberContainer({
+          type: type ?? target.type ?? 'container',
+          label,
+          dimension: target.dimension ?? dimension,
+          position: target.position,
+          contentsKnown: false,
+          source: target.source ?? null,
+          toldBy,
+          toldAt: at,
+        });
+      }
+    } else if (position) {
+      // Il baule nominato da un umano che il bot non conosceva: `label` è il nome
+      // che gli ha dato ("baule di casa"), `type` il blocco quando lo si conosce.
+      // La discovery non dichiara mai il contenuto: quello è il claim, ed è
+      // parziale. `observedAt: at` è il momento in cui il fatto è entrato in
+      // memoria (per una correzione/ripetizione non è "adesso").
+      target = this.rememberContainer({ type: type ?? 'container', label, dimension, position, contentsKnown: false, observedAt: at, source: TOLD_SOURCE, toldBy, toldAt: at, tags: ['told'] });
+    }
+    if (!target) throw new Error('claimToldContents needs a container id or a position');
+    const observationId = this.observe({
+      subject: target.id,
+      predicate: 'claimed_contains',
+      object: item,
+      observedAt: at,
+      source: TOLD_SOURCE,
+      data: { count: count ?? null, toldBy, partial: true },
+    });
+    this._touchVector();
+    return { container: target, observationId };
+  }
+
+  // I claim sul contenuto di un baule, con la conferma *calcolata dalla lettura*:
+  // `unverified` = mai riletto dopo il claim; `confirmed` = una lettura successiva
+  // lo ha trovato; `contradicted` = è stato riletto e quell'item non c'era (una
+  // lettura *prima* del claim non dice nulla su un claim successivo).
+  claimsFor (containerId, { item = null, now = Date.now() } = {}) {
+    const view = this._describeContainer(containerId, now);
+    if (!view) return [];
+    const claims = this.observations({ subject: containerId, predicate: 'claimed_contains', limit: 200 });
+    const reads = this.observations({ subject: containerId, predicate: 'contains', limit: 200 });
+    return claims
+      .filter((c) => !item || matchesItemName(c.object, item))
+      .map((c) => {
+        const claimAt = c.observedAt ?? null;
+        const after = reads.filter((r) => (r.observedAt ?? 0) > (claimAt ?? 0));
+        // Una lettura scrive una riga per item trovato; una lettura che non trova
+        // nulla non scrive righe, e l'unica traccia è `inspectedAt` del baule.
+        // "C'è ancora?" lo decide perciò l'ultima *lettura*, non una riga
+        // qualsiasi dopo il claim: prima si sceglie l'evento più recente, poi lo si
+        // interroga.
+        const rowsAt = after.length ? Math.max(...after.map((r) => r.observedAt ?? 0)) : null;
+        const inspectedAfter = view.inspectedAt != null && claimAt != null && view.inspectedAt > claimAt;
+        const lastIsEmpty = inspectedAfter && (rowsAt == null || view.inspectedAt > rowsAt);
+        const lastRead = (!lastIsEmpty && rowsAt != null) ? after.filter((r) => r.observedAt === rowsAt) : [];
+        const hit = lastRead.filter((r) => matchesItemName(r.object, c.object) && (r.count ?? 0) > 0);
+        const ageMs = claimAt == null ? null : Math.max(0, now - claimAt);
+        return {
+          containerId,
+          item: String(c.object),
+          count: c.count ?? null,
+          toldBy: c.toldBy ?? null,
+          claimAt,
+          confidence: c.confidence ?? 1,
+          verdict: hit.length ? 'confirmed' : ((lastRead.length || inspectedAfter) ? 'contradicted' : 'unverified'),
+          verifiedAt: hit[0]?.observedAt ?? lastRead[0]?.observedAt ?? (inspectedAfter ? view.inspectedAt : null),
+          verifiedCount: hit[0]?.count ?? null,
+          stale: this.toldClaimStaleMs >= 0 && ageMs != null && ageMs > this.toldClaimStaleMs,
+          observationId: c.id,
+        };
+      })
+      .sort((a, b) => (b.claimAt ?? 0) - (a.claimAt ?? 0));
+  }
+
+  // «Dove posso trovare ferro?»: un'unica risposta che tiene separato il misurato
+  // dal detto. `source: 'observed'` è un contenuto letto, `'told'` un claim (o un
+  // luogo nominato da un umano), `'discovered'` un luogo del bot. Il richiedente
+  // non deve indovinare la provenienza guardando i campi.
+  whereToFind (item, { limit = 5, near = null, includeStale = true, now = Date.now() } = {}) {
+    const token = String(item ?? '').trim().toLowerCase();
+    if (!token) return [];
+    const seen = new Set();
+    const rows = [];
+    const push = (row) => {
+      if (!row.position) return;
+      const key = `${row.kind}:${row.id}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      rows.push(row);
+    };
+    const containers = this.findContainers({ includeInvalid: false, includeStale: true, now });
+    // 1. Misure osservate: il contenuto letto di un baule.
+    for (const view of containers) {
+      const match = Object.entries(view.contents ?? {})
+        .find(([name, count]) => Number(count) > 0 && matchesItemName(name, token));
+      if (!match) continue;
+      push({
+        kind: 'container', id: view.id, label: view.label ?? null, position: view.position,
+        dimension: view.dimension ?? null, item: match[0], count: Number(match[1]),
+        source: 'observed', verifiedAt: view.inspectedAt ?? null, status: view.status,
+        toldBy: view.toldBy ?? null, claim: null,
+      });
+    }
+    // 2. Claim dettati: parziali, mai presentati come inventario; una smentita non
+    // si offre come destinazione.
+    for (const view of containers) {
+      for (const claim of this.claimsFor(view.id, { item: token, now })) {
+        if (claim.verdict === 'contradicted') continue;
+        push({
+          kind: 'container', id: view.id, label: view.label ?? null, position: view.position,
+          dimension: view.dimension ?? null, item: claim.item, count: claim.count,
+          source: 'told', verifiedAt: claim.verifiedAt, status: view.status,
+          toldBy: claim.toldBy, claim: claim.verdict,
+        });
+      }
+    }
+    // 3. Luoghi che nominano la risorsa: un sito di risorse, o un luogo dettato.
+    for (const record of this.repo.find({ kinds: VECTOR_KINDS.filter((k) => k !== 'container'), includeInvalid: false })) {
+      if (!record.position || record.category === 'conceptual') continue;
+      if (!includeStale && record.status === MEMORY_STATUS.STALE) continue;
+      const words = [record.type, record.label, ...(record.tags ?? [])].filter((v) => typeof v === 'string');
+      if (!words.some((w) => matchesItemName(w, token))) continue;
+      push({
+        kind: record.kind, id: record.id, label: record.label ?? null, position: record.position,
+        dimension: record.dimension ?? null, item: record.type ?? token, count: null,
+        source: record.source === TOLD_SOURCE ? 'told' : 'discovered',
+        verifiedAt: record.lastSeenAt ?? null, status: record.status,
+        toldBy: record.toldBy ?? null, claim: null,
+      });
+    }
+    const rank = { observed: 0, told: 1, discovered: 2 };
+    rows.sort((a, b) => (rank[a.source] ?? 3) - (rank[b.source] ?? 3)
+      || (near ? distance3d(a.position, near) - distance3d(b.position, near) : 0)
+      || (b.verifiedAt ?? 0) - (a.verifiedAt ?? 0));
+    return rows.slice(0, limit);
+  }
+
   // ---- containers ------------------------------------------------------------------
 
   containerId (position) {
@@ -249,7 +675,7 @@ export class WorldMemory {
   // `_materializeContains` (che invalida gli archi prima di ricostruirli) avrebbe
   // cancellato il contenuto appreso. Un `contents` assente non è un contenuto
   // vuoto: è l'assenza di una misura.
-  rememberContainer ({ type = 'container', dimension = 'overworld', position, contents = undefined, contentsKnown = undefined, observedAt = null, source = null }) {
+  rememberContainer ({ type = 'container', label = null, dimension = 'overworld', position, contents = undefined, contentsKnown = undefined, observedAt = null, source = null, toldBy = null, toldAt = null, tags = [] }) {
     const now = observedAt ?? Date.now();
     const id = this.containerId(position);
     const existing = this.repo.get(id);
@@ -271,6 +697,10 @@ export class WorldMemory {
       id,
       kind: 'container',
       type,
+      // Un nome umano del baule ("baule di casa"), quando qualcuno gliel'ha dato.
+      // `describeContainer` lo propaga: serve a nominarlo in chat e a ritrovarlo
+      // per nome (`placesForName`).
+      label: label ?? existing?.label ?? null,
       dimension,
       position: round(position),
       ...contentsState,
@@ -278,8 +708,15 @@ export class WorldMemory {
       lastSeenAt: now,
       confidence: inspection ? 1 : (existing?.confidence ?? 1),
       status: existing?.status === MEMORY_STATUS.INVALID ? MEMORY_STATUS.INVALID : MEMORY_STATUS.KNOWN,
-      tags: existing?.tags ?? [],
+      tags: [...new Set([...(existing?.tags ?? []), ...tags])],
       source: source ?? (inspection ? 'read_container' : 'discovered'),
+      // Un baule *nominato* da un umano: chi lo ha detto e quando. I claim sul suo
+      // contenuto non vivono qui ma nel log (`claimed_contains`), perché sono
+      // parziali e vanno confrontati con la lettura. Un contenitore non diventa
+      // `permanent`: la sua posizione invecchia come quella di ogni altro baule.
+      toldBy: toldBy ?? existing?.toldBy ?? null,
+      toldAt: toldAt ?? existing?.toldAt ?? null,
+      permanent: existing?.permanent === true,
     });
     if (!inspection) return this._describeContainer(id, now);
     this._materializeContains(id, contentsState.contents);
@@ -1572,7 +2009,9 @@ export class WorldMemory {
   // vedere lo stale anche nel record memorizzato.
   refreshStatuses (now = Date.now()) {
     this.repo.markStaleBefore({ kind: 'container', before: now - this.containerStaleMs });
-    this.repo.markStaleBefore({ excludeKind: 'container', before: now - this.landmarkStaleMs });
+    // I luoghi *dettati* sono permanenti e nessun TTL li tocca (`keepPermanent`),
+    // altrimenti "l'ingresso della miniera" scadrebbe perché nessuno lo ri-visita.
+    this.repo.markStaleBefore({ excludeKind: 'container', before: now - this.landmarkStaleMs, keepPermanent: true });
   }
 
   // ---- hydrate / summary -----------------------------------------------------------

@@ -4636,3 +4636,204 @@ in the payload it is indistinguishable from a measurement.
   rows are open; [open questions](wiki/open-questions.md) no longer describes
   `survey_village` as spec — it lists what the first live rows must show, for the
   sweep, the census read and the farm order alike.
+
+## [2026-10-07] feat | A human can teach the bot a fact, and the fact says who said it
+
+The chat channel could answer questions and execute orders; a fact about the
+world — «ricordati che il ferro sta nel baule a 120, 64, -230», «l'ingresso
+principale della miniera sta a…», «il punto dove mi trovo adesso è il campo di
+patate» — had no way in: the memory's producers were all the bot's own sensors.
+M10 adds the missing direction, and it adds it *without* collapsing the one
+distinction that matters: **a fact that was said is not a fact that was seen.**
+
+- `world-memory.mjs` gets a provenance (`TOLD_SOURCE = 'told'`), the teller
+  (`toldBy`/`toldAt`) and `permanent: true` for a place a human named. A named
+  place has **no TTL** — `markStaleBefore({keepPermanent: true})` skips it,
+  because nobody re-visits a mine entrance by accident and time alone is not
+  evidence that it moved; a *container* a human names is not permanent, and its
+  position ages like any other chest.
+- The four operations are methods, not routes: `rememberToldPlace` /
+  `tellPlace` (create **or** correct: repeating a name at another position is a
+  correction, not a duplicate), `correctToldPlace` (same `id`, the old position
+  in `history[]`, and the **provenance kept** — a human correcting a place the
+  bot had discovered does not turn that discovery into a told fact),
+  `resolvePlace`/`placesForName` (`action: 'ambiguous'` with the candidates: the
+  code never resolves a name by distance) and `forgetPlace` (`status:
+  'invalid'`, never a delete — out of search, answers and navigation by default,
+  still in history).
+- A chest's content is the one case where the model had to change shape.
+  «Nel baule c'è del ferro» does not mean knowing the inventory, so
+  `claimToldContents` writes a *discovery* of the chest (`contentsKnown: false`,
+  `source: 'told'`, the human `label`) plus a **claim** in the observation log
+  (`predicate: 'claimed_contains'`, `data: {count, toldBy, partial: true}`) —
+  never `contents`, never `contentsKnown: true`, and never at the cost of an
+  inventory the bot had already read. `claimsFor` derives the verdict from the
+  *reading*: `unverified` (not re-read since the claim), `confirmed` (a later
+  read found it), `contradicted` (re-read and it was not there), `stale` past
+  `toldClaimStaleMs` (7 days). `whereToFind` ranks an observed reading above a
+  claim and never offers a contradicted one.
+- `memory-chat.mjs` reads the sentence — a pure module, no network, no model,
+  five languages. `toldIntentFromText(text, {sender, names})` returns an intent
+  or `null` (not a memory order → the ordinary chat flow), with the branch order
+  FORGET → CORRECT → REMEMBER → GOTO → CONSULT. Two decisions are worth
+  recording: **coordinates need an explicit marker** (a bare run of numbers must
+  not become a waypoint: «ricorda che ne ho 120»), and the rewriting is done on
+  **tokens** (`analyze`/`drop` mark the tokens a match starts inside), which is
+  what stops the final "a" of "ricorda" from being read as a preposition and
+  what lets accented letters survive. A deictic («questo», «il punto dove mi
+  trovo») needs the sender's live position; without one the answer is a question
+  (`no_sender_position`) and nothing is written.
+- `bedrock-harness.mjs` exposes the write path (`POST /memory/tell/place`,
+  `/container`, `/contents`, `/forget`; `GET /memory/places`, `/where`,
+  `/claims`) behind `TOLD_FACTS`, so the chat channel and a future console call
+  the same operations instead of reimplementing them.
+- `controller.mjs` gains `handleToldFact` inside `maybeHumanCommand`, after the
+  dedup and **before** `resolveQuestion`. It answers (write / answer /
+  clarification) and returns `true` — remembering, consulting, correcting and
+  forgetting never interrupt the running goal — or a plan, only for the movement
+  order: «vai al campo di patate» is a normal order to the remembered position
+  (`deterministic: 'told_goto'`, no model call), with the usual preemption and
+  resume. An escort phrased with a remembered name stays an escort, and a name
+  the memory does not know goes back to the ordinary path. Every reply is
+  composed from the catalogue (22 new `told_*` keys in `chat-lang/{it,en,fr,es,de}.mjs`),
+  addressed to the sender like the other replies, and states the recorded value
+  («Registrato: campo di patate a 120, 64, -230, Overworld») — the LLM is not
+  involved, so a number cannot be rephrased into a different number.
+- Three bugs were found by the tests and fixed: a label arriving on a chest the
+  bot had already read was dropped (the container was only written when it did
+  not exist), the told reply was not addressed (and `{name}` was overwritten by
+  the sender's name, so an ambiguous answer said *«ho 2 posti chiamati "Ale"»*),
+  and the container phrase in Spanish kept the verb inside the name
+  (*«cofre de hierro esta»*).
+
+**Evidence.** `tests/memory-chat.test.mjs` (10: the three original phrases, the
+negatives, the bounds, the formatting), `tests/memory-told.test.mjs` (22: the
+owner's matrix — persistence, the sender's position, a partial claim that
+cannot erase an observed inventory, ambiguity, correction, invalidation, the
+differentiated TTL, navigation by name — over both backends) and
+`tests/controller-told-facts.test.mjs` (6: chat integration against a scripted
+harness, `tell_place` with the live sender position, clarify with no sender,
+consult with provenance, ambiguity, `told_goto` with no write, memory
+unavailable). Suite: 1815 pass, 0 fail. **Not yet exercised against a live
+BDS**; the raw reference is [TOLD-FACTS](raw/TOLD-FACTS.md), the wiki sections
+are [memory](wiki/memory.md#told-facts-what-a-human-said) and
+[human-command](wiki/human-command.md#told-facts-m10-the-human-teaches-the-bot-remembers),
+and the residual rows are in [open questions](wiki/open-questions.md).
+
+## [2026-10-07] feat | Told facts: the writes pass the sender gate, and a repeated fact writes nothing
+
+Closing pass on the M10 told facts (the commit below is the one amended with
+this): three things were missing or wrong at the edges, and the HTTP path got
+its first live exercise.
+
+- **The write routes now pass the same gate as the orders.** A dictated fact
+  *is* an order a human gives, so a `POST /memory/tell/*` whose `toldBy` is
+  outside `CHAT_ALLOWLIST` (when that variable is set in the harness
+  environment too) answers `403 {error:'told_sender_not_allowed', toldBy}`. A
+  write with **no** `toldBy` is not a human order — a local console or
+  maintenance call — and stays possible: the API is in loopback and the chat
+  gate lives in the controller, this is a second wall for the writes that claim
+  «tizio me l'ha detto». Verified live: `toldBy: 'Mallory'` → 403, `'Ale'` → the
+  place is written, no `toldBy` → written.
+- **Repeating a fact is not correcting it.** `tellPlace` resolved the name,
+  found the place and called `correctToldPlace` unconditionally, so the most
+  common sentence — the human saying the same thing again, not knowing they
+  already said it — appended a history row for an identical fact (seen live:
+  two POSTs of «campo di patate a 120, 64, -230» gave `historyCount: 1`). Now a
+  phrase whose position, dimension and name match what is stored answers
+  `{action: 'unchanged'}` and writes nothing; a *different* label on the same
+  position is still a real correction. The chat confirms (`told_place_ack`) and
+  the correction branch no longer mistakes `unchanged` for «non conosco il
+  posto» — that regression is pinned by a new integration case.
+- **The index follows a correction (measured, not assumed).** After
+  `POST /memory/tell/place` moved the place 120,-230 → 900,-900, a live
+  `GET /memory/search?q=campo di patate` returned the same `id`
+  (`campo_di_patate_120_64_-230`) at the **new** position. Worth writing down:
+  the id is an identity, not a location — it keeps the slug of the first time —
+  so a position is always read from the record.
+
+**Evidence.** New cases: `tests/memory-told.test.mjs` 22 → 24 (the repetition
+property over both backends, and the rename-is-a-correction counterpart) and
+`tests/controller-told-facts.test.mjs` 6 → 7 (an `unchanged` correction answered
+with the confirmation). Full suite: 1840 pass, 0 fail. Live HTTP round on a
+harness without a Minecraft server (`MEMORY_DIR` in a temp dir):
+create → restart → find again, correct (same id, `historyCount` 1),
+search after the correction, forget → out of `/memory/places`, allowlist
+refusal. Docs touched: [TOLD-FACTS](raw/TOLD-FACTS.md),
+[memory](wiki/memory.md#told-facts-what-a-human-said),
+[human-command](wiki/human-command.md#told-facts-m10-the-human-teaches-the-bot-remembers)
+§M10, [verification](wiki/verification.md) 47.58–47.59,
+[open questions](wiki/open-questions.md#told-facts-2026-10-07--live-over-http-the-in-game-chat-round-still-open),
+`AGENTS.md`, `BEDROCK.md`. The live **in-game** round is still open.
+
+## [2026-10-07] deploy | Told facts live on the production harness (`c70acc5`)
+
+Requested after the push: deploy the feature live. The production runtime on VM
+100 (`hermes-jev-bedrock`) matched `main` (`3c6122e`) file for file before the
+deploy — the md5 of `bedrock-harness.mjs`, `controller.mjs`, `memory-store.mjs`,
+`sqlite-memory.mjs`, `world-memory.mjs` and `chat-lang/{it,en,fr,es,de}.mjs` was
+identical in the container and in the committed base — so the branch could be
+laid down as a **targeted deploy** rather than a rebuild. `git archive`-style
+tree transfer of the eleven changed files (tarball 118840 byte, sha256
+`38c5dab0ab494f5aa979d5ab8a2d2f2cf43568a555176d8e645dc03a36ea48de`, served from
+the Proxmox host on port 8099), applied to both places the runtime lives: the
+container's `/app` (`docker cp` + `node --check` on all eleven files) and the VM
+source tree the controller mounts as `/app/project`. md5 host = container = VM
+tree for all eleven. Backups
+before touching anything: `/tmp/hermes-jev-bedrock-pre-c70acc5.tar.gz` (source
+tree, `.git`/`node_modules`/`runs`/`nmp-cache` excluded) and
+`/tmp/app-pre-c70acc5.tar.gz` (the nine replaced files out of the container).
+
+`docker restart hermes-jev-bedrock` (nothing else: the container's `/app` is not
+a bind mount, only `runs` and `nmp-cache` are). The restart alone did **not** let
+the bot in — `[connect] attempt 1..3 failed: connecterror:9` with the discovery
+answering `protocol 2193 / 1.26.52` — the known NetherNet failure, and the
+remedy that worked was the documented one: `pct exec 108 -- systemctl restart
+minecraft-bedrock` (the usual `rc=1` from the startup-check, systemd restarted
+it, `Started Minecraft Bedrock Server.`), after which the bot went in at attempt
+6 then attempt 1 of a later reconnect and BDS reported `players: 1`.
+
+Live round against the real world memory, bot connected, **no controller**
+(none was running before or after): the four writes and three reads behind
+`TOLD_FACTS`, all with `toldBy: 'Ale'`:
+
+- `POST /memory/tell/place` «campo di patate» at 92/74/169 → `created`,
+  `source: 'told'`, `permanent: true`, `historyCount: 0`; `GET /memory/places`
+  finds it by name; the **same phrase again** → `unchanged` and still
+  `historyCount: 0` (the last branch of the feature, exercised live);
+- the same name at 130/70/-240 → `corrected`, **same id**
+  (`campo_di_patate_92_74_169` — the id is identity, not position), position
+  moved, `historyCount: 1`, `previous` carrying the old position and `toldAt`;
+- `POST /memory/tell/contents` of 5 iron on a chest the bot had **already read**
+  (91/73/160, 411 iron observed) → the container keeps `source: 'discovered'` and
+  `permanent: false`, gains the label «baule di casa» and a separate claim
+  `verdict: 'unverified'`; `GET /memory/where?item=iron_ingot` still answers the
+  **observed** 411 for that chest, and the claim is readable through
+  `GET /memory/claims?containerId=container_91_73_160` — a human's statement did
+  not overwrite what the bot had read;
+- **persistence after restart**: the container was restarted again and the
+  corrected place (with its history) and the claim were both still there;
+- `POST /memory/tell/forget` → `status: 'invalid'` with `previous` returned,
+  out of `GET /memory/places`, still readable with `includeInvalid=1` —
+  invalidated, never deleted;
+- governance sanity after the deploy: `GET /options` → 25 keys, `GET /survival`
+  → `normal` (the harness's own paths are intact with the new code).
+
+Two test artefacts were left in the production memory and are disclosed rather
+than silently cleaned: the invalidated landmark `campo_di_patate_92_74_169`
+(status `invalid`, excluded from every read) and the label «baule di casa» plus
+the unverified iron claim on the container at 91/73/160 — the next real reading
+of that chest will confirm or contradict the claim, and a different name told by
+the human replaces the label. `CHAT_ALLOWLIST` is **not** set in the container's
+environment, so the sender gate on the writes is inert there (the route is as
+open as `/act` on the loopback API); the 403 was verified in the integration
+tests and in the local live round. Still open: the **in-game chat** round, which
+needs a human typing `@bot Ricorda che questo è il campo di patate` with a
+chat-enabled controller running (`CHAT_ALLOWLIST` is a *controller* variable —
+the harness alone never reads the chat). Docs touched:
+[TOLD-FACTS](raw/TOLD-FACTS.md),
+[verification](wiki/verification.md) 47.58–47.59,
+[open questions](wiki/open-questions.md#told-facts-2026-10-07--live-over-http-the-in-game-chat-round-still-open).
+Branch `feat/told-facts` = `c70acc5`, pushed to `origin`; the deploy was a
+targeted one, so `main` still carries the other session's uncommitted
+`bedrock-adapter.mjs` and was left alone.

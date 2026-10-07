@@ -21,6 +21,7 @@ never committed.
 | `docs/raw/NETHER_ROADMAP.md` | `docs/raw/` | Nether/End roadmap (Italian): portal locate/build, Nether survival, ghast dodge, piglin bartering, enderman gaze, fortress/blaze, stronghold/End/dragon, N0–N7. |
 | `docs/raw/DEEP_DARK_ROADMAP.md` | `docs/raw/` | Deep Dark stealth roadmap (English): sculk sensor vibration model, verified sneak-walk, vibration-cost stealth pathfinding, shrieker/Warden warning, the escape tactic, underground 3D navigation and `find_deep_dark` (W0–W6). |
 | `docs/raw/VILLAGE_RECON_ROADMAP.md` | `docs/raw/` | Village reconnaissance roadmap (English): the village inventory as a site register in world memory (houses, free beds, pens with adults/babies, plots with ripeness, storage contents), the bounded read-only `survey_village` sweep, container memory on the deposit side, and the farm order as one intent expanding into `harvest_*` → `plant_*` → `deposit_*` verified by a state delta (V0–V5). |
+| `docs/raw/TOLD-FACTS.md` | `docs/raw/` | Told facts (English): facts dictated by a human — the `source: 'told'` provenance, a named place with no TTL, a chest's content as a partial claim read back from the next real inspection, correction that keeps identity/history, forgetting as invalidation, the five-language sentence reader, the HTTP tell routes and the chat flow (M10). |
 | `docs/raw/evidence/` | `docs/raw/evidence/` | JSONL evidence from early harness runs. |
 
 ## Source code (authoritative for behaviour)
@@ -35,7 +36,8 @@ never committed.
 | `bedrock-fishing.mjs` | Pure fishing rules: fish classification, water-block detection, shore geometry, bite timing. |
 | `bedrock-world.mjs` | Registry + Prismarine v9 decoder, `findBlocks`/`blockAt`, `requestAround` (subchunk requests). |
 | `bedrock-harness.mjs` | HTTP API (`/observe`, `/options`, `/act`, `/plan`, `/say`, `/survival`) and the Survival Governor filter; owns the `WorldMemory` (load, periodic flush, close). |
-| `world-memory.mjs` | Persistent **world memory** service: landmark/container records, `known/stale/invalid` status, spatial queries; storage-agnostic. |
+| `world-memory.mjs` | Persistent **world memory** service: landmark/container records, `known/stale/invalid` status, spatial queries; storage-agnostic. Since 2026-10-07 it also holds the **told facts** (M10): `TOLD_SOURCE`, the permanent named places (`tellPlace`, `correctToldPlace`, `placesForName`, `resolvePlace`, `forgetPlace`) and the partial claims on a chest's content (`claimToldContents`, `claimsFor`, `whereToFind`) — [wiki/memory](wiki/memory.md#told-facts-what-a-human-said). |
+| `memory-chat.mjs` | Pure **told-facts sentence reader** (M10): `toldIntentFromText(text, {sender, names})` → the four memory operations (remember / consult / correct / forget), the movement order to a remembered name, or `null` when the message is not a memory fact. Token-level rewriting (`analyze`/`drop`), coordinates only with an explicit marker (`isWorldPosition`, `coordsFromText`), the sender's live position for a deictic, the container/item/count phrase, and the `CLARIFY` reasons (`no_name`, `no_position`, `no_marker`, `no_sender_position`). Five languages, no network, no model. |
 | `sqlite-memory.mjs` | SQLite repository (`node:sqlite`, WAL, chunk index) — default memory backend. |
 | `memory-store.mjs` | JSON repository (same interface) — fallback / tests. |
 | `exploration.mjs` | Deterministic exploration M1 planner: biome target resolution, expanding-square/spiral over unexplored chunks, biome detection, report. |

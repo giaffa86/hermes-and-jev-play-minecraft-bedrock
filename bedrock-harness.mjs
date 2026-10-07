@@ -15,6 +15,14 @@
 //   POST /memory/reindex {limit} -> ricostruisce l'indice vettoriale
 //   POST /memory/prune {keepMissions, keepActions, keepCheckpoints, minAgeMs, dryRun} -> retention
 //   POST /memory/observations/prune {keepPerFact, minAgeMs, dryRun} -> retention del log
+// Fatti dettati (told facts, TOLD_FACTS=off li spegne):
+//   GET  /memory/places?name=&limit=&toldOnly=&includeInvalid= -> luoghi per nome umano (senza name: quelli dettati)
+//   GET  /memory/where?item=&limit=N -> dove si trova una risorsa, misurato o detto
+//   GET  /memory/claims?containerId=&item= -> claim sul contenuto di un baule, col verdetto della lettura
+//   POST /memory/tell/place {name,position,dimension,label,type,toldBy,id,requireExisting} -> crea o sposta (mai ambiguità silenziosa)
+//   POST /memory/tell/container {label,type,position,dimension,toldBy} -> nomina una cassa senza dichiararne il contenuto
+//   POST /memory/tell/contents {containerId|position,item,count,label,type,toldBy} -> claim parziale, non "contentsKnown"
+//   POST /memory/tell/forget {name|id,toldBy} -> invalida (non cancella)
 // Il controller sceglie solo chiavi restituite da /options; la validità è qui.
 import { createServer } from 'node:http';
 import { appendFileSync, mkdirSync } from 'node:fs';
@@ -134,6 +142,50 @@ worldMemory.hydrate();
 console.log(`world memory ready: ${JSON.stringify(worldMemory.summary())} (${MEMORY_DIR})`);
 // Flush periodico: la memoria sopravvive anche a un crash (flushed ogni 30 s a dirty).
 setInterval(() => { try { worldMemory.flush(); } catch (error) { console.error('[memory] flush failed:', error.message); } }, 30000).unref();
+
+// «Ricordati che il ferro sta nel baule a x y z» — il canale dei fatti dettati.
+// L'API è in loopback e chi può ordinare lo decide il controller (`CHAT_ALLOWLIST`):
+// qui resta l'interruttore della feature, per spegnerla senza toccare il resto
+// della memoria. Le regole (identità, ambiguità, provenienza) stanno in
+// world-memory.mjs; queste rotte sono trasporto e validazione.
+const TOLD_FACTS = process.env.TOLD_FACTS !== 'off';
+
+// Un fatto dettato è un ordine umano, quindi porta lo stesso gate degli ordini:
+// se `CHAT_ALLOWLIST` è configurata anche qui, un fatto attribuito a un mittente
+// fuori lista viene rifiutato. Una scrittura **senza** `toldBy` non è un ordine
+// umano (console locale, manutenzione) e resta possibile — l'API è in loopback e
+// il gate del canale chat vive nel controller, questo è il secondo muro per le
+// scritture che dicono «me l'ha detto tizio».
+const TOLD_ALLOWLIST = new Set((process.env.CHAT_ALLOWLIST || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
+function toldGate (payload) {
+  if (!TOLD_FACTS) return [403, { error: 'told_facts_disabled' }];
+  const toldBy = payload?.toldBy ?? payload?.actor ?? null;
+  if (toldBy && TOLD_ALLOWLIST.size && !TOLD_ALLOWLIST.has(String(toldBy).trim().toLowerCase())) {
+    return [403, { error: 'told_sender_not_allowed', toldBy }];
+  }
+  return null;
+}
+
+// Proiezione di un luogo per l'API: il nome con cui l'umano lo chiama, dove sta e
+// da chi lo sa. Basta a rispondere in chat e a navigarci (la futura console usa la
+// stessa forma); il record intero resta nella memoria.
+function toldPlaceView (record) {
+  if (!record) return null;
+  return {
+    id: record.id ?? null,
+    label: record.label ?? null,
+    type: record.type ?? null,
+    kind: record.kind ?? null,
+    dimension: record.dimension ?? null,
+    position: record.position ?? null,
+    source: record.source ?? null,
+    toldBy: record.toldBy ?? null,
+    toldAt: record.toldAt ?? null,
+    permanent: record.permanent === true,
+    status: record.status ?? null,
+    historyCount: Array.isArray(record.history) ? record.history.length : 0,
+  };
+}
 
 const adapter = new BedrockAdapter({
   memory: worldMemory,
@@ -747,6 +799,123 @@ server = createServer(async (req, res) => {
         minAgeMs: payload.minAgeMs ?? undefined,
         dryRun: payload.dryRun !== false,
       })];
+    }
+    else if (req.method === 'GET' && req.url.startsWith('/memory/places')) {
+      const params = new URLSearchParams(req.url.split('?')[1] ?? '');
+      const name = params.get('name');
+      const limit = params.get('limit') != null ? Number(params.get('limit')) : null;
+      const includeInvalid = params.get('includeInvalid') === '1';
+      const rows = name
+        ? worldMemory.placesForName(name, { limit, includeInvalid, toldOnly: params.get('toldOnly') === '1' })
+        : worldMemory.toldPlaces({ limit, includeInvalid });
+      response = [200, { places: rows.map(toldPlaceView), count: rows.length }];
+    }
+    else if (req.method === 'GET' && req.url.startsWith('/memory/where')) {
+      const params = new URLSearchParams(req.url.split('?')[1] ?? '');
+      const item = params.get('item') ?? '';
+      const limit = params.get('limit') != null ? Number(params.get('limit')) : 5;
+      const hits = item ? worldMemory.whereToFind(item, { limit }) : [];
+      response = [200, { item, hits, count: hits.length }];
+    }
+    else if (req.method === 'GET' && req.url.startsWith('/memory/claims')) {
+      const params = new URLSearchParams(req.url.split('?')[1] ?? '');
+      const containerId = params.get('containerId');
+      response = containerId
+        ? [200, { claims: worldMemory.claimsFor(containerId, { item: params.get('item') }) }]
+        : [400, { error: 'containerId_required' }];
+    }
+    else if (req.method === 'POST' && req.url === '/memory/tell/place') {
+      const payload = body ? JSON.parse(body) : {};
+      const gate = toldGate(payload);
+      if (gate) response = gate;
+      else if (!payload.name) response = [400, { error: 'name_required' }];
+      else if (!payload.position) response = [400, { error: 'position_required' }];
+      else {
+        const result = worldMemory.tellPlace({
+          name: payload.name,
+          label: payload.label ?? null,
+          type: payload.type ?? null,
+          position: payload.position,
+          dimension: payload.dimension ?? 'overworld',
+          toldBy: payload.toldBy ?? payload.actor ?? null,
+          toldAt: payload.toldAt ?? null,
+          id: payload.id ?? null,
+          requireExisting: payload.requireExisting === true,
+        });
+        response = [200, {
+          ok: result.action === 'created' || result.action === 'corrected' || result.action === 'unchanged',
+          action: result.action,
+          place: toldPlaceView(result.place),
+          previous: result.previous,
+          candidates: (result.candidates ?? []).map(toldPlaceView),
+        }];
+      }
+    }
+    else if (req.method === 'POST' && req.url === '/memory/tell/container') {
+      const payload = body ? JSON.parse(body) : {};
+      const gate = toldGate(payload);
+      if (gate) response = gate;
+      else if (!payload.position) response = [400, { error: 'position_required' }];
+      else if (!payload.label) response = [400, { error: 'label_required' }];
+      else {
+        // Una cassa è la sua posizione (`containerId`): nominarla non crea un
+        // secondo record per lo stesso baule, e non tocca il contenuto — una
+        // discovery non è mai una smentita (world-memory, V0).
+        const container = worldMemory.rememberContainer({
+          type: payload.type ?? 'container',
+          label: payload.label,
+          position: payload.position,
+          dimension: payload.dimension ?? 'overworld',
+          contentsKnown: false,
+          source: 'told',
+          toldBy: payload.toldBy ?? payload.actor ?? null,
+          toldAt: payload.toldAt ?? null,
+          tags: ['told'],
+        });
+        response = [200, { ok: true, container: toldPlaceView(container) }];
+      }
+    }
+    else if (req.method === 'POST' && req.url === '/memory/tell/contents') {
+      const payload = body ? JSON.parse(body) : {};
+      const gate = toldGate(payload);
+      if (gate) response = gate;
+      else if (!payload.item) response = [400, { error: 'item_required' }];
+      else if (!payload.containerId && !payload.position) response = [400, { error: 'containerId_or_position_required' }];
+      else {
+        const { container, observationId } = worldMemory.claimToldContents({
+          containerId: payload.containerId ?? null,
+          position: payload.position ?? null,
+          dimension: payload.dimension ?? 'overworld',
+          item: payload.item,
+          count: payload.count ?? null,
+          label: payload.label ?? null,
+          type: payload.type ?? null,
+          toldBy: payload.toldBy ?? payload.actor ?? null,
+          toldAt: payload.toldAt ?? null,
+        });
+        // Il claim è parziale e non verificato finché una lettura non lo tocca:
+        // torna al chiamante con il suo verdetto, così la chat può dirlo.
+        response = [200, {
+          ok: true,
+          container: toldPlaceView(container),
+          observationId,
+          claim: worldMemory.claimsFor(container.id, { item: payload.item })[0] ?? null,
+        }];
+      }
+    }
+    else if (req.method === 'POST' && req.url === '/memory/tell/forget') {
+      const payload = body ? JSON.parse(body) : {};
+      const gate = toldGate(payload);
+      if (gate) response = gate;
+      else {
+        const resolved = worldMemory.resolvePlace({ name: payload.name ?? null, id: payload.id ?? null });
+        if (resolved.action === 'ambiguous') response = [200, { ok: false, error: 'ambiguous', candidates: resolved.candidates.map(toldPlaceView) }];
+        else if (resolved.action === 'unknown') response = [200, { ok: false, error: 'unknown_place' }];
+        else {
+          const place = worldMemory.forgetPlace(resolved.place.id, { reason: payload.reason ?? 'told_to_forget', actor: payload.toldBy ?? payload.actor ?? null });
+          response = [200, { ok: true, place: toldPlaceView(place), previous: toldPlaceView(resolved.place) }];
+        }
+      }
     }
     else if (req.method === 'GET' && req.url === '/stats') response = [200, { run: RUN, pid: process.pid, uptimeMs: Math.round(process.uptime() * 1000), ...ledger.summary() }];
     else if (req.method === 'POST' && req.url === '/plan') { adapter.setPlan(JSON.parse(body)); response = [200, { ok: true, plan: adapter.plan }]; }
