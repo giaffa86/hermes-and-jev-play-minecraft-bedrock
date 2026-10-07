@@ -1,12 +1,12 @@
 # Docker Compose per l'agente Hermes + Jev Bedrock sull'host Docker.
-# Il container si connette al BDS via NetherNet e comunica con il servizio Hermes
-# esistente sulla rete Docker condivisa `hermes-internal`.
+# Il container si connette al BDS via NetherNet e parla con il servizio
+# Hermes esistente sulla rete Docker condivisa `hermes-internal`.
 #
 # Prima di avviare:
 #   1. Creare .env nella stessa directory (vedi .env.example).
 #   2. Verificare che esista la rete Docker `hermes-internal` di Hermes:
 #        docker network ls | grep hermes-internal
-#   3. Se il nome e' diverso, aggiornare networks.hermes-internal.name qui sotto.
+#   3. Se il nome e' diverso, aggiornare networks.hermes-internal.name.
 
 services:
   hermes-jev-bedrock:
@@ -14,36 +14,36 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: hermes-jev-bedrock
+    # Host networking: la sessione Bedrock/NetherNet (UDP 19132 +
+    # WebRTC/ICE) non deve passare per il NAT del bridge Docker, che la
+    # faceva cadere ogni 1-2 min. Con `network_mode: host` il servizio non
+    # ha piu' `ports:`/`networks:` propri: l'API ascolta su API_HOST e il
+    # firewall dell'host deve permetterla solo alla rete interna di Hermes
+    # (es. `ufw allow from 172.29.0.0/24 to 172.29.0.1 port 3077 proto
+    # tcp`, dove 172.29.0.1 e' il gateway di `hermes-internal`).
+    network_mode: host
     env_file:
       - .env
     environment:
-      # Docker publishes this listener only on the VM loopback address below.
-      - API_HOST=0.0.0.0
+      # Interfaccia di ascolto dell'API del harness. Con host networking
+      # 127.0.0.1 sarebbe la VM stessa; si usa il gateway di
+      # `hermes-internal` perche' il controller gira nel container `hermes`.
+      - API_HOST=172.29.0.1
       # URL del harness visto dal controller.
-      # Se il controller gira sulla VM (fuori Docker): http://127.0.0.1:3077
-      # Se il controller gira in un altro container sulla stessa rete: http://hermes-jev-bedrock:3077
-      - HARNESS=http://127.0.0.1:3077
-    ports:
-      # Espone il harness solo su localhost della VM (non su LAN/internet).
-      # Se vuoi esporlo alla LAN, sostituire 127.0.0.1 con 0.0.0.0 o l'IP della VM.
-      - "127.0.0.1:3077:3077"
+      # Controller sulla VM (fuori Docker): http://127.0.0.1:3077
+      # Controller in un container della stessa rete:
+      #   http://172.29.0.1:3077
+      - HARNESS=http://172.29.0.1:3077
     volumes:
       # Log, eventi e mondi di test
       - ./runs:/app/runs
-      # Persistenza cache token Xbox Live (importante per non rifare l'auth ogni volta).
-      # La prima volta puo' essere popolata copiando ~/.minecraft/nmp-cache dal nodo
+      # Persistenza cache token Xbox Live (per non rifare l'auth ogni
+      # volta). Si puo' popolare copiando ~/.minecraft/nmp-cache dal nodo
       # nella directory ./nmp-cache accanto a questo file.
       - ./nmp-cache:/root/.minecraft/nmp-cache:rw
-    networks:
-      # Rete con accesso esterno: BDS (<ip-server-bedrock>:19132) e API remote (TypeSafe/OpenRouter)
-      - hermes-jev-bedrock
-      # Rete interna condivisa con il container Hermes esistente (non modificato)
-      - hermes-internal
     restart: unless-stopped
 
 networks:
-  hermes-jev-bedrock:
-    driver: bridge
   hermes-internal:
     external: true
     # Nome reale della rete Docker di Hermes (verificare sull'host Docker)

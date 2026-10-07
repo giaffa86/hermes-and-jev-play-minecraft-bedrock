@@ -1,5 +1,29 @@
 # Log
 
+## [2026-10-07] deploy | Il bridge Docker faceva cadere la sessione Bedrock: host networking
+
+Il wedge di trasporto della spedizione `diamond-20261007-1` aveva una causa fuori dal
+codice: il container del harness era sulla rete bridge Docker. Misurato: un container
+temporaneo dalla stessa immagine, cambiando solo la rete in `--network host`, ha tenuto
+**una sessione 6 min 47 s senza un solo `client_close`** (console BDS `Player Spawned
+14:46:50` → `Player disconnected 14:53:34`), mentre `hermes-internal` perdeva la sessione
+ogni 1-2 minuti e spesso non si riconnetteva.
+
+- `docker-compose.yml` lancia `hermes-jev-bedrock` con `network_mode: host`,
+  `API_HOST=172.29.0.1` e `HARNESS=http://172.29.0.1:3077`; l'API resta raggiungibile
+  solo da `hermes-internal` grazie a una regola host mirata
+  (`ufw allow from 172.29.0.0/24 to 172.29.0.1 port 3077 proto tcp`).
+- `mission.sh` usa `HARNESS=http://172.29.0.1:3077` e la nuova release
+  `release-live-920018ef` (prima `release-live-d78a190`).
+- **Correttezza del deploy**: il container in esecuzione **non aveva `memory-chat.mjs`**
+  e usava `world-memory.mjs`/`memory-store.mjs`/`sqlite-memory.mjs`/`chat-lang/`
+  vecchi — il merge `dbcc005` (told facts) era pushato ma deployato solo a metà. La
+  nuova release si costruisce da `git archive HEAD` sopra la release precedente (così
+  `.env` sopravvive) e `/app` viene sincronizzato da lì; sha verificati.
+- **Residuo**: a bot inattivo la sessione è stabile, ma durante un run restano 13 drop
+  ogni 30 minuti, correlati alle azioni; `connecterror:9` è `InactivityTimeout` di
+  nethernet. Dettagli in [open-questions](wiki/open-questions.md) § NetherNet instability.
+
 ## [2026-10-07] fix | A blind harness is a broken run, not a quiet one (and a 4 HP bot does not attack)
 
 The `diamond-20261007-1` expedition died eleven times in a day. The forensic reading

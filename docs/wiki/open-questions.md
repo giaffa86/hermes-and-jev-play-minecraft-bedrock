@@ -418,6 +418,25 @@ sitting on the human's boat.** The chain around it is implemented and in
   `harness_blind_stop`, and the deterministic ladder no longer sends an unarmed bot
   to fight (`policy.fightAllowed`). Both are unit-tested; the live half (a run that
   now *stops* instead of dying) needs a session that lasts longer than two minutes.
+- **Update 2026-10-07 (later the same day) — the Docker bridge NAT was the cause.**
+  Measured with a throwaway container from the same image and the same `.env`, changing
+  only the network: with `--network host` it connected (`attempt 5`) after the 7th BDS
+  restart and held one session **6 min 47 s with zero `client_close`** (BDS console:
+  `Player Spawned 14:46:50` → `Player disconnected 14:53:34`), while the same period on
+  `hermes-internal` shows 18 drops and no successful reconnect. So the NetherNet
+  UDP/WebRTC session does not survive the bridge NAT. `docker-compose.yml` now runs the
+  harness with `network_mode: host`, `API_HOST=172.29.0.1` (the gateway of
+  `hermes-internal`) and `HARNESS=http://172.29.0.1:3077`; a scoped host rule
+  (`ufw allow from 172.29.0.0/24 to 172.29.0.1 port 3077 proto tcp`) keeps the API
+  reachable from the controller inside the `hermes` container while leaving it
+  unexposed to the LAN, and `mission.sh` uses the same URL.
+- **Residual (smaller, still open)**: with host networking an **idle** session is
+  stable, but during a run 13 drops per 30 min still appear and they are
+  action-correlated (pathfinding, `survey_village`, container windows). `connecterror:9`
+  is nethernet's `InactivityTimeout` (`node_modules/nethernet/src/signalling.js:18`), so
+  the event loop blocking during a heavy action is the next candidate — a bounded
+  experiment (idle vs. busy) is the cheapest way to separate it from the transport.
+  Also unchanged: when logins stop being accepted, only a BDS restart clears it.
 
 ## Missing Bedrock capabilities (for the full first-night milestone)
 
