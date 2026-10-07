@@ -4861,3 +4861,102 @@ the harness alone never reads the chat). Docs touched:
 Branch `feat/told-facts` = `c70acc5`, pushed to `origin`; the deploy was a
 targeted one, so `main` still carries the other session's uncommitted
 `bedrock-adapter.mjs` and was left alone.
+
+## [2026-10-07] fix | A chat reply that is true: the four defects the owner read in the live chat
+
+The owner asked what was wrong with the last answers in the in-game chat, and
+the answer was read from the artefacts instead of guessed: the controller journal
+(`runs/told-chat-main/controller.jsonl` in the `hermes` container) holds every
+`chat_reply` with its `context`, and the harness journal
+(`runs/diamond-20261007-1/actions.jsonl`) holds every action attempt. Four
+defects, all in the controller and all now pinned by a test that **fails without
+its edit** (each fix was reverted on purpose to prove it):
+
+- **(A) a complaint written as a memory.** «mi avevi detto un diamante a 29 -4 208
+  ma non è vero» was parsed as a *declaration* — the «è» of "non è vero" is a
+  position verb and the coordinates were there — so `handleToldFact` created the
+  landmark `mi_avevi_detto_un_diamante_ma_29_-4_208` at 29/-4/208. The parser now
+  refuses a denial (`DENIAL`) and a report of speech (`REPORT_OF_SPEECH`) unless
+  the message carries an explicit memory verb.
+- **(B) a question answered from the wrong source.** «dimmi le coordinate dei
+  diamanti» was answered with the **bot's own** position: first because the bare
+  word `coordinate` matched the `q_position` intent, then — after a first small
+  fix — because `POSITION_NOUN` was a single **global** regex used with `.test()`,
+  so the second message in the same process no longer matched. The noun pattern is
+  now anchored to the end of the question, the possessive form has its own branch,
+  `extractPlaceName(mode: 'where')` drops the noun, and the consult falls through
+  to the live vein the bot can see (`nearestLiveOre` → `told_ore_near`).
+- **(C) an order closed as done.** The bot had really mined three
+  `deepslate_diamond_ore`; the human had already collected the drops; then a
+  replan emptied `plan.targets` ((«libera uno slot» is a construction step) and
+  `Object.entries({}).every(...)` is vacuously true, so `goalMet` reported
+  `GOAL MET` and the chat said «fatto». The order's own targets are now saved when
+  the goal is born and used as a floor (`humanOrderTargets`), so a replan may add
+  work but never remove the reason the order existed.
+- **(D) a refusal nobody saw.** «non ho diamanti in inventario, non posso
+  gettarlo» was addressed to `@?` (the goal's `humanOrder` had no `from` for a
+  chat-born goal) and then **discarded** by the send rate limit
+  (`CHAT_MIN_INTERVAL_MS`), leaving the optimistic ack as the only message. One
+  `humanSender` now feeds both `from:` and `to:` in the four blocking replies, and
+  `replyChat` retries once after `retryInMs` (`chat_reply_retry`).
+
+Tests: 14 position-word cases over five languages and five resources
+(`tests/human-questions.test.mjs`, `tests/memory-chat.test.mjs`), 8 chat
+integration cases (`tests/controller-told-facts.test.mjs`), the order floor
+(`tests/controller-chat-open-plan.test.mjs`, with a new prompt-aware fake planner
+because a replan makes the call order unpredictable), the sender and the retry
+(`tests/controller-chat-ack.test.mjs`). Full suite 1866 pass, 0 fail. Docs:
+[CHAT-REPLY-TRUTH](raw/CHAT-REPLY-TRUTH.md),
+[human command](wiki/human-command.md),
+[verification](wiki/verification.md) 47.60,
+[open questions](wiki/open-questions.md#the-chat-replies-that-were-not-true-2026-10-07).
+Still open: nothing is deployed yet (the controller fixes need a controller
+restart), and the order floor does not cover an order that had *no* numeric
+target.
+
+## [2026-10-07] feat | The bot says what it found: one alert per vein (M11)
+
+Asked by the owner while the bot was slow to dig («posso chiedere appena vedi un
+diamante comunicami la posizione»). The **adapter** owns the census of valuable
+ores and the chat socket, the **harness** owns the language: `adapter.oreAlertText`
+is composed from the five-language catalogue (`ore_alert`), so a coordinate never
+passes through a model and the adapter stays without i18n. One sentence per vein,
+once per position, with `ORE_ALERT` choosing the ores (default `diamond`, `off`
+= silence), `ORE_ALERT_RANGE` (32) and `ORE_ALERT_COOLDOWN_MS` (5000) bounding
+when it may speak; the cells are remembered in a FIFO-bounded set, the nearest
+fresh vein wins and every vein within `ORE_ALERT_SPOT_RADIUS` of it counts as the
+*same* sighting — a far vein is postponed, never swallowed. The tests found a
+real bug: `now - last < cooldown` blocked the **first** alert when `now` was
+small. 7 cases in `tests/bedrock-ore-alert.test.mjs`,
+[verification](wiki/verification.md) 47.61,
+[human command](wiki/human-command.md#the-bot-reports-what-it-finds-m11). The
+alert lives in the harness, so it needs a `hermes-jev-bedrock` restart (bot out
+and back, ~30 s) and has never been read in game.
+
+## [2026-10-07] feat | «ragiona»: the answer that is reasoned, not recalled (M12)
+
+The owner asked whether a word in the middle of a question could skip the canned
+sentences and reach the deliberative half of the bot. With `ragiona` (or
+`pensa`, `think`, `reason`, `réfléchis`, `piensa`, `überlege`, …) in a **question**,
+the controller strips the marker before the dedup key and before the question
+router and answers from the chat model of M7, with facts instead of a template:
+the last six actions and whether they were stagnant, the last result (action, ok,
+error) and the three nearest ores (`reasonFacts`), under a 220-token budget and a
+per-sender cooldown. The marker is matched as a **word** and compared folded, so
+`réfléchis` and `reflechis` are the same word, and only its own punctuation
+leaves with it (the `?` and the `¿` are the human's). The guardrail is the point:
+it changes the **reply**, never the action — no goal, no memory write, the
+address (`@<sender>`) added by the controller, and the cooldown or a failed call
+falls back to the catalogue instead of going quiet. A reasoned **order** keeps its
+ack/outcome pair with both composed by the model (`reasoned` travels through
+`goal.humanOrder`). The unit tests found two real defects in `reasonRequest` (the
+trailing `?` of the question was stripped, and an orphan `:` was left where the
+marker stood). 15 unit + 4 integration cases
+(`tests/chat-llm.test.mjs`, `tests/controller-chat-reason.test.mjs`),
+[verification](wiki/verification.md) 47.62,
+[human command](wiki/human-command.md#ragiona-the-answer-that-is-reasoned-not-recalled-m12).
+M7 — and therefore «ragiona» — was **off** in the deployed controller (no key in
+its environment): the canned answers the owner read were the deployed
+configuration, and turning it on is an env change
+(`CHAT_LLM_API_KEY`/`CHAT_LLM_URL`/`CHAT_LLM_MODEL`), with `DEEPSEEK_API_KEY`
+kept only as the legacy alias.

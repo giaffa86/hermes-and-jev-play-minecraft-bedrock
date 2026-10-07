@@ -177,6 +177,19 @@ succeeds ends on the step budget (`budget_exhausted`) instead of a fake success.
 Covered by `tests/controller-chat-open-plan.test.mjs` (order taken from IDLE and
 mid-goal).
 
+**The order's criteria survive a replan (2026-10-07).** The guard above is not
+enough when the order *did* work and a later replan empties the plan: 226
+successful actions make `hasWorked` true, the plan comes back with
+`targets: {}` (the model had switched to "free an inventory slot"), the final
+branch of `goalMet` falls back to the run-wide `TARGETS` — empty — and
+`Object.entries({}).every(...)` is vacuously true, so the bot announced
+*«fatto: … raccolgo un diamante già minato»* with no diamond in the inventory and
+`dropped: []`. The target map recorded **when the order was born**
+(`goal.humanOrder.targets`, written in both places that create a chat goal) is now
+the floor of the met check (`humanOrderTargets(goal)`): a replan may drop,
+rewrite or reorder the plan, it cannot cancel the criterion the human asked for.
+An order that never meets it ends on `budget_exhausted`.
+
 ### Limits
 
 - `POST /say` is rate-limited by the adapter (`CHAT_MIN_INTERVAL_MS`, default
@@ -880,6 +893,104 @@ it as a destination.
 
 *Numbering*: M10 follows M9 (inventory orders); it is not related to any other
 roadmap's `M10`.
+
+## The reply is measured, not intended (M10.1)
+
+Four defects the owner found by reading the chat of the live round of
+2026-10-07. They share one shape: a reply is a claim about the world, and each of
+them let the claim drift away from its evidence. Full evidence, journal lines and
+code in [`docs/raw/CHAT-REPLY-TRUTH.md`](../raw/CHAT-REPLY-TRUTH.md).
+
+| The human saw | What was true | The fix |
+|---|---|---|
+| «Registrato: mi avevi detto un diamante ma a 29, -4, 208» | it was a **complaint**, not a place | `DENIAL` (a negation whose copula follows) and `REPORT_OF_SPEECH` (unless a memory verb is present) make `toldIntentFromText` return `null`; `NAME_VERB` keeps a verb out of a label |
+| «baule a 95, 73, 161 … diamanti ×1» while a vein was 8 blocks away | the memory knew only an old chest | `nearestLiveOre` answers the **vein in sight** first (`told_ore_near`, log `tell_where_ore`); `/memory/where` is the fallback |
+| «quali sono le coordinate?» → «sono a x 27, y -3, z 207» | the human asked about the **diamonds** | `q_position` only matches a position noun with no genitive after it; `SELF_REF` in `memory-chat.mjs` covers the possessives |
+| the ack of a drop, then silence | «@? non ho diamanti in inventario» was sent and dropped | `humanSender` addresses the four blocked replies (`from` **and** `to`), and `replyChat` retries a `rate_limited` answer after the wait the harness names |
+
+Two rules come out of it, and they are the contract of this section:
+
+- **A name a human utters is not a place.** A denial, a report of what the bot
+  once said or a question is never a memory write; when in doubt the parser
+  returns `null` and the ordinary path (Hermes, semantic recall) decides.
+- **A reply the harness refuses is not delivered.** `POST /say` answers
+  `{ok:false, error:'rate_limited', retryInMs}` inside `CHAT_MIN_INTERVAL_MS`
+  (1000 ms) and the message is gone; `replyChat` now waits (clamped to
+  `CHAT_REPLY_RETRY_MS` 1200 … `CHAT_REPLY_RETRY_MAX_MS` 4000) and sends it
+  again, logging `chat_reply_retry`. An undeliverable reply is loud in the
+  journal instead of being replaced by the optimistic ack.
+
+*Numbering*: M10.1 is the round of fixes that followed the first live M10 round
+(2026-10-07); it introduces no new slice.
+
+## The bot reports what it finds (M11)
+
+Requested by the owner while the bot was searching for diamonds: *«comunicami se
+vedi dei diamanti durante il cammino»*. The bot now announces a **new** ore vein
+in chat by itself.
+
+| Rule | Constant / behaviour |
+|---|---|
+| Which ores | `ORE_ALERT` (default `diamond`; a comma/space list; `off`/`none`/`0`/`false`/empty = silence), parsed by the exported `oreAlertCores()` |
+| How far | `ORE_ALERT_RANGE` (default 32) |
+| One vein, one line | the nearest fresh sighting marks every sighting within `ORE_ALERT_SPOT_RADIUS` (6) as seen, and the FIFO memory (`ORE_ALERT_SEEN_MAX`, 4000, keyed `core@x,y,z`) keeps it from speaking twice about the same spot |
+| Not a machine gun | `ORE_ALERT_COOLDOWN_MS` (5000) between two alerts; an ore not announced waits, it is not lost |
+| What it says | catalogue key `ore_alert`, five languages: *«ho visto {ore} a {pos} — {distance} blocchi da me»* |
+| Visible | `observe().oreAlert` = the last alert (or `null`), next to `ores` |
+
+**Who owns what.** The adapter detects and sends (`_alertNewOres`, called by
+`_scanValuableOres`) because it owns the census and `sendChat`; the **harness**
+injects the text (`adapter.oreAlertText`, built from the catalogue with the same
+position formatter the memory replies use). The adapter therefore holds no
+translation and a coordinate never passes through a model. The alert is not a
+goal: it preempts nothing and works with no controller running.
+
+**Evidence.** `tests/bedrock-ore-alert.test.mjs` (one alert per vein, honoured
+cooldown, an out-of-range ore not swallowed, `off` and a missing renderer stay
+silent, `oreAlertCores` parsing, integration through `_scanValuableOres`),
+`tests/memory-chat.test.mjs`, `tests/controller-told-facts.test.mjs`,
+`tests/controller-chat-open-plan.test.mjs`, `tests/controller-chat-ack.test.mjs`.
+Never exercised in-game.
+
+*Numbering*: M11 is the first slice the owner asked for after M10; it is the
+first chat behaviour owned by the **harness** rather than the controller.
+
+## «ragiona»: the answer that is reasoned, not recalled (M12)
+
+Requested by the owner on 2026-10-07: *«se ti chiedo una qualsiasi domanda e ti
+scrivo ragiona nel mezzo, tu puoi evitare di passare da frasi fatte e passare dal
+system two del suo cervello?»*. A question that carries the marker skips the
+catalogue and is answered by the chat model (M7) from the facts of `observe()`.
+
+| Rule | Constant / behaviour |
+|---|---|
+| The markers | `DEFAULT_REASON_MARKERS` — ragiona, ragionate, pensaci, pensa, rifletti, think, reason, reflect, reflechis, pense, piensa, razona, reflexiona, denk, denke, uberlege; `CHAT_REASON_MARKERS` replaces the list |
+| How it is matched | as a **word**, compared folded (accents optional: `réfléchis` = `reflechis`), every occurrence removed — `spiegami il tuo ragionamento` is not a marker |
+| What leaves with it | only the punctuation that belongs to the marker (`ragiona:` loses the colon); the question keeps its `?` and its `¿` |
+| Only questions | `reasoned && looksLikeQuestion(message)`: «ragiona: prendi la terra» is still an order, and its ack is reasoned too |
+| Switch | `CHAT_REASON` (default: on when the M7 engine is on), `CHAT_REASON_COOLDOWN_MS` (5000) per sender |
+| What the model gets | `compactChatFacts` + `reasonFacts`: the last six actions with their `stagnant` flag, the last result (action, ok, error), the three nearest ores |
+| Room | `DEFAULT_REASON_MAX_TOKENS` (220) instead of `DEFAULT_CHAT_MAX_TOKENS` (120) |
+| Never silent | cooldown or failed call → the ordinary path answers from the catalogue, and the journal says why (`chat_reason {via:'cooldown'\|'fallback'}`) |
+
+**The guardrail: «ragiona» changes the reply, never the action.** The branch sits
+in `maybeHumanCommand` after the memory parser and before `resolveQuestion`, it
+creates no goal and writes no memory, and the address (`@<sender>`) is added by
+the controller, not by the model. A reasoned order keeps its normal
+ack/outcome pair, with both composed by the model (`reasoned` travels in
+`goal.humanOrder`/`parameters`). The marker is stripped **before** the dedup key,
+the router and the prompt: nothing downstream has to know it was there.
+
+**Evidence.** `tests/controller-chat-reason.test.mjs` (the marker reaches the
+model but not the question; a reasoned question gets one addressed reply and no
+goal; a reasoned order stays an order; the cooldown falls back and still
+answers), `tests/chat-llm.test.mjs` (the marker table in five languages, the
+explicit marker list, the reasoned system line with 220 tokens, the extra facts).
+Never exercised in-game, and never against a real provider.
+
+*Numbering*: M12 is the second slice the owner asked for on 2026-10-07. It is the
+piece of M7 that the deployed configuration had switched off: with a key the
+engine *rephrases*, with «ragiona» it *answers*.
 
 ## An order arriving mid-goal suspends the running goal
 

@@ -166,3 +166,34 @@ test('coordinates: bounds and formatting', () => {
   assert.equal(dimensionLabel('end'), 'End');
   assert.equal(dimensionLabel(null), '?');
 });
+
+// «coordinate diamante» chiede una *risorsa*, non un posto: la parola di
+// posizione è il modo di chiedere, non un nome da cercare in memoria.
+test('a position word before a resource asks for the resource, not for a place', () => {
+  // La regola non è del diamante: vale per qualunque risorsa, in qualunque
+  // lingua. Il nome della risorsa resta, la parola di posizione no.
+  const asks = [
+    ['coordinate diamante', 'diamond', ['diamond', 'diamond_ore']],
+    ['coordinate del diamante', 'diamond', ['diamond', 'diamond_ore']],
+    ['posizione dei diamanti', 'diamond', ['diamond', 'diamond_ore']],
+    ['coordinate del ferro', 'iron', ['iron_ingot', 'iron_ore']],
+    ['posizione del carbone', 'coal', ['coal', 'coal_ore']],
+    ['coordinate della legna', 'planks', ['oak_log', 'planks']],
+    ['coordinate dell oro', 'gold', ['gold_ingot', 'gold_ore']],
+  ];
+  for (const [message, item, names] of asks) {
+    const intent = toldIntentFromText(message, { names });
+    assert.equal(intent?.kind, TELL.CONSULT, `"${message}" è una consulta`);
+    assert.equal(intent.item, item, `"${message}" chiede ${item}`);
+    assert.equal(/\b(coordinate|posizione)\b/i.test(intent.name ?? ''), false, `"${message}" non lascia «coordinate» nel nome`);
+  }
+  // E la stessa frase ripetuta nel processo continua a funzionare: `POSITION_NOUN`
+  // è anche `/g` per la rimozione, e `.test()` su una regex globale avanza
+  // `lastIndex` (la seconda volta non riconosceva più la parola).
+  for (const message of ['coordinate diamante', 'coordinate del ferro']) {
+    const first = toldIntentFromText(message, { names: ['diamond', 'iron_ingot'] });
+    const second = toldIntentFromText(message, { names: ['diamond', 'iron_ingot'] });
+    assert.equal(second?.kind, first?.kind, `"${message}" ripetuta resta una consulta`);
+    assert.equal(second?.item, first?.item);
+  }
+});

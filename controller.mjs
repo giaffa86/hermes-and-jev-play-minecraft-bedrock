@@ -38,9 +38,9 @@ import {
 import {toldIntentFromText, TELL, CLARIFY, formatPosition, dimensionLabel} from './memory-chat.mjs';
 import {planGreetings, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
 import {orderAck, orderOutcome, lostNotice, escortWaiting, mountWaitingShore, isSelfTriggering, normalizePrefixes, matchChatPrefix, selfPrefixes, renderReply, clampMessage, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
-import {answerIntent, renderAnswer, renderFarmNothing, renderNoArmor, renderNoDrop, renderNoItem, renderUnrouted, looksLikeSmallTalk} from './human-questions.mjs';
+import {answerIntent, renderAnswer, renderFarmNothing, renderNoArmor, renderNoDrop, renderNoItem, renderUnrouted, looksLikeQuestion, looksLikeSmallTalk} from './human-questions.mjs';
 import {resolveQuestionIntent, DEFAULT_INTENT_TIMEOUT_MS, DEFAULT_INTENT_MIN_P} from './chat-intent.mjs';
-import {composeChatReply, chatLlmConfig, compactChatFacts, createChatMemory} from './chat-llm.mjs';
+import {composeChatReply, chatLlmConfig, compactChatFacts, createChatMemory, reasonRequest} from './chat-llm.mjs';
 import {chatLangConfig, t, languageName, LANGS, listAnd} from './chat-i18n.mjs';
 import {narrateGoal, DEFAULT_NARRATE_COOLDOWN_MS} from './chat-narration.mjs';
 import {runDir} from './run-paths.mjs';
@@ -137,6 +137,7 @@ function chatPrefixes (observation = null) {
 }
 const humanCommandSeen = new Set(); // dedup: un comando già eseguito non si ripete
 const ignoredChatSeen = new Set(); // dedup della telemetria: un messaggio rifiutato si logga una volta
+const reasonCooldown = new Map(); // M11: ultimo ragionamento per mittente
 // Un ordine vecchio non va rieseguito: l'inbox dell'harness conserva gli ultimi
 // messaggi, quindi un riavvio del controller (osservato live) rileggerebbe
 // ordini già evasi. `at` è l'orologio dell'adapter, non del planner.
@@ -185,6 +186,11 @@ const CHAT_REPLY = process.env.CHAT_REPLY == null
   ? (CHAT_CONTROL !== 'off' && CHAT_ALLOWLIST.size > 0)
   : /^(1|on|true|yes)$/i.test(process.env.CHAT_REPLY);
 const CHAT_REPLY_MAX_LENGTH = +(process.env.CHAT_REPLY_MAX_LENGTH || DEFAULT_REPLY_MAX_LENGTH);
+// Quanto aspettare e ritentare quando l'harness risponde `rate_limited`: il bot
+// parla al massimo una volta al secondo, e un esito perso e' una bugia per
+// omissione (vedi `replyChat`).
+const CHAT_REPLY_RETRY_MS = +(process.env.CHAT_REPLY_RETRY_MS || 1200);
+const CHAT_REPLY_RETRY_MAX_MS = +(process.env.CHAT_REPLY_RETRY_MAX_MS || 4000);
 // Annuncio in autonomia (M8): quando parte un goal che nessuno ha chiesto, il bot
 // dice cosa sta per fare ("In autonomia: sto raccogliendo le patate") invece di
 // sparire nel silenzio. Una volta per goal, con cooldown, e solo se un umano è
@@ -224,6 +230,19 @@ const CHAT_INTENT_MIN_P = process.env.CHAT_INTENT_MIN_P == null ? DEFAULT_INTENT
 // `CHAT_LLM_API_KEY`) o con `CHAT_LLM=off` tutto resta deterministico.
 const CHAT_LLM = chatLlmConfig();
 const CHAT_LLM_ON = CHAT_LLM.enabled;
+// M11 «ragiona»: l'umano può chiedere una risposta *ragionata* invece di una
+// frase del catalogo. Il marcatore (`DEFAULT_REASON_MARKERS`) viene tolto dal
+// messaggio; se il resto è una domanda, la risposta la compone M7 dai fatti
+// (`observe()` + la memoria delle azioni), senza passare dalle frasi fatte del
+// router. Non tocca mai le azioni: un ordine resta un ordine anche con «ragiona»
+// in mezzo. Attivo solo dove M7 è configurato (senza chiave non c'è nessun
+// ragionamento da chiedere) e con un cooldown per mittente: una risposta libera
+// costa una chiamata al modello.
+const CHAT_REASON_ON = process.env.CHAT_REASON == null
+  ? CHAT_LLM_ON
+  : /^(1|on|true|yes)$/i.test(process.env.CHAT_REASON);
+const CHAT_REASON_COOLDOWN_MS = +(process.env.CHAT_REASON_COOLDOWN_MS || 5000);
+const CHAT_REASON_MARKERS = (process.env.CHAT_REASON_MARKERS || '').split(',').map(word => word.trim().toLowerCase()).filter(Boolean);
 // Memoria conversazionale per mittente: solo in RAM, bounded. Serve a non
 // ripetere la stessa frase e a capire i seguiti ("e ora?", "grazie").
 const chatMemory = createChatMemory();
@@ -607,6 +626,19 @@ async function toldResolve (obs, entry, {message, prefixes, intent, log}) {
 // la risorsa: il nome del luogo può contenere la parola della risorsa ("campo di
 // patate") e la scelta non è del parser. La provenienza viaggia nella risposta:
 // l'umano deve sapere se il bot l'ha visto o se gliel'hanno detto.
+// La vena più vicina che il bot vede *adesso* (`obs.ores`). Il nome del blocco
+// (`deepslate_diamond_ore`) e l'id dell'item (`diamond`, `lapis_lazuli`) non
+// coincidono: si confronta il nucleo del nome del blocco con quello dell'item,
+// così «diamanti» trova `diamond_ore` e «lapis» trova `deepslate_lapis_ore`.
+function nearestLiveOre (obs, intent) {
+  const coreOf = (name) => String(name ?? '').replace(/^deepslate_/, '').replace(/_ore$/, '').split('_')[0];
+  const want = coreOf(intent?.item);
+  if (!want) return null;
+  const hits = (Array.isArray(obs?.ores) ? obs.ores : []).filter((ore) => coreOf(ore?.name) === want);
+  if (!hits.length) return null;
+  return hits.slice().sort((a, b) => (a?.distance ?? Infinity) - (b?.distance ?? Infinity))[0];
+}
+
 async function toldConsult (obs, entry, {message, prefixes, intent, log}) {
   if (intent.name) {
     const resolved = await toldResolve(obs, entry, {message, prefixes, intent, log});
@@ -633,6 +665,29 @@ async function toldConsult (obs, entry, {message, prefixes, intent, log}) {
     }
   }
   if (intent.item) {
+    // Prima la vena che il bot *vede adesso*: «dimmi le coordinate dei diamanti»
+    // vuole un posto da minare, e il ricordo di un baule lontano non è quella
+    // risposta. Caso live 07/10/2026: alla domanda il bot rispondeva con le
+    // proprie coordinate (router delle domande) e poi con un baule a 60 blocchi;
+    // l'utente: «ho chiesto la posizione dei diamanti e invece il bot mi ha
+    // comunicato le sue coordinate».
+    const ore = nearestLiveOre(obs, intent);
+    if (ore) {
+      const distance = ore.distance != null ? Math.round(ore.distance) : Math.round(Math.hypot(
+        (obs?.position?.x ?? 0) - (ore.position?.x ?? 0),
+        (obs?.position?.y ?? 0) - (ore.position?.y ?? 0),
+        (obs?.position?.z ?? 0) - (ore.position?.z ?? 0),
+      ));
+      await toldSay(entry, {message, prefixes, key: 'told_ore_near', vars: {
+        ore: ore.name,
+        pos: formatPosition(ore.position),
+        dimension: dimensionLabel(obs?.dimension),
+        distance,
+        source: t(CHAT_LANG, 'told_source_seen'),
+      }});
+      log('tell_where_ore', {from: entry.from, xuid: entry.xuid, item: intent.item, word: intent.word ?? null, ore: ore.name, position: ore.position, distance: ore.distance ?? null});
+      return true;
+    }
     const out = await api('GET', `/memory/where?item=${encodeURIComponent(intent.item)}&limit=5`);
     if (out?.error) return toldUnavailable(entry, {message, prefixes, err: out, log});
     const hits = Array.isArray(out?.hits) ? out.hits : [];
@@ -1056,7 +1111,7 @@ async function resolveQuestion (obs, entry) {
 
 // Cerca nell'ultima osservazione un nuovo comando umano valido. Restituisce
 // {plan, entry} oppure null. Dedup per non rieseguire lo stesso messaggio.
-async function maybeHumanCommand (obs) {
+async function maybeHumanCommand (obs, {history = [], lastResult = null} = {}) {
   if (CHAT_CONTROL === 'off' || !CHAT_ALLOWLIST.size) return null;
   const chat = obs.chat || [];
   const prefixes = chatPrefixes(obs);
@@ -1085,10 +1140,20 @@ async function maybeHumanCommand (obs) {
       }
       continue;
     }
-    const message = match.rest;
-    if (!message) continue;
-    const seenKey = `${entry.at}|${entry.from}|${message}`;
+    const raw = match.rest;
+    if (!raw) continue;
+    // Il dedup resta sul testo grezzo: è quello che l'inbox dell'harness ripete.
+    const seenKey = `${entry.at}|${entry.from}|${raw}`;
     if (!rememberSeen(humanCommandSeen, seenKey)) continue;
+    // M11: «ragiona» è un'istruzione su *come rispondere*, non un ordine, e va
+    // tolto prima di ogni interprete (i fatti dettati e il router non devono
+    // vederlo). Un messaggio che è *solo* il marcatore non è niente.
+    const asked = CHAT_REASON_ON
+      ? reasonRequest(raw, CHAT_REASON_MARKERS.length ? {markers: CHAT_REASON_MARKERS} : {})
+      : null;
+    const reasoned = asked?.reason === true;
+    const message = reasoned ? asked.message : raw;
+    if (!message) continue;
     // Fatti dettati (M10): ricorda / consulta / correggi / dimentica, e «vai al
     // <luogo nominato>». Riconoscimento deterministico e risposta dal catalogo:
     // nessun modello, nessun goal (tranne il movimento, che è un ordine come gli
@@ -1099,8 +1164,16 @@ async function maybeHumanCommand (obs) {
     if (told && typeof told === 'object') {
       log('chat_command', {from: entry.from, xuid: entry.xuid, prefix: match.prefix, message, deterministic: 'told_goto'});
       const ack = orderAck({from: entry.from, plan: told, maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG});
-      await saySmart('ack', {from: entry.from, message, obs, plan: told, grounding: ack, fallback: ack, prefixes});
-      return {plan: told, entry: {...entry, message}};
+      await saySmart('ack', {from: entry.from, message, obs, plan: told, grounding: ack, fallback: ack, prefixes, reasoned});
+      return {plan: told, entry: {...entry, message, reasoned}};
+    }
+    // M11: con «ragiona» una domanda non ha una frase fatta da leggere — la
+    // risposta la compone M7 dai fatti (che cosa sto facendo, che cosa è andato
+    // storto, che cosa mi manca). Se M7 non risponde (spento, in cooldown o in
+    // errore) si scende nel flusso normale: mai silenzio.
+    if (reasoned && looksLikeQuestion(message)) {
+      const answered = await sayReason({from: entry.from, message, obs, prefixes, history, lastResult});
+      if (answered) continue;
     }
     // M6/M6.1: prima di tradurre il messaggio in un piano, chiediti se è una
     // domanda. Se lo è, si risponde e si passa al messaggio successivo: nessun
@@ -1131,8 +1204,8 @@ async function maybeHumanCommand (obs) {
     // M5: conferma dell'ordine in chat. Best-effort (l'adapter applica rate
     // limit e lunghezza); l'esito arriva alla chiusura del goal.
     const ack = orderAck({from: entry.from, plan, maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG});
-    await saySmart('ack', {from: entry.from, message, obs, plan, grounding: ack, fallback: ack, prefixes});
-    return {plan, entry: {...entry, message}};
+    await saySmart('ack', {from: entry.from, message, obs, plan, grounding: ack, fallback: ack, prefixes, reasoned});
+    return {plan, entry: {...entry, message, reasoned}};
   }
   return null;
 }
@@ -1143,7 +1216,7 @@ async function maybeHumanCommand (obs) {
 // guasto — chiave assente, timeout, HTTP, risposta vuota o scatenante — produce
 // il fallback, quindi il canale non resta mai muto. Il testo inviato entra nella
 // memoria conversazionale del mittente.
-async function saySmart (context, {from, message = null, obs = null, plan = null, grounding = null, fallback, prefixes = CHAT_PREFIXES}) {
+async function saySmart (context, {from, message = null, obs = null, plan = null, grounding = null, fallback, prefixes = CHAT_PREFIXES, reasoned = false}) {
   let text = fallback;
   if (CHAT_LLM_ON) {
     try {
@@ -1156,6 +1229,7 @@ async function saySmart (context, {from, message = null, obs = null, plan = null
         persona: CHAT_LLM.persona,
         prefixes,
         lang: CHAT_LANG,
+        reasoned,
         model: CHAT_LLM.model,
         url: CHAT_LLM.url,
         key: CHAT_LLM.key,
@@ -1174,6 +1248,75 @@ async function saySmart (context, {from, message = null, obs = null, plan = null
   return text;
 }
 
+// M11: la risposta «ragionata». Non passa dal catalogo — manda al modello di chat
+// i fatti di `observe()` più quelli che servono a *spiegare* (le ultime azioni e
+// com'è andata, le vene viste) e la domanda dell'umano, e lascia che sia lui a
+// metterli insieme. Ritorna il testo inviato, oppure null quando M7 non è
+// disponibile o il mittente ha già ragionato da poco: in quel caso il chiamante
+// prosegue nel flusso normale (una risposta fatta è meglio di nessuna risposta).
+async function sayReason ({from, message, obs = null, plan = null, prefixes = CHAT_PREFIXES, history = [], lastResult = null}) {
+  if (!CHAT_REASON_ON || !CHAT_LLM_ON) return null;
+  const now = Date.now();
+  const key = from ?? '?';
+  const last = reasonCooldown.get(key) ?? 0;
+  if (now - last < CHAT_REASON_COOLDOWN_MS) {
+    log('chat_reason', {to: from, ok: false, via: 'cooldown', waitMs: CHAT_REASON_COOLDOWN_MS - (now - last), message});
+    return null;
+  }
+  try {
+    const reply = await composeChatReply({
+      message,
+      from,
+      facts: compactChatFacts(obs, plan, reasonFacts(obs, {history, lastResult})),
+      grounding: null,
+      history: chatMemory.history(from),
+      persona: CHAT_LLM.persona,
+      prefixes,
+      lang: CHAT_LANG,
+      reasoned: true,
+      model: CHAT_LLM.model,
+      url: CHAT_LLM.url,
+      key: CHAT_LLM.key,
+      timeoutMs: CHAT_LLM.timeoutMs,
+      maxLength: CHAT_REPLY_MAX_LENGTH,
+    });
+    reasonCooldown.set(key, Date.now());
+    // La risposta è indirizzata come le altre (M5): l'umano ha parlato in chat a
+    // tutti, la risposta è sua. L'indirizzo lo mette il controller, non il
+    // modello: un nome storpiato dal modello non è un errore che si vuole.
+    const text = clampMessage(/^@\S+/.test(reply.text) ? reply.text : `@${from ?? '?'} ${reply.text}`, CHAT_REPLY_MAX_LENGTH);
+    const sent = await replyChat(text, {to: from, context: 'reason', prefixes});
+    chatMemory.remember(from, message, text);
+    log('chat_reason', {to: from, ok: true, via: 'llm', model: reply.model, ms: reply.ms, cost: reply.cost, message, sent: !!sent?.ok});
+    return {text, sent};
+  } catch (error) {
+    // Un guasto di M7 non è un guasto del canale: si torna al flusso normale.
+    log('chat_reason', {to: from, ok: false, via: 'fallback', error: error.message, code: error.code ?? null, message});
+    return null;
+  }
+}
+
+// I fatti che servono a *spiegare*, non solo a descrivere: le ultime azioni con il
+// loro esito (dalla memoria azioni del controller) e le vene che il bot ha visto.
+// Sono letti dallo stato, non inventati dal modello.
+function reasonFacts (obs, {history = [], lastResult = null} = {}) {
+  const facts = {};
+  const recent = (history ?? []).slice(-6).map(entry => ({action: entry.key, stagnant: entry.stagnant === true}));
+  if (recent.length) facts.recentActions = recent;
+  if (lastResult) {
+    facts.lastResult = {
+      action: history.at(-1)?.key ?? null,
+      ok: lastResult.ok === true,
+      error: lastResult.error ?? null,
+    };
+  }
+  const ores = (obs?.ores ?? []).slice(0, 3).map(ore => ({
+    name: ore.name, position: ore.position, distance: ore.distance ?? null,
+  }));
+  if (ores.length) facts.oresNearby = ores;
+  return facts;
+}
+
 // Risposta in chat (M5): una riga, indirizzata al mittente, mai scatenante
 // (`@<nome> ...`, non `@bot ...`). Ritorna l'esito del POST /say e non lancia
 // mai: il canale resta best-effort come il saluto.
@@ -1183,7 +1326,21 @@ async function replyChat (message, {to = null, context = null, prefixes = CHAT_P
     log('chat_reply_refused', {to, context, message, reason: 'would_trigger_the_bot'});
     return {ok: false, error: 'would_trigger_the_bot'};
   }
-  const result = await api('POST', '/say', {message}).catch(error => ({ok: false, error: error.message}));
+  let result = await api('POST', '/say', {message}).catch(error => ({ok: false, error: error.message}));
+  // Il bot puo' parlare una volta al secondo (`CHAT_MIN_INTERVAL_MS` lato
+  // harness) e una risposta dentro quella finestra veniva **scartata**: con
+  // l'ack che parte subito e l'esito un istante dopo, l'umano vedeva solo
+  // l'ack ottimista. Il 07/10/2026 «non ho diamanti in inventario» e «non ce
+  // l'ho fatta: item_not_in_inventory» sono spariti cosi' e in chat e' rimasto
+  // un «fatto» mai avvenuto. L'esito onesto non si perde: si ritenta quando
+  // l'harness dice quando (`retryInMs`).
+  if (result?.ok === false && result.error === 'rate_limited') {
+    const wait = Math.min(Math.max(Number(result.retryInMs) || CHAT_REPLY_RETRY_MS, 50), CHAT_REPLY_RETRY_MAX_MS);
+    await delay(wait);
+    const retry = await api('POST', '/say', {message}).catch(error => ({ok: false, error: error.message}));
+    log('chat_reply_retry', {to, context, waitMs: wait, ok: !!retry?.ok, error: retry?.error ?? null, message});
+    result = retry?.ok ? {...retry, retried: true} : retry;
+  }
   log('chat_reply', {to, context, message, ok: !!result?.ok, error: result?.error ?? null});
   return result;
 }
@@ -1385,7 +1542,25 @@ async function hermesDecide(observation, options, plan) {
 }
 
 // ---- loop -----------------------------------------------------------------------------------
-const goalMet = (obs, plan, skillStatus) => {
+// I target con cui l'ordine umano e' nato: `parameters.targets` per un goal
+// creato in chat, `humanOrder.targets` per un ordine che ha riorientato un goal
+// autonomo (o una richiesta dello stesso umano). Assente o vuoto = l'ordine non
+// dichiarava un obiettivo misurabile, quindi nessun pavimento.
+function humanOrderTargets (goal) {
+  for (const source of [goal?.humanOrder?.targets, goal?.parameters?.targets]) {
+    if (source && Object.keys(source).length) return source;
+  }
+  return null;
+}
+
+// `orderTargets` e' il pavimento di un ordine umano: i target con cui l'ordine
+// e' nato. Un replan puo' riscrivere il piano (e deve: il mondo cambia), ma non
+// puo' **cancellare il successo** dell'ordine. Il 07/10/2026 «raccolgo un
+// diamante» e' finito con `GOAL MET` e un «fatto» in chat 28 s dopo un replan
+// che aveva svuotato `targets` — il diamante non c'era (l'aveva raccolto
+// l'umano). Senza pavimento un piano senza criteri e' "soddisfatto" a vuoto:
+// `Object.entries({}).every(...)` e' true e senza waypoint l'arrivo e' true.
+const goalMet = (obs, plan, skillStatus, orderTargets = null) => {
   if (plan.construction) {
     if (plan.construction.command === 'pause') return obs.construction?.projectId === plan.construction.projectId && obs.construction.state === 'paused';
     return constructionGoalMet(obs, plan.construction);
@@ -1422,7 +1597,8 @@ const goalMet = (obs, plan, skillStatus) => {
   // successo. Senza questa guardia un prerequisito completato (es. `wood`)
   // chiuderebbe il goal al primo passo.
   if (CURRICULUM) return false;
-  const targetMap = plan.targets && Object.keys(plan.targets).length ? plan.targets : TARGETS;
+  const orderFloor = orderTargets && Object.keys(orderTargets).length ? orderTargets : null;
+  const targetMap = plan.targets && Object.keys(plan.targets).length ? plan.targets : (orderFloor ?? TARGETS);
   const targets = Object.entries(targetMap).every(([item, n]) => (obs.inventory[item] || 0) >= n);
   const w = plan.waypoint || WAYPOINT;
   const at = !w || Math.hypot(w.x - obs.position.x, w.z - obs.position.z) <= 2;
@@ -1457,7 +1633,7 @@ function goalAlreadySatisfied (goal, obs) {
   const sticky = withStickyEscort(withStickyFollow(goal.plan ?? {}, goal.follow), goal.escort);
   const humanOrdered = goal.source === GOAL_SOURCE.CHAT || !!goal.humanOrder;
   if (humanOrdered && planIsOpen(sticky)) return false;
-  return goalMet(obs, sticky, null);
+  return goalMet(obs, sticky, null, humanOrderTargets(goal));
 }
 
 // Esegue UN goal fino a un esito terminale e restituisce l'esito senza uscire
@@ -1624,7 +1800,7 @@ for (let step = 1; step <= maxSteps; step++) {
   prevObs = obs;
   // Comando umano via chat (M3): priorità sul piano autonomo finché non arriva
   // un nuovo ordine. Il governor resta comunque l'ultima parola sulle opzioni.
-  const humanCmd = await maybeHumanCommand(obs);
+  const humanCmd = await maybeHumanCommand(obs, {history, lastResult});
   if (humanCmd) {
     // Un ordine umano che arriva mentre un altro lavoro è in corso non lo
     // riorienta: il goal in corso va in SUSPENDED e l'ordine diventa un goal
@@ -1659,7 +1835,7 @@ for (let step = 1; step <= maxSteps; step++) {
     skillRun = null; // il piano umano sostituisce la skill attiva
     // Un ordine può riorientare un goal nato autonomo: l'esito di *quel* goal
     // deve tornare a chi ha ordinato (non al planner autonomo).
-    goal.humanOrder = {from: humanCmd.entry.from, message: humanCmd.entry.message, objective: plan.objective, at: Date.now()};
+    goal.humanOrder = {from: humanCmd.entry.from, message: humanCmd.entry.message, objective: plan.objective, at: Date.now(), targets: plan.targets ?? null, reasoned: humanCmd.entry.reasoned === true};
     console.log('HUMAN ORDER', humanCmd.entry.from, '->', plan.objective, plan.follow ? `[follow ${plan.follow}]` : '');
     log('human_order', {from: humanCmd.entry.from, xuid: humanCmd.entry.xuid, plan});
   }
@@ -1714,9 +1890,14 @@ for (let step = 1; step <= maxSteps; step++) {
   // (visto live il 04/10). Un ordine del genere si chiude dopo almeno una
   // azione riuscita.
   const humanOrder = goal.source === GOAL_SOURCE.CHAT || !!goal.humanOrder;
+  // Il mittente di un ordine puo' stare in `parameters` (goal nato in chat) o in
+  // `humanOrder` (ordine che ha riorientato un goal): le risposte di blocco
+  // devono indirizzarsi a lui, altrimenti escono come `@?` (visto live il
+  // 07/10/2026 su «non ho diamanti in inventario, non posso gettarlo»).
+  const humanSender = goal.humanOrder?.from ?? goal.parameters?.from ?? null;
   const openPlan = planIsOpen(stickyPlan);
   const hasWorked = step > 1 && lastResult?.ok === true;
-  if ((!humanOrder || !openPlan || hasWorked) && goalMet(obs, stickyPlan, skillStatus)) {
+  if ((!humanOrder || !openPlan || hasWorked) && goalMet(obs, stickyPlan, skillStatus, humanOrderTargets(goal))) {
     console.log(`GOAL MET after ${step - 1} actions`, JSON.stringify({position: obs.position, inventory: obs.inventory}));
     log('goal_met', {steps: step - 1, totalCost, obs});
     goalReached = true;
@@ -2013,7 +2194,7 @@ for (let step = 1; step <= maxSteps; step++) {
     // "fatto"), invece di lasciare il modello libero dentro un goal impossibile.
     console.log('EQUIP ORDER: nessun pezzo di armatura in inventario');
     log('equip_order', {step, key: null, error: 'no_armor_in_inventory'});
-    await replyChat(renderNoArmor({from: goal.humanOrder?.from ?? null, maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG}), {context: 'equip_no_armor', prefixes: CHAT_PREFIXES});
+    await replyChat(renderNoArmor({from: humanSender, maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG}), {context: 'equip_no_armor', to: humanSender, prefixes: CHAT_PREFIXES});
     lastEquipKey = 'blocked';
     failureReason = 'no_armor_in_inventory';
     runExitCode = 2;
@@ -2036,7 +2217,7 @@ for (let step = 1; step <= maxSteps; step++) {
   if (dropBlocked) {
     console.log('DROP ORDER: oggetto non in inventario');
     log('drop_order', {step, key: null, error: 'item_not_in_inventory', token: plan.drop?.token ?? null});
-    await replyChat(renderNoItem({from: goal.humanOrder?.from ?? null, item: plan.drop?.word ?? plan.drop?.token ?? '', maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG}), {context: 'drop_no_item', prefixes: CHAT_PREFIXES});
+    await replyChat(renderNoItem({from: humanSender, item: plan.drop?.word ?? plan.drop?.token ?? '', maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG}), {context: 'drop_no_item', to: humanSender, prefixes: CHAT_PREFIXES});
     lastDropKey = 'blocked';
     failureReason = 'item_not_in_inventory';
     runExitCode = 2;
@@ -2057,7 +2238,7 @@ for (let step = 1; step <= maxSteps; step++) {
   if (collectBlocked) {
     console.log('COLLECT ORDER: nessun oggetto a terra');
     log('collect_order', {step, key: null, error: 'no_matching_drop', token: plan.collect?.token ?? null});
-    await replyChat(renderNoDrop({from: goal.humanOrder?.from ?? null, item: plan.collect?.word ?? plan.collect?.token ?? '', maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG}), {context: 'collect_no_drop', prefixes: CHAT_PREFIXES});
+    await replyChat(renderNoDrop({from: humanSender, item: plan.collect?.word ?? plan.collect?.token ?? '', maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG}), {context: 'collect_no_drop', to: humanSender, prefixes: CHAT_PREFIXES});
     lastCollectKey = 'blocked';
     failureReason = 'no_matching_drop';
     runExitCode = 2;
@@ -2089,7 +2270,7 @@ for (let step = 1; step <= maxSteps; step++) {
     if (!worked) {
       console.log('FARM ORDER: niente da fare adesso');
       log('farm_order', {step, key: null, error: 'nothing_to_do', crop: plan.farm.crop, ...outcome});
-      await replyChat(renderFarmNothing({from: goal.humanOrder?.from ?? null, item: plan.farm.word ?? plan.farm.crop, maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG}), {context: 'farm_nothing', prefixes: CHAT_PREFIXES});
+      await replyChat(renderFarmNothing({from: humanSender, item: plan.farm.word ?? plan.farm.crop, maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG}), {context: 'farm_nothing', to: humanSender, prefixes: CHAT_PREFIXES});
       failureReason = 'nothing_to_do';
       runExitCode = 2;
       break;
@@ -2258,7 +2439,7 @@ async function waitForGoal () {
       if (cmd) {
         const goal = goalManager.enqueue({
           type: 'chat', source: GOAL_SOURCE.CHAT, objective: cmd.plan.objective,
-          plan: cmd.plan, parameters: {from: cmd.entry.from, message: cmd.entry.message},
+          plan: cmd.plan, parameters: {from: cmd.entry.from, message: cmd.entry.message, targets: cmd.plan.targets ?? null, reasoned: cmd.entry.reasoned === true},
         });
         console.log(`IDLE -> goal ${goal.id} from ${cmd.entry.from}: ${goal.objective}`);
         log('human_order', {from: cmd.entry.from, xuid: cmd.entry.xuid, plan: cmd.plan, goalId: goal.id, via: 'idle'});
@@ -2358,6 +2539,7 @@ async function reportHumanOutcome (goal, { status, steps = null, reason = null }
     plan: {objective, follow: goal.humanOrder?.follow ?? null},
     grounding: text,
     fallback: text,
+    reasoned: goal.humanOrder?.reasoned === true || goal.parameters?.reasoned === true,
   });
   return text;
 }
@@ -2422,7 +2604,7 @@ async function main () {
         const child = goalManager.enqueue({
           type: 'chat', source: GOAL_SOURCE.CHAT, objective: outcome.human.plan.objective,
           plan: outcome.human.plan,
-          parameters: {from: outcome.human.entry.from, message: outcome.human.entry.message},
+          parameters: {from: outcome.human.entry.from, message: outcome.human.entry.message, targets: outcome.human.plan.targets ?? null, reasoned: outcome.human.entry.reasoned === true},
           parentGoal: goal.id,
         });
         console.log(`HUMAN ORDER ${outcome.human.entry.from}: suspend ${goal.id} -> run ${child.id}`);

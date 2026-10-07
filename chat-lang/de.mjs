@@ -146,6 +146,8 @@ export default Object.freeze({
   told_source_told: ' (du hast es mir gesagt)',
   told_source_seen: ' (ich habe es selbst gesehen)',
   told_where_item: '{label} bei {pos}, {dimension}: {item}{count}{source}',
+  told_ore_near: '{ore} bei {pos}, {dimension} — {distance} Blöcke von mir{source}',
+  ore_alert: 'ich habe {ore} bei {pos} entdeckt — {distance} Blöcke von mir',
   told_count: ' ×{n}',
   told_claim_unverified: ' (ungeprüft)',
   told_claim_verified: ' (geprüft)',

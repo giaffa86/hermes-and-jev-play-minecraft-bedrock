@@ -126,11 +126,18 @@ CHAT_LANG=it                       # it | en | fr | es | de; default it, unknown
 CHAT_NARRATE=on                    # default: follows CHAT_REPLY (channel open)
 CHAT_NARRATE_COOLDOWN_MS=300000    # minimum silence between two announcements (0 = no limit)
 
+# Ore alert (M11): the harness says in chat when the census finds a valuable
+# vein — one sentence per vein, once per position, never twice. The ore list is
+# folded to its core, so diamond_ore and deepslate_diamond_ore are the same.
+ORE_ALERT=diamond                  # comma-separated cores; off/none/'' = silence
+ORE_ALERT_RANGE=32                 # only veins within this distance are announced
+ORE_ALERT_COOLDOWN_MS=5000         # minimum silence between two alerts
+
 # Natural chat (M7, optional): an LLM rephrases the deterministic reply;
 # without a key (or with CHAT_LLM=off) the reply is still sent, in the
 # deterministic text (M7.1 keeps that text in the sender's language).
-DEEPSEEK_API_KEY=                  # the gate; CHAT_LLM_API_KEY wins over it
-CHAT_LLM_API_KEY=                  # alternative to DEEPSEEK_API_KEY
+DEEPSEEK_API_KEY=                  # legacy alias of CHAT_LLM_API_KEY, still honoured
+CHAT_LLM_API_KEY=                  # the gate (canonical name)
 CHAT_LLM=on                        # on with a key; off disables the engine even with a key
 CHAT_LLM_MODEL=deepseek-chat       CHAT_LLM_MODEL=deepseek-flash      # DeepSeek-V4.1-Flash (deepseek-chat/reasoner exist too).
                                    # Note: V4.1-Flash thinks by default (effort high); in that mode
@@ -141,6 +148,14 @@ CHAT_LLM_URL=https://api.deepseek.com/chat/completions   # any OpenAI-compatible
 CHAT_LLM_TIMEOUT_MS=8000           # past this the template is sent
 CHAT_PERSONA='...'                  # persona sentence spliced into the system prompt
 CHAT_SMALLTALK_TEMPLATE='@{name} ciao! dimmi pure.'       # greeting fallback
+
+# Reasoned answer (M12, needs M7): a question carrying a deliberation marker is
+# answered by the engine from the facts instead of the catalogue sentence. The
+# marker is stripped before the dedup and the router; the reply is addressed by
+# the controller, and the action is never changed. Off when M7 is off.
+CHAT_REASON=on                     # default: the state of M7
+CHAT_REASON_COOLDOWN_MS=5000       # per sender; within it the catalogue answers
+CHAT_REASON_MARKERS=               # replaces the built-in list (ragiona, pensa, think, ...)
 
 # Persistent agent session (optional)
 SESSION=off                        # on = persistent session loop with an IDLE state; off = one-shot (default)

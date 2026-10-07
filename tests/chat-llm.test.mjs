@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   chatLlmConfig, chatLlmKey, compactChatFacts, composeChatReply, buildChatMessages, createChatMemory,
-  DEFAULT_CHAT_LLM_MODEL, DEFAULT_CHAT_LLM_URL,
+  DEFAULT_CHAT_LLM_MODEL, DEFAULT_CHAT_LLM_URL, reasonRequest,
 } from '../chat-llm.mjs';
 import { looksLikeSmallTalk } from '../human-questions.mjs';
 
@@ -164,4 +164,75 @@ test('looksLikeSmallTalk matches greetings exactly and never swallows an order',
   for (const text of ['grazie prendi la legna', 'ciao seguimi', 'prendi 4 dirt', 'vai a ovest', '']) {
     assert.equal(looksLikeSmallTalk(text), false, `${text} stays an order`);
   }
+});
+
+// --- M11: «ragiona» ---------------------------------------------------------
+
+test('reasonRequest finds the marker in the five languages and strips it', () => {
+  const cases = [
+    ['ragiona: perché non stai minando?', 'perché non stai minando?'],
+    ['perché non stai minando? ragiona', 'perché non stai minando?'],
+    ['ragiona perché non stai minando', 'perché non stai minando'],
+    ['think: why are you not mining?', 'why are you not mining?'],
+    ['why are you not mining? think', 'why are you not mining?'],
+    ['réfléchis: pourquoi tu ne mines pas ?', 'pourquoi tu ne mines pas ?'],
+    ['reflechis pourquoi tu ne mines pas', 'pourquoi tu ne mines pas'],
+    ['piensa: ¿por qué no estás minando?', '¿por qué no estás minando?'],
+    ['ragiona, perché non stai minando?', 'perché non stai minando?'],
+    ['perché non stai minando? ragiona.', 'perché non stai minando?'],
+    ['non capisco, ragiona: che cosa ti serve?', 'non capisco, che cosa ti serve?'],
+    ['überlege: warum baust du nicht ab?', 'warum baust du nicht ab?'],
+    ['uberlege warum baust du nicht ab', 'warum baust du nicht ab'],
+    // Il marcatore è una parola: «ragionamento» non lo è.
+    ['spiegami il tuo ragionamento', null],
+    ['', null],
+  ];
+  for (const [text, expected] of cases) {
+    const out = reasonRequest(text);
+    if (expected == null) {
+      assert.equal(out.reason, false, `${JSON.stringify(text)} is not a reasoning request`);
+      assert.equal(out.message, text, 'a message without the marker is returned untouched');
+    } else {
+      assert.equal(out.reason, true, `${JSON.stringify(text)} asks for reasoning`);
+      assert.equal(out.message, expected, `${JSON.stringify(text)} loses only the marker`);
+    }
+  }
+});
+
+test('reasonRequest accepts an explicit marker list and removes every occurrence', () => {
+  const out = reasonRequest('dai su, analizza: analizza il baule', { markers: ['analizza'] });
+  assert.equal(out.reason, true);
+  assert.equal(out.message, 'dai su, il baule');
+  assert.equal(reasonRequest('ragiona: perché?', { markers: ['analizza'] }).reason, false, 'the default markers can be replaced');
+});
+
+test('a reasoned request tells the model to answer, and gets more room', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push(JSON.parse(init.body));
+    return { ok: true, status: 200, json: async () => ({ model: 'stub-model', choices: [{ message: { content: 'sto scavando' } }] }) };
+  };
+  await composeChatReply({ message: 'perché non stai minando?', from: 'Ale', facts: {position: {x: 1, y: 2, z: 3}}, key: 'k', reasoned: true, fetchImpl });
+  const asked = calls.at(-1);
+  assert.match(asked.messages[0].content, /ti ha chiesto di ragionare/, 'the system asks for a reasoned answer');
+  assert.equal(asked.max_tokens, 220, 'a reasoned answer gets room to explain');
+  assert.deepEqual(asked.messages, buildChatMessages({message: 'perché non stai minando?', from: 'Ale', facts: {position: {x: 1, y: 2, z: 3}}, reasoned: true}));
+
+  await composeChatReply({ message: 'perché non stai minando?', from: 'Ale', key: 'k', fetchImpl });
+  assert.equal(calls.at(-1).max_tokens, 120, 'a normal answer keeps the short budget');
+  assert.equal(/ti ha chiesto di ragionare/.test(calls.at(-1).messages[0].content), false, 'the instruction is only for a reasoned answer');
+});
+
+test('compactChatFacts merges the extra facts the controller can explain with', () => {
+  const facts = compactChatFacts(OBS, null, {
+    recentActions: [{action: 'mine_oak_log', stagnant: true}],
+    lastResult: {action: 'mine_oak_log', ok: false, error: 'movement timeout'},
+    oresNearby: [{name: 'diamond_ore', position: {x: 4, y: 60, z: 0}, distance: 4.1}],
+    nothing: null,
+  });
+  assert.deepEqual(facts.recentActions, [{action: 'mine_oak_log', stagnant: true}]);
+  assert.equal(facts.lastResult.error, 'movement timeout');
+  assert.equal(facts.oresNearby[0].name, 'diamond_ore');
+  assert.equal('nothing' in facts, false, 'null facts are dropped');
+  assert.equal(compactChatFacts(OBS).recentActions, undefined, 'without extra nothing is added');
 });

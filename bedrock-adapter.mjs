@@ -336,6 +336,34 @@ const PORTAL_FRAME_RADIUS = +(process.env.PORTAL_FRAME_RADIUS || 6);
 const ORE_INTEREST_RANGE = 24;
 const ORE_SCAN_TTL_MS = 5000;        // la percezione gira molte volte al secondo
 const ORE_SCAN_MOVE_TOLERANCE = 8;   // ...e comunque non riusare una lista di 8 blocchi fa
+// M11 — avviso in chat quando una vena *nuova* entra in vista (`ORE_ALERT`,
+// default `diamond`; `off` lo spegne). Nato dalla richiesta dell'utente del
+// 07/10/2026: «appena vedi un diamante comunicami la posizione», poi «seguimi e
+// comunicami se vedi dei diamanti durante il cammino». Il testo non si compone
+// qui: il renderer lo inietta chi possiede il catalogo (`oreAlertText`, 5 lingue),
+// così l'adapter resta senza i18n e il messaggio resta traducibile.
+const ORE_ALERT_SETTING = String(process.env.ORE_ALERT ?? 'diamond').trim().toLowerCase();
+const ORE_ALERT_OFF = ORE_ALERT_SETTING === '' || /^(off|no|none|0|false)$/.test(ORE_ALERT_SETTING);
+// Il nome può arrivare come `diamond`, `diamond_ore` o `deepslate_diamond_ore`:
+// si confronta il nucleo (`oreCore`), così una voce copre tutte le varianti.
+const ORE_ALERT_CORES = oreAlertCores();
+const ORE_ALERT_RANGE = +(process.env.ORE_ALERT_RANGE || 32);
+const ORE_ALERT_COOLDOWN_MS = +(process.env.ORE_ALERT_COOLDOWN_MS || 5000);
+const ORE_ALERT_SPOT_RADIUS = 6;      // blocchi della *stessa* vena: un solo avviso
+const ORE_ALERT_SEEN_MAX = 4000;      // tetto della memoria degli avvisi (FIFO)
+// Nucleo del nome di una vena: `deepslate_diamond_ore` → `diamond`,
+// `lapis_lazuli` → `lapis` (blocco e item non usano lo stesso nome).
+function oreCore (name) {
+  return String(name ?? '').toLowerCase().replace(/^deepslate_/, '').replace(/_ore$/, '').split('_')[0];
+}
+
+// Le vene da annunciare, lette da `ORE_ALERT` (`off`/vuoto = nessuna). Esportata
+// perché l'interruttore si prova senza riavviare il processo.
+export function oreAlertCores (setting = process.env.ORE_ALERT ?? 'diamond') {
+  const value = String(setting ?? '').trim().toLowerCase();
+  if (value === '' || /^(off|no|none|0|false)$/.test(value)) return new Set();
+  return new Set(value.split(/[\s,]+/).filter(Boolean).map(oreCore));
+}
 const CHECKPOINT_MIN_DISTANCE = 48;   // checkpoint sparsi: ogni ~48 blocchi di viaggio
 // Raggio entro cui alzare lo scudo ha senso (il blocco vale per gli attacchi
 // che arrivano davanti al bot).
@@ -458,6 +486,11 @@ export class BedrockAdapter {
     this._fishTeaseAt = 0;           // ultimo evento `fish_hook_tease` (pesce che si avvicina ma non morde)
     this.nearbyBlocks = {};
     this.valuableOres = [];        // ore di valore in vista (occasioni, vedi _scanValuableOres)
+    this.oreAlertSeen = new Set();   // vene già annunciate in chat (chiave nome+posizione)
+    this.oreAlertCores = ORE_ALERT_CORES; // vene da annunciare (ORE_ALERT, default diamond)
+    this._lastOreAlertAt = 0;        // cooldown fra due avvisi
+    this.lastOreAlert = null;        // ultimo avviso (per /observe e per i test)
+    this.oreAlertText = null;        // renderer iniettato da chi ha il catalogo (M11)
     this.structures = [];          // strutture rilevate nell'ultima ricognizione (M5/M6)
     this._structureSurvey = null;  // riassunto dell'ultima ricognizione (per /observe)
     this._structureSurveyAt = 0;
@@ -1247,7 +1280,50 @@ export class BedrockAdapter {
     // che vale di più, non quella che capita davanti.
     found.sort((a, b) => (b.value - a.value) || (a.distance - b.distance));
     this.valuableOres = found;
+    this._alertNewOres(found, now);
     return found;
+  }
+
+  // M11: una vena nuova entra in vista → il bot lo dice in chat. Una volta per
+  // posizione, un solo avviso per vena (i blocchi adiacenti sono la stessa
+  // vena), un cooldown fra due avvisi, e solo se il chiamante ha iniettato il
+  // renderer del catalogo. Non annunciate ≠ perdute: restano in attesa e
+  // parlano al giro dopo, quando il cooldown è passato.
+  _alertNewOres (found = [], now = Date.now()) {
+    if (!this.oreAlertCores.size || typeof this.oreAlertText !== 'function') return null;
+    const fresh = found.filter(ore => ore?.position
+      && this.oreAlertCores.has(oreCore(ore.name))
+      && (ore.distance ?? Infinity) <= ORE_ALERT_RANGE
+      && !this.oreAlertSeen.has(`${oreCore(ore.name)}@${ore.position.x},${ore.position.y},${ore.position.z}`));
+    if (!fresh.length) return null;
+    if (this._lastOreAlertAt && now - this._lastOreAlertAt < ORE_ALERT_COOLDOWN_MS) return null;
+    const nearest = fresh.slice().sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity))[0];
+    const message = this.oreAlertText({ ...nearest });
+    if (!message) return null;
+    for (const ore of fresh) {
+      const near = Math.hypot(
+        ore.position.x - nearest.position.x,
+        ore.position.y - nearest.position.y,
+        ore.position.z - nearest.position.z,
+      );
+      if (ore === nearest || near <= ORE_ALERT_SPOT_RADIUS) this._rememberOreAlert(ore);
+    }
+    this._lastOreAlertAt = now;
+    this.lastOreAlert = { at: now, name: nearest.name, position: nearest.position, distance: nearest.distance ?? null };
+    this.logger?.log?.(`ore_alert ${JSON.stringify(this.lastOreAlert)}`);
+    try {
+      this.sendChat(message);
+    } catch (error) {
+      this.logger?.log?.(`ore_alert failed: ${error?.message ?? error}`);
+    }
+    return nearest;
+  }
+
+  _rememberOreAlert (ore) {
+    this.oreAlertSeen.add(`${oreCore(ore.name)}@${ore.position.x},${ore.position.y},${ore.position.z}`);
+    while (this.oreAlertSeen.size > ORE_ALERT_SEEN_MAX) {
+      this.oreAlertSeen.delete(this.oreAlertSeen.values().next().value);
+    }
   }
 
   // Producer di memoria: registra scoperte dal mondo (portali, siti di risorse,
@@ -4403,6 +4479,7 @@ export class BedrockAdapter {
       circuits: this._circuitsView(),
       construction: this.construction.view(),
       ores: (this.valuableOres ?? []).slice(0, 8),
+      oreAlert: this.lastOreAlert ?? null,
       recent: this.recent.slice(-8),
       status: this.status,
       spawned: this.spawned,

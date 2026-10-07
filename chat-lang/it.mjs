@@ -159,6 +159,8 @@ export default Object.freeze({
   told_source_told: " (me l'hai detto tu)",
   told_source_seen: ' (visto da me)',
   told_where_item: '{label} a {pos}, {dimension}: {item}{count}{source}',
+  told_ore_near: '{ore} a {pos}, {dimension} — {distance} blocchi da me{source}',
+  ore_alert: 'ho visto {ore} a {pos} — {distance} blocchi da me',
   told_count: ' ×{n}',
   told_claim_unverified: ' (non verificato)',
   told_claim_verified: ' (verificato)',

@@ -77,9 +77,37 @@ const HERE = /(?:\b(?:qui|qua|questo|questa|questo punto|il punto dove mi trovo|
 
 const WHERE = /(?:\b(?:dove|dov'e|dove sta|dove si trova|in che posto)\b|\b(?:where|where is|where's)\b|\b(?:ou est|ou se trouve)\b|\b(?:donde esta|donde hay|donde se encuentra)\b|\b(?:wo ist|wo finde ich|wo liegt)\b)/;
 
+// «le coordinate dei diamanti»: chiede *la posizione di una cosa*, non quella
+// del bot. Senza questo la frase arrivava al router delle domande, che sul
+// nudo «coordinate» rispondeva con le coordinate del bot (segnalato dall'utente
+// il 07/10/2026: «ho chiesto la posizione dei diamanti e invece il bot mi ha
+// comunicato le sue coordinate»).
+const POSITION_NOUN = /(?:\b(?:coordinate|coordinata|posizione|posizioni)\b|\b(?:position|positions|coordinates|coords)\b|\b(?:coordonnees|coordenadas|koordinaten)\b)/;
+// La stessa classe con `/g` per la *rimozione*: `POSITION_NOUN.test()` su una
+// regex globale avanza `lastIndex` e il test successivo parte a metà frase (col
+// primo `coordinate` rispondeva, col secondo no) — le due cose restano separate.
+const POSITION_NOUN_SOURCE = /(?:\b(?:coordinate|coordinata|posizione|posizioni)\b|\b(?:position|positions|coordinates|coords)\b|\b(?:coordonnees|coordenadas|koordinaten)\b)/g;
+
 // "dove sei?", "che cosa stai facendo?": non è una domanda sulla memoria, è una
 // domanda sul bot — la risponde il percorso delle domande, non questo.
-const SELF_REF = /(?:\b(?:sei|stai|ti trovi|ti sei messo|state|siete)\b|\b(?:are you|do you|you)\b|\b(?:es-tu|tu es)\b|\b(?:estas|te encuentras)\b|\b(?:bist du)\b)/;
+const SELF_REF = /(?:\b(?:sei|stai|ti trovi|ti sei messo|state|siete|mi trovo|sono io)\b|\b(?:are you|do you|you)\b|\b(?:es-tu|tu es)\b|\b(?:estas|te encuentras)\b|\b(?:bist du)\b|\b(?:le tue|la tua|i tuoi|il tuo|your|tes|ton|ta|deine|dein|tus|tu)\s+(?:coordinate|coordinata|coordonnees|coordenadas|koordinaten|posizione|position)\b)/;
+
+// Una frase che *racconta* ciò che il bot ha detto non è un ordine: è un
+// commento su una risposta precedente. Registrarla produrrebbe un luogo dal
+// nome impossibile (caso live 07/10/2026: «mi avevi detto un diamante a 29 -4
+// 208 ma non è vero» → «Registrato: mi avevi detto un diamante ma a 29, -4,
+// 208»). Resta al flusso normale, senza scrivere niente.
+const REPORT_OF_SPEECH = /(?:\b(?:mi avevi detto|mi hai detto|mi avevi scritto|mi hai scritto|avevi detto|hai detto|m avevi detto|mi avevi promesso)\b|\b(?:you told me|you said)\b|\b(?:tu m as dit|tu mas dit)\b|\b(?:me dijiste|me has dicho)\b|\b(?:du hast gesagt|du sagtest|du hast mir gesagt)\b)/;
+
+// Una smentita: la negazione *della* dichiarazione («non è vero», «non c'è»,
+// «no hay», «ist nicht»). Non è un ordine di memoria: al massimo è una
+// correzione di ciò che il bot crede, e in ogni caso non si scrive da soli un
+// posto a partire da una negazione.
+const DENIAL = /\b(?:non|no|not|nicht|n est|pas)\b[^.,;!?]{0,20}?\b(?:e|e'|es|est|esta|estan|is|are|ist|sind|vero|verdad|vrai|true|faux|falso|esiste|esistono|exists|c'e|ce|hay|sono|trova|trovano|gibt)\b/;
+
+// Le parole di un verbo dentro un nome sono detriti, non un nome: «mi avevi
+// detto un diamante ma» è una frase, non un posto.
+const NAME_VERB = /(?:\b(?:detto|detta|detti|dice|dici|dite|avevi|aveva|avevano|guarda|guardate|vedi|credo|penso|sembra|sapevi|sapeva|forse|magari|promesso|scritto)\b)/;
 
 const GOTO_VERB = /(?:\b(?:vai|va'|va|andiamo|raggiungi|portami|guidami|accompagnami|dirigiti|muoviti|torna)\b|\b(?:go to|go|head to|walk to|take me|bring me|lead me)\b|\b(?:vas-y|rejoins|rends-toi|amene-moi)\b|\b(?:ve a|vete a|llevame|guiame)\b|\b(?:geh zu|geh|bring mich|fuhre mich|lauf zu)\b)/;
 
@@ -228,6 +256,9 @@ export function extractPlaceName (text, { mode = 'remember' } = {}) {
   a.drop(/\b(?:che|that|que|dass)\b/g);
   if (mode === 'where') {
     a.drop(WHERE_SOURCE);
+    // «coordinate diamante» e «posizione dei diamanti»: la parola di posizione è
+    // il modo in cui l'umano chiede, non il nome di un posto.
+    a.drop(POSITION_NOUN_SOURCE);
     a.drop(WHERE_AUX_SOURCE);
   }
   let kept = a.kept();
@@ -265,6 +296,7 @@ export function extractPlaceName (text, { mode = 'remember' } = {}) {
   s = s.replace(/[.,;:!?¡¿"'()\[\]]+$/g, '').replace(/^[\s:,\-–>]+/, '').replace(/\s+/g, ' ').trim();
   if (!s || s.length > 60) return null;
   if (NAME_STOPWORDS.has(foldText(s))) return null;
+  if (NAME_VERB.test(foldText(s))) return null;
   return s;
 }
 
@@ -282,7 +314,10 @@ const ARTICLE = /^(?:(?:il|lo|la|i|gli|le|un|uno|una|the|les|der|die|das|ein|ein
 // Preposizioni di luogo: pendenti in testa a un nome sono detriti ("è **a**
 // coordinate …" → "a"), non l'inizio di un nome. Quelle che possono aprire un nome
 // vero ("di", "del", "the") restano fuori da questo insieme.
-const LEADING_DANGLING = new Set(['a', 'ad', 'al', 'allo', 'alla', 'ai', 'agli', 'alle', 'in', 'nel', 'nello', 'nella', 'nei', 'negli', 'nelle', 'at', 'to', 'au', 'aux', 'en', 'im', 'zum', 'zur']);
+const LEADING_DANGLING = new Set(['a', 'ad', 'al', 'allo', 'alla', 'ai', 'agli', 'alle', 'in', 'nel', 'nello', 'nella', 'nei', 'negli', 'nelle', 'dell', "dell'", 'della', 'delle', 'del', 'dei', 'degli', 'all', "all'", 'nell', "nell'", 'sul', 'sullo', 'sulla', 'sui', 'sugli', 'sulle', 'at', 'to', 'au', 'aux', 'en', 'im', 'zum', 'zur',
+  // Marcatori di discorso in testa: «guarda che il campo di patate è a …»
+  // nomina il campo, non «guarda il campo».
+  'guarda', 'guardate', 'senti', 'sentite', 'vedi', 'ecco', 'ascolta', 'ascoltate', 'sappi', 'bada', 'attento', 'dai', 'allora', 'scusa', 'scusami', 'look', 'listen', 'hey', 'well', 'regarde', 'ecoute', 'mira', 'escucha', 'schau', 'hor', 'hor mal']);
 
 const DANGLING = new Set(['sta', 'stanno', "e", "e'", 'sono', 'si', 'trova', 'trovano', 'sorge', 'at', 'is', 'are', 'ist', 'sind', 'est', 'es', 'esta', 'estan', 'esta', 'se', 'trouve', 'trouvent', 'correspond', 'corrisponde', 'findet', 'liegt', 'steht', 'in', 'im', 'de', 'du', 'des', 'del', 'della', 'delle', 'dei', 'degli', 'di', 'of', 'the', 'ora', 'adesso', 'now', 'maintenant', 'ahora', 'jetzt', 'piu', 'non']);
 const DEICTIC_CLAUSE = /\b(?:questo|questa|qui|qua|il punto dove|il posto dove|this|here|the spot|the place where|ici|ce point|aqui|este punto|hier|dieser punkt)\b/;
@@ -393,11 +428,18 @@ export function toldIntentFromText (text, { sender = null, names = [] } = {}) {
   if (!raw) return null;
   const folded = foldText(raw);
   if (folded.length > MAX_MESSAGE) return null;
+  // Un reclamo o una smentita non è un ordine di memoria. Un verbo di memoria
+  // esplicito resta però un ordine anche dentro un racconto («dimentica il posto
+  // che mi avevi detto»): solo la smentita vale su tutto.
+  if (DENIAL.test(folded)) return null;
+  const explicitMemory = REMEMBER_VERB.test(folded) || FORGET_VERB.test(folded) || CORRECT_VERB.test(folded);
+  if (REPORT_OF_SPEECH.test(folded) && !explicitMemory) return null;
   const coords = coordsFromText(folded);
   const here = HERE.test(folded);
   const question = looksLikeQuestion(raw);
   const container = containerPhrase(raw);
-  const item = (container || WHERE.test(folded)) ? matchToldItem(raw, names) : null;
+  const asksCoordinates = POSITION_NOUN.test(folded) && !SELF_REF.test(folded);
+  const item = (container || WHERE.test(folded) || asksCoordinates) ? matchToldItem(raw, names) : null;
 
   // 1. Dimenticare: l'unica operazione che richiede solo un nome.
   if (FORGET_VERB.test(folded)) {
@@ -431,7 +473,7 @@ export function toldIntentFromText (text, { sender = null, names = [] } = {}) {
   // 5. Consultare: il nome del luogo e la risorsa viaggiano *insieme* ("dov'è il
   //    campo di patate?" contiene anche "patate", che è un item). Chi risponde
   //    prova prima il luogo, poi la risorsa: qui non si sceglie.
-  if (WHERE.test(folded) && !SELF_REF.test(folded)) {
+  if ((WHERE.test(folded) || asksCoordinates) && !SELF_REF.test(folded)) {
     const name = extractPlaceName(raw, { mode: 'where' });
     const resource = item;
     if (name || resource) {

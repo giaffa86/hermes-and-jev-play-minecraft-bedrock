@@ -1525,3 +1525,43 @@ unit-tested ([verification](verification.md) 47.58–47.59,
 - **The console is not wired.** `feat/companion-webconsole` (another session)
   is the "future console" the routes were shaped for; nothing here imports it
   and no code depends on it.
+
+## The chat replies that were not true (2026-10-07)
+
+The four defects the owner found by reading the live chat are fixed and each is
+pinned by a test that fails without its edit ([verification](verification.md)
+47.60, [CHAT-REPLY-TRUTH](../raw/CHAT-REPLY-TRUTH.md)). What is still open:
+
+- **Nothing is deployed.** The controller fixes (the order-target floor, the
+  sender, the rate-limit retry, the parser guards) live in the controller, so a
+  controller restart ships them; the ore alert lives in the **adapter and the
+  harness**, so it needs a `hermes-jev-bedrock` restart — the bot leaves and
+  rejoins (~30 s) and a BDS restart is sometimes needed for the stale peer
+  state. The two are separate deploys and neither has run.
+- **The order-target floor is a cap, not a proof.** If the planner empties
+  `plan.targets`, the order falls back to the targets it was born with; but a
+  goal whose original order had no numeric target at all («seguimi») still
+  closes on the waypoint rule. No test covers "the order had targets and the
+  planner *changed* them to a harder set".
+- **The ore alert is unheard.** `ORE_ALERT` (default `diamond`, five-language
+  sentence from the catalogue, one message per vein, `ORE_ALERT_COOLDOWN_MS`
+  between two alerts) has never been read in game: the timing during a follow
+  and the wording in the other languages are unverified, and the alert only
+  speaks for ores the census already found (`ORE_ALERT_RANGE`, default 32).
+- **«ragiona» has never met a real provider.** The marker, the stripped
+  sentence, the reasoned prompt and the 220-token budget are unit-tested, but no
+  call has ever left the machine: the real cost of a long answer, a model that
+  ignores the one-line rule and the quality of the German/Spanish wording are
+  open. The word list (`DEFAULT_REASON_MARKERS`) is a starting point, not a
+  translation review, and `CHAT_REASON` follows M7: with no key there is no
+  reasoned answer at all.
+- **M7 was off in production.** The controller environment had no
+  `DEEPSEEK_API_KEY` and no `CHAT_LLM_*`, so every "frase fatta" the owner read
+  was the deployed configuration, not a defect. `CHAT_LLM_API_KEY` is the
+  canonical name (`DEEPSEEK_API_KEY` is the legacy alias still honoured by
+  `chatLlmKey`, and asserted by `tests/chat-llm.test.mjs`); a production env
+  should carry only the canonical one.
+- **`saySmart` never sees a rejection.** `replyChat` retries once on
+  `rate_limited`; two messages inside `CHAT_MIN_INTERVAL_MS` still lose the
+  second one if the retry also lands inside the window (the backoff is bounded
+  at `CHAT_REPLY_RETRY_MAX_MS`, 4000).

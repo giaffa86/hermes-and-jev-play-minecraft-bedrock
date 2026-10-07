@@ -30,6 +30,8 @@ import { BedrockAdapter } from './bedrock-adapter.mjs';
 import { farmOptionKeys } from './bedrock-survival.mjs';
 import { constructionResponse } from './construction-api.mjs';
 import { createWorldMemory } from './world-memory.mjs';
+import { chatLangConfig, t } from './chat-i18n.mjs';
+import { formatPosition } from './memory-chat.mjs';
 import { createRunLedger } from './run-ledger.mjs';
 import { runDir, runsRoot } from './run-paths.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -194,6 +196,17 @@ const adapter = new BedrockAdapter({
     console.warn('[adapter] disconnected; will reconnect');
     startConnectionWorker(10000);
   },
+});
+
+// M11: l'adapter rileva la vena nuova, il catalogo la racconta. Il testo esce da
+// qui (5 lingue, `CHAT_LANG`) e non dal modello: è una coordinata, e una
+// coordinata non si riformula. Se una lingua non ha la chiave, `t` ripiega sul
+// default invece di lasciare la chat muta.
+const ORE_ALERT_LANG = chatLangConfig(process.env).lang;
+adapter.oreAlertText = (ore) => t(ORE_ALERT_LANG, 'ore_alert', {
+  ore: ore.name,
+  pos: formatPosition(ore.position),
+  distance: Math.max(0, Math.round(ore.distance ?? 0)),
 });
 
 function startConnectionWorker (initialDelay = 0) {

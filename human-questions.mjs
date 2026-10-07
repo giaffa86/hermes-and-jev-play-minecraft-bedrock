@@ -281,7 +281,16 @@ export const QUESTION_INTENTS = [
   {
     id: 'q_position',
     description: 'The human asks where the bot is right now: its position, its coordinates or its dimension (e.g. "dove sei", "where are you", "non ti vedo").',
-    patterns: [/\b(dove (sei|ti trovi|siete)|posizione|coordinate|non ti vedo|where are you|your (position|coordinates)|ou (es|est)[- ]?tu|donde estas|wo (bist|seid) du|deine position|tu posicion)\b/],
+    patterns: [
+      // Il bot parla di sé: un verbo di stato, una forma possessiva, o la nuda
+      // parola di posizione **da sola**. Una parola di posizione seguita da
+      // un'altra cosa («coordinate diamante», «posizione dei diamanti») è una
+      // domanda su *quella* cosa: il 07/10/2026 «coordinate diamante?» riceveva
+      // la posizione del bot invece di quella dei diamanti.
+      /\b(dove (sei|ti trovi|siete|mi trovo)|non ti vedo|where are you|ou (es|est)[- ]?tu|donde estas|wo (bist|seid) du|(che|quali|what) (coordinate|posizione|position))\b/,
+      /\b(?:le tue|la tua|i tuoi|il tuo|your|tes|ton|ta|tus|tu|deine|dein)\s+(?:posizion[ei]|positions?|posicion(?:es)?|coordinates?|coordenadas?|koordinaten?)\b/,
+      /\b(?:posizion[ei]|positions?|posicion(?:es)?|coordinates?|coordenadas?|koordinaten?)$/,
+    ],
     answer: positionAnswer,
   },
   {
