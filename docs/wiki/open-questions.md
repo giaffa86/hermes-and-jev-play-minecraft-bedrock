@@ -1428,3 +1428,51 @@ and their network ids are unknown). The decisive cheap experiment is to repeat
 `craft_torch` carrying **only** coal, then **only** charcoal: if the coals variant
 fails identically the problem is in the consume/stack-id path, if it passes the
 35 was the charcoal variant.
+
+## Told facts (2026-10-07) — never live
+
+The four memory operations and the movement order are implemented and
+unit-tested ([verification](verification.md) 47.58–47.59,
+[human command](human-command.md#told-facts-m10-the-human-teaches-the-bot-remembers),
+[TOLD-FACTS](../raw/TOLD-FACTS.md)). What is still open:
+
+- **No live round.** No sentence of this feature has been typed into a live
+  BDS: the chat *reply* path (`replyChat`, `saySmart`) is exercised with a
+  scripted harness, exactly as for the other chat milestones. The HTTP writes
+  **have** been driven live on 07/10 (harness only, no Minecraft server, a
+  temporary `MEMORY_DIR`): created → restarted → found again, corrected (same
+  id, `historyCount` 1), forgotten, and the correction seen in
+  `GET /memory/search` at the new position; the `CHAT_ALLOWLIST` gate answered
+  403 `told_sender_not_allowed` for a sender outside it. The live round still to
+  run: dictate a place at the botanist's own coordinates from **in-game chat**,
+  restart the bot, ask for it, correct it, and check that the answer names the
+  provenance — plus one claim on a chest the bot has already read (the label
+  must appear and the observed contents must stay).
+- **`told_goto` still verifies a plain waypoint.** The plan carries
+  `notes: human:<from> told_place:<id>`, but success is the ordinary arrival at
+  the coordinates; nothing checks that the position the bot reached **is** the
+  remembered one (or that a corrected place moved the destination). A future
+  slice should close the loop with the place id.
+- **Two names for one place create two records.** The create-vs-correct
+  decision is made on the **exact** name: «il campo» and «campo di patate» are
+  two places pointing at the same field. The ambiguity reply is the safety net
+  (`ho 2 posti chiamati "…"`), not a fix — a synonym/alias relation would be the
+  real one.
+- **No expiry is offered to the human.** A named place is `permanent` by
+  construction and a claim ages after `toldClaimStaleMs` (7 days, a constructor
+  option, not an env var), but nothing lets the human say «this one expires in a
+  week». Deleting/invalidating by hand is the current answer.
+- **No `q_memory` question intent.** The request spoke of routing recall through a
+  new question intent; the implementation answers **consult** deterministically in
+  `handleToldFact`, before `resolveQuestion`, so a memory question costs no model
+  call and `QUESTION_INTENTS` is untouched. The cost is the other side of the
+  same coin: a memory question phrased in a way `memory-chat.mjs` does not
+  recognise falls to the ordinary flow (Hermes, semantic recall) instead of being
+  routed to the memory. A `q_memory` intent is the natural fallback if that shows
+  up in the field — it would be the only part of this feature that needs a model.
+  Related: a told landmark has no relations to update (it is not linked to a
+  concept node), so a correction only has to move the record and the derived
+  index — which it does.
+- **The console is not wired.** `feat/companion-webconsole` (another session)
+  is the "future console" the routes were shaped for; nothing here imports it
+  and no code depends on it.

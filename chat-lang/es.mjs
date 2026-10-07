@@ -66,6 +66,7 @@ export default Object.freeze({
   'fallback.drop': 'tiro {word} de mi inventario',
   'fallback.collect': 'recojo {word} del suelo',
   'fallback.farm': 'cosecho {word} del campo, lo replanto y guardo la cosecha',
+  'fallback.goto_told': 'voy a {name}',
 
   'phrase.equip': 'ponerme la armadura',
   'phrase.drop': 'tirar {word}',
@@ -132,4 +133,29 @@ export default Object.freeze({
   'kind.milk': 'leche',
   'kind.honey': 'miel',
   'kind.goods': 'lo que he recogido',
+
+  // --- told facts: what a human dictated about the world (memory-chat.mjs).
+  // `{pos}` is "x, y, z" and `{dimension}` the dimension name, both composed by
+  // the caller: the catalogue never knows how Minecraft writes a coordinate. ---
+  told_place_ack: 'Guardado: {label} en {pos}, {dimension}.',
+  told_container_ack: 'Guardado: {label} en {pos}, {dimension}.',
+  told_contents_ack: 'Anotado: {item} en el {label} en {pos}, {dimension}. No lo he comprobado.',
+  told_correct_ack: 'Actualizado: {label} ahora está en {pos}, {dimension} (antes: {from}).',
+  told_forget_ack: 'Olvidado: {label}.',
+  told_where_place: '{label} está en {pos}, {dimension}{source}.',
+  told_source_told: ' (me lo dijiste tú)',
+  told_source_seen: ' (lo vi yo)',
+  told_where_item: '{label} en {pos}, {dimension}: {item}{count}{source}',
+  told_count: ' ×{n}',
+  told_claim_unverified: ' (sin verificar)',
+  told_claim_verified: ' (verificado)',
+  told_where_none: 'no sé dónde encontrar {item}: no lo he visto y nadie me lo ha dicho',
+  told_ask_name: '¿a qué lugar te refieres? Dame un nombre, por ejemplo "este es el campo de patatas"',
+  told_ask_position: 'vale, ¿pero dónde está "{name}"? Dime las coordenadas (por ejemplo "coordenadas 120 64 -230") o "donde estoy ahora" si estás ahí',
+  told_ask_marker: 'he visto unos números, pero para guardarlos como coordenadas escríbelos con la palabra "coordenadas" (por ejemplo "coordenadas {x} {y} {z}")',
+  told_no_sender_position: 'no te veo: si eres tú el que está ahí, dime las coordenadas (por ejemplo "coordenadas 120 64 -230")',
+  told_unknown_place: 'no tengo un lugar llamado "{name}". Si querías guardarlo, dime dónde está',
+  told_ambiguous: 'tengo {count} lugares llamados "{name}": {options}. ¿Cuál?',
+  told_memory_unavailable: 'no puedo leer mi memoria ahora mismo ({reason})',
+  told_noun_container: 'cofre',
 });

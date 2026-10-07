@@ -35,12 +35,13 @@ import {
   withStickyEscort, withStickyFollow,
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_FARM_MAX_HARVES, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
+import {toldIntentFromText, TELL, CLARIFY, formatPosition, dimensionLabel} from './memory-chat.mjs';
 import {planGreetings, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
-import {orderAck, orderOutcome, lostNotice, escortWaiting, mountWaitingShore, isSelfTriggering, normalizePrefixes, matchChatPrefix, selfPrefixes, renderReply, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
+import {orderAck, orderOutcome, lostNotice, escortWaiting, mountWaitingShore, isSelfTriggering, normalizePrefixes, matchChatPrefix, selfPrefixes, renderReply, clampMessage, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
 import {answerIntent, renderAnswer, renderFarmNothing, renderNoArmor, renderNoDrop, renderNoItem, renderUnrouted, looksLikeSmallTalk} from './human-questions.mjs';
 import {resolveQuestionIntent, DEFAULT_INTENT_TIMEOUT_MS, DEFAULT_INTENT_MIN_P} from './chat-intent.mjs';
 import {composeChatReply, chatLlmConfig, compactChatFacts, createChatMemory} from './chat-llm.mjs';
-import {chatLangConfig, t, languageName, LANGS} from './chat-i18n.mjs';
+import {chatLangConfig, t, languageName, LANGS, listAnd} from './chat-i18n.mjs';
 import {narrateGoal, DEFAULT_NARRATE_COOLDOWN_MS} from './chat-narration.mjs';
 import {runDir} from './run-paths.mjs';
 import {systemOneDecide} from './system-one.mjs';
@@ -520,6 +521,338 @@ function isAllowedSender (entry) {
   return false;
 }
 
+// ---- fatti dettati (told facts) ---------------------------------------------------------------
+// Ricorda / consulta / correggi / dimentica, più «vai al <luogo nominato>». Il
+// riconoscimento è deterministico (memory-chat.mjs) e le frasi escono dal catalogo
+// (chat-lang/*): i numeri *sono* l'informazione, quindi qui il modello non
+// riformula e non decide cosa il bot sa. Nessuna di queste operazioni interrompe il
+// goal in corso; «vai al campo di patate» è un ordine di movimento come gli altri
+// (preemption e ripresa normali).
+const TOLD_FACTS = process.env.TOLD_FACTS !== 'off';
+
+// Il motivo per cui la frase non si è potuta scrivere → la domanda da fare. Un
+// comando riconosciuto e incompleto non scrive niente: chiede.
+const CLARIFY_TOLD = Object.freeze({
+  no_name: 'told_ask_name',
+  no_position: 'told_ask_position',
+  no_marker: 'told_ask_marker',
+  no_sender_position: 'told_no_sender_position',
+});
+
+// La posizione viva del mittente: «questo è il campo di patate» vale dove sta lui
+// adesso. Se non è in vista non si indovina — si chiedono le coordinate.
+function senderPlace (obs, from) {
+  const name = String(from ?? '').toLowerCase();
+  if (!name) return null;
+  const human = (obs?.humans || []).find(h => String(h.username ?? '').toLowerCase() === name);
+  const entity = human ?? (obs?.entities || []).find(e => e.kind === 'player' && String(e.username ?? '').toLowerCase() === name);
+  if (!entity?.position) return null;
+  return {
+    position: {x: Math.round(entity.position.x), y: Math.round(entity.position.y), z: Math.round(entity.position.z)},
+    dimension: obs?.dimension ?? 'overworld',
+  };
+}
+
+// Risposta di memoria: testo dal catalogo, senza passare dall'LLM (`saySmart` lo
+// riformulerebbe, e una conferma di scrittura deve dire esattamente cosa è stato
+// scritto). L'umano è ringraziato col contatto nella memoria conversazionale, così
+// le risposte successive restano coerenti.
+async function toldSay (entry, {message, prefixes, key, vars = {}}) {
+  // Come ogni risposta del canale, la riga è *indirizzata* al mittente (M5):
+  // il destinatario deve sapere che la conferma è per lui.
+  const body = renderReply(t(CHAT_LANG, key, {name: entry.from ?? '', ...vars}), {}, CHAT_REPLY_MAX_LENGTH);
+  const text = entry.from && !body.startsWith('@') ? clampMessage(`@${entry.from} ${body}`, CHAT_REPLY_MAX_LENGTH) : body;
+  await replyChat(text, {to: entry.from, context: 'told', prefixes});
+  chatMemory.remember(entry.from, message, text);
+  return text;
+}
+
+// Un nome che vale per più di un posto non si risolve: si chiede quale. Mai il
+// più vicino — la distanza non è una risposta a "quale intendi?".
+function toldOptionLine (place) {
+  return `${place.label ?? place.id} a ${formatPosition(place.position)} (${dimensionLabel(place.dimension)})`;
+}
+
+async function toldAmbiguous (entry, {message, prefixes, intent, candidates, log}) {
+  const name = intent.name ?? intent.container ?? '';
+  const options = listAnd(candidates.map(toldOptionLine), CHAT_LANG);
+  await toldSay(entry, {message, prefixes, key: 'told_ambiguous', vars: {count: candidates.length, name, options}});
+  log('tell_ambiguous', {from: entry.from, xuid: entry.xuid, name, count: candidates.length, candidates: candidates.map(c => c.id)});
+  return true;
+}
+
+// La memoria non risponde (rotta giù, scrittura rifiutata): si dice, non si finge.
+async function toldUnavailable (entry, {message, prefixes, err, log}) {
+  const reason = err?.error ?? err?.message ?? 'unknown';
+  await toldSay(entry, {message, prefixes, key: 'told_memory_unavailable', vars: {reason}});
+  log('tell_memory_unavailable', {from: entry.from, xuid: entry.xuid, reason});
+  return true;
+}
+
+// Un luogo risolto per nome: `null` se non c'è (allora non si scrive e non si
+// naviga), `{ambiguous: true}` se ce n'è più d'uno (si chiede).
+async function toldResolve (obs, entry, {message, prefixes, intent, log}) {
+  const name = intent.name ?? intent.container ?? '';
+  const out = await api('GET', `/memory/places?name=${encodeURIComponent(name)}&limit=10`);
+  if (out?.error) return {error: out.error};
+  const places = Array.isArray(out?.places) ? out.places : [];
+  if (places.length > 1) {
+    await toldAmbiguous(entry, {message, prefixes, intent, candidates: places, log});
+    return {ambiguous: true};
+  }
+  return {place: places[0] ?? null};
+}
+
+// «Dov'è il campo di patate?» / «Dove posso trovare ferro?» — prima il luogo, poi
+// la risorsa: il nome del luogo può contenere la parola della risorsa ("campo di
+// patate") e la scelta non è del parser. La provenienza viaggia nella risposta:
+// l'umano deve sapere se il bot l'ha visto o se gliel'hanno detto.
+async function toldConsult (obs, entry, {message, prefixes, intent, log}) {
+  if (intent.name) {
+    const resolved = await toldResolve(obs, entry, {message, prefixes, intent, log});
+    if (resolved.error) return toldUnavailable(entry, {message, prefixes, err: {error: resolved.error}, log});
+    if (resolved.ambiguous) return true;
+    const place = resolved.place;
+    if (place) {
+      const source = place.source === 'told' ? t(CHAT_LANG, 'told_source_told') : '';
+      await toldSay(entry, {message, prefixes, key: 'told_where_place', vars: {
+        label: place.label ?? place.id,
+        pos: formatPosition(place.position),
+        dimension: dimensionLabel(place.dimension),
+        source,
+      }});
+      log('tell_where_place', {from: entry.from, xuid: entry.xuid, id: place.id, name: intent.name, source: place.source});
+      return true;
+    }
+    // Un nome che la memoria non conosce non si indovina: se la frase chiedeva
+    // anche una risorsa si prova quella, altrimenti si dice che non lo sa.
+    if (!intent.item) {
+      await toldSay(entry, {message, prefixes, key: 'told_unknown_place', vars: {name: intent.name}});
+      log('tell_unknown_place', {from: entry.from, xuid: entry.xuid, name: intent.name});
+      return true;
+    }
+  }
+  if (intent.item) {
+    const out = await api('GET', `/memory/where?item=${encodeURIComponent(intent.item)}&limit=5`);
+    if (out?.error) return toldUnavailable(entry, {message, prefixes, err: out, log});
+    const hits = Array.isArray(out?.hits) ? out.hits : [];
+    if (!hits.length) {
+      await toldSay(entry, {message, prefixes, key: 'told_where_none', vars: {item: intent.word ?? intent.item}});
+      log('tell_where_none', {from: entry.from, xuid: entry.xuid, item: intent.item, word: intent.word ?? null});
+      return true;
+    }
+    const best = hits[0];
+    const label = best.label ?? (best.kind === 'container' ? t(CHAT_LANG, 'told_noun_container') : best.id);
+    const verdict = best.source === 'told'
+      ? t(CHAT_LANG, best.claim === 'confirmed' ? 'told_claim_verified' : 'told_claim_unverified')
+      : '';
+    const source = best.source === 'told' ? t(CHAT_LANG, 'told_source_told') + verdict : t(CHAT_LANG, 'told_source_seen');
+    const count = best.count != null ? t(CHAT_LANG, 'told_count', {n: best.count}) : '';
+    await toldSay(entry, {message, prefixes, key: 'told_where_item', vars: {
+      label,
+      pos: formatPosition(best.position),
+      dimension: dimensionLabel(best.dimension),
+      item: intent.word ?? intent.item,
+      count,
+      source,
+    }});
+    log('tell_where_item', {from: entry.from, xuid: entry.xuid, item: intent.item, id: best.id, source: best.source, count: best.count ?? null, claim: best.claim ?? null, hits: hits.length});
+    return true;
+  }
+  return false;
+}
+
+// Traduce una frase di memoria in scritture e risposte. Torna `true` se il
+// messaggio è stato gestito (già risposto), un piano se è l'ordine di movimento
+// verso un luogo nominato, `null` se non è un fatto dettato e la chat deve
+// proseguire come prima (domande e ordini di sempre).
+async function handleToldFact (obs, entry, {message, prefixes}) {
+  if (!TOLD_FACTS) return null;
+  const sender = senderPlace(obs, entry.from);
+  const intent = toldIntentFromText(message, {sender: sender ? entry.from : null, names: Object.keys(obs?.inventory ?? {})});
+  if (!intent) return null;
+  const who = {from: entry.from, xuid: entry.xuid};
+  const dim = (value) => value ?? obs?.dimension ?? 'overworld';
+
+  if (intent.kind === CLARIFY) {
+    const numbers = intent.numbers ?? [];
+    await toldSay(entry, {message, prefixes, key: CLARIFY_TOLD[intent.reason] ?? 'told_ask_name', vars: {
+      name: intent.name ?? intent.container ?? '',
+      x: numbers[0] ?? '', y: numbers[1] ?? '', z: numbers[2] ?? '',
+    }});
+    log('tell_clarify', {...who, reason: intent.reason, via: intent.via, message});
+    return true;
+  }
+
+  if (intent.kind === TELL.CONSULT) return toldConsult(obs, entry, {message, prefixes, intent, log});
+
+  // «Vai al campo di patate»: non è una scrittura, è un ordine di movimento. Se il
+  // nome non è in memoria il messaggio torna al flusso normale (Hermes e il recall
+  // semantico possono avere altre idee), e una scorta resta una scorta.
+  if (intent.kind === TELL.GOTO_PLACE) {
+    if (isEscortOrder(message, obs)) return null;
+    const resolved = await toldResolve(obs, entry, {message, prefixes, intent, log});
+    if (resolved.error) return toldUnavailable(entry, {message, prefixes, err: {error: resolved.error}, log});
+    if (resolved.ambiguous) return true;
+    const place = resolved.place;
+    if (!place?.position) return null;
+    const name = place.label ?? intent.name;
+    const plan = {
+      objective: t(CHAT_LANG, 'fallback.goto_told', {name}),
+      targets: {},
+      waypoint: {x: Math.round(place.position.x), z: Math.round(place.position.z)},
+      follow: null,
+      notes: `human:${entry.from} told_place:${place.id}`,
+    };
+    log('plan', {plan, ms: 0, source: 'human', deterministic: 'told_goto'});
+    return plan;
+  }
+
+  if (intent.kind === TELL.FORGET_PLACE) {
+    const resolved = await toldResolve(obs, entry, {message, prefixes, intent, log});
+    if (resolved.error) return toldUnavailable(entry, {message, prefixes, err: {error: resolved.error}, log});
+    if (resolved.ambiguous) return true;
+    const place = resolved.place;
+    if (!place) {
+      await toldSay(entry, {message, prefixes, key: 'told_unknown_place', vars: {name: intent.name}});
+      log('tell_unknown_place', {...who, name: intent.name, via: 'forget'});
+      return true;
+    }
+    const out = await api('POST', '/memory/tell/forget', {id: place.id, toldBy: entry.from});
+    if (out?.error) return toldUnavailable(entry, {message, prefixes, err: out, log});
+    await toldSay(entry, {message, prefixes, key: 'told_forget_ack', vars: {label: place.label ?? intent.name}});
+    log('tell_forget', {...who, id: place.id, name: intent.name});
+    return true;
+  }
+
+  if (intent.kind === TELL.CORRECT_PLACE) {
+    // Una correzione conserva identità e storia: si passa per il nome (che è la
+    // chiave del luogo) e mai per l'id di un posto che l'umano non ha nominato.
+    const resolved = await toldResolve(obs, entry, {message, prefixes, intent, log});
+    if (resolved.error) return toldUnavailable(entry, {message, prefixes, err: {error: resolved.error}, log});
+    if (resolved.ambiguous) return true;
+    const out = await api('POST', '/memory/tell/place', {
+      name: intent.name,
+      label: resolved.place?.label ?? intent.name,
+      position: intent.position,
+      dimension: dim(intent.dimension),
+      toldBy: entry.from,
+      id: resolved.place?.id ?? null,
+      requireExisting: true,
+    });
+    if (out?.error) return toldUnavailable(entry, {message, prefixes, err: out, log});
+    if (out.action === 'ambiguous') return toldAmbiguous(entry, {message, prefixes, intent, candidates: out.candidates, log});
+    if (out.action !== 'corrected' && out.action !== 'unchanged') {
+      await toldSay(entry, {message, prefixes, key: 'told_unknown_place', vars: {name: intent.name}});
+      log('tell_unknown_place', {...who, name: intent.name, via: 'correct'});
+      return true;
+    }
+    const previous = out.previous?.position ?? null;
+    await toldSay(entry, {message, prefixes, key: previous ? 'told_correct_ack' : 'told_place_ack', vars: {
+      label: out.place.label ?? intent.name,
+      pos: formatPosition(out.place.position),
+      dimension: dimensionLabel(out.place.dimension),
+      from: previous ? formatPosition(previous) : '',
+    }});
+    log('tell_correct', {...who, id: out.place.id, name: intent.name, position: intent.position, dimension: out.place.dimension, previous});
+    return true;
+  }
+
+  if (intent.kind === TELL.REMEMBER_CONTENTS) {
+    const position = intent.position ?? sender?.position ?? null;
+    if (!position) {
+      await toldSay(entry, {message, prefixes, key: 'told_no_sender_position'});
+      log('tell_clarify', {...who, reason: 'no_sender_position', via: 'contents', message});
+      return true;
+    }
+    const out = await api('POST', '/memory/tell/contents', {
+      position,
+      dimension: dim(intent.dimension),
+      item: intent.item,
+      count: intent.count ?? null,
+      label: intent.container,
+      type: intent.containerType,
+      toldBy: entry.from,
+    });
+    if (out?.error) return toldUnavailable(entry, {message, prefixes, err: out, log});
+    await toldSay(entry, {message, prefixes, key: 'told_contents_ack', vars: {
+      item: intent.word ?? intent.item,
+      label: out.container?.label ?? intent.container,
+      pos: formatPosition(out.container?.position ?? position),
+      dimension: dimensionLabel(out.container?.dimension ?? dim(intent.dimension)),
+    }});
+    log('tell_contents', {...who, id: out.container?.id ?? null, item: intent.item, count: intent.count ?? null, position, verdict: out.claim?.verdict ?? null});
+    return true;
+  }
+
+  if (intent.kind === TELL.REMEMBER_CONTAINER) {
+    const position = intent.position ?? sender?.position ?? null;
+    if (!position) {
+      await toldSay(entry, {message, prefixes, key: 'told_no_sender_position'});
+      log('tell_clarify', {...who, reason: 'no_sender_position', via: intent.via, message});
+      return true;
+    }
+    // La cassa è la sua posizione: la rotta non tocca il contenuto (un baule
+    // nominato non è un baule svuotato).
+    const out = await api('POST', '/memory/tell/container', {
+      label: intent.label ?? intent.container,
+      type: intent.containerType,
+      position,
+      dimension: dim(intent.dimension),
+      toldBy: entry.from,
+    });
+    if (out?.error) return toldUnavailable(entry, {message, prefixes, err: out, log});
+    await toldSay(entry, {message, prefixes, key: 'told_container_ack', vars: {
+      label: out.container?.label ?? intent.container,
+      pos: formatPosition(out.container?.position ?? position),
+      dimension: dimensionLabel(out.container?.dimension ?? dim(intent.dimension)),
+    }});
+    log('tell_container', {...who, id: out.container?.id ?? null, label: intent.container, position, dimension: out.container?.dimension ?? null});
+    return true;
+  }
+
+  if (intent.kind === TELL.REMEMBER_PLACE) {
+    const label = intent.name;
+    const position = intent.position ?? sender?.position ?? null;
+    if (!position) {
+      await toldSay(entry, {message, prefixes, key: 'told_no_sender_position'});
+      log('tell_clarify', {...who, reason: 'no_sender_position', via: intent.via, message});
+      return true;
+    }
+    const out = await api('POST', '/memory/tell/place', {
+      name: label,
+      label,
+      position,
+      dimension: dim(intent.dimension),
+      toldBy: entry.from,
+    });
+    if (out?.error) return toldUnavailable(entry, {message, prefixes, err: out, log});
+    if (out.action === 'ambiguous') return toldAmbiguous(entry, {message, prefixes, intent, candidates: out.candidates, log});
+    if (!out.ok) return toldUnavailable(entry, {message, prefixes, err: {error: out.action ?? 'not_stored'}, log});
+    if (out.action === 'corrected' && out.previous?.position) {
+      // Lo stesso nome a una posizione diversa è lo stesso posto che si è spostato,
+      // non un doppione: la conferma lo dice, così l'umano sa che ha corretto.
+      await toldSay(entry, {message, prefixes, key: 'told_correct_ack', vars: {
+        label: out.place.label ?? label,
+        pos: formatPosition(out.place.position),
+        dimension: dimensionLabel(out.place.dimension),
+        from: formatPosition(out.previous.position),
+      }});
+      log('tell_correct', {...who, id: out.place.id, name: label, position, dimension: out.place.dimension, previous: out.previous.position, via: intent.via});
+      return true;
+    }
+    await toldSay(entry, {message, prefixes, key: 'told_place_ack', vars: {
+      label: out.place.label ?? label,
+      pos: formatPosition(out.place.position),
+      dimension: dimensionLabel(out.place.dimension),
+    }});
+    log('tell_place', {...who, id: out.place.id, name: label, position, dimension: out.place.dimension, kind: 'place'});
+    return true;
+  }
+
+  return null;
+}
+
 // Traduce un comando umano in linguaggio naturale in un piano (come hermesPlan,
 // ma con il contesto del mittente: gamertag e posizione viva). Hermes è il
 // traduttore; il fallback deterministico è "seguire il mittente".
@@ -756,6 +1089,19 @@ async function maybeHumanCommand (obs) {
     if (!message) continue;
     const seenKey = `${entry.at}|${entry.from}|${message}`;
     if (!rememberSeen(humanCommandSeen, seenKey)) continue;
+    // Fatti dettati (M10): ricorda / consulta / correggi / dimentica, e «vai al
+    // <luogo nominato>». Riconoscimento deterministico e risposta dal catalogo:
+    // nessun modello, nessun goal (tranne il movimento, che è un ordine come gli
+    // altri). Sta *prima* di `resolveQuestion` perché «dov'è il campo di patate?»
+    // è una domanda la cui risposta è nella memoria, non nel router.
+    const told = await handleToldFact(obs, {...entry, message}, {message, prefixes});
+    if (told === true) continue;
+    if (told && typeof told === 'object') {
+      log('chat_command', {from: entry.from, xuid: entry.xuid, prefix: match.prefix, message, deterministic: 'told_goto'});
+      const ack = orderAck({from: entry.from, plan: told, maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG});
+      await saySmart('ack', {from: entry.from, message, obs, plan: told, grounding: ack, fallback: ack, prefixes});
+      return {plan: told, entry: {...entry, message}};
+    }
     // M6/M6.1: prima di tradurre il messaggio in un piano, chiediti se è una
     // domanda. Se lo è, si risponde e si passa al messaggio successivo: nessun
     // goal nasce. Se sembrava una domanda ma il router non ha deciso, si dice

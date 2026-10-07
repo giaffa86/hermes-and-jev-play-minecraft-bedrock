@@ -73,6 +73,7 @@ export default Object.freeze({
   'fallback.drop': "butto via {word} dall'inventario",
   'fallback.collect': 'raccolgo {word} da terra',
   'fallback.farm': 'mieto {word} dal campo, ripianto e metto via il raccolto',
+  'fallback.goto_told': 'vado a {name}',
 
   // --- the goal in progress, described to a human ---
   'phrase.equip': "indossare l'armatura",
@@ -145,4 +146,29 @@ export default Object.freeze({
   'kind.milk': 'il latte',
   'kind.honey': 'il miele',
   'kind.goods': 'la roba raccolta',
+
+  // --- told facts: what a human dictated about the world (memory-chat.mjs).
+  // `{pos}` is "x, y, z" and `{dimension}` the dimension name, both composed by
+  // the caller: the catalogue never knows how Minecraft writes a coordinate. ---
+  told_place_ack: 'Registrato: {label} a {pos}, {dimension}.',
+  told_container_ack: 'Registrato: {label} a {pos}, {dimension}.',
+  told_contents_ack: "Segnato: {item} nel {label} a {pos}, {dimension}. Non l'ho verificato.",
+  told_correct_ack: 'Aggiornato: {label} ora è a {pos}, {dimension} (prima a {from}).',
+  told_forget_ack: 'Dimenticato: {label}.',
+  told_where_place: '{label} è a {pos}, {dimension}{source}.',
+  told_source_told: " (me l'hai detto tu)",
+  told_source_seen: ' (visto da me)',
+  told_where_item: '{label} a {pos}, {dimension}: {item}{count}{source}',
+  told_count: ' ×{n}',
+  told_claim_unverified: ' (non verificato)',
+  told_claim_verified: ' (verificato)',
+  told_where_none: "non so dove trovare {item}: non l'ho visto e nessuno me l'ha detto",
+  told_ask_name: 'a che posto ti riferisci? Dammi un nome, per esempio "questo è il campo di patate"',
+  told_ask_position: 'va bene, ma dove è "{name}"? Dimmi le coordinate (per esempio "coordinate 120 64 -230") oppure "dove sono adesso" se sei lì',
+  told_ask_marker: 'ho visto dei numeri, ma per registrarli come coordinate scrivili con la parola "coordinate" (per esempio "coordinate {x} {y} {z}")',
+  told_no_sender_position: 'non ti vedo: se sei tu lì, dimmi le coordinate (per esempio "coordinate 120 64 -230")',
+  told_unknown_place: 'non ho un posto chiamato "{name}". Se intendevi registrarlo, dimmi dove è',
+  told_ambiguous: 'ho {count} posti chiamati "{name}": {options}. Quale intendi?',
+  told_memory_unavailable: 'non riesco a leggere la memoria adesso ({reason})',
+  told_noun_container: 'baule',
 });

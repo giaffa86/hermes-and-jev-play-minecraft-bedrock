@@ -66,6 +66,7 @@ export default Object.freeze({
   'fallback.drop': 'ich werfe {word} aus meinem Inventar',
   'fallback.collect': 'ich sammle {word} vom Boden auf',
   'fallback.farm': 'ich ernte {word} vom Feld, pflanze neu und räume die Ernte weg',
+  'fallback.goto_told': 'ich gehe zu {name}',
 
   'phrase.equip': 'die Rüstung anziehen',
   'phrase.drop': '{word} wegwerfen',
@@ -132,4 +133,29 @@ export default Object.freeze({
   'kind.milk': 'Milch',
   'kind.honey': 'Honig',
   'kind.goods': 'das Gesammelte',
+
+  // --- told facts: what a human dictated about the world (memory-chat.mjs).
+  // `{pos}` is "x, y, z" and `{dimension}` the dimension name, both composed by
+  // the caller: the catalogue never knows how Minecraft writes a coordinate. ---
+  told_place_ack: 'Gespeichert: {label} bei {pos}, {dimension}.',
+  told_container_ack: 'Gespeichert: {label} bei {pos}, {dimension}.',
+  told_contents_ack: 'Notiert: {item} in der {label} bei {pos}, {dimension}. Ich habe es nicht geprüft.',
+  told_correct_ack: 'Aktualisiert: {label} ist jetzt bei {pos}, {dimension} (vorher: {from}).',
+  told_forget_ack: 'Vergessen: {label}.',
+  told_where_place: '{label} ist bei {pos}, {dimension}{source}.',
+  told_source_told: ' (du hast es mir gesagt)',
+  told_source_seen: ' (ich habe es selbst gesehen)',
+  told_where_item: '{label} bei {pos}, {dimension}: {item}{count}{source}',
+  told_count: ' ×{n}',
+  told_claim_unverified: ' (ungeprüft)',
+  told_claim_verified: ' (geprüft)',
+  told_where_none: 'ich weiß nicht, wo {item} zu finden ist: ich habe es nicht gesehen und niemand hat es mir gesagt',
+  told_ask_name: 'welchen Ort meinst du? Gib mir einen Namen, zum Beispiel "das ist das Kartoffelfeld"',
+  told_ask_position: 'okay, aber wo ist "{name}"? Sag mir die Koordinaten (zum Beispiel "Koordinaten 120 64 -230") oder "wo ich jetzt bin", wenn du dort bist',
+  told_ask_marker: 'ich habe Zahlen gesehen, aber um sie als Koordinaten zu speichern, schreib sie mit dem Wort "Koordinaten" (zum Beispiel "Koordinaten {x} {y} {z}")',
+  told_no_sender_position: 'ich sehe dich nicht: wenn du dort bist, sag mir die Koordinaten (zum Beispiel "Koordinaten 120 64 -230")',
+  told_unknown_place: 'ich habe keinen Ort namens "{name}". Wenn du ihn speichern wolltest, sag mir, wo er ist',
+  told_ambiguous: 'ich habe {count} Orte namens "{name}": {options}. Welchen meinst du?',
+  told_memory_unavailable: 'ich kann gerade nicht in meinem Gedächtnis lesen ({reason})',
+  told_noun_container: 'Truhe',
 });

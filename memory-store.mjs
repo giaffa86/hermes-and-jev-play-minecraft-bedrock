@@ -116,11 +116,14 @@ export class JsonMemoryRepository {
     return records?.length ?? 0;
   }
 
-  markStaleBefore ({ kind = null, excludeKind = null, before }) {
+  markStaleBefore ({ kind = null, excludeKind = null, keepPermanent = false, before }) {
     let count = 0;
     for (const r of this.records.values()) {
       if (kind && r.kind !== kind) continue;
       if (excludeKind && r.kind === excludeKind) continue;
+      // Un fatto *dettato* permanente non ha TTL: nessuno lo rinfrescherebbe, e la
+      // scadenza lo declasserebbe solo perché è passato del tempo.
+      if (keepPermanent && r.permanent === true) continue;
       if (r.status === 'invalid' || r.status === 'stale') continue;
       if ((r.lastSeenAt ?? r.discoveredAt ?? 0) < before) { r.status = 'stale'; count++; this.dirty = true; }
     }

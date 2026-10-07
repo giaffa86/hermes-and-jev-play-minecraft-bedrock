@@ -809,6 +809,78 @@ accounting problem (what left the inventory), **catching** is a search problem
 *Numbering*: M9 is the slice of milestone 3/4 the owner asked for after M8; the
 label is about the *inventory* orders, not the `M9` row of another roadmap.
 
+## Told facts (M10): the human teaches, the bot remembers
+
+The channel so far answered *questions* about the bot and executed *orders*.
+M10 adds the missing direction: the human can **dictate a fact about the world**
+the bot cannot measure, and the bot must be able both to give it back and to use
+it as a destination.
+
+| The human says | The bot does |
+|---|---|
+| «Ricorda che questo è il campo di patate» | writes a `landmark` named *campo di patate* at the **sender's live position**, `source: 'told'`, `permanent: true` |
+| «Segnati che l'ingresso della miniera sta a 130, 62, -240» | writes the named place at the coordinates in the sentence |
+| «Nel baule di casa c'è del ferro» | names the chest (position, label) and records a **partial claim** on its content — it does not become an inventory |
+| «Dov'è il campo di patate?» / «Dove posso trovare ferro?» | answers from the catalogue with the exact stored value and its provenance: *«(me l'hai detto tu)»* vs *«(visto da me)»* |
+| «L'ingresso principale della miniera ora è a…» | **corrects** the place: same identity, the old position in its history, the provenance kept |
+| «Dimentica il vecchio deposito» | **invalidates** it (`status: 'invalid'`) — never deletes: out of search, answers and navigation, still in history |
+| «Vai al campo di patate» | a normal **movement order** to the remembered position (`told_goto`), with the usual preemption/resume, no model call |
+
+- **Said is not seen.** The record keeps `toldBy`/`toldAt` next to the bot's own
+  observations, and the answer says which one it is answering from. A place a
+  human names is `permanent` (no TTL: nobody re-visits a mine entrance by
+  accident, and time alone is not evidence it moved); the *content* of a named
+  chest is a claim with a 7-day staleness and a verdict derived from the next
+  real reading (`unverified`/`confirmed`/`contradicted`). Details and the HTTP
+  surface are in [memory](memory.md#told-facts-what-a-human-said).
+- **Repeating a fact is not correcting it.** The same sentence said twice
+  writes nothing the second time (`action: 'unchanged'`, no history row) and is
+  still confirmed in chat; a correction is a place that *moves*, and it keeps the
+  identity (same `id`) and the history. The writes pass the same sender gate as
+  the orders: with `CHAT_ALLOWLIST` configured in the harness too, a fact
+  attributed to a sender outside it is refused (403 `told_sender_not_allowed`).
+- **Reading the sentence is deterministic and offline** (`memory-chat.mjs`,
+  `toldIntentFromText`): five languages, no network, no model — the intent is
+  either unambiguous or the message goes back to the ordinary flow (`null`).
+  Branch order FORGET → CORRECT → REMEMBER → GOTO → CONSULT, coordinates only
+  with an explicit marker, and a message-shaped check so «dove sei adesso?»
+  stays a `q_position` question.
+- **An incomplete command writes nothing and asks.** A recognised sentence with
+  no name, no position, numbers that look like coordinates but carry no marker,
+  or a deictic («questo», «il punto dove mi trovo») with no visible sender is
+  answered with the right question (`told_ask_name`, `told_ask_position`,
+  `told_ask_marker`, `told_no_sender_position`).
+- **Ambiguity is asked, never resolved by distance**: two places with the same
+  name produce *«ho 2 posti chiamati …: … e …. Quale intendi?»* and no write —
+  not even for a correction or a forget.
+- **The confirmation is the information**: it is composed from the catalogue
+  (`told_*` keys in `chat-i18n.mjs`), addressed to the sender like every other
+  reply, and states the recorded value («Registrato: campo di patate a 120, 64,
+  -230, Overworld»). No LLM is involved: `chat-llm.mjs` never sees a told fact,
+  so a number cannot be rephrased into a different number.
+- **Remembering does not interrupt the goal.** Remember/consult/correct/forget
+  are answered and the message loop continues — the running goal is untouched.
+  Only «vai al campo di patate» is an order, and therefore behaves like one
+  (`human_preempt`/resume). An *escort* phrased with a remembered name
+  («accompagnami al campo di patate») is left to the escort flow, and a name the
+  memory does not know falls back to the ordinary path (Hermes, semantic
+  recall) instead of being invented.
+- **Failure is declared**: if the harness route does not answer, the reply is
+  *«non riesco a leggere la memoria adesso (…)»* (`tell_memory_unavailable`)
+  rather than a guess.
+- **Evidence.** `tests/memory-chat.test.mjs` (the sentence in five languages,
+  the three original phrases, the negatives and the bounds),
+  `tests/memory-told.test.mjs` (24 cases over both storage backends:
+  persistence, TTL, claim verdicts, ambiguity, correction, repetition,
+  invalidation, navigation by name) and `tests/controller-told-facts.test.mjs`
+  (seven chat integration cases against a scripted harness: position of the
+  sender, clarify with no sender, consult, ambiguity, an unchanged correction
+  that is not mistaken for an unknown place, `told_goto` with no write, memory
+  unavailable). Never exercised against a live BDS.
+
+*Numbering*: M10 follows M9 (inventory orders); it is not related to any other
+roadmap's `M10`.
+
 ## An order arriving mid-goal suspends the running goal
 
 Until 2026-10-06 an order that landed while another goal was running
@@ -944,6 +1016,10 @@ quieter hello is preferred (still an open question).
   `messageKeys`, `listAnd`, `chatLangConfig`): the only place a chat sentence is
   *looked up* (M7.2, `CHAT_LANG`). The sentences themselves live one file per
   language in `chat-lang/{lang}.mjs`.
+- `memory-chat.mjs` / `world-memory.mjs` — the told facts (M10):
+  `toldIntentFromText` and the place/coordinate/container parsing, and the
+  memory side (`tellPlace`, `correctToldPlace`, `forgetPlace`,
+  `claimToldContents`, `claimsFor`, `whereToFind`, `TOLD_SOURCE`).
 - `chat-narration.mjs` — the autonomy narration (M8): `narrateGoal`/
   `narrateChore`/`narrateNeed`/`targetWord` compose "In autonomia: sto
   raccogliendo le patate" from the catalogue; `village-labor.mjs` reports the
@@ -953,7 +1029,8 @@ quieter hello is preferred (still an open question).
 - `minecraft-data` `bedrock/1.26.51/protocol.json` — `packet_text` fields
   (`source_name`, `type`, `message`, `xuid`, …); `packet_add_player` (`username`).
 - Related wiki: [overview](overview.md), [headless-client](headless-client.md),
-  [village-recon](village-recon.md), [open-questions](open-questions.md).
+  [village-recon](village-recon.md), [memory](memory.md),
+  [`docs/raw/TOLD-FACTS.md`](../raw/TOLD-FACTS.md), [open-questions](open-questions.md).
 
 ### Exact food quantities and observed names
 

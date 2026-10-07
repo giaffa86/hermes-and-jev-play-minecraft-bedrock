@@ -351,11 +351,14 @@ export class SqliteMemoryRepository {
     return records.length;
   }
 
-  markStaleBefore ({ kind = null, excludeKind = null, before }) {
+  markStaleBefore ({ kind = null, excludeKind = null, keepPermanent = false, before }) {
     const clauses = ['last_seen_at < ?', "status NOT IN ('invalid', 'stale')"];
     const params = [before];
     if (kind) { clauses.push('kind = ?'); params.push(kind); }
     if (excludeKind) { clauses.push('kind != ?'); params.push(excludeKind); }
+    // I record `permanent` (luoghi dettati) non hanno TTL. Il flag vive nel JSON
+    // `data` (colonna dei campi non-colonna), quindi il filtro è sulla colonna JSON.
+    if (keepPermanent) clauses.push("COALESCE(json_extract(data, '$.permanent'), 0) != 1");
     return this.db.prepare(`UPDATE world_memory SET status = 'stale' WHERE ${clauses.join(' AND ')}`).run(...params).changes;
   }
 

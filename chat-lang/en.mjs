@@ -66,6 +66,7 @@ export default Object.freeze({
   'fallback.drop': 'I throw {word} out of my inventory',
   'fallback.collect': 'I pick {word} up from the ground',
   'fallback.farm': 'I harvest {word} from the field, replant it and put the produce away',
+  'fallback.goto_told': 'I am going to {name}',
 
   'phrase.equip': 'putting on the armor',
   'phrase.drop': 'throwing {word} away',
@@ -132,4 +133,29 @@ export default Object.freeze({
   'kind.milk': 'milk',
   'kind.honey': 'honey',
   'kind.goods': 'the stuff I gathered',
+
+  // --- told facts: what a human dictated about the world (memory-chat.mjs).
+  // `{pos}` is "x, y, z" and `{dimension}` the dimension name, both composed by
+  // the caller: the catalogue never knows how Minecraft writes a coordinate. ---
+  told_place_ack: 'Saved: {label} at {pos}, {dimension}.',
+  told_container_ack: 'Saved: {label} at {pos}, {dimension}.',
+  told_contents_ack: "Noted: {item} in the {label} at {pos}, {dimension}. I haven't checked it.",
+  told_correct_ack: 'Updated: {label} is now at {pos}, {dimension} (before: {from}).',
+  told_forget_ack: 'Forgotten: {label}.',
+  told_where_place: '{label} is at {pos}, {dimension}{source}.',
+  told_source_told: ' (you told me)',
+  told_source_seen: ' (I saw it myself)',
+  told_where_item: '{label} at {pos}, {dimension}: {item}{count}{source}',
+  told_count: ' ×{n}',
+  told_claim_unverified: ' (unverified)',
+  told_claim_verified: ' (verified)',
+  told_where_none: "I don't know where to find {item}: I haven't seen it and nobody told me",
+  told_ask_name: 'which place do you mean? Give me a name, for example "this is the potato field"',
+  told_ask_position: 'ok, but where is "{name}"? Tell me the coordinates (for example "coordinates 120 64 -230") or "where I am now" if you are there',
+  told_ask_marker: 'I saw some numbers, but to save them as coordinates write them with the word "coordinates" (for example "coordinates {x} {y} {z}")',
+  told_no_sender_position: 'I cannot see you: if you are the one there, tell me the coordinates (for example "coordinates 120 64 -230")',
+  told_unknown_place: 'I have no place called "{name}". If you meant to save it, tell me where it is',
+  told_ambiguous: 'I have {count} places called "{name}": {options}. Which one do you mean?',
+  told_memory_unavailable: 'I cannot read my memory right now ({reason})',
+  told_noun_container: 'chest',
 });

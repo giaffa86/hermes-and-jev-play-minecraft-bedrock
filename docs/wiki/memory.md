@@ -82,7 +82,11 @@ world_memory (
   "confidence": 1.0,
   "status": "known",           // known | stale | invalid
   "tags": [],
-  "source": "discovered",
+  "source": "discovered",      // observed | discovered | told | episodic
+  "label": "baule di casa",    // the human name, when one was dictated
+  "permanent": false,          // no TTL: a place a human named (see "Told facts")
+  "toldBy": null,              // who said it, when it was told (source: 'told')
+  "toldAt": null,
   "contents": { "white_wool": 42 }   // containers only (in `data` JSON)
 }
 ```
@@ -485,6 +489,39 @@ Known limits: an unconsolidated backlog blocks the episodic pruning by design
 (run `POST /memory/consolidate` first), and an *unreachable* count of readers
 still sees only the newest reading per fact — the older readings are kept only
 while they are within `keepPerFact`.
+
+## Told facts: what a human said
+
+A human can *teach* the bot a fact it cannot measure, and the memory keeps the
+provenance apart from what the bot saw itself. Four operations — remember,
+consult, correct, forget — plus the destination they make usable.
+
+| | mechanism |
+|---|---|
+| **Provenance** | `source: 'told'`, `toldBy`, `toldAt`; `toldFor(record)` reads the declaration back (who/when/word) |
+| **No TTL for a named place** | `permanent: true` — `markStaleBefore({keepPermanent: true})` skips it, because nobody re-visits a mine entrance by accident and time alone is not evidence it moved |
+| **A named place** | `kind: 'landmark'` with a human `label`; `placesForName(name, {exact})`, `toldPlaces()`, `resolvePlace({name})` |
+| **Ambiguity** | `resolvePlace` returns `action: 'ambiguous'` with the candidates; the caller asks which one, it never picks the nearest |
+| **Correcting** | `correctToldPlace` reuses the `id`, appends the old position to `history[]` and **keeps the original provenance** — a human correcting a place the bot had discovered does not turn that discovery into a told fact. `tellPlace` answers `unchanged` (and writes nothing) when the phrase repeats the place exactly: same position, same dimension, same name |
+| **Forgetting** | `forgetPlace` writes `status: 'invalid'` (+ `invalidReason`/`invalidatedBy`/`invalidatedAt`); invalid records are excluded from search, answers and navigation by default and stay readable in history |
+| **A chest's content** | `claimToldContents` writes a *discovery* of the chest (`contentsKnown: false`, `source: 'told'`) and a claim row in the observation log (`predicate: 'claimed_contains'`, `partial: true`) — it never writes `contents` and never claims to know the inventory |
+| **Reading a claim** | `claimsFor(containerId)` derives the verdict from the *reading*: `unverified` (never re-read after the claim), `confirmed` (a later read found it), `contradicted` (re-read and it was not there), `stale` past `toldClaimStaleMs` (7 days) |
+| **Where to find an item** | `whereToFind(item)` ranks an observed reading above a claim, and never offers a contradicted one |
+
+The write path is exposed as HTTP (`POST /memory/tell/place`, `/container`,
+`/contents`, `/forget`; `GET /memory/places`, `/where`, `/claims`), behind
+`TOLD_FACTS` and — when `CHAT_ALLOWLIST` is configured in the harness too — behind
+the same sender gate as the orders, so the same operations are available to the
+chat channel and to a future console. A place's `id` is an **identity, not a
+location**: it keeps the slug of the first time (`campo_di_patate_120_64_-230`
+still after the field moved), so the position is always read from the record —
+which is also what the derived vector index does: after a correction,
+`GET /memory/search?q=campo di patate` returns the same id at the **new**
+position. The chat side (parsing the sentence in five languages,
+confirming with the exact recorded value, refusing an ambiguous or incomplete
+command, turning «vai al campo di patate» into a waypoint) lives in
+[human-command](human-command.md#told-facts-m10-the-human-teaches-the-bot-remembers); the operational reference is
+[`docs/raw/TOLD-FACTS.md`](../raw/TOLD-FACTS.md).
 
 ## Next slices
 
