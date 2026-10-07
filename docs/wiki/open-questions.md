@@ -265,6 +265,32 @@ sitting on the human's boat.** The chain around it is implemented and in
   `movement timeout` failures for containers genuinely beyond the walkable component
   remain — they cost 30 s each when asked for explicitly.
 
+## The walker's stall verdict, and where it stopped (2026-10-07)
+
+- Three live failures shared one shape: the destination was reachable on paper
+  (`GET /debug/path` returned complete routes of 12-14 nodes, the chest 1.6-6.8
+  blocks away) and the walk still ended `movement timeout`, spending the whole
+  budget. `runs/demo-r3/events.jsonl` rows 6879 and 6918: 75 s of budget and 1,5
+  blocks covered, 6,8 blocks short of the chest — the bot thrashed, and the
+  per-waypoint `stuck` verdict never fired because a new minimum of a few
+  centimetres toward the **next node** resets `lastProgressAt`. A reconstruction
+  attempt with the same build and a chest 3,9 blocks away succeeded twice in 7.3 s
+  and 6.2 s, so the geometry is not the cause: the stall is.
+- `_updateMotionState` now also watches the **distance to the goal node**: no new
+  minimum of 25 cm for `MOVE_STALL_MS = 8000` ends the motion as `no_progress`, and
+  three stalls in a row close the walk as `stuck` (~25 s) instead of burning the
+  whole budget, with `details` (`from`, `position`, `pathNodes`, `reachedWaypoints`,
+  `outcome`, `stalled: true`) saying where it gave up.
+- `storage_open_failure` and the `/act` result now carry `_moveTo`'s
+  `error.details` (both used to drop it), so the next failure names the position
+  instead of only the error. **Offline only** (6 new cases in
+  `tests/bedrock-storage-walk.test.mjs`): the live round that hunts the failure
+  with the new payload is still open.
+- Still open: the walker spends the whole `STORAGE_TAKE_WALK_MS` when it is slower
+  than the deadline but genuinely progressing, and the "close enough to open
+  anyway (≤4,5 blocks)" fallback is not implemented — it changes what *arrived*
+  means, so it needs its own round.
+
 ## Taking from a container: the cache expires, the memory remembers (2026-10-04)
 
 - `take_<item>` options came only from the **runtime** cache (`_cachedContainers()`, filled

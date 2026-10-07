@@ -218,6 +218,14 @@ const STORAGE_READ_WALK_MS = 8000;
 // 30 s è scaduto) e il tentativo successivo è riuscito in 546 ms. Il budget resta
 // dentro l'`HARNESS_ACTION_TIMEOUT_MS`, che è la rete di sicurezza dell'azione.
 const STORAGE_TAKE_WALK_MS = 75000;
+// Watchdog di progresso della camminata (07/10/2026): `_updateMotionState` chiude
+// un movimento come `no_progress` quando la **distanza dal bersaglio** non scende
+// di 25 cm per otto secondi di fila. Il rilevatore per-waypoint non bastava: un
+// nuovo minimo di pochi centimetri verso il prossimo nodo azzera `lastProgressAt`,
+// quindi il verdetto `stuck` non arrivava mai e un `take_*` da memoria è finito
+// `movement timeout` dopo 75 s di budget avendo percorso 1,5 blocchi netti, a 6,8
+// blocchi dal baule (live 07/10/2026, `runs/demo-r3/events.jsonl` riga 6918).
+const MOVE_STALL_MS = 8000;
 // TTL della cache contenitori: altri giocatori possono cambiare le scorte.
 const CONTAINER_TTL_MS = 5 * 60 * 1000;
 // V0 — il censimento del sito è un fatto da *sito*, non da istante: si legge una
@@ -5601,7 +5609,10 @@ export class BedrockAdapter {
         result = { ok: false, error: 'unknown_action', reason: `unknown or invalid action ${key}` };
       }
     } catch (e) {
-      result = { ok: false, error: e.message };
+      // `details` (calcolato da `_moveTo`: `from`, `position`, `pathNodes`,
+      // `reachedWaypoints`, `progressed`) viaggia con il risultato: un `/act`
+      // rifiutato dice *dove* si è fermato, non solo come si chiama l'errore.
+      result = { ok: false, error: e.message, ...(e.details ? { details: e.details } : {}) };
     }
     return result;
   }
@@ -7824,6 +7835,10 @@ export class BedrockAdapter {
       this.log('storage_open_failure', {
         block: target.name, position: target.position, error: error.message,
         distance: Math.round(this._pointDistance(target.position) * 10) / 10,
+        // Il dettaglio del fallimento di camminata (`from`, `position`, `pathNodes`,
+        // `reachedWaypoints`, `progressed`) è già calcolato da `_moveTo`: senza
+        // questo campo l'artefatto dice "movement timeout" e non *dove*.
+        ...(error.details ? { details: error.details } : {}),
       });
       throw error;
     }
@@ -10939,6 +10954,7 @@ export class BedrockAdapter {
         yaw: this._yawTo(this._feet, { x: goalNode.x + 0.5, z: goalNode.z + 0.5 }),
         forward: true, jumpQueued: false, jumpHeldTicks: 0, jumpStart: false,
         bestWaypointDist: Infinity, lastProgressAt: Date.now(), stuckTries: 0,
+        bestTargetDist: Infinity, lastTargetProgressAt: Date.now(),
         useRequest: null, guard: null,
       };
       // `_updateMotionState` gira solo sui tick del client: se la connessione cade (o
@@ -11030,6 +11046,18 @@ export class BedrockAdapter {
     if (Math.hypot(feet.x - motion.target.x, feet.z - motion.target.z) <= motion.stopDistance &&
         Math.abs(feet.y - motion.target.y) < (motion.arrivalVerticalTolerance ?? 3)) {
       return this._finishMotion('goal');
+    }
+
+    // Nessun progresso *verso il bersaglio*: la distanza dal punto d'arrivo è
+    // l'unica misura che non si può migliorare restando fermi o girando in tondo,
+    // mentre il minimo per-waypoint sì (un nuovo minimo verso il prossimo nodo
+    // azzera `lastProgressAt` anche se il bot non si sta avvicinando a nulla).
+    const targetHoriz = Math.hypot(feet.x - motion.target.x, feet.z - motion.target.z);
+    if (targetHoriz < (motion.bestTargetDist ?? Infinity) - 0.25) {
+      motion.bestTargetDist = targetHoriz;
+      motion.lastTargetProgressAt = Date.now();
+    } else if (Date.now() - (motion.lastTargetProgressAt ?? motion.lastProgressAt) > MOVE_STALL_MS) {
+      return this._finishMotion('no_progress');
     }
 
     let waypoint = motion.path[motion.index];
@@ -11568,9 +11596,18 @@ export class BedrockAdapter {
       }
       const feet = this._feet;
       const moved = lastFeet ? Math.hypot(feet.x - lastFeet.x, feet.z - lastFeet.z) : Infinity;
-      if (moved < 0.3) {
+      // `no_progress` (watchdog sul bersaglio) e `moved < 0.3` (il tratto non ha
+      // spostato il bot) sono lo stesso verdetto visto da due lati: tre di fila
+      // chiudono la corsa invece di consumare tutto il budget. Live 07/10/2026:
+      // 75 s per 1,5 blocchi netti con il verdetto per-waypoint sempre zittito.
+      if (outcome === 'no_progress' || moved < 0.3) {
         attempts++;
-        if (attempts >= 3) throw new Error(outcome === 'stuck' ? 'stuck' : 'path_failed');
+        if (attempts >= 3) {
+          const stalled = new Error(outcome === 'no_progress' || outcome === 'stuck' ? 'stuck' : 'path_failed');
+          stalled.details = { target: { ...target }, from: motionStart, position: { ...this._feet },
+            pathNodes: path.length, reachedWaypoints, outcome, stalled: true };
+          throw stalled;
+        }
       } else {
         attempts = 0;
       }

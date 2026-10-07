@@ -1,5 +1,28 @@
 # Log
 
+## [2026-10-07] fix | The walker says `stuck` instead of spending the budget
+
+Run `demo-r3` (07/10) holds three walks that failed with the destination in
+sight: rows 6879 and 6918 of `runs/demo-r3/events.jsonl` end `movement timeout`
+after the full `STORAGE_TAKE_WALK_MS = 75000`, having covered **1,5 blocks** and
+stopped 6,8 blocks short of the chest; `GET /debug/path` returned a complete
+12-14 node route the whole time. The per-waypoint verdict in `_updateMotionState`
+could not see it: a new minimum of a few centimetres toward the *next node*
+resets `lastProgressAt`, so `stuck` never fired. A reconstruction with the same
+deployed build and a chest 3,9 blocks away succeeded twice — 7,3 s and 6,2 s — so
+the geometry is not the cause.
+
+The motion now also watches the **distance to the goal node**: no new minimum of
+25 cm for `MOVE_STALL_MS = 8000` finishes the motion as `no_progress`, and
+`_moveTo` closes the walk as `stuck` after three of them (~25 s) instead of
+burning the budget, carrying `details` (`from`, `position`, `pathNodes`,
+`reachedWaypoints`, `outcome`, `stalled: true`). `storage_open_failure` and the
+`/act` result now carry `_moveTo`'s `error.details`, which both used to drop: the
+next live failure names where the bot stopped instead of only how the error is
+called. Six offline cases in `tests/bedrock-storage-walk.test.mjs`, suite
+1799/1799. No live round yet — the fix is measured against the artifacts above,
+not yet against a fresh failure.
+
 ## [2026-10-07] fix | The loot comes back with the gear: recover_loot re-arms
 
 Run 2 (`demo-r2`) died ten times and its ledger holds **zero** `equip_*`
