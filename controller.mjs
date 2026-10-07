@@ -1234,6 +1234,7 @@ async function saySmart (context, {from, message = null, obs = null, plan = null
         url: CHAT_LLM.url,
         key: CHAT_LLM.key,
         timeoutMs: CHAT_LLM.timeoutMs,
+        thinking: CHAT_LLM.thinking,
         maxLength: CHAT_REPLY_MAX_LENGTH,
       });
       text = reply.text;
@@ -1278,6 +1279,7 @@ async function sayReason ({from, message, obs = null, plan = null, prefixes = CH
       url: CHAT_LLM.url,
       key: CHAT_LLM.key,
       timeoutMs: CHAT_LLM.timeoutMs,
+      thinking: CHAT_LLM.thinking,
       maxLength: CHAT_REPLY_MAX_LENGTH,
     });
     reasonCooldown.set(key, Date.now());

@@ -517,6 +517,12 @@ is to rephrase:
   (`isSelfTriggering`) all fall back to the deterministic text. `replyChat` is
   the only caller of `POST /say`, so the channel is never silent and still never
   self-triggers.
+- **A thinking model is told to be quiet.** `CHAT_LLM_THINKING` (default `off`)
+  adds `{"thinking":{"type":"disabled"}}` to the body: with `deepseek-flash` and
+  `max_tokens` 120 the reasoning swallowed the whole budget and the reply came
+  back **empty** with `finish_reason: length` (measured 07/10/2026). Turning it on
+  (`low|high|max` → `reasoning_effort`) also raises the budget to 1200 — 2000 for a
+  reasoned answer — so a slow answer is a choice, not an accident.
 - **Small talk is not an order.** `looksLikeSmallTalk` matches an **exact**
   closed list (`ciao`, `come stai`, `grazie mille`, `hello`, …) on the
   prefix-stripped message, so `grazie prendi la legna` stays an order. A
@@ -540,6 +546,7 @@ model could garble `{prefixes}`.
 | `CHAT_LLM_MODEL` | `deepseek-chat` | model id sent to the endpoint |
 | `CHAT_LLM_URL` | `https://api.deepseek.com/chat/completions` | any OpenAI-compatible endpoint |
 | `CHAT_LLM_TIMEOUT_MS` | `8000` | per-reply ceiling; on expiry the template is sent |
+| `CHAT_LLM_THINKING` | `off` | the client's switch for a model that thinks: `off` sends `{"thinking":{"type":"disabled"}}`, `low|high|max` send `reasoning_effort` (and raise the budget), `default|auto` send nothing |
 | `CHAT_PERSONA` | village bot | persona sentence spliced into the system prompt |
 | `CHAT_SMALLTALK_TEMPLATE` | `@{name} ciao! dimmi pure.` | deterministic fallback for a greeting |
 

@@ -4984,3 +4984,31 @@ italiana allungata oltre il tetto il test fallisce). Misure: 178–215 caratteri
 un gamertag lungo e due trigger. `tests/chat-i18n.test.mjs` continua a garantire
 chiavi e segnaposto allineati fra le cinque lingue. Suite completa: 1867 pass /
 0 fail. **Residual**: il testo non è stato ancora letto in gioco.
+
+## [2026-10-07] fix | The chat line does not pay for reasoning
+
+Il modello che l'utente vuole per la chat (`deepseek-flash`, DeepSeek-V4.1-Flash)
+**pensa di default**, con `effort: high`. Misurato contro l'API reale con il corpo
+che il client manda davvero (`temperature` 0.7, `max_tokens` 120): la risposta
+torna **vuota** con `finish_reason: 'length'`, perché l'intero budget finisce in
+`reasoning_content`; con `reasoning_effort: 'low'` è vuota lo stesso. Con
+`{"thinking":{"type":"disabled"}}` la stessa chiamata risponde in 5 token di
+completion, e senza switch ma con `max_tokens: 2000` servono 6605 caratteri di
+ragionamento e 1795 token per una riga: un costo che nessuno ha chiesto.
+
+`chat-llm.mjs` ha ora l'interruttore del client — `chatThinkingLevel`,
+`chatThinkingFields`, `DEFAULT_CHAT_THINKING = 'off'`, `CHAT_LLM_THINKING` — che
+spento manda `{"thinking":{"type":"disabled"}}`, acceso (`low|high|max`) manda
+`reasoning_effort` e alza il budget (1200, 2000 per la risposta ragionata), e per
+`default|auto` non manda nulla lasciando decidere il provider; `minimal|medium`
+sono tradotti in `low` invece di far fallire la richiesta. Il controller passa
+`thinking: CHAT_LLM.thinking` a entrambi i call site.
+
+Evidenze live: con la chiave DeepSeek e i fatti di un `observe()` reale, una
+domanda normale è stata risposta in 868 ms e una domanda `ragiona:` in 886 ms,
+entrambe in italiano, ancorate ai fatti e in una riga. Evidenze offline:
+`tests/chat-llm.test.mjs` (16 casi, incluso il nuovo «the chat line never pays for
+reasoning unless it is asked to»); suite completa: 1868 pass / 0 fail.
+**Residual**: misurato su un provider solo; uno che ignora il campo risponde
+comunque, al massimo con `finish_reason: length`, che il fallback al catalogo
+copre.

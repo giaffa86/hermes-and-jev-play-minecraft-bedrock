@@ -5,8 +5,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  chatLlmConfig, chatLlmKey, compactChatFacts, composeChatReply, buildChatMessages, createChatMemory,
-  DEFAULT_CHAT_LLM_MODEL, DEFAULT_CHAT_LLM_URL, reasonRequest,
+  chatLlmConfig, chatLlmKey, chatThinkingFields, chatThinkingLevel, compactChatFacts, composeChatReply, buildChatMessages, createChatMemory,
+  DEFAULT_CHAT_LLM_MODEL, DEFAULT_CHAT_LLM_URL, DEFAULT_CHAT_THINKING, reasonRequest,
 } from '../chat-llm.mjs';
 import { looksLikeSmallTalk } from '../human-questions.mjs';
 
@@ -221,6 +221,39 @@ test('a reasoned request tells the model to answer, and gets more room', async (
   await composeChatReply({ message: 'perché non stai minando?', from: 'Ale', key: 'k', fetchImpl });
   assert.equal(calls.at(-1).max_tokens, 120, 'a normal answer keeps the short budget');
   assert.equal(/ti ha chiesto di ragionare/.test(calls.at(-1).messages[0].content), false, 'the instruction is only for a reasoned answer');
+});
+
+test('the chat line never pays for reasoning unless it is asked to', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push(JSON.parse(init.body));
+    return { ok: true, status: 200, json: async () => ({ model: 'stub-model', choices: [{ message: { content: 'sto scavando' } }] }) };
+  };
+  // Il modello che pensa spende il budget in `reasoning_content`: una riga di
+  // chat arriva vuota con `finish_reason: 'length'` (verificato contro DeepSeek
+  // il 07/10/2026). Il default è quindi spento, e spento va *chiesto*.
+  await composeChatReply({ message: 'ciao', key: 'k', fetchImpl });
+  assert.deepEqual(calls.at(-1).thinking, { type: 'disabled' }, 'reasoning off by default');
+  assert.equal(calls.at(-1).reasoning_effort, undefined);
+  assert.equal(calls.at(-1).max_tokens, 120);
+
+  await composeChatReply({ message: 'ciao', key: 'k', reasoned: true, thinking: 'low', fetchImpl });
+  assert.equal(calls.at(-1).reasoning_effort, 'low', 'a level is passed through');
+  assert.equal(calls.at(-1).thinking, undefined);
+  assert.equal(calls.at(-1).max_tokens, 2000, 'with reasoning on, the reasoned answer gets room for both');
+
+  await composeChatReply({ message: 'ciao', key: 'k', thinking: 'default', fetchImpl });
+  assert.equal(calls.at(-1).thinking, undefined, 'the provider default sends no switch');
+  assert.equal(calls.at(-1).reasoning_effort, undefined);
+  assert.equal(calls.at(-1).max_tokens, 120, 'the provider default keeps the short budget');
+
+  assert.deepEqual(chatThinkingFields('medium'), { reasoning_effort: 'low' }, 'the other names are translated');
+  assert.deepEqual(chatThinkingFields('none'), { thinking: { type: 'disabled' } }, 'a "none" spelling still disables it');
+  assert.deepEqual(chatThinkingFields('auto'), {}, 'auto means the provider decides');
+  assert.equal(chatThinkingLevel('off'), null);
+  assert.equal(chatThinkingLevel('max'), 'max');
+  assert.equal(chatLlmConfig({ env: { CHAT_LLM_API_KEY: 'k', CHAT_LLM_THINKING: 'low' } }).thinking, 'low');
+  assert.equal(chatLlmConfig({ env: { CHAT_LLM_API_KEY: 'k' } }).thinking, DEFAULT_CHAT_THINKING);
 });
 
 test('compactChatFacts merges the extra facts the controller can explain with', () => {

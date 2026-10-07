@@ -142,8 +142,13 @@ CHAT_LLM=on                        # on with a key; off disables the engine even
 CHAT_LLM_MODEL=deepseek-chat       CHAT_LLM_MODEL=deepseek-flash      # DeepSeek-V4.1-Flash (deepseek-chat/reasoner exist too).
                                    # Note: V4.1-Flash thinks by default (effort high); in that mode
                                    # temperature is ignored and max_tokens is shared with the
-                                   # reasoning, so for one chat line disable it in the body
-                                   # ({"thinking":{"type":"disabled"}}): the client does not send it yet.
+                                   # reasoning, so with max_tokens 120 the reply comes back empty
+                                   # (finish_reason length, measured 07/10/2026).
+CHAT_LLM_THINKING=off              # the client's own switch: off (default) sends
+                                   # {"thinking":{"type":"disabled"}}; low|high|max send
+                                   # reasoning_effort and raise the budget (1200, 2000 for a
+                                   # reasoned answer); default|auto send nothing and let the
+                                   # provider decide.
 CHAT_LLM_URL=https://api.deepseek.com/chat/completions   # any OpenAI-compatible endpoint
 CHAT_LLM_TIMEOUT_MS=8000           # past this the template is sent
 CHAT_PERSONA='...'                  # persona sentence spliced into the system prompt

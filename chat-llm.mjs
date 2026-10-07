@@ -30,6 +30,40 @@ export const DEFAULT_CHAT_HISTORY_SENDERS = 8;
 export const DEFAULT_CHAT_MAX_TOKENS = 120;
 export const DEFAULT_REASON_MAX_TOKENS = 220;
 
+// Un modello che "pensa" spende il budget della risposta nel ragionamento: con
+// `deepseek-flash` e `max_tokens: 120` la risposta torna con
+// `finish_reason: 'length'` e `content` vuoto (verificato contro l'API il
+// 07/10/2026: 120 token consumati in `reasoning_content`, nessuna riga utile).
+// Per una riga di chat il ragionamento va quindi spento; se lo si accende, il
+// budget deve salire di conseguenza.
+export const DEFAULT_CHAT_THINKING = 'off';
+export const DEFAULT_CHAT_THINKING_TOKENS = 1200;
+export const DEFAULT_REASON_THINKING_TOKENS = 2000;
+const THINKING_OFF = /^(0|off|false|no|disabled|none)$/i;
+// L'API di DeepSeek accetta `low|high|max`; `minimal`/`medium` sono i nomi che
+// circolano altrove, quindi si traducono invece di far fallire la richiesta.
+const THINKING_LEVELS = Object.freeze({minimal: 'low', low: 'low', medium: 'low', high: 'high', max: 'max'});
+
+// Il livello di ragionamento chiesto, o `null` quando il modello non deve
+// pensare (`off`, il default) o quando decide il provider (`default`/`auto`).
+export function chatThinkingLevel (thinking = DEFAULT_CHAT_THINKING) {
+  const value = String(thinking ?? '').trim().toLowerCase();
+  if (!value || THINKING_OFF.test(value)) return null;
+  return THINKING_LEVELS[value] ?? null;
+}
+
+// I campi da aggiungere al corpo della richiesta: spento = `thinking`
+// disabilitato esplicito (un `reasoning_effort` non basta: la risposta resterebbe
+// vuota), un livello = `reasoning_effort`, `default`/`auto` = niente (decide il
+// provider).
+export function chatThinkingFields (thinking = DEFAULT_CHAT_THINKING) {
+  const value = String(thinking ?? '').trim().toLowerCase();
+  const level = chatThinkingLevel(value);
+  if (level) return {reasoning_effort: level};
+  if (value === 'on' || value === 'auto' || value === 'default') return {};
+  return {thinking: {type: 'disabled'}};
+}
+
 // M11 «ragiona»: l'umano può chiedere una risposta *ragionata* invece di una
 // frase del catalogo. Il marcatore è una parola sola, dove capita nel messaggio
 // («ragiona: perché non stai minando?», «perché non stai minando? ragiona»);
@@ -90,13 +124,14 @@ export function chatLlmKey (env = process.env) {
 // Resolved configuration. `CHAT_LLM=off` disables the engine even with a key;
 // `CHAT_LLM=on` without a key stays disabled (`enabled: false`), and the
 // controller falls back to the deterministic path.
-export function chatLlmConfig ({ env = process.env, key, url, model, timeoutMs, persona, maxLength, enabled } = {}) {
+export function chatLlmConfig ({ env = process.env, key, url, model, timeoutMs, persona, maxLength, enabled, thinking } = {}) {
   const resolvedKey = key !== undefined ? key : chatLlmKey(env);
   const off = /^(0|off|false|no)$/i.test(String(env.CHAT_LLM ?? ''));
   return {
     key: resolvedKey || null,
     url: url ?? env.CHAT_LLM_URL ?? DEFAULT_CHAT_LLM_URL,
     model: model ?? env.CHAT_LLM_MODEL ?? DEFAULT_CHAT_LLM_MODEL,
+    thinking: thinking ?? env.CHAT_LLM_THINKING ?? DEFAULT_CHAT_THINKING,
     timeoutMs: timeoutMs ?? +(env.CHAT_LLM_TIMEOUT_MS || DEFAULT_CHAT_LLM_TIMEOUT_MS),
     persona: persona ?? env.CHAT_PERSONA ?? DEFAULT_CHAT_PERSONA,
     maxLength: maxLength ?? +(env.CHAT_REPLY_MAX_LENGTH || DEFAULT_REPLY_MAX_LENGTH),
@@ -162,6 +197,7 @@ export async function composeChatReply ({
   persona = DEFAULT_CHAT_PERSONA, prefixes = [], model, url, key,
   timeoutMs = DEFAULT_CHAT_LLM_TIMEOUT_MS, maxLength = DEFAULT_REPLY_MAX_LENGTH,
   lang = DEFAULT_LANG, reasoned = false, maxTokens = null,
+  thinking = DEFAULT_CHAT_THINKING,
   fetchImpl = fetch,
 } = {}) {
   if (!key) {
@@ -182,7 +218,10 @@ export async function composeChatReply ({
         model: model ?? DEFAULT_CHAT_LLM_MODEL,
         messages,
         temperature: 0.7,
-        max_tokens: maxTokens ?? (reasoned ? DEFAULT_REASON_MAX_TOKENS : DEFAULT_CHAT_MAX_TOKENS),
+        max_tokens: maxTokens ?? (chatThinkingLevel(thinking)
+          ? (reasoned ? DEFAULT_REASON_THINKING_TOKENS : DEFAULT_CHAT_THINKING_TOKENS)
+          : (reasoned ? DEFAULT_REASON_MAX_TOKENS : DEFAULT_CHAT_MAX_TOKENS)),
+        ...chatThinkingFields(thinking),
         stream: false,
       }),
       signal: controller.signal,
