@@ -273,6 +273,15 @@ The design decisions, in the order they matter:
    controller (`@<sender>`), never by the model.
 6. **Off by default with the engine off.** `CHAT_REASON` defaults to the state of
    M7: no key (or `CHAT_LLM=off`) means no reasoning either.
+7. **The greeting teaches it.** A deliberative path nobody knows about is
+   invisible, so the proactive hello announces the marker with one example: the
+   `greet` line of every language carries `{reason}`, and the controller fills it
+   with `CHAT_REASON_MARKERS[0]` when one is configured, otherwise with the
+   language's own `reason_word` (`ragiona`, `think`, `réfléchis`, `piensa`,
+   `denk`) — never a word the controller would not recognise. The rendered line is
+   checked in five languages **and** against the adapter's 256-character ceiling:
+   the greeting goes raw with `POST /say`, and an oversized message is dropped in
+   silence (`message_too_long`).
 
 ## Test matrix
 
@@ -285,6 +294,7 @@ The design decisions, in the order they matter:
 | the refusal is addressed to the requester, and a `rate_limited` ack is retried | `tests/controller-chat-ack.test.mjs` (26) |
 | one alert per vein, honoured cooldown, off = silence, `oreAlertCores` parsing, `_scanValuableOres` integration | `tests/bedrock-ore-alert.test.mjs` (7) |
 | «ragiona» is found in five languages and leaves the question intact; without it the catalogue answers; a reasoned order stays an order; the cooldown falls back instead of going quiet | `tests/chat-llm.test.mjs` (4) + `tests/controller-chat-reason.test.mjs` (4) |
+| the greeting teaches the marker in five languages, the configured word wins, and the line fits the adapter's ceiling | `tests/human-greeting.test.mjs` |
 
 Each of the first three controller tests was run **without** its fix and failed
 (3/1, 21/1, 26/1), so the test really pins the defect.
@@ -304,6 +314,10 @@ Each of the first three controller tests was run **without** its fix and failed
   on is an env change (`CHAT_LLM_API_KEY`, `CHAT_LLM_URL`, `CHAT_LLM_MODEL`),
   with no code change.
 - The alert needs a **harness** restart (adapter + harness changed) while the
-  controller fixes need a controller restart; the two are separate deploys.
+  controller fixes need a controller restart; the two are separate deploys. The
+  greeting hint rides with the controller (the catalogue lives there).
+- The greeting line is the longest text the bot sends (178–215 characters with a
+  long name and two triggers): a per-language translation review and, in game, a
+  check that the client shows it whole are still missing.
 - `_scanValuableOres` still pays the cost of the old scan shape
   (`docs/raw/` and `docs/wiki/open-questions.md` track the bounded-scan fix).

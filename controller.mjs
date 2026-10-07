@@ -1405,6 +1405,10 @@ async function maybeGreetHumans (obs) {
     range: CHAT_GREET_RANGE,
     template: CHAT_GREET_TEMPLATE,
     lang: CHAT_LANG,
+    // M12: il saluto mostra il verbo del ragionamento — quello configurato se
+    // c'è, altrimenti quello della lingua (mai una parola che non accenderebbe
+    // nulla).
+    reason: CHAT_REASON_MARKERS[0] ?? null,
   });
   for (const greet of greetings) {
     // Segna subito il tentativo: su errore si ritenta dopo il cooldown, non a

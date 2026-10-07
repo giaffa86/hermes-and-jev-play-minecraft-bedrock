@@ -156,6 +156,7 @@ CHAT_SMALLTALK_TEMPLATE='@{name} ciao! dimmi pure.'       # greeting fallback
 CHAT_REASON=on                     # default: the state of M7
 CHAT_REASON_COOLDOWN_MS=5000       # per sender; within it the catalogue answers
 CHAT_REASON_MARKERS=               # replaces the built-in list (ragiona, pensa, think, ...)
+                                   # the proactive greeting teaches the first word (or the language's own)
 
 # Persistent agent session (optional)
 SESSION=off                        # on = persistent session loop with an IDLE state; off = one-shot (default)

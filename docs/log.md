@@ -4960,3 +4960,27 @@ its environment): the canned answers the owner read were the deployed
 configuration, and turning it on is an env change
 (`CHAT_LLM_API_KEY`/`CHAT_LLM_URL`/`CHAT_LLM_MODEL`), with `DEEPSEEK_API_KEY`
 kept only as the legacy alias.
+
+## [2026-10-07] feat | The welcome prompt teaches «ragiona»
+
+Il saluto proattivo del bot — la chiave `greet` del catalogo, in `human-greeting.mjs`
+e inviata cruda con `POST /say` — ora annuncia anche il verbo del ragionamento,
+con un esempio: «Per una risposta ragionata scrivi ragiona nel messaggio, es.
+"@bot ragiona: perché sei fermo?"». Un percorso deliberativo che nessuno conosce è
+invisibile: il saluto è l'unico posto in cui l'umano lo scopre senza chiedere.
+
+Il segnaposto `{reason}` è riempito con `CHAT_REASON_MARKERS[0]` quando è
+configurato un verbo, altrimenti con quello della lingua (`reason_word`:
+`ragiona`, `think`, `réfléchis`, `piensa`, `denk` — tutti marker veri), così il
+saluto non insegna mai una parola che il controller non riconoscerebbe.
+
+Evidenze offline: `tests/human-greeting.test.mjs` verifica per ogni lingua che
+l'esempio ci sia, che il verbo configurato vinca su quello della lingua e che la
+riga resa sia accettata dal `sendChat` dell'adapter — il tetto di 256 caratteri è
+provato attraverso l'adapter e non con un numero magico, perché un messaggio
+troppo lungo viene scartato **in silenzio** (`message_too_long`). Entrambe le metà
+sono state provate per revert (senza il riempimento di `{reason}` e con la riga
+italiana allungata oltre il tetto il test fallisce). Misure: 178–215 caratteri con
+un gamertag lungo e due trigger. `tests/chat-i18n.test.mjs` continua a garantire
+chiavi e segnaposto allineati fra le cinque lingue. Suite completa: 1867 pass /
+0 fail. **Residual**: il testo non è stato ancora letto in gioco.

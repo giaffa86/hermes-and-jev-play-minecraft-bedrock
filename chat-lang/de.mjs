@@ -57,8 +57,9 @@ export default Object.freeze({
   farm_nothing: 'im Moment nichts zu tun ({word}): nichts Reifes in Reichweite und nichts zum Wegräumen',
   list_or: ' oder ',
 
-  greet: 'Hallo {name}! Ich bin Hermes, der Haus-Bot. Gib mir eine Aufgabe im Chat: ' +
-    '{prefix} <Auftrag> — zum Beispiel "{prefix} folge mir" oder "{prefix} baue Eisen ab".',
+  greet: 'Hallo {name}! Ich bin Hermes, der Haus-Bot. Gib mir einen Auftrag: {prefix} <Auftrag>. ' +
+    'Für eine begründete Antwort schreib {reason} in die Nachricht, z. B. "{prefix} {reason}: warum stehst du still?".',
+  reason_word: 'denk',
 
   'fallback.stop': 'ich bleibe stehen und warte auf den nächsten Auftrag',
   'fallback.follow': 'ich folge {from} und mache den letzten Auftrag: "{message}"',

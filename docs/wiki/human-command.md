@@ -972,6 +972,7 @@ catalogue and is answered by the chat model (M7) from the facts of `observe()`.
 | What the model gets | `compactChatFacts` + `reasonFacts`: the last six actions with their `stagnant` flag, the last result (action, ok, error), the three nearest ores |
 | Room | `DEFAULT_REASON_MAX_TOKENS` (220) instead of `DEFAULT_CHAT_MAX_TOKENS` (120) |
 | Never silent | cooldown or failed call → the ordinary path answers from the catalogue, and the journal says why (`chat_reason {via:'cooldown'\|'fallback'}`) |
+| Taught by the greeting | the proactive hello announces the marker with an example: `{reason}` in `greet` is `CHAT_REASON_MARKERS[0]` when configured, otherwise the language's own `reason_word` |
 
 **The guardrail: «ragiona» changes the reply, never the action.** The branch sits
 in `maybeHumanCommand` after the memory parser and before `resolveQuestion`, it
@@ -985,7 +986,10 @@ the router and the prompt: nothing downstream has to know it was there.
 model but not the question; a reasoned question gets one addressed reply and no
 goal; a reasoned order stays an order; the cooldown falls back and still
 answers), `tests/chat-llm.test.mjs` (the marker table in five languages, the
-explicit marker list, the reasoned system line with 220 tokens, the extra facts).
+explicit marker list, the reasoned system line with 220 tokens, the extra facts),
+`tests/human-greeting.test.mjs` (the greeting teaches the marker in five
+languages, the configured word wins over the language's own, and the line stays
+under the adapter's 256-character ceiling).
 Never exercised in-game, and never against a real provider.
 
 *Numbering*: M12 is the second slice the owner asked for on 2026-10-07. It is the
@@ -1017,8 +1021,8 @@ A human should not have to guess how to command the bot. When the bot perceives 
 nearby human it says hello and spells out the syntax:
 
 ```text
-Ciao <nome>! Sono Hermes, il bot di casa. Assegnami un task scrivendo in chat:
-@bot <ordine> — per esempio "@bot seguimi" oppure "@bot mina ferro".
+Ciao <nome>! Sono Hermes, il bot di casa. Dammi un ordine: @bot <ordine>.
+Per una risposta ragionata scrivi ragiona nel messaggio, es. "@bot ragiona: perché sei fermo?".
 ```
 
 - **Perception**: `observe().humans` — human players within `HUMAN_RANGE`
@@ -1040,7 +1044,17 @@ Ciao <nome>! Sono Hermes, il bot di casa. Assegnami un task scrivendo in chat:
 - **Env**: `CHAT_GREET` (default: on when `CHAT_CONTROL` is not `off` and the
   allowlist is set), `CHAT_GREET_RANGE` (24), `CHAT_GREET_COOLDOWN_MS`
   (600000; `0` = once per session), `CHAT_GREET_TEMPLATE` (placeholders `{name}`,
-  `{prefix}`, `{prefixes}`).- Tests: `tests/human-greeting.test.mjs` — policy (`renderGreeting`,
+  `{prefix}`, `{prefixes}`, `{reason}`).
+- **The reasoning hint (M12)**: the greeting also teaches the marker, with one
+  example, because a deliberative path that nobody knows about is invisible.
+  `{reason}` is filled with `CHAT_REASON_MARKERS[0]` when one is configured,
+  otherwise with the language's own word (`reason_word` in the catalogue:
+  `ragiona`, `think`, `réfléchis`, `piensa`, `denk`), so the greeting never
+  advertises a word the controller would not recognise. `tests/human-greeting.test.mjs`
+  asserts the hint in five languages **and** that the rendered line still fits
+  the adapter's ceiling: the greeting goes raw with `POST /say`, and an oversized
+  message is dropped in silence (`message_too_long`, 256 characters).
+- **Tests**: `tests/human-greeting.test.mjs` — policy (`renderGreeting`,
   allowlist/range/cooldown filters, malformed humans) plus the adapter wire
   (`observe().humans`, the serialised `text` packet, the `sendChat` guards).
 

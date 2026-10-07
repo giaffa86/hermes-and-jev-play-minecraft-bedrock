@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { BedrockAdapter } from '../bedrock-adapter.mjs';
+import { t } from '../chat-i18n.mjs';
 import {
   planGreetings, renderGreeting,
   DEFAULT_GREETING_TEMPLATE, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS,
@@ -44,6 +45,35 @@ test('con più trigger il saluto elenca la sintassi completa', () => {
   // verrebbe riseplittata sugli spazi (vedi `normalizePrefixes`).
   assert.equal(out[0].message,
     renderGreeting(DEFAULT_GREETING_TEMPLATE, { username: 'Tester', prefixes: ['@bot', '@hermes'] }));
+});
+
+test('il saluto insegna il verbo del ragionamento, in ogni lingua e senza sfondare il tetto dell\'adapter', () => {
+  // Un nome lungo quanto i verbi reali e due trigger: il caso peggiore.
+  const LANGS = ['it', 'en', 'fr', 'es', 'de'];
+  const adapter = adapterAtOrigin();
+  adapter.status = 'spawned';
+  adapter.spawned = true;
+  adapter.client = { queue () {} };
+
+  for (const lang of LANGS) {
+    const plain = renderGreeting(DEFAULT_GREETING_TEMPLATE, { username: 'LongGamertag123', prefixes: ['@bot', '@hermes'], lang });
+    assert.ok(plain.includes(t(lang, 'reason_word')), `${lang}: il saluto mostra il verbo del ragionamento della lingua`);
+    assert.ok(!/\{\w+\}/.test(plain), `${lang}: nessun segnaposto residuo`);
+
+    // Il verbo configurato con `CHAT_REASON_MARKERS` vince su quello della lingua:
+    // il saluto non deve insegnare una parola che il controller non riconoscerebbe.
+    const custom = renderGreeting(DEFAULT_GREETING_TEMPLATE, { username: 'LongGamertag123', prefixes: ['@bot', '@hermes'], lang, reason: 'analizza' });
+    assert.ok(custom.includes('analizza'), `${lang}: il verbo configurato compare nel saluto`);
+    assert.ok(!custom.includes('{reason}'), `${lang}: il segnaposto del verbo è stato riempito`);
+
+    // Il saluto va grezzo con `POST /say`: oltre il tetto sparisce in silenzio
+    // (`message_too_long`), quindi si prova con l'adapter vero, non con un numero.
+    for (const text of [plain, custom]) {
+      adapter._lastChatAt = 0;
+      const sent = adapter.sendChat(text);
+      assert.equal(sent.ok, true, `${lang}: ${sent.error} (${text.length} caratteri)`);
+    }
+  }
 });
 
 test('un umano fidato vicino riceve il saluto con la sintassi del prefisso', () => {

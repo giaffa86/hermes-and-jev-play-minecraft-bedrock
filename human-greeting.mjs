@@ -29,13 +29,15 @@ export const DEFAULT_GREET_COOLDOWN_MS = 600000;
 // trivially unit-testable and the caller can supply any template. `{prefix}`
 // and `{prefixes}` are aliases for the same thing: the exact syntax the
 // controller accepts, i.e. every configured trigger joined by `separator`
-// (`@bot o @hermes`).
-export function renderGreeting (template, { username, prefix, prefixes, separator = null, lang = DEFAULT_LANG } = {}) {
+// (`@bot o @hermes`). `{reason}` is the word that asks for a reasoned answer
+// (M12): the caller passes the configured one, otherwise the language's own.
+export function renderGreeting (template, { username, prefix, prefixes, separator = null, lang = DEFAULT_LANG, reason = null } = {}) {
   const label = formatPrefixes(prefixes ?? prefix, { separator: separator ?? t(lang, 'list_or') }) || formatPrefixes(prefix, { separator: separator ?? t(lang, 'list_or') });
   return String(template ?? '')
     .replaceAll('{name}', username ?? '')
     .replaceAll('{prefixes}', label)
-    .replaceAll('{prefix}', label);
+    .replaceAll('{prefix}', label)
+    .replaceAll('{reason}', reason ?? t(lang, 'reason_word'));
 }
 
 // Human-readable list of the configured triggers, in configuration order.
@@ -50,6 +52,8 @@ export function formatPrefixes (value, { separator = ' o ' } = {}) {
 //                is not actually open, so it is suppressed.
 //   greeted    : Map username(lowercase) -> last greeting timestamp
 //   cooldownMs : minimum age before re-greeting; <= 0 = once per session.
+//   reason     : the word that asks for a reasoned answer (M12), already
+//                resolved by the caller; null = the language's own word.
 // Returns [{ username, message, distance }] (possibly empty).
 export function planGreetings ({
   humans = [],
@@ -63,6 +67,7 @@ export function planGreetings ({
   template = null,
   separator = null,
   lang = DEFAULT_LANG,
+  reason = null,
 } = {}) {
   const greetingTemplate = template ?? t(lang, 'greet');
   if (!allowlist || !allowlist.size) return [];
@@ -82,7 +87,7 @@ export function planGreetings ({
     out.push({
       username,
       distance: distance ?? null,
-      message: renderGreeting(greetingTemplate, { username, prefixes: prefixes ?? prefix, separator, lang }),
+      message: renderGreeting(greetingTemplate, { username, prefixes: prefixes ?? prefix, separator, lang, reason }),
     });
   }
   return out;
