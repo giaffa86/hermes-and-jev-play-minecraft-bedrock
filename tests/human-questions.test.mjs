@@ -289,3 +289,48 @@ test('"cosa stai facendo?" risponde in italiano anche per un goal autonomo', () 
   assert.equal(answerIntent('q_activity', human), 'sto facendo: sto andando da Ale');
   assert.equal(answerIntent('q_activity', {}), 'non ho un obiettivo: sono in attesa di ordini');
 });
+
+// Live 2026-10-07: «coordinate diamante?» riceveva la posizione del bot. Una
+// parola di posizione seguita da qualcos'altro è una domanda su *quella* cosa.
+test('a position word followed by a resource is not a question about the bot', () => {
+  const notAboutTheBot = [
+    'coordinate diamante?',
+    'coordinate del ferro',
+    'coordinate del carbone',
+    'coordinate della legna',
+    'posizione dei diamanti',
+    'posizione del carbone',
+    'dove sono i diamanti da minare?',
+    'dove sono le coordinate del baule',
+    'position of the iron',
+    'position of the diamonds',
+    'position de la pierre',
+    'position des diamanten',
+    'posicion de la madera',
+    'coordenadas del hierro',
+  ];
+  for (const message of notAboutTheBot) {
+    assert.equal(matchQuestionIntent(message), null, `"${message}" non chiede dove sia il bot`);
+  }
+  const aboutTheBot = [
+    'coordinate',
+    'coordinate?',
+    'posizione',
+    'mi comunichi le coordinate?',
+    'quali sono le tue coordinate?',
+    'qual è la tua posizione?',
+    'che coordinate hai?',
+    'dove sei?',
+    'dove mi trovo?',
+    'what are your coordinates?',
+    'your position?',
+    'ta position?',
+    'deine koordinaten?',
+    'wo bist du?',
+    'tu posicion?',
+    'cuáles son tus coordenadas?',
+  ];
+  for (const message of aboutTheBot) {
+    assert.equal(matchQuestionIntent(message)?.id, 'q_position', `"${message}" chiede dove sia il bot`);
+  }
+});

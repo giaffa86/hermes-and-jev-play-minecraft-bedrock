@@ -63,8 +63,11 @@ export default Object.freeze({
   list_or: ' o ',
 
   // --- proactive greeting (human-greeting.mjs) ---
-  greet: 'Ciao {name}! Sono Hermes, il bot di casa. Assegnami un task scrivendo in chat: ' +
-    '{prefix} <ordine> — per esempio "{prefix} seguimi" oppure "{prefix} mina ferro".',
+  greet: 'Ciao {name}! Sono Hermes, il bot di casa. Dammi un ordine: {prefix} <ordine>. ' +
+    'Per una risposta ragionata scrivi {reason} nel messaggio, es. "{prefix} {reason}: perché sei fermo?".',
+  // Il verbo che accende il ragionamento (M12): il saluto lo mostra quando
+  // `CHAT_REASON_MARKERS` non ne configura uno.
+  reason_word: 'ragiona',
 
   // --- deterministic objectives written by the controller (human orders) ---
   'fallback.stop': 'resto fermo in attesa del prossimo ordine',
@@ -159,6 +162,8 @@ export default Object.freeze({
   told_source_told: " (me l'hai detto tu)",
   told_source_seen: ' (visto da me)',
   told_where_item: '{label} a {pos}, {dimension}: {item}{count}{source}',
+  told_ore_near: '{ore} a {pos}, {dimension} — {distance} blocchi da me{source}',
+  ore_alert: 'ho visto {ore} a {pos} — {distance} blocchi da me',
   told_count: ' ×{n}',
   told_claim_unverified: ' (non verificato)',
   told_claim_verified: ' (verificato)',

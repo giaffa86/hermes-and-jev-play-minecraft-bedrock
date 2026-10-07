@@ -57,8 +57,9 @@ export default Object.freeze({
   farm_nothing: 'nada que hacer por ahora ({word}): nada maduro a mano y nada que guardar',
   list_or: ' o ',
 
-  greet: '¡Hola {name}! Soy Hermes, el bot de la casa. Dame una tarea escribiendo en el chat: ' +
-    '{prefix} <orden> — por ejemplo "{prefix} sígueme" o "{prefix} mina hierro".',
+  greet: '¡Hola {name}! Soy Hermes, el bot de la casa. Dame una orden: {prefix} <orden>. ' +
+    'Para una respuesta razonada escribe {reason} en el mensaje, p. ej. "{prefix} {reason}: ¿por qué estás quieto?".',
+  reason_word: 'piensa',
 
   'fallback.stop': 'me quedo quieto esperando la próxima orden',
   'fallback.follow': 'sigo a {from} y hago su última orden: "{message}"',
@@ -146,6 +147,8 @@ export default Object.freeze({
   told_source_told: ' (me lo dijiste tú)',
   told_source_seen: ' (lo vi yo)',
   told_where_item: '{label} en {pos}, {dimension}: {item}{count}{source}',
+  told_ore_near: '{ore} en {pos}, {dimension} — a {distance} bloques de mí{source}',
+  ore_alert: 'he visto {ore} en {pos} — a {distance} bloques de mí',
   told_count: ' ×{n}',
   told_claim_unverified: ' (sin verificar)',
   told_claim_verified: ' (verificado)',

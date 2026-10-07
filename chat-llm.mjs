@@ -27,6 +27,89 @@ export const DEFAULT_CHAT_LLM_MODEL = 'deepseek-chat';
 export const DEFAULT_CHAT_LLM_TIMEOUT_MS = 8000;
 export const DEFAULT_CHAT_HISTORY_TURNS = 6;
 export const DEFAULT_CHAT_HISTORY_SENDERS = 8;
+export const DEFAULT_CHAT_MAX_TOKENS = 120;
+export const DEFAULT_REASON_MAX_TOKENS = 220;
+
+// Un modello che "pensa" spende il budget della risposta nel ragionamento: con
+// `deepseek-flash` e `max_tokens: 120` la risposta torna con
+// `finish_reason: 'length'` e `content` vuoto (verificato contro l'API il
+// 07/10/2026: 120 token consumati in `reasoning_content`, nessuna riga utile).
+// Per una riga di chat il ragionamento va quindi spento; se lo si accende, il
+// budget deve salire di conseguenza.
+export const DEFAULT_CHAT_THINKING = 'off';
+export const DEFAULT_CHAT_THINKING_TOKENS = 1200;
+export const DEFAULT_REASON_THINKING_TOKENS = 2000;
+const THINKING_OFF = /^(0|off|false|no|disabled|none)$/i;
+// L'API di DeepSeek accetta `low|high|max`; `minimal`/`medium` sono i nomi che
+// circolano altrove, quindi si traducono invece di far fallire la richiesta.
+const THINKING_LEVELS = Object.freeze({minimal: 'low', low: 'low', medium: 'low', high: 'high', max: 'max'});
+
+// Il livello di ragionamento chiesto, o `null` quando il modello non deve
+// pensare (`off`, il default) o quando decide il provider (`default`/`auto`).
+export function chatThinkingLevel (thinking = DEFAULT_CHAT_THINKING) {
+  const value = String(thinking ?? '').trim().toLowerCase();
+  if (!value || THINKING_OFF.test(value)) return null;
+  return THINKING_LEVELS[value] ?? null;
+}
+
+// I campi da aggiungere al corpo della richiesta: spento = `thinking`
+// disabilitato esplicito (un `reasoning_effort` non basta: la risposta resterebbe
+// vuota), un livello = `reasoning_effort`, `default`/`auto` = niente (decide il
+// provider).
+export function chatThinkingFields (thinking = DEFAULT_CHAT_THINKING) {
+  const value = String(thinking ?? '').trim().toLowerCase();
+  const level = chatThinkingLevel(value);
+  if (level) return {reasoning_effort: level};
+  if (value === 'on' || value === 'auto' || value === 'default') return {};
+  return {thinking: {type: 'disabled'}};
+}
+
+// M11 «ragiona»: l'umano può chiedere una risposta *ragionata* invece di una
+// frase del catalogo. Il marcatore è una parola sola, dove capita nel messaggio
+// («ragiona: perché non stai minando?», «perché non stai minando? ragiona»);
+// viene tolto e il resto del messaggio resta quello che era — un ordine resta un
+// ordine, una domanda diventa una domanda a cui rispondere dai fatti.
+export const DEFAULT_REASON_MARKERS = Object.freeze([
+  'ragiona', 'ragionate', 'pensaci', 'pensa', 'rifletti',
+  'think', 'reason', 'reflect',
+  'reflechis', 'pense',
+  'piensa', 'razona', 'reflexiona',
+  'denk', 'denke', 'uberlege',
+]);
+
+function foldReasonWord (word) {
+  return String(word ?? '').normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+}
+
+// Riconosce il marcatore (accenti ignorati, così `réfléchis` e `überlege`
+// funzionano anche scritti senza accenti) e restituisce `{reason, message}`: il
+// messaggio senza il marcatore, ripulito della punteggiatura rimasta orfana in
+// testa o in coda. Non decide *cosa* fare del messaggio: lo decide il chiamante.
+export function reasonRequest (message, {markers = DEFAULT_REASON_MARKERS} = {}) {
+  const text = String(message ?? '');
+  if (!text) return {reason: false, message: ''};
+  const wanted = new Set((markers || []).map(foldReasonWord));
+  let reason = false;
+  // La punteggiatura che appartiene al marcatore («ragiona:», «ragiona,») se ne va
+  // con lui; quella che non è sua resta. Così «ragiona: perché non mino?» perde i
+  // due punti ma tiene il punto interrogativo, che è la domanda, e
+  // «piensa: ¿por qué?» tiene anche l'inversione spagnola.
+  const pieces = text.split(/([^\p{L}\p{N}']+)/u);
+  const kept = [];
+  pieces.forEach((piece, i) => {
+    const isWord = /^[\p{L}\p{N}']+$/u.test(piece);
+    const previousRemoved = i > 0 && /^[\p{L}\p{N}']+$/u.test(pieces[i - 1]) && wanted.has(foldReasonWord(pieces[i - 1]));
+    if (isWord) {
+      if (wanted.has(foldReasonWord(piece))) { reason = true; return; }
+      kept.push(piece);
+      return;
+    }
+    kept.push(previousRemoved ? piece.replace(/^[\s:,;\-–—.]+/u, '') : piece);
+  });
+  if (!reason) return {reason: false, message: text};
+  const cleaned = kept.join('').replace(/[^\S\n]{2,}/g, ' ').trim();
+  return {reason: true, message: cleaned};
+}
 
 export const DEFAULT_CHAT_PERSONA =
   "Hermes, il bot di casa di un server Minecraft Bedrock: vivi nel villaggio come un giocatore, lavori con gli altri (coltivazioni, pastorizia, legname, minerali, pesca) e dai una mano nelle missioni";
@@ -41,13 +124,14 @@ export function chatLlmKey (env = process.env) {
 // Resolved configuration. `CHAT_LLM=off` disables the engine even with a key;
 // `CHAT_LLM=on` without a key stays disabled (`enabled: false`), and the
 // controller falls back to the deterministic path.
-export function chatLlmConfig ({ env = process.env, key, url, model, timeoutMs, persona, maxLength, enabled } = {}) {
+export function chatLlmConfig ({ env = process.env, key, url, model, timeoutMs, persona, maxLength, enabled, thinking } = {}) {
   const resolvedKey = key !== undefined ? key : chatLlmKey(env);
   const off = /^(0|off|false|no)$/i.test(String(env.CHAT_LLM ?? ''));
   return {
     key: resolvedKey || null,
     url: url ?? env.CHAT_LLM_URL ?? DEFAULT_CHAT_LLM_URL,
     model: model ?? env.CHAT_LLM_MODEL ?? DEFAULT_CHAT_LLM_MODEL,
+    thinking: thinking ?? env.CHAT_LLM_THINKING ?? DEFAULT_CHAT_THINKING,
     timeoutMs: timeoutMs ?? +(env.CHAT_LLM_TIMEOUT_MS || DEFAULT_CHAT_LLM_TIMEOUT_MS),
     persona: persona ?? env.CHAT_PERSONA ?? DEFAULT_CHAT_PERSONA,
     maxLength: maxLength ?? +(env.CHAT_REPLY_MAX_LENGTH || DEFAULT_REPLY_MAX_LENGTH),
@@ -67,7 +151,7 @@ function firstLine (text) {
 export function buildChatMessages ({
   message, from = null, facts = null, grounding = null, history = [],
   persona = DEFAULT_CHAT_PERSONA, prefixes = [], maxLength = DEFAULT_REPLY_MAX_LENGTH,
-  lang = DEFAULT_LANG,
+  lang = DEFAULT_LANG, reasoned = false,
 } = {}) {
   const triggers = (prefixes || []).map(p => `"${p}"`).join(', ');
   // La lingua configurata (`CHAT_LANG`) non forza la risposta: comanda la lingua
@@ -82,6 +166,11 @@ export function buildChatMessages ({
     `Rispondi con UNA sola riga breve (massimo circa ${maxLength} caratteri), tono naturale e colloquiale da giocatore: niente markdown, niente elenchi.`,
     "Usa SOLO i fatti elencati sotto. Se un fatto non c'e', di' che non lo sai: non inventare numeri, oggetti, coordinate, azioni o persone.",
     'Non promettere di fare cose che non risultano tra le tue capacita: se non sai, dillo.',
+    // M11: con «ragiona» non c'è una frase da riformulare, c'è una domanda a cui
+    // rispondere collegando i fatti (che cosa sto facendo, che cosa è andato
+    // storto, che cosa mi manca). Le due regole di sopra restano: solo i fatti,
+    // e se il fatto non c'è si dice che manca.
+    reasoned ? "L'umano ti ha chiesto di ragionare: rispondi alla sua domanda mettendo insieme i FATTI (che cosa stai facendo, che cosa è andato storto, che cosa ti serve) e, se la risposta non è tra i fatti, di' che cosa ti manca per rispondere." : null,
     triggers ? `Non iniziare mai la risposta con ${triggers}: non devi attivare te stesso.` : null,
   ].filter(Boolean).join(' ');
   const parts = [];
@@ -107,7 +196,8 @@ export async function composeChatReply ({
   message, from = null, facts = null, grounding = null, history = [],
   persona = DEFAULT_CHAT_PERSONA, prefixes = [], model, url, key,
   timeoutMs = DEFAULT_CHAT_LLM_TIMEOUT_MS, maxLength = DEFAULT_REPLY_MAX_LENGTH,
-  lang = DEFAULT_LANG,
+  lang = DEFAULT_LANG, reasoned = false, maxTokens = null,
+  thinking = DEFAULT_CHAT_THINKING,
   fetchImpl = fetch,
 } = {}) {
   if (!key) {
@@ -115,7 +205,7 @@ export async function composeChatReply ({
     error.code = 'no_key';
     throw error;
   }
-  const messages = buildChatMessages({message, from, facts, grounding, history, persona, prefixes, maxLength});
+  const messages = buildChatMessages({message, from, facts, grounding, history, persona, prefixes, maxLength, reasoned});
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(1, timeoutMs));
   const started = Date.now();
@@ -128,7 +218,10 @@ export async function composeChatReply ({
         model: model ?? DEFAULT_CHAT_LLM_MODEL,
         messages,
         temperature: 0.7,
-        max_tokens: 120,
+        max_tokens: maxTokens ?? (chatThinkingLevel(thinking)
+          ? (reasoned ? DEFAULT_REASON_THINKING_TOKENS : DEFAULT_CHAT_THINKING_TOKENS)
+          : (reasoned ? DEFAULT_REASON_MAX_TOKENS : DEFAULT_CHAT_MAX_TOKENS)),
+        ...chatThinkingFields(thinking),
         stream: false,
       }),
       signal: controller.signal,
@@ -215,7 +308,7 @@ function topInventory (inventory, limit = 8) {
 
 // The only facts the model may use. Defensive by design: `observe()` evolves and
 // a missing branch must degrade the prompt, never crash the chat loop.
-export function compactChatFacts (obs, plan = null) {
+export function compactChatFacts (obs, plan = null, extra = null) {
   if (!obs || typeof obs !== 'object') return null;
   const facts = {};
   if (obs.self) facts.self = {name: obs.self.name ?? obs.self.username ?? null};
@@ -246,6 +339,13 @@ export function compactChatFacts (obs, plan = null) {
   if (Array.isArray(obs.entities)) {
     const hostiles = obs.entities.filter(e => e?.hostile).slice(0, 4).map(e => ({type: e.type, distance: round(e.distance)}));
     if (hostiles.length) facts.hostiles = hostiles;
+  }
+  // M11: i fatti che servono a *spiegare* (le ultime azioni e com'è andata, le
+  // vene viste) li aggiunge il controller, che li ha in mano.
+  if (extra && typeof extra === 'object') {
+    for (const [key, value] of Object.entries(extra)) {
+      if (value !== null && value !== undefined) facts[key] = value;
+    }
   }
   return facts;
 }

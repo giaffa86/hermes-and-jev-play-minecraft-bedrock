@@ -57,6 +57,7 @@ function startToldHarness ({
   tellPlaceAction = 'created',
   tellPlacePrevious = null,
   chatFromObserve = 2,
+  ores = [],
 } = {}) {
   return new Promise(resolve => {
     const calls = [];
@@ -72,6 +73,7 @@ function startToldHarness ({
       entities: senderVisible ? [{ kind: 'player', username: chatFrom, name: chatFrom, position: SENDER_AT }] : [],
       humans: senderVisible ? [{ username: chatFrom, name: chatFrom, position: SENDER_AT }] : [],
       dropped: [], containers: [],
+      ores,
       chat: observes >= chatFromObserve && chatFrom
         ? [{ from: chatFrom, message: chatMessage, type: 'chat', xuid: '1234567890', at: chatAt }]
         : [],
@@ -325,6 +327,42 @@ test('a memory route that is down says so instead of inventing an answer', async
       assert.match(replies[0], /non riesco a leggere la memoria/);
       const events = readEvents(runId);
       assert.ok(events.some(e => e.type === 'tell_memory_unavailable' && e.reason === 'told_facts_disabled'));
+    });
+  } finally { harness.server.close(); rmSync(fake.dir, { recursive: true, force: true }); }
+});
+
+test('«dimmi le coordinate dei diamanti» answers with the vein the bot sees now, not with a chest', async () => {
+  const harness = await startToldHarness({
+    chatMessage: '@bot dimmi le coordinate dei diamanti',
+    ores: [
+      { name: 'deepslate_diamond_ore', position: { x: 61, y: -6, z: 199 }, distance: 7.6, value: 100, harvestable: false },
+      { name: 'diamond_ore', position: { x: 52, y: 1, z: 193 }, distance: 12.4, value: 100, harvestable: false },
+    ],
+  });
+  const fake = fakeHermesQueue(['wait']);
+  try {
+    await withRun(async (runId) => {
+      const { code } = await runController(baseEnv(runId, harness.port, fake.dir));
+      assert.equal(code, 0, 'the controller exits cleanly');
+
+      // The nearest vein wins, and the answer is a position to dig toward —
+      // not the bot's own coordinates and not a chest in the old base.
+      const replies = says(harness);
+      assert.equal(replies.length, 1, `exactly one reply (got ${JSON.stringify(replies)})`);
+      assert.match(replies[0], /^@Ale deepslate_diamond_ore a 61, -6, 199, Overworld — 8 blocchi da me \(visto da me\)/);
+
+      // Nothing was written and the memory catalogue was not consulted for a
+      // resource the bot can see right now.
+      assert.equal(writes(harness).length, 0);
+      assert.equal(harness.calls.some(c => c.path === '/memory/where'), false, 'a live sighting does not need the memory');
+
+      const events = readEvents(runId);
+      const ore = events.find(e => e.type === 'tell_where_ore');
+      assert.ok(ore, 'the sighting reply is logged');
+      assert.equal(ore.item, 'diamond');
+      assert.equal(ore.ore, 'deepslate_diamond_ore');
+      assert.deepEqual(ore.position, { x: 61, y: -6, z: 199 });
+      assert.equal(events.some(e => e.type === 'chat_command'), false, 'a question is not an order');
     });
   } finally { harness.server.close(); rmSync(fake.dir, { recursive: true, force: true }); }
 });

@@ -210,3 +210,58 @@ test('an open chat order is not closed on a failed action', async () => {
     rmSync(fake.dir, { recursive: true, force: true });
   }
 });
+
+// Finto `hermes` che risponde in base al *prompt*, non all'ordine delle
+// chiamate: la scelta dell'azione contiene `Valid actions:`, il piano no. Cosi'
+// un test puo' far cadere un replan in mezzo senza indovinare la sequenza.
+function fakeHermesByPrompt ({ plans = [], actions = [] } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'fake-hermes-'));
+  const statePath = join(dir, 'state.json');
+  const popPath = join(dir, 'pop.mjs');
+  writeFileSync(statePath, JSON.stringify({ plans, actions }));
+  writeFileSync(popPath, `
+import { readFileSync, writeFileSync } from 'node:fs';
+const path = ${JSON.stringify(statePath)};
+let prompt = '';
+for await (const chunk of process.stdin) prompt += chunk;
+const state = JSON.parse(readFileSync(path, 'utf8'));
+const pick = list => (list.length > 1 ? list.shift() : list[0]);
+const answer = prompt.includes('Valid actions:') ? (pick(state.actions) ?? 'wait') : (pick(state.plans) ?? '{}');
+writeFileSync(path, JSON.stringify(state));
+process.stdout.write(answer);
+`);
+  const bin = join(dir, 'hermes');
+  writeFileSync(bin, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(popPath)}\n`);
+  chmodSync(bin, 0o755);
+  return { dir };
+}
+
+test('a replan that empties the targets does not close the order as done', async () => {
+  // Live, il 07/10/2026: «raccogli un diamante» e' finito con un «fatto» in chat
+  // 28 secondi dopo un *replan* che aveva svuotato i target ("construction:
+  // libera uno slot…"), con zero diamanti in inventario. Il pavimento dei target
+  // dell'ordine impedisce che un piano riscritto cancelli il successo promesso.
+  const harness = await startOpenPlanHarness({ orderMessage: '@bot mina un diamante' });
+  const diamond = JSON.stringify({ objective: 'Mine a diamond', targets: { diamond: 1 }, waypoint: null, follow: null, notes: 'test' });
+  const emptied = JSON.stringify({ objective: 'Free a slot so a mined diamond can be collected', targets: {}, waypoint: null, follow: null, notes: 'replan' });
+  const fake = fakeHermesByPrompt({ plans: [INIT_PLAN, diamond, emptied], actions: ['wait'] });
+  const runId = `test-chat-order-floor-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({ ...baseEnv(runId, harness.port, fake.dir), REPLAN_EVERY: '2', MAX_STEPS: '4' });
+    assert.equal(code, 0, `the controller exits cleanly (stdout: ${stdout.slice(-600)})`);
+
+    const events = readEvents(runId);
+    assert.equal(events.filter(e => e.type === 'goal_start' && e.source === 'chat').length, 1, 'the order becomes a chat goal');
+    assert.equal(events.some(e => e.type === 'replan'), true, `the plan is rewritten mid-goal (got ${JSON.stringify(events.map(e => e.type))})`);
+    const met = events.filter(e => e.type === 'goal_met');
+    assert.equal(met.length, 1, `only the seeded idle goal closes: the diamond was never collected (got ${JSON.stringify(met)})`);
+    assert.equal(events.some(e => e.type === 'budget_exhausted'), true, 'the order ends on the budget, not on a fake success');
+
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.equal(says.some(m => /fatto/.test(m)), false, `no "fatto" is announced for an order that never happened (says: ${JSON.stringify(says)})`);
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});

@@ -41,10 +41,11 @@ process.stdout.write(next);
 // Scripted harness. `chatFrom` is the sender of the order injected from the
 // second observation on; `calls` records every request so the test can inspect
 // the `/say` traffic.
-function startChatHarness ({ chatFrom = 'Ale', chatMessage = '@bot prendi la terra', chatAgeMs = 0, chatFromObserve = 2, self = { username: 'hermes-bot', name: null }, options = null, act = null, extra = () => ({}) } = {}) {
+function startChatHarness ({ chatFrom = 'Ale', chatMessage = '@bot prendi la terra', chatAgeMs = 0, chatFromObserve = 2, self = { username: 'hermes-bot', name: null }, options = null, act = null, say = null, extra = () => ({}) } = {}) {
   return new Promise(resolve => {
     const calls = [];
     let observes = 0;
+    let says = 0;
     // Il timestamp è fissato all'avvio: un messaggio reale conserva il proprio
     // `at` nella chatInbox (è la chiave di dedup del controller).
     const chatAt = Date.now() - chatAgeMs;
@@ -75,7 +76,7 @@ function startChatHarness ({ chatFrom = 'Ale', chatMessage = '@bot prendi la ter
         calls.push({ method: req.method, path, payload });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         if (req.method === 'GET' && path === '/observe') { observes += 1; res.end(JSON.stringify(observation())); }
-        else if (path === '/say') res.end(JSON.stringify({ ok: true, sent: payload.message }));
+        else if (path === '/say') { says += 1; res.end(JSON.stringify(say ? say(payload.message, says) : { ok: true, sent: payload.message })); }
         else if (path === '/options') res.end(JSON.stringify({ options: typeof options === 'function' ? options() : (options ?? []) }));
         else if (path === '/act') res.end(JSON.stringify(act ? act(payload.key) : {}));
         else if (path === '/plan') res.end(JSON.stringify({ ok: true }));
@@ -852,6 +853,12 @@ test("un ordine di gettare senza l'oggetto in inventario lo dice all'umano e non
     assert.equal(events.find(e => e.type === 'goal_end' && e.status === 'failed')?.reason, 'item_not_in_inventory');
     const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
     assert.ok(says.some(m => /non ho diamanti in inventario/.test(m)), `manca il rifiuto: ${JSON.stringify(says)}`);
+    // Il mittente e' quello che ha ordinato, non `null`: live il 07/10/2026 il
+    // rifiuto e' uscito come «@? non ho diamanti in inventario» perche' il ramo
+    // leggeva solo `goal.humanOrder.from`, assente su un goal nato in chat.
+    assert.ok(says.some(m => /^@Ale non ho diamanti in inventario/.test(m)), `il rifiuto non e' indirizzato al mittente: ${JSON.stringify(says)}`);
+    assert.equal(says.some(m => m.startsWith('@?')), false, `nessuna risposta puo' uscire senza destinatario: ${JSON.stringify(says)}`);
+    assert.equal(events.find(e => e.type === 'chat_reply' && e.context === 'drop_no_item')?.to, 'Ale', 'la risposta è registrata col destinatario');
     assert.equal(harness.calls.some(c => c.path === '/act'), false, 'nessuna azione: non c\'è nulla da buttare');
   } finally {
     harness.server.close();
@@ -977,6 +984,35 @@ test('"che fai?" with no active goal answers the idle state, never a made-up obj
     const events = readEvents(runId);
     assert.equal(events.find(e => e.type === 'chat_question')?.intent, 'q_activity');
     assert.equal(events.some(e => e.type === 'chat_command'), false);
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
+});
+
+test('un ack scartato per rate limit viene ritentato, non perso', async () => {
+  // Live, il 07/10/2026: l'ack e l'esito partono a un istante di distanza, il
+  // bot puo' parlare una volta al secondo, e l'harness *scarta* il secondo
+  // messaggio (`rate_limited`). In chat e' rimasto un «fatto» mai avvenuto e il
+  // rifiuto onesto e' sparito. Ora `replyChat` ritenta quando l'harness dice
+  // quando.
+  const harness = await startChatHarness({
+    say: (message, n) => (n === 1 ? { ok: false, error: 'rate_limited', retryInMs: 25 } : { ok: true, sent: message }),
+  });
+  const fake = fakeHermesQueue([HUMAN_PLAN]);
+  const runId = `test-chat-rate-limit-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController(baseEnv(runId, harness.port, fake.dir));
+    assert.equal(code, 0, `controller exited with ${code}\n${stdout}`);
+    const says = harness.calls.filter(c => c.method === 'POST' && c.path === '/say').map(c => c.payload.message);
+    assert.equal(says.filter(m => /^@Ale ok: /.test(m)).length >= 1, true, `l'ack e' arrivato: ${JSON.stringify(says)}`);
+    assert.equal(says.filter(m => /^@Ale fatto: /.test(m)).length, 1, `anche l'esito e' arrivato: ${JSON.stringify(says)}`);
+    const events = readEvents(runId);
+    const retry = events.find(e => e.type === 'chat_reply_retry');
+    assert.equal(retry?.ok, true, `il ritentativo e' andato a buon fine (${JSON.stringify(events.filter(e => e.type.startsWith('chat_reply')))})`);
+    assert.equal(retry?.waitMs >= 25, true, `si aspetta quanto chiede l'harness (waitMs ${retry?.waitMs})`);
+    assert.equal(events.find(e => e.type === 'chat_reply' && e.ok === true)?.retried, undefined, 'il log finale resta quello canonico');
   } finally {
     harness.server.close();
     rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
