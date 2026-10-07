@@ -1791,6 +1791,15 @@ export class BedrockAdapter {
     }
   }
 
+  // Sessione viva: spawn avvenuto e stato `spawned`. Non dice nulla su morte o
+  // sonno — un bot morto o addormentato e' connesso, e in quei due casi `wait` e'
+  // davvero l'unica azione (respawn e sveglia automatici). Su `client_close`
+  // l'adapter azzera spawn/stato: e' la stessa condizione che durante il wedge del
+  // 07/10/2026 faceva credere al controller di avere una sola azione valida.
+  get sessionLive () {
+    return this.spawned === true && this.status === 'spawned';
+  }
+
   pos () {
     if (!this.position) return null;
     // Posizione esatta (2 decimali): il vecchio harness riportava interi, ma con
@@ -4425,11 +4434,20 @@ export class BedrockAdapter {
   }
 
   options ({ localGatherOnly = false } = {}) {
-    // Durante una riconnessione NetherNet l'unica azione sensata è attendere:
-    // le opzioni calcolate sul mondo vecchio fallirebbero comunque.
-    if (!this.spawned || this.status !== 'spawned') {
-      return [{ key: 'wait', description: 'Wait for the Bedrock connection to be re-established' }];
+    // Senza sessione viva `wait` non e' una scelta: e' un bot immobile che i mob
+    // uccidono. Il 07/10/2026 il controller ha deciso `wait` 75 volte con una
+    // sola opzione, con la ragione gia' nota (`not_connected`), e le ultime 9
+    // morti del run hanno come ultima azione `wait(ok)`: la sessione NetherNet
+    // era caduta e il harness fingeva un'azione valida. Le opzioni calcolate sul
+    // mondo vecchio fallirebbero comunque, quindi la risposta e' il vuoto con la
+    // ragione in `optionsBlindReason`, che l'harness espone in `/options`
+    // (`connected: false` + `blind`). Il controller, che la legge, non brucia
+    // passi su un `wait` che non e' una scelta.
+    if (!this.sessionLive) {
+      this.optionsBlindReason = 'not_connected';
+      return [];
     }
+    this.optionsBlindReason = null;
     if (this.dead) {
       return [{ key: 'wait', description: 'Dead; respawning automatically' }];
     }
@@ -6132,7 +6150,7 @@ export class BedrockAdapter {
   }
 
   _waitForContainerOpen (predicate, timeoutMs = 3000) {
-    return new Promise((resolve, reject) => {
+    const pending = new Promise((resolve, reject) => {
       const waiter = { predicate, resolve: packet => { clearTimeout(timer); resolve(packet); } };
       const timer = setTimeout(() => {
         this._containerWaiters = this._containerWaiters.filter(w => w !== waiter);
@@ -6140,6 +6158,14 @@ export class BedrockAdapter {
       }, timeoutMs);
       this._containerWaiters.push(waiter);
     });
+    // Una `wait` abbandonata (un altro tentativo ha gia' aperto la finestra, o
+    // l'await e' saltato da un'eccezione) rifiutava senza handler: Node emetteva
+    // `unhandledRejection` e la sessione NetherNet cadeva su `connecterror:9`,
+    // lasciando il bot immobile e uccidibile. Il catch qui non cambia l'esito
+    // per chi fa `await` (la promise restituita e' la stessa): toglie solo il
+    // rifiuto non gestito.
+    pending.catch(() => {});
+    return pending;
   }
 
   // Il contenuto di un container storage arriva in un pacchetto separato
@@ -9668,6 +9694,35 @@ export class BedrockAdapter {
     return 10;
   }
 
+  // Scambio diretto fra due slot del giocatore in UNA richiesta (type_id
+  // 'swap', legacy 2: source+destination, nessun count). Serve quando
+  // l'inventario e' pieno: take+place verso uno slot occupato da un item
+  // diverso viene rifiutato con status 50, mentre 'swap' e' l'azione che BDS
+  // si aspetta. Vedi schema in minecraft-data bedrock/1.26.51 protocol.json.
+  async _swapSlots (srcIndex, dstIndex) {
+    const item = this.inventorySlots[srcIndex];
+    if (!item?.network_id) return { ok: false, error: 'missing_item' };
+    await this._ensureInventoryOpen();
+    const src = this._invSlotAsSource(srcIndex);
+    const dst = this._invSlotToSlotInfo(dstIndex);
+    const dstItem = this.inventorySlots[dstIndex];
+    const response = await this._sendStackRequest([{
+      type_id: 'swap', legacy_type_id: 2,
+      source: this._slotInfo(src.container, src.slot, item.stack_id || 0),
+      destination: this._slotInfo(dst.container, dst.slot, dstItem?.stack_id || 0),
+    }]);
+    if (String(response.status) !== 'ok' && response.status !== 0) {
+      this.log('swap_failed', {
+        status: response.status, srcIndex, dstIndex,
+        item: this._slotItemName(item), src, dst,
+        stack_id: item.stack_id ?? null, dst_stack_id: dstItem?.stack_id ?? null,
+      });
+      return { ok: false, error: `swap_failed_${response.status}` };
+    }
+    this._applyStackResponse(response);
+    return { ok: true };
+  }
+
   _hotbarSlotToEvict () {
     let best = 8;
     let bestScore = Infinity;
@@ -9772,7 +9827,21 @@ export class BedrockAdapter {
       if (slotIndex <= 8) return slotIndex;
       let free = this.inventorySlots.findIndex((s, i) => i < 9 && !s?.network_id);
       if (free < 0) free = await this._evictHotbarSlot();
-      if (free < 0) throw new Error('hotbar_full');
+      if (free < 0) {
+        // Inventario completo (36/36): non esiste un buco dove evacuare lo slot
+        // hotbar, ma la hotbar *piena* si puo' comunque scambiare. Senza questo
+        // ramo l'inventario pieno rende impossibile selezionare qualsiasi
+        // attrezzo (hotbar_full su dig/mine/place/eat) e il bot resta bloccato.
+        const hot = this._hotbarSlotToEvict();
+        const swapped = await this._swapSlots(slotIndex, hot);
+        if (swapped.ok) {
+          this.log('hotbar_swap_full', { name, slot: slotIndex, hot });
+          return hot;
+        }
+        this.log('hotbar_swap_full_failed', { name, slot: slotIndex, hot, error: swapped.error });
+        try { await this._resyncByReconnect(); } catch (error) { this.log('inventory_resync_failed', { message: error.message }); }
+        throw new Error('hotbar_full');
+      }
       const item = this.inventorySlots[slotIndex];
       this.log('swap_request', { name, slot: slotIndex, stack_id: item.stack_id ?? null, free });
       const moved = await this._moveItemViaCursor(slotIndex, free);

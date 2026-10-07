@@ -112,3 +112,38 @@ test('la soglia di annegamento e 60 tick (3 secondi), non l ultimo respiro', () 
   assert.ok(deriveNeeds({ health: 20, food: 20, fluids: { headInWater: true, waterBreathing: false, air: 60 } }, { level: 'none' }).includes('surface'));
   assert.ok(!deriveNeeds({ health: 20, food: 20, fluids: { headInWater: true, waterBreathing: false, air: 61 } }, { level: 'none' }).includes('surface'));
 });
+
+// 07/10/2026: la scala scelse `attack_skeleton` a 4 cuori con l'inventario
+// vuoto (`SURVIVAL FIGHT ... (critical_health)`) perche' la fuga non era
+// offerta, e il bot mori'. Combattere e' una decisione del piano, non una
+// reazione automatica: quando chi chiama dice che il bot non e' in grado di
+// vincere, la scala non propone `attack_*` — la scelta torna al modello.
+test('senza fuga disponibile la scala non manda a combattere un bot disarmato', () => {
+  const governor = { mode: 'emergency', needs: ['escape'], allowedIntents: ['escape', 'fight'] };
+  assert.equal(NEED_INTENTS.escape[1], 'fight', 'combattere e il ripiego della fuga');
+  assert.equal(
+    chooseNeedAction({ governor, options: [opt('attack_skeleton')] }).key,
+    'attack_skeleton',
+    'senza policy la scala combatte: era il comportamento che uccideva il bot',
+  );
+  assert.equal(
+    chooseNeedAction({ governor, options: [opt('attack_skeleton')], policy: { fightAllowed: false } }),
+    null,
+    'con la policy la scala si ferma e decide il modello (piano, ordine umano, fuga)',
+  );
+});
+
+test('con la fuga disponibile la policy non cambia nulla', () => {
+  const governor = { mode: 'emergency', needs: ['escape'], allowedIntents: ['escape', 'fight'] };
+  const options = [opt('attack_skeleton'), opt('flee')];
+  const withPolicy = chooseNeedAction({ governor, options, policy: { fightAllowed: false } });
+  assert.equal(withPolicy.key, 'flee', 'la fuga resta la prima scelta');
+  assert.equal(chooseNeedAction({ governor, options, policy: { fightAllowed: true } }).key, 'flee');
+});
+
+test('la policy non tocca gli intenti non di combattimento', () => {
+  const governor = { mode: 'emergency', needs: ['survive', 'heal'], allowedIntents: ['heal', 'eat'] };
+  const options = [opt('eat'), opt('attack_zombie')];
+  assert.equal(chooseNeedAction({ governor, options, policy: { fightAllowed: false } }).key, 'eat');
+  assert.equal(chooseNeedAction({ governor, options, policy: { fightAllowed: true } }).key, 'eat');
+});

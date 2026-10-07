@@ -69,8 +69,17 @@ function pickKeyForIntents (options, intents, preferredKeys) {
 // dopo la fuga. `wait` non viene mai scelta: se non c'e' un'azione di
 // sopravvivenza la decisione torna al modello, che e' l'unico a sapere cosa sta
 // facendo il piano.
-export function chooseNeedAction ({ governor = null, options = [], needIntents = NEED_INTENTS, urgency = INTENT_URGENCY, preferredKeys = PREFERRED_KEYS } = {}) {
+export function chooseNeedAction ({ governor = null, options = [], needIntents = NEED_INTENTS, urgency = INTENT_URGENCY, preferredKeys = PREFERRED_KEYS, policy = {} } = {}) {
   if (!governor || !Array.isArray(options) || !options.length) return null;
+  // Combattere e' una scelta, non una reazione: se chi chiama dice che il bot non
+  // e' in grado di vincere (vita bassa, nessuna arma) la scala non sceglie
+  // `attack_*` e restituisce `null`, cosi' la decisione torna al modello — che
+  // puo' valutare il piano, la fuga o un ordine umano. Il 07/10/2026 la scala
+  // scelse `attack_skeleton` a 4 cuori con l'inventario vuoto: morte.
+  const usable = policy.fightAllowed === false
+    ? options.filter(option => !optionIntents(option.key).includes('fight'))
+    : options;
+  if (!usable.length) return null;
   const emergency = governor.mode === 'emergency' && Array.isArray(governor.allowedIntents) && governor.allowedIntents.length > 0;
   let intents = [];
   let need = null;
@@ -100,7 +109,7 @@ export function chooseNeedAction ({ governor = null, options = [], needIntents =
     }
   }
   if (!intents.length) return null;
-  const choice = pickKeyForIntents(options, intents, preferredKeys);
+  const choice = pickKeyForIntents(usable, intents, preferredKeys);
   if (!choice) return null;
   const intent = intents.find(candidate => optionIntents(choice.key).includes(candidate)) || intents[0];
   if (!need) need = (governor.needs || []).find(item => (needIntents[item] || []).includes(intent)) || null;

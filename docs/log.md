@@ -1,5 +1,49 @@
 # Log
 
+## [2026-10-07] fix | A blind harness is a broken run, not a quiet one (and a 4 HP bot does not attack)
+
+The `diamond-20261007-1` expedition died eleven times in a day. The forensic reading
+of `runs/diamond-20261007-1/actions.jsonl` and of the controller ledger says the
+environmental half (the NetherNet transport dropping the session ~2 minutes after
+login, five BDS restarts) is not the whole story: **75 decisions picked `wait` with a
+single option** and the last 9 death rows have `wait(ok)` as their last action, 12-164 s
+before dying, always standing on the same block. Two implementation defects made that
+lethal rather than merely unproductive:
+
+1. `bedrock-adapter.mjs` `options()` answered `[{key: 'wait', description: 'Wait for
+the Bedrock connection to be re-established'}]` while the session was down — a fake
+valid action, indistinguishable from a real choice, when the controller had already
+noted the reason (`wait_only {reason: 'not_connected'}`). Now `get sessionLive ()`
+(=`spawned === true && status === 'spawned'`) gates the list: no session, **no
+options**, and `optionsBlindReason = 'not_connected'`. The dead/sleeping branches still
+answer `wait` (a dead or sleeping bot *is* connected).
+2. `survival/resolver.mjs` `chooseNeedAction` picked `SURVIVAL FIGHT attack_skeleton`
+for a 4 HP bot with an **empty inventory**, because `fight` is the fallback of the
+`escape` intent (`NEED_INTENTS.escape = ['escape', 'fight']`) and no `flee` was
+offered. The ladder now accepts `policy: { policy.fightAllowed }`, filters every
+`attack_*` out when the caller says the bot cannot win (and returns `null` if nothing
+else is left, handing the decision back to the model), and `controller.mjs` passes
+`fightAllowed: mayFight(obs)` (health ≥ `FIGHT_MIN_HEALTH` = 10 **and** a sword/axe
+in the inventory).
+
+The rest of the chain now tells the truth instead of imitating a working run:
+`/observe` carries `connected`, `/options` carries `connected` + `blind`, and the
+controller treats `connected: false` or an empty list as blindness —
+`HARNESS_BLIND_MAX_STEPS` (6) steps of patience at `HARNESS_BLIND_WAIT_MS` (5 s)
+without spending budget (`harness_blind`), then exit code 2 with
+`harness_blind_stop`. The reconnect backoff was tightened from 60 s to 3/6/12/15 s,
+because every second a blind bot stands still is a second a mob can use.
+
+Evidence: `tests/bedrock-options-blind.test.mjs` (new), the reworked case in
+`tests/bedrock-dig.test.mjs`, three new cases in `tests/survival-ladder.test.mjs`,
+full suite **1805/1805** (was 1804/1 failing — the same old expectation),
+`npm run wiki:lint` clean. Docs: [control-flow](wiki/control-flow.md) item 4,
+[survival-intelligence](wiki/survival-intelligence.md) (`chooseNeedAction`),
+[open-questions](wiki/open-questions.md) (the wedge, still open on the transport
+side), `BEDROCK.md` (the `wait_only` note, now death/sleep only). **Live half still
+open**: a run that stops with `harness_blind_stop` instead of dying needs a session
+lasting more than two minutes.
+
 ## [2026-10-07] fix | The walker says `stuck` instead of spending the budget
 
 Run `demo-r3` (07/10) holds three walks that failed with the destination in

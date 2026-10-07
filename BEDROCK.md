@@ -730,9 +730,14 @@ keys.
    excluded ones land in the logs (`options.excluded`, `options.droppedByCap`).
 4. **Diagnostics**: every decision logs the candidate keys with per-key probability
    (not just the chosen index), `selectedProbability`, `confidence`, `cost`, `ms`
-   and the objective; `wait_only` records the reason (reconnection, death, sleep,
-   no useful option) when the harness offers only `wait`; `result` records the
-   outcome of every action; `goal_met`/`budget_exhausted` include the total cost.
+   and the objective; `wait_only` records the reason (death, sleep, no useful
+   option) when the harness offers only `wait`; a **blind harness** (session down,
+   `/options` empty or `connected: false`) is not a decision at all: the
+   controller waits `HARNESS_BLIND_WAIT_MS` and stops the run after
+   `HARNESS_BLIND_MAX_STEPS` consecutive blind steps (`harness_blind`,
+   `harness_blind_stop`, exit code 2) without spending action budget;
+   `result` records the outcome of every action; `goal_met`/`budget_exhausted`
+   include the total cost.
 5. **Smoke test**: with a fake harness in `/tmp`, a loop of 3 stagnant
    `goto_waypoint` produced `anti_loop` → replan → exclusion → `mine_dirt` choice
    (log `runs/smoke-decisions/controller.jsonl`).

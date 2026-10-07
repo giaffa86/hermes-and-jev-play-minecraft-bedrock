@@ -370,11 +370,15 @@ test('coals item tag matches coal and charcoal only', () => {
   assert.equal(adapter._ingredientMatches(tag, 'oak_planks'), false);
 });
 
-test('options collapse to wait while the Bedrock connection is being re-established', async () => {
+test('without a live session no option is offered, and the reason is explicit', async () => {
   const { adapter } = digAdapter();
   adapter.spawned = false;
   adapter.status = 'discovering';
-  assert.deepEqual(adapter.options().map(o => o.key), ['wait']);
+  // 07/10/2026: qui c'era un `wait` finto che il controller non poteva
+  // distinguere da una scelta — 75 `wait` a una sola opzione e 9 morti mentre
+  // la sessione era giu'. Ora la sessione cieca non offre niente.
+  assert.deepEqual(adapter.options(), []);
+  assert.equal(adapter.optionsBlindReason, 'not_connected');
   assert.deepEqual(await adapter.executeAction('dig_down'), { ok: false, error: 'not_connected' });
 });
 

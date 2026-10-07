@@ -1213,6 +1213,28 @@ let lostFollowSteps = 0;        // passi consecutivi con l'ordine "seguimi" aper
 let lostEscortSteps = 0;        // passi consecutivi con la scorta aperta ma senza traccia dell'umano
 let lostNoticeSent = false;     // l'avviso in chat e' uno per episodio, non uno per cooldown
 let lostHoldSteps = 0;          // passi di attesa a tracce perse (nessuna azione, nessun modello)
+let blindSteps = 0;             // passi consecutivi con harness cieco (sessione Bedrock caduta)
+// Harness cieco: la sessione Bedrock e' caduta e non esiste nessuna azione
+// reale. Si resiste (la riconnessione e' in corso) per un numero limitato di
+// passi, poi il run si ferma con `harness_blind`: un run fermo e leggibile vale
+// piu' di un bot che resta immobile e muore. Il 07/10/2026 il controller ha
+// deciso `wait` 75 volte con una sola opzione e le ultime 9 morti del run hanno
+// come ultima azione `wait(ok)` — la ragione (`not_connected`) era gia' nota e
+// veniva solo registrata in `wait_only`.
+const HARNESS_BLIND_MAX_STEPS = Number(process.env.HARNESS_BLIND_MAX_STEPS ?? 6);
+const HARNESS_BLIND_WAIT_MS = Number(process.env.HARNESS_BLIND_WAIT_MS ?? 5000);
+// Combattere a vita bassa e senza arma e' una condizione di morte: la scala
+// deterministica non lo sceglie (07/10/2026: `SURVIVAL FIGHT attack_skeleton` a
+// hp 4 con l'inventario vuoto, poi morte). Il modello resta libero di scegliere
+// `attack_*` quando il piano lo giustifica: qui si toglie solo la scelta
+// automatica, non l'opzione.
+const FIGHT_MIN_HEALTH = Number(process.env.FIGHT_MIN_HEALTH ?? 10);
+const ARMED_ITEMS = ['netherite_sword', 'diamond_sword', 'iron_sword', 'stone_sword', 'golden_sword', 'wooden_sword', 'trident', 'netherite_axe', 'diamond_axe', 'iron_axe', 'stone_axe', 'copper_axe', 'wooden_axe', 'copper_sword'];
+const mayFight = (observation) => {
+  const hp = Number(observation?.health ?? 20);
+  const armed = ARMED_ITEMS.some(name => (observation?.inventory?.[name] ?? 0) > 0);
+  return hp >= FIGHT_MIN_HEALTH && armed;
+};
 let mountHoldSteps = 0;         // passi a bordo con l'umano (nessuna azione, nessun modello)
 let lastLostNoticeAt = 0;       // ultimo avviso "non ti vedo" (cooldown per episodio)
 // Il budget e' rinnovabile: un ordine "seguimi" aperto non si esaurisce con
@@ -1399,12 +1421,32 @@ for (let step = 1; step <= maxSteps; step++) {
   const milestoneHint = CURRICULUM ? nextMilestone(obs) : null;
   const active = resolveActiveSkill({skills: gameplaySkills, plan, governor, milestone: milestoneHint, observation: obs});
   const preferredIntents = skillPreferredIntents(active.skill);
-  const {options} = await api('GET', '/options');
+  const optionsReply = await api('GET', '/options');
+  const options = Array.isArray(optionsReply.options) ? optionsReply.options : [];
   // Quando il harness offre solo `wait` lo stato va spiegato nei log: non è una
-  // scelta di Jev ma l'unica azione valida (riconnessione, morte, sonno, ...).
+  // scelta di Jev ma l'unica azione valida (morte, sonno, nulla di valido).
   if (options.length === 1 && options[0].key === 'wait') {
     log('wait_only', {step, reason: waitOnlyReason(obs)});
   }
+  // Harness cieco: la sessione Bedrock è caduta e non c'è nessuna azione reale.
+  // Non è una scelta del modello e non è un `wait` da eseguire: il bot immobile
+  // viene ucciso. Si resiste un numero limitato di passi (la riconnessione è in
+  // corso) e poi il run si ferma con `harness_blind`, senza consumare il budget
+  // di azioni: un run fermo e leggibile vale più di un bot che muore in
+  // silenzio.
+  if (optionsReply.connected === false || options.length === 0) {
+    blindSteps += 1;
+    log('harness_blind', {step, consecutive: blindSteps, max: HARNESS_BLIND_MAX_STEPS, reason: optionsReply.blind ?? 'empty_options'});
+    if (blindSteps > HARNESS_BLIND_MAX_STEPS) {
+      runExitCode = 2;
+      console.log(`HARNESS BLIND after ${step - 1} actions: nessuna azione valida (${optionsReply.blind ?? 'empty_options'})`);
+      log('harness_blind_stop', {steps: step - 1, totalCost, consecutive: blindSteps, reason: optionsReply.blind ?? 'empty_options'});
+      break;
+    }
+    await delay(HARNESS_BLIND_WAIT_MS);
+    continue;
+  }
+  blindSteps = 0;
   // Cosa proporre a Jev: esclusioni esplicite (fallimento, cooldown anti-loop),
   // tetto di rilevanza e boost degli intenti della skill attiva. Il harness
   // resta l'unico proprietario della validità.
@@ -1448,7 +1490,7 @@ for (let step = 1; step <= maxSteps; step++) {
   // (gia' ordinati per priorita' del pericolo), altrimenti i bisogni in ordine.
   // Si dorme *nonostante tutto*, inseguimento compreso: l'azione non passa dal
   // modello, che poteva scegliere il waypoint e restare sveglio.
-  const needAction = chooseNeedAction({ governor, options: filtered.options });
+  const needAction = chooseNeedAction({ governor, options: filtered.options, policy: { fightAllowed: mayFight(obs) } });
   const needKey = needAction?.key || null;
   const needIntent = needAction?.intent || null;
   // Recupero dell'umano perso: con un ordine di follow aperto, se l'inseguimento

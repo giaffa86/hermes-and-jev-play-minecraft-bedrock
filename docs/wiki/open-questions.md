@@ -397,6 +397,28 @@ sitting on the human's boat.** The chain around it is implemented and in
   the world and stopped dying; the world itself is untouched and the bot comes back with
   `docker start`.
 
+- **Update 2026-10-07 — the wedge, and the silence that made it lethal.** In the
+  `diamond-20261007-1` expedition the transport no longer dropped a session *during*
+  one action: it dropped it ~2 minutes after login, five times in one day, always as
+  `Server closed connection: connecterror:9` → `[client_close] {reason:
+  'connecterror:9'}` → `[connect] attempt N failed: connecterror:9` (backoff up to
+  60 s), with the BDS console showing `Player disconnected` 2:00 after `Player
+  Spawned` and no kick reason; the third one was preceded by
+  `[unhandledRejection] Error: container_open_timeout` (stack `at Timeout._onTimeout
+  (file:///app/bedrock-adapter.mjs:6139:16)`, i.e. `_waitForContainerOpen`). The
+  leftover rejection is now suppressed (`pending.catch(() => {})`), **and it was not
+  the cause**: two rejections appeared after the patch and the sessions kept dying.
+  The five `systemctl restart minecraft-bedrock` rounds (bot container stopped first,
+  `playerCount 0` verified) bought minutes, not stability, so the transport cause is
+  still **open**. What is fixed is the *consequence*: while blind, the adapter
+  advertised a fake `wait`, the controller obeyed it (75 decisions at a single
+  option), and the idle entity was killed — 9 of the 11 deaths of the day have
+  `wait(ok)` as their last action, 12-164 s before dying. A blind harness is now
+  explicit (`connected: false`, `blind`, empty `/options`) and the run stops with
+  `harness_blind_stop`, and the deterministic ladder no longer sends an unarmed bot
+  to fight (`policy.fightAllowed`). Both are unit-tested; the live half (a run that
+  now *stops* instead of dying) needs a session that lasts longer than two minutes.
+
 ## Missing Bedrock capabilities (for the full first-night milestone)
 
 - **Food beyond crops** — requires the furnace/smelting chain (exists, needs live

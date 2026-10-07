@@ -424,12 +424,22 @@ asking the model**. `survival/resolver.mjs` now exports the ladder:
   fight, heal, eat, sleep, shelter, build, smelt, craft`) and `PREFERRED_KEYS`
   maps an intent onto its action keys (`escape: flee → move_to_safe → avoid_lava →
   dodge_projectile → retreat → go_home`, `heal: eat → sleep → equip_armor`, …).
-- `chooseNeedAction({governor, options})` returns `{key, intent, need, source}`:
-  in `emergency` it follows the **rule's own intent order** (`allowedIntents` is
-  the policy: a critical-health rule heals first, a creeper rule escapes first)
-  and appends the intents derived from the needs; outside emergency it follows
-  the needs. It never picks `wait`: if no action exists the decision goes back
-  to the model. Progressive needs are deliberately not mapped.
+- `chooseNeedAction({governor, options, policy})` returns `{key, intent, need,
+  source}`: in `emergency` it follows the **rule's own intent order**
+  (`allowedIntents` is the policy: a critical-health rule heals first, a creeper
+  rule escapes first) and appends the intents derived from the needs; outside
+  emergency it follows the needs. It never picks `wait`: if no action exists the
+  decision goes back to the model. Progressive needs are deliberately not mapped.
+  **`policy.fightAllowed === false` removes every `attack_*` option from the
+  ladder and returns `null` when nothing else is left** — fighting is a plan
+  decision, not a reflex. Added after 07/10/2026, when `critical_health` (health
+  ≤ 4, [risk](../raw/SURVIVAL-INTELLIGENCE.md)) sent a bot with an **empty
+  inventory** into `SURVIVAL FIGHT attack_skeleton`: the fight intent is the
+  fallback of `escape` (`NEED_INTENTS.escape = ['escape', 'fight']`), so with no
+  `flee` offered the ladder attacked instead of leaving the choice to the model
+  (which can still choose `attack_*`, and still does when armed). The controller
+  passes `policy: { fightAllowed: mayFight(obs) }` — health ≥ `FIGHT_MIN_HEALTH`
+  (default 10) **and** a sword/axe/trident in the inventory.
 
 Action side: drowning now needs air below `DROWNING_AIR = 60` (was 8) and the
 adapter offers **`surface`** (`SURFACE_AIR_ALERT = 150`) when the head is in

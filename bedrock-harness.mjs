@@ -187,7 +187,11 @@ async function connectLoop (initialDelay = 0) {
     } catch (err) {
       console.error(`[connect] attempt ${attempt} failed:`, err.message || err);
       if (shuttingDown) return;
-      const delayMs = Math.min(5000 * 2 ** Math.min(attempt - 1, 4), 60000);
+      // Riconnessione rapida: mentre la sessione e' caduta il bot e' immobile e
+      // i mob lo uccidono, quindi il vecchio tetto di 60 s (07/10/2026: 9 morti
+      // con l'ultima azione `wait`) e' tempo regalato al nemico. 3/6/12 s e poi
+      // 15 s: la sessione NetherNet si riprende al primo tentativo utile.
+      const delayMs = Math.min(3000 * 2 ** Math.min(attempt - 1, 2), 15000);
       console.log(`[connect] retrying in ${delayMs}ms...`);
       await delay(delayMs, undefined, { signal: shutdownSignal.signal });
     }
@@ -210,6 +214,9 @@ server = createServer(async (req, res) => {
       // se la progressione è stata interrotta (mode != normal).
       const obs = adapter.observe();
       obs.survival = summarizeSurvival(evaluateSurvival(obs, { rules: survivalRules }));
+      // Sessione viva o caduta: chi legge l'osservazione deve poterlo vedere
+      // senza dedurlo dalla posizione congelata (07/10/2026).
+      obs.connected = adapter.sessionLive === true;
       response = [200, obs];
     } else if (req.method === 'GET' && req.url.startsWith('/observe.structures')) {
       // Strutture/ambienti rilevati (spec M5/M6): la ricognizione è throttled
@@ -320,6 +327,10 @@ server = createServer(async (req, res) => {
       const restricted = filterOptionsForGovernor(offered, survival, { protectedKeys: humanOrderKeys });
       response = [200, {
         options: restricted.options,
+        // `connected: false` (con `blind`) dice che non esistono azioni reali:
+        // il controller non deve leggerlo come una scelta di attendere.
+        connected: adapter.sessionLive === true,
+        blind: typeof adapter.optionsBlindReason === 'string' ? adapter.optionsBlindReason : null,
         survival: summarizeSurvival(survival),
         filtered: restricted.filtered,
         removed: restricted.removed,

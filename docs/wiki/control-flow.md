@@ -99,7 +99,19 @@ Cross-cutting, deterministic, at every step:
    owns **validity**: from the current state it computes *only* the actions that
    are executable and useful right now and exposes them as `/options`. The models
    can only choose from that list; bad behaviour is fixed in the harness, not in
-   the prompt.
+   the prompt. When the Bedrock session is **not live** the harness offers
+   **nothing** (`adapter.sessionLive` false → `options()` returns `[]`,
+   `optionsBlindReason = 'not_connected'`) and says so in the route
+   (`connected: false` + `blind`, mirrored by `observe().connected`): before
+   07/10/2026 it returned a fake `[{key: 'wait'}]`, which the controller read as
+   "the only valid action" while the bot stood still and mobs killed it — 75
+   `wait` decisions at a single option and the last 9 deaths of the day having
+   `wait(ok)` as their last action. A **blind** harness is a broken run, not a
+   quiet one: the controller resists `HARNESS_BLIND_MAX_STEPS` (default 6) steps
+   without spending budget (`harness_blind`), then stops with exit code 2 and
+   `harness_blind_stop`. `wait` survives only where it is true: a dead or sleeping
+   bot is *connected*, and those two branches (plus the harness `busy` lock) still
+   answer it.
 
 5. **System One — Jev** (`controller.mjs` → `jevDecide`, via the OpenRouter/TypeSafe
    `/decisions` endpoint) chooses **one** bounded action per step from the
