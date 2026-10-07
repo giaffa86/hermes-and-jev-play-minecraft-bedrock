@@ -44,6 +44,7 @@ import {composeChatReply, chatLlmConfig, compactChatFacts, createChatMemory, rea
 import {chatLangConfig, t, languageName, LANGS, listAnd} from './chat-i18n.mjs';
 import {narrateGoal, DEFAULT_NARRATE_COOLDOWN_MS} from './chat-narration.mjs';
 import {runDir} from './run-paths.mjs';
+import {withPlanShape} from './plan-shape.mjs';
 import {systemOneDecide} from './system-one.mjs';
 import {
   evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
@@ -479,7 +480,7 @@ async function hermesPlan(observation, { recall = '' } = {}) {
   const skillList = [...gameplaySkills.keys()].join(', ');
   const curriculumHint = CURRICULUM ? nextMilestone(observation) : null;
   const prompt = [
-    'You are the PLANNER for a Minecraft bot. Return ONLY a JSON object {"objective": string, "targets": {item: minCount}, "waypoint": {"x":int,"z":int} | null, "skill": string | null, "notes": string}.',
+    'You are the PLANNER for a Minecraft bot. Return ONLY a JSON object {"objective": string, "subgoal": string | null, "targets": {item: minCount}, "waypoint": {"x":int,"z":int} | null, "skill": string | null, "notes": string}.',
     `Overall goal: ${GOAL}`,
     constructionPlannerInstructions(),
     CURRICULUM ? `Overall progression milestone: ${CURRICULUM} (the progression engine verifies it deterministically)` : '',
@@ -487,6 +488,7 @@ async function hermesPlan(observation, { recall = '' } = {}) {
     WAYPOINT ? `Required waypoint (keep it unless reached): ${JSON.stringify(WAYPOINT)}` : '',
     `Required targets: ${JSON.stringify(TARGETS)}`,
     `Optional "skill" field, one of the declarative gameplay skills: ${skillList}. Use it when the objective matches one of them; it is verified against harness state, not by you.`,
+    'Optional "subgoal" field: the current chunk of the objective, one short phrase (the controller derives it from the skill when you set one). It is not a second objective.',
     provenHintLines(observation),
     recall,
     'The harness exposes the currently valid actions (typical keys: goto_waypoint, dig_down, mine_<block>, collect_drop, craft_<item>, place_<item>, eat, flee, sleep, wait); the controller will pick one of them. Keep the objective to one sentence the controller can act on now.',
@@ -530,6 +532,14 @@ async function planForStep (observation, reason, goal = null) {
   const recall = await semanticRecall(goal);
   const plan = await hermesPlan(observation, {recall: semanticRecallLines(recall.hits)});
   return applySemanticWaypoint(plan, recall);
+}
+
+// ---- R1: la forma del piano ---------------------------------------------------------------
+// Un solo punto dove `objective -> subgoal -> steps[]` viene derivato dagli
+// artefatti dichiarativi (skill e progression). Additivo: se un produttore ha
+// gia' messo `subgoal`/`steps`, `withPlanShape` non li sovrascrive.
+function shapedPlan (plan) {
+  return withPlanShape(plan, { skills: gameplaySkills, milestones: progressionGraph.milestones });
 }
 
 // ---- comando umano via chat (M1-M3) ---------------------------------------------------------
@@ -915,7 +925,7 @@ async function humanCommandPlan (obs, entry) {
   const sender = (obs.entities || []).find(e => e.kind === 'player' && e.username && e.username.toLowerCase() === (entry.from || '').toLowerCase());
   const senderPos = sender?.position ?? null;
   const prompt = [
-    'You are the PLANNER for a Minecraft bot. A TRUSTED human player sent you a command in chat. Return ONLY a JSON object {"objective": string, "targets": {item: minCount}, "waypoint": {"x":int,"z":int} | null, "follow": string | null, "notes": string}.',
+    'You are the PLANNER for a Minecraft bot. A TRUSTED human player sent you a command in chat. Return ONLY a JSON object {"objective": string, "subgoal": string | null, "targets": {item: minCount}, "waypoint": {"x":int,"z":int} | null, "follow": string | null, "notes": string}.',
     `The human (gamertag "${entry.from}") said: "${entry.message}".`,
     constructionPlannerInstructions(),
     senderPos
@@ -1200,7 +1210,7 @@ async function maybeHumanCommand (obs, {history = [], lastResult = null} = {}) {
       continue;
     }
     log('chat_command', {from: entry.from, xuid: entry.xuid, prefix: match.prefix, message});
-    const plan = await humanCommandPlan(obs, {...entry, message});
+    const plan = shapedPlan(await humanCommandPlan(obs, {...entry, message}));
     // M5: conferma dell'ordine in chat. Best-effort (l'adapter applica rate
     // limit e lunghezza); l'esito arriva alla chiusura del goal.
     const ack = orderAck({from: entry.from, plan, maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG});
@@ -1692,7 +1702,7 @@ if (goalContract && !plan.construction) {
   }
 }
 
-let initialPlan = goal.plan || await planForStep(obs, 'start', goal);
+let initialPlan = goal.plan || shapedPlan(await planForStep(obs, 'start', goal));
 if (initialPlan?.met) {
   console.log('CURRICULUM GOAL already met');
   log('goal_met', {steps: 0, curriculum: CURRICULUM});
@@ -1938,7 +1948,7 @@ for (let step = 1; step <= maxSteps; step++) {
     replanReason = null;
   }
   if (replanReason) {
-    const candidatePlan = await planForStep(obs, replanReason, goal);
+    const candidatePlan = shapedPlan(await planForStep(obs, replanReason, goal));
     if (candidatePlan?.met) { log('curriculum_goal_met', {step, reason: replanReason}); goalReached = true; break; }
     const sameSkill = candidatePlan?.skill && candidatePlan.skill === plan.skill;
     plan = withStickyEscort(withStickyFollow(candidatePlan, goal.follow), goal.escort);

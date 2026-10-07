@@ -25,37 +25,9 @@ import { declaredOptionVocabulary, INTENTS } from '../survival/intents.mjs';
 import { loadGameplaySkills } from '../survival/skills.mjs';
 import { CRITERIA_KEYS, validateCriteria } from '../survival/verify.mjs';
 import { loadCircuits } from '../circuits.mjs';
+import { circuitRef, criteriaNames } from '../plan-shape.mjs';
 
 const DEFAULT_PROGRESSION = new URL('../knowledge/progression.json', import.meta.url);
-
-// Nomi di criterio effettivamente usati, appiattendo i combinatori allOf/anyOf.
-function criteriaNames (criteria, out = new Set()) {
-  if (!criteria || typeof criteria !== 'object') return out;
-  if (Array.isArray(criteria)) {
-    for (const sub of criteria) criteriaNames(sub, out);
-    return out;
-  }
-  for (const [key, value] of Object.entries(criteria)) {
-    if (key === 'allOf' || key === 'anyOf') criteriaNames(value, out);
-    else out.add(key);
-  }
-  return out;
-}
-
-// Il circuito che una skill dichiara come proprio criterio di successo, se c'e'.
-function circuitRef (def) {
-  const success = def?.success;
-  if (success && typeof success === 'object' && success.circuitBuilt && typeof success.circuitBuilt === 'object') {
-    return success.circuitBuilt.id || null;
-  }
-  if (Array.isArray(success)) {
-    for (const sub of success) {
-      const ref = circuitRef({ success: sub });
-      if (ref) return ref;
-    }
-  }
-  return null;
-}
 
 export function buildInventory ({ skillsRoot, circuitsRoot, progressionPath } = {}) {
   const issues = [];

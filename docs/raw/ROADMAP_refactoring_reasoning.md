@@ -7,7 +7,7 @@ aspirational design prompts written without reading the code: several of their
 central claims are factually wrong for this repository. This document keeps the
 parts of their intent that are real, records every correction with the evidence
 that contradicts the draft, and turns the result into an incremental roadmap whose
-first milestone is already implemented (R0).
+first two milestones are already implemented (R0, R1).
 
 It is an `docs/raw/` source: the wiki summarizes and links it
 (`docs/wiki/reasoning-roadmap.md`); behaviour is still decided by the code.
@@ -216,7 +216,7 @@ the test asserting the real files parse.
 
 ---
 
-### R1 — A typed plan: `subgoal` and `steps`
+### R1 — A typed plan: `subgoal` and `steps` (IMPLEMENTED)
 
 **Goal.** Promote the plan from "shallow JSON with a bag of hints" to an explicit
 ordered structure: `objective → subgoal → steps[]`, where each step names a
@@ -231,6 +231,9 @@ level between objective and actions, receding-horizon, re-derived at each replan
 **Existing code involved.** `humanCommandPlan` (`controller.mjs:911`),
 `hermesPlan` (`:478`), `planFromMilestone` (`:361`), `nextMilestone`
 (`survival/progression.mjs`), `verifySkill` (`survival/verify.mjs:345`).
+**New file.** `plan-shape.mjs` (pure): `criteriaNames`, `circuitRef`, `planStep`,
+`derivePlanShape`, `withPlanShape` — the single place the shape is derived, also
+re-used by the R0 inventory.
 
 **Data structures.** add to the existing plan (no new file of truth):
 
@@ -248,6 +251,18 @@ through `verifySkill` one at a time; `GOAL MET` is unchanged.
 
 **Risks.** Medium: touches the planner's shape. Mitigation: `steps` is additive;
 no consumer may require it in the same change.
+
+**Implemented (this change).** `plan-shape.mjs` derives the shape; `controller.mjs`
+applies it through one `shapedPlan()` wrapper at the three points where a plan
+becomes a goal (the human order at `maybeHumanCommand`, the initial plan at
+`main`, the replan at the step loop). Both planner prompts now accept an optional
+`"subgoal"` string, which is a hint only: when the plan names a skill, `subgoal`
+**is** that skill's `description` — the model cannot rename the chunk. A plan with
+no `objective` (the `{met:true}` sentinel) is left untouched. `tests/plan-shape.test.mjs`
+(9 cases) covers the derivation, the `verify ⊆ CRITERIA_KEYS` rule, that a step
+never carries an action field, objective stability across a replan, the "producer
+wins" rule, and the sentinel. The live `CURRICULUM` acceptance round is still open
+(it needs the bot container and a real goal).
 
 ---
 

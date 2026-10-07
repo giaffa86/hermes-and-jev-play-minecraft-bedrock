@@ -1,5 +1,24 @@
 # Log
 
+## [2026-10-07] docs | R1 implementata: il piano ha una forma (`subgoal` + `steps[]`)
+
+Secondo passo della roadmap corretta (`docs/raw/ROADMAP_refactoring_reasoning.md`). Il
+piano non è più solo un JSON piatto: `plan-shape.mjs` (puro) deriva `plan.subgoal`
+(il pezzo corrente dell'objective, "Evolution A": un solo livello sopra le azioni) e
+`plan.steps[{id, skill, circuit, targets, verify}]` dagli artefatti dichiarativi — la
+skill decide i `targets`, il circuito (`success.circuitBuilt.id`) e i criteri di
+verifica, filtrati a `CRITERIA_KEYS`. Nessuno step nomina una key di `/options`: le
+azioni restano una scelta del controller a runtime. `controller.mjs` applica la forma
+con un solo `shapedPlan()` nei tre punti dove un piano diventa un goal (ordine umano,
+piano iniziale, replan); è **additiva** — un produttore che ha già messo
+`subgoal`/`steps` vince, e un sentinella senza `objective` (`{met:true}`) resta com'è.
+Le due prompt di planning accettano un `"subgoal"` opzionale che è solo un suggerimento:
+con una skill nel piano il `subgoal` *è* la `description` della skill. `criteriaNames` e
+`circuitRef` sono condivisi con l'inventario R0 (`tools/capability-inventory.mjs`), che
+non li duplica più. `tests/plan-shape.test.mjs` (9 casi): derivazione, `verify` ⊆
+`CRITERIA_KEYS`, nessun campo-azione, objective stabile nel replan, il produttore che
+vince, il sentinella. Resta aperto il giro live `CURRICULUM` (serve il container).
+
 ## [2026-10-07] docs | La roadmap del layer di ragionamento, corretta contro il codice (R0 implementata)
 
 Richiesta dell'utente: *"scrivi roadmap correggendo le inesattezze su questa attività"*,
