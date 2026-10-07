@@ -480,6 +480,28 @@ expedition kit and night survival (spec addition in [exploration](exploration.md
   `hut_incomplete`). All three need the bot to leave the room — same blocker as
   below.
 
+## The re-arm after a recovery has no live proof (2026-10-07)
+
+`recover_loot` now re-arms (`_equipArmor` then `_equipShield`, the shield into
+the offhand) and the standalone `rearm_gear` action exposes the same pass, but
+**no round has ever run it on the BDS**: run 2 (`demo-r2`) and run 3 (`demo-r3`)
+logged **zero** `equip_*` attempts, and the only live `equip_armor` (run 1,
+06/10) was refused by the server with `status 50` — the refusal `4ec6820` now
+types and retries once, and that commit **is not deployed** either (the live
+image is `225440a`).
+
+What is missing is cheap and unambiguous: a death with loot to recover. The
+round dies once, runs `recover_loot`, and reads `rearm` in the payload, the
+`recover_loot_rearm` log line, `observe().armor` and the offhand slot. Open
+until then:
+
+- Does a **genuine** `armor_place_failed_50` survive the single retry? The armor
+  retries the *same* place (`armor/2` with the same stack id) while the shield
+  falls back to a different offhand slot — if the refusal is real, only the
+  shield has a second chance.
+- Is the offhand slot index stable across reconnects? `equip_shield` already
+  carries `OFFHAND_FALLBACK_SLOT = 0` for the servers that answer 50 on slot 1.
+
 ## Respawn stuck on live BDS (2026-10-02) — mitigated by auto-reconnect
 
 - After a death (natural or a console `kill`) the bot stays `dead`

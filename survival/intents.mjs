@@ -30,6 +30,12 @@ const KEY_INTENTS = {
   close_door: ['shelter'],
   barricade: ['shelter'],
   equip_armor: ['heal'],
+  // Riarmo completo (armatura + scudo in un colpo): stessa famiglia di
+  // `equip_armor`/`equip_shield` — senza la voce la chiave sarebbe `unknown` e
+  // il filtro di emergenza la toglierebbe proprio quando l'armatura serve
+  // (lo stesso difetto trovato live il 06/10/2026 sullo scudo contro uno
+  // scheletro).
+  rearm_gear: ['heal', 'shelter'],
   // Difesa passiva: lo scudo ferma le frecce, quindi in emergenza e' una forma di
   // riparo (`shelter`) come una porta chiusa. Senza queste voci le tre key
   // restavano `unknown` e il filtro del governor le toglieva proprio quando

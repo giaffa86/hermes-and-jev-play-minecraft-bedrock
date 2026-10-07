@@ -4640,6 +4640,12 @@ export class BedrockAdapter {
     if (Object.keys(this.inventory).some(name => this._armorSlotFor(name) >= 0)) {
       o.push({ key: 'equip_armor', description: 'Equip armor pieces from inventory (helmet/chestplate/leggings/boots)' });
     }
+    // Riarmo completo: armatura **e** scudo in un colpo solo (lo scudo sempre
+    // nell'offhand, mai in zaino). È lo stesso passo che `recover_loot` fa da
+    // solo, offerto come azione per quando il loot è già in zaino.
+    if (this._needsRearm()) {
+      o.push({ key: 'rearm_gear', description: 'Put the carried armor pieces and the shield back on (the shield always in the offhand)' });
+    }
     // Porte: chiudi quelle aperte dal bot per sigillare il rifugio.
     if (this._closeDoorTarget()) {
       o.push({ key: 'close_door', description: 'Close the open door(s) behind you to keep mobs out' });
@@ -5241,7 +5247,7 @@ export class BedrockAdapter {
     // Construction owns its procurement choices: unrelated takes, deposits,
     // mining and teardown must not consume materials or edit another build.
     if (this.plan?.construction) {
-      const survival = new Set(['eat', 'flee', 'sleep', 'go_home', 'retreat', 'recover_loot', 'equip_armor', 'equip_shield', 'raise_shield', 'lower_shield', 'avoid_lava', 'move_to_safe', 'dodge_projectile']);
+      const survival = new Set(['eat', 'flee', 'sleep', 'go_home', 'retreat', 'recover_loot', 'rearm_gear', 'equip_armor', 'equip_shield', 'raise_shield', 'lower_shield', 'avoid_lava', 'move_to_safe', 'dodge_projectile']);
       const kept = o.filter(option => survival.has(option.key) || option.key.startsWith('attack_') || option.key === 'collect_drop');
       kept.push(...this.construction.options());
       return kept.length ? kept : [{ key: 'wait', description: 'Construction paused or blocked; inspect construction.lastError and resume after resolving it' }];
@@ -5541,6 +5547,8 @@ export class BedrockAdapter {
         result = await this._lightPortal({});
       } else if (key === 'go_home' || key === 'retreat') {
         result = await this._goHome();
+      } else if (key === 'rearm_gear') {
+        result = await this._rearmGear();
       } else if (key === 'equip_armor') {
         result = await this._equipArmor();
       } else if (key === 'close_door') {
@@ -5701,10 +5709,60 @@ export class BedrockAdapter {
     await delay(1200);
     const left = this._nearestDropNear(site.position, 12);
     if (!left) this.deathSite = null;
-    this.log('recover_loot', { site: target, moved, recovered, left: !!left });
+    // Loot recuperato e **non rimesso addosso**: chi torna dal sito di morte si
+    // ritrova in zaino l'armatura e lo scudo che aveva, ma niente indosso — cioè
+    // nudo davanti ai mob che l'hanno appena ucciso. Il riarmo è parte del
+    // recupero, non un secondo ordine da dare al bot.
+    const rearm = await this._rearmGear();
+    this.log('recover_loot', { site: target, moved, recovered, left: !!left, rearm });
     const expGained = this.experienceLevel != null && levelBefore != null
       ? Math.max(0, this.experienceLevel - levelBefore) : null;
-    return { ok: true, site: target, moved, recovered, leftNearby: !!left, expLevel: this.experienceLevel ?? null, expGained };
+    return { ok: true, site: target, moved, recovered, leftNearby: !!left, rearm, expLevel: this.experienceLevel ?? null, expGained };
+  }
+
+  // Addosso quello che il loot ha restituito: i pezzi d'armatura e lo scudo che
+  // dopo una morte restano nello zaino. Lo scudo vive **solo** nell'offhand (la
+  // mano sinistra, container 34): se è in zaino va spostato, mai lasciato lì.
+  // Best effort: se un pezzo non entra, il recupero del loot resta comunque
+  // riuscito e il fallimento finisce in `failures` (log `recover_loot_rearm`).
+  async _rearmGear () {
+    const rearm = { armor: [], shield: null, failures: [] };
+    // Chiamato da `_recoverLoot` dopo il recupero: se nel frattempo il bot è
+    // morto di nuovo non c'è niente da rimettere addosso (e nessun fallimento).
+    if (this.dead) return { ok: true, skipped: 'dead', ...rearm };
+    try {
+      const armor = await this._equipArmor();
+      if (armor?.ok) rearm.armor = armor.equipped ?? [];
+      else if (armor?.error !== 'no_armor_in_inventory') rearm.failures.push({ stage: 'armor', error: armor?.error ?? 'armor_equip_failed', carried: armor?.carried ?? null });
+    } catch (error) {
+      rearm.failures.push({ stage: 'armor', error: error.message });
+    }
+    if ((this.inventory?.shield || 0) > 0 || this._offhandItem() === 'shield') {
+      try {
+        const shield = await this._equipShield();
+        if (shield?.ok) rearm.shield = 'offhand';
+        else rearm.failures.push({ stage: 'shield', error: shield?.error ?? 'shield_equip_failed' });
+      } catch (error) {
+        rearm.failures.push({ stage: 'shield', error: error.message });
+      }
+    }
+    if (rearm.armor.length || rearm.shield || rearm.failures.length) this.log('recover_loot_rearm', rearm);
+    // `ok:false` solo quando c'era qualcosa da indossare e **niente** è entrato:
+    // un riarmo parziale è riuscito, e non avere nulla da indossare non è un
+    // fallimento (`rearm_gear` resta un'azione lecita da chiamare).
+    const worn = rearm.armor.length > 0 || Boolean(rearm.shield);
+    return worn || !rearm.failures.length ? { ok: true, ...rearm } : { ok: false, error: 'rearm_failed', ...rearm };
+  }
+
+  // C'è qualcosa da rimettere addosso? Qui contano gli **slot**, non l'aggregato:
+  // `equip_armor` è già offerto dall'aggregato (`Object.keys(this.inventory)`),
+  // `rearm_gear` serve per il pezzo che uno slot mostra e che gli slot armor non
+  // hanno (o per lo scudo ancora in zaino).
+  _needsRearm () {
+    const worn = new Set(this._wornArmor());
+    const unworn = this._armorPiecesInSlots().some(piece => !worn.has(piece.name));
+    const shieldInPack = (this.inventory?.shield || 0) > 0 && this._offhandItem() !== 'shield';
+    return unworn || shieldInPack;
   }
 
   _dropStillThere (drop) {

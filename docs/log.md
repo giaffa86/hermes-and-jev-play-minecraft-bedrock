@@ -1,5 +1,33 @@
 # Log
 
+## [2026-10-07] fix | The loot comes back with the gear: recover_loot re-arms
+
+Run 2 (`demo-r2`) died ten times and its ledger holds **zero** `equip_*`
+attempts: `_recoverLoot` collected the drops and never put the armor back on,
+and the only live `equip_armor` (run 1, 06/10) was refused by the server. A death
+is exactly the moment the gear matters.
+
+`_recoverLoot` now ends with `_rearmGear()` — `_equipArmor()` then
+`_equipShield()` — with `rearm: { ok, armor, shield, failures }` in the payload
+and a `recover_loot_rearm` log line when something went on. The re-arm is **best
+effort**, because the loot is already recovered when it runs: a refused place
+keeps `ok: true` and reports itself in `rearm.failures`
+(`armor_place_failed_<status>` + `carried`), and only "something wearable,
+nothing worn" is `ok: false` / `rearm_failed`.
+
+`rearm_gear` offers the same pass standalone — offered when `_needsRearm()`
+sees a slot carrying an armor piece the armor slots do not wear, or the shield
+in the pack — and `survival/intents.mjs` declares it `heal` + `shelter` from the
+start, so the emergency filter that once dropped the shield cannot drop it. The
+shield goes into the `offhand` container (slot 1, fallback 0), never into the
+pack. `tests/bedrock-recover-rearm.test.mjs` (5 tests) covers the pass, the
+destination, the partial failure, the empty case and the option gating; the
+action catalogue in `BEDROCK.md` gains its row, and [respawn](wiki/respawn.md)
+and [emergency](wiki/emergency.md) explain the rule. **No live proof yet**: the
+round that proves it is a death with loot to recover, and the armor fix
+`4ec6820` is still undeployed (live image `225440a`) — see
+[open-questions](wiki/open-questions.md).
+
 ## [2026-10-06] fix | One death is one episode, and a runtime id does not outlive its session
 
 The driver dumped the ten `death` events of run 2 (`demo-r2`) from the container

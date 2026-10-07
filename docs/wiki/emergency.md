@@ -56,6 +56,11 @@ mission*):
   had no entry in `KEY_INTENTS`, so `optionIntents()` answered `unknown` and the
   filter dropped them exactly when a projectile is incoming. They now mean
   `shelter` (`survival/intents.mjs`) — the passive defence a closed door gives.
+- **`rearm_gear` arrived already mapped.** The re-arm that `recover_loot` now
+  runs by itself (armor back on, shield into the offhand; see
+  [respawn](respawn.md)) declares `heal` + `shelter` from the start, so the trap
+  above cannot catch it: an unmapped key is dropped by the emergency filter
+  exactly when the bot has just died and wants its gear back.
 
 Both behaviours are pinned by `tests/survival-governor.test.mjs` (*an armed bot
 keeps fight among the emergency intents*, *the shield is still usable in an

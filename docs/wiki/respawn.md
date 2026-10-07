@@ -5,7 +5,8 @@ Topic: what happens when the bot dies on the live BDS, why respawn can get
 the refinement path.
 
 Sources: `bedrock-adapter.mjs` (`_onOwnHealth`, `_onRespawnPacket`,
-`_survivalTick`, the respawn watchdog), [open-questions](open-questions.md),
+`_survivalTick`, the respawn watchdog, `_recoverLoot`/`_rearmGear` and
+`_equipArmor`/`_equipShield`), [open-questions](open-questions.md),
 [verification](verification.md) row 12.
 
 ## The flow
@@ -78,6 +79,41 @@ already been closed by the fallback (before, that path left the limbo silent).
 dance. Note that the internal `deaths` counter (`bedrock-adapter.mjs:631`) lives
 for the process and is never reset in code: after a harness restart it starts
 from zero, so `/observe` alone is not a death record — the run ledger is.
+
+## The loot comes back with the gear (07/10/2026)
+
+Run 2 (`demo-r2`) died ten times and its ledger holds **zero** `equip_*`
+attempts: `_recoverLoot` collected the drops and walked away without the armor,
+and the only live `equip_armor` of run 1 was refused by the server
+(`armor_place_failed`, status 50). A death is exactly the moment the gear
+matters — the bot that comes back from `recover_loot` should not have to be
+re-dressed by hand.
+
+`_recoverLoot` now ends with a **re-arm**: `_equipArmor()` first, then
+`_equipShield()`, and the payload carries `rearm: { ok, armor, shield, failures }`.
+The re-arm is **best effort** on purpose — the loot is already recovered when it
+runs — so a refused place leaves `ok: true` and reports itself in
+`rearm.failures` (`{ stage: 'armor', error: 'armor_place_failed_<status>', carried }`),
+and only "something wearable, nothing worn" is `rearm.ok: false` with
+`rearm.error: 'rearm_failed'`. A pass that put something on logs
+`recover_loot_rearm`.
+
+The **shield lives in the offhand** and nowhere else: `_equipShield` places into
+the `offhand` container (id 34) at slot 1, falling back to slot 0 only when the
+server answers 50, and `rearm_gear` keeps that rule — it is offered exactly when
+a slot carries an armor piece the armor slots do not wear, or the shield is in
+the pack (`_needsRearm`, which reads the *slots*, not the aggregate counts).
+`rearm_gear` is the standalone action for the same pass, for the moments a
+driver wants the gear back without a death; it declares the `heal` and `shelter`
+intents (`survival/intents.mjs`), the lesson the shield learned on 06/10 — a key
+with no intent is answered `unknown` and the emergency filter drops it exactly
+when it is needed.
+
+`tests/bedrock-recover-rearm.test.mjs` (5 tests) pins the re-arm, the shield's
+destination (`offhand`/1, one place), the partial failure, the empty case (no
+request, no log) and the option gating. **No live proof yet** — the round that
+proves it is a death with loot to recover, and the armor fix of `4ec6820` is
+still undeployed; see [open-questions](open-questions.md).
 
 ## Limits
 
