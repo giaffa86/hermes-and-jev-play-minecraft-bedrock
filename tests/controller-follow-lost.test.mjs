@@ -194,6 +194,10 @@ test('a lost follow walks to the last known position, then asks once in chat', a
     const followPlans = harness.calls.filter(c => c.path === '/plan' && c.payload.follow).map(c => c.payload.follow);
     assert.equal(followPlans.length >= 1, true, 'the follow is posted to the harness');
     assert.equal(followPlans.every(f => f === 'Ale'), true, `the follow target never changes (got ${JSON.stringify(followPlans)})`);
+    // R4: il fallimento di `seek_player` (`player_not_found`) e' un bersaglio
+    // spostato, non un vicolo cieco: si ritenta, il piano non viene revisionato.
+    const revised = harness.calls.filter(c => c.path === '/plan' && c.payload.steps?.some(s => s.refused));
+    assert.equal(revised.length, 0, `a retryable refusal does not revise the plan (got ${JSON.stringify(revised.map(c => c.payload.steps))})`);
   } finally {
     harness.server.close();
     rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });

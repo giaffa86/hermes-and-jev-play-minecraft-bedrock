@@ -6,7 +6,7 @@
 
 export function buildSkillRecord ({
   skill, status, actions = 0, startedAt, endedAt = Date.now(),
-  failureReason = null, context = null,
+  failureReason = null, context = null, failure = null,
 } = {}) {
   const id = typeof skill === 'string' ? skill : skill?.id ?? null;
   return {
@@ -18,6 +18,10 @@ export function buildSkillRecord ({
     elapsedMs: startedAt != null ? Math.max(0, endedAt - startedAt) : null,
     failureReason,
     context,
+    // R4: il rifiuto tipizzato che ha portato al fallimento (`{step, stepId,
+    // key, error, kind, retryable, evidence}`), quando c'e' stato. `null` per
+    // una skill riuscita o per un fallimento che non viene da un rifiuto.
+    failure,
   };
 }
 

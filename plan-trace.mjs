@@ -46,6 +46,13 @@ export function planTraceSteps (plan, { limit = MAX_STEPS } = {}) {
     if (step?.circuit) out.circuit = step.circuit;
     if (step?.targets && Object.keys(step.targets).length) out.targets = { ...step.targets };
     if (Array.isArray(step?.verify) && step.verify.length) out.verify = [...step.verify];
+    // R4: un passo che ha subito un rifiuto lo porta dentro di se': quando il
+    // piano revisionato viene adottato, la traccia mostra il rifiuto **sullo
+    // step**, non solo l'elenco in coda.
+    if (step?.refused) {
+      out.refused = { error: step.refused.error ?? null, kind: step.refused.kind ?? null, retryable: step.refused.retryable ?? null };
+      if (step.refusalCount != null) out.refusalCount = step.refusalCount;
+    }
     return out;
   });
 }
@@ -112,18 +119,25 @@ export function createPlanTrace ({ dir, file = null, now = Date.now, write = app
     decided ({ step = null, key = null, by = null, reason = null } = {}) {
       return push('decisions', { step, key, by, reason });
     },
-    refused ({ step = null, key = null, error = null, ms = null } = {}) {
-      return push('refusals', { step, key, error, ms });
+    // R4: un rifiuto porta anche il suo tipo. `kind`/`retryable`/`stepId`
+    // restano assenti quando il chiamante non li conosce (un `busy` consumato
+    // prima della decisione, per esempio): la riga non inventa campi.
+    refused ({ step = null, key = null, error = null, ms = null, kind = null, retryable = null, stepId = null } = {}) {
+      const entry = { step, key, error, ms };
+      if (kind != null) entry.kind = kind;
+      if (retryable != null) entry.retryable = retryable;
+      if (stepId != null) entry.stepId = stepId;
+      return push('refusals', entry);
     },
     // Un esito d'azione: conta e finisce in `decisions` o `refusals`. `by` e'
     // il ramo che ha scelto la chiave (`jev`, `survival_need`, `drop_order`, …).
-    record ({ step = null, key = null, by = null, reason = null, ok = null, error = null, ms = null } = {}) {
+    record ({ step = null, key = null, by = null, reason = null, ok = null, error = null, ms = null, kind = null, retryable = null, stepId = null } = {}) {
       if (!current) return null;
       current.actions += 1;
       if (ok === true) current.ok += 1;
       else current.failed += 1;
       if (ok === true) this.decided({ step, key, by, reason });
-      else this.refused({ step, key, error: error ?? 'unknown', ms });
+      else this.refused({ step, key, error: error ?? 'unknown', ms, kind, retryable, stepId });
       return current;
     },
     // Chiude il segmento e scrive la riga. Idempotente: la seconda chiamata non
@@ -148,6 +162,7 @@ export function summarizePlanTrace (rows = [], { top = 10 } = {}) {
   const bySource = {};
   const endedBy = {};
   const refusalsByError = {};
+  const refusalsByKind = {};
   let decisions = 0;
   let refusals = 0;
   let steps = 0;
@@ -167,6 +182,7 @@ export function summarizePlanTrace (rows = [], { top = 10 } = {}) {
     for (const refusal of row?.refusals ?? []) {
       const error = refusal?.error ?? 'unknown';
       refusalsByError[error] = (refusalsByError[error] ?? 0) + 1;
+      if (refusal?.kind) refusalsByKind[refusal.kind] = (refusalsByKind[refusal.kind] ?? 0) + 1;
     }
     steps += row?.steps?.length ?? 0;
     actions += row?.actions ?? 0;
@@ -185,12 +201,14 @@ export function summarizePlanTrace (rows = [], { top = 10 } = {}) {
     decisions,
     refusals,
     refusalsByError,
+    refusalsByKind,
     actions,
     ok,
     failed,
     omitted,
     topSources: rank(bySource),
     topRefusals: rank(refusalsByError),
+    topRefusalKinds: rank(refusalsByKind),
     topEndedBy: rank(endedBy),
     firstAt: rows.at(0)?.startedAt ?? null,
     lastAt: last?.endedAt ?? null,

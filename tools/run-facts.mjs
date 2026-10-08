@@ -65,6 +65,9 @@ if (facts.planTrace) {
   const sources = Object.entries(p.bySource).map(([k, v]) => `${k}=${v}`).join(', ');
   console.log(`  plan-trace: ${p.plans} piani (${sources}), ${p.steps} passi, ${p.decisions} decisioni, ${p.refusals} rifiuti, ${p.replans} replan`);
   if (p.topRefusals.length) console.log(`    rifiuti: ${p.topRefusals.map(([k, v]) => `${k}=${v}`).join(', ')}`);
+  // R4: il tipo del rifiuto dice cosa il passo poteva farne (ritentare, cambiare
+  // approccio, fallire): e' la differenza fra "un errore" e "una risposta".
+  if (p.topRefusalKinds?.length) console.log(`    tipi: ${p.topRefusalKinds.map(([k, v]) => `${k}=${v}`).join(', ')}`);
   if (p.topEndedBy.length) console.log(`    chiusure: ${p.topEndedBy.map(([k, v]) => `${k ?? 'open'}=${v}`).join(', ')}`);
   if (p.lastPlan) console.log(`    ultimo piano: ${p.lastPlan.source} "${p.lastPlan.objective ?? ''}"${p.lastPlan.subgoal ? ` -> ${p.lastPlan.subgoal}` : ''} (${p.lastPlan.stepCount} step)`);
 }

@@ -64,7 +64,7 @@ Namespaced `R0`…`R7` to avoid colliding with the repo's own M1–M12 chat mile
 | **R1** Typed plan | Add `plan.subgoal` + `plan.steps[]` (each naming a skill/circuit + its verify criteria), derived from the declarative files; exactly one level above actions ("Evolution A") | **implemented** |
 | **R2** Clarification gate | Wrap `humanCommandPlan`: `orderGaps(text, plan, obs, {memory})` → `ready` \| `needs_input`; ask one question, hold the order, resume on the same sender's answer. **Design decided 07/10/2026**: the pending question lives in the harness-side inbox (`chatInbox`), not in the controller, and an under-specified order never becomes a goal (so no running goal is suspended). `CHAT_CLARIFY` **default on**, kill-switch `off` | **implemented** |
 | **R3** Plan trace | One structured `plan_trace` line per decision (objective, subgoal, source, steps, action, refusals, replan reason). Never chain-of-thought | **implemented** — one line per plan *segment* in `runs/<run>/plan-trace.jsonl`, written by the controller |
-| **R4** Structured failure | Harness refusal → typed `{step, error, evidence, retryable}`; a step revises its own steps instead of only a global replan | proposed |
+| **R4** Structured failure | Harness refusal → typed `{step, error, evidence, retryable}`; a step revises its own steps instead of only a global replan | **implemented** — the step is the unit: `retry` retries, `switch` drops the key and republishes `steps[].refused`, `replan` fails the step |
 | **R5** Composite goals | `prepare_for_nether` as a DAG over existing milestones, expanded deterministically | proposed |
 | **R6** Golden scenarios | Order + observation → expected plan/clarification/refusal, including the C17/C18 negative cases; freezes R1–R5 | proposed |
 | **R7** (conditional) contracts over a process boundary | Only if a second consumer appears; MCP explicitly deferred to avoid a second source of truth | deferred |
@@ -195,6 +195,69 @@ the file back:
   `[plan-trace] write failed:`; there is no env flag to disable it.
 - Honest limit: a goal the goal contract closes before any plan is *published*
   leaves no line — there was no plan to trace.
+
+### Structured failure (R4)
+
+A refusal used to be a string in a log line, and the only reaction was a global
+replan. R4 makes the refusal a **typed fact about the step that suffered it**, so
+the step can retry, change approach, or fail — and say which one it did.
+
+```text
+  /act key  --{ok:false, error:'no reachable iron_ore found nearby'}-->
+        |
+        v   step-failure.mjs (pure, no imports; vocabulary closed & ordered)
+  classifyFailure(error) -> { kind, retryable }
+     busy | timeout | transient | moved        -> retryable
+     blocked                                    -> switchable
+     refused | prerequisite | unknown           -> terminal
+        |
+        v   failureDisposition(record, {attempts, maxAttempts: 2})
+  retry  -> nothing changes            (same key, plan untouched)
+  switch -> exclude the refused key    + revise & publish steps[].refused
+  replan -> pendingStepReplan = 'step_failed:<error>'  (the step fails)
+```
+
+Properties, covered by `tests/step-failure.test.mjs` (11),
+`tests/controller-step-failure.test.mjs` (2, the real controller on the wire) and
+`tests/plan-trace.test.mjs` (+2):
+
+- **The vocabulary comes from the harness, not from imagination**: the case table is
+  built from the real refusal strings of `bedrock-adapter.mjs` (`no reachable <ore>
+  found nearby`, `<x>_timeout`, `<x>_refused`, `<target>_gone`, `no_safe_cell`,
+  `not_diggable_*`, `missing_<item>`, …). The rule order is load-bearing:
+  `timeout` before `refused`, `moved` before `blocked`, `blocked` before
+  `prerequisite`.
+- **An error outside the vocabulary is `unknown` and terminal** — never guessed
+  retryable. Safety over progress, in the one place where guessing would loop.
+- **The evidence is bounded**: position, dimension, targets, `ms` and the small
+  extra fields of the result; a field whose JSON exceeds 200 characters is dropped,
+  so a refusal never dumps the world into a log line.
+- **The step is the unit**: attempts are counted per `activeStepId(plan)` (the step
+  whose `skill` matches `plan.skill`, else the first), and `reviseSteps()` returns a
+  *new* plan with `refused {step, error, kind, retryable, at, alternatives}`,
+  `refusalCount` and the last 4 revisions — the plan is never mutated in place.
+- **The alternative is derived, not guessed**: `siblingKeys` returns the offered
+  keys sharing an intent with the refused one (`optionIntents`), never the key
+  itself — `mine_iron_ore` → `mine_deepslate_iron_ore`, `mine_diamond_ore`. They are
+  *recorded* in the revision; the choice is still Jev's on the reduced option list.
+- **A switch must not close its own door**: only the refused key is excluded (a
+  first version also excluded the alternatives, making the switch impossible).
+- **A retry decides nothing**: no exclusion and no plan revision — otherwise the
+  retry would not exist and the plan would churn on a transient.
+- **The reason survives the iteration boundary**: `step_failed:<error>` travels in
+  `pendingStepReplan` (declared outside the loop) because `replanReason` lives
+  inside one iteration, and it is consumed *before* the anti-loop block so the
+  precise reason is not overwritten by `anti_loop:*`.
+- **The type reaches the files**: the refusal carries `kind`/`retryable`/`stepId`
+  in `plan-trace.jsonl`, `summarizePlanTrace` counts `refusalsByKind`,
+  `run-facts` prints `tipi: blocked=2, prerequisite=1`, and `buildSkillRecord()`
+  records the `failure` that failed the skill.
+- **The regression that shaped it**: `player_not_found` was `unknown` → a replan
+  while a follow order was open, in a path that is deliberately deterministic. A
+  human who walks away is a **moved target**, so `moved` covers `*_not_found` and a
+  retryable refusal never touches the plan.
+- Honest limit: a step that needs a different *kind* of approach (not a sibling
+  mode of the same intent) still ends in a replan.
 
 ## Real capability surface (the R0 input)
 

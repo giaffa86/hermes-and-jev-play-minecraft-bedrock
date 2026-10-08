@@ -501,7 +501,7 @@ from the goal above:
 
 ---
 
-### R4 — Structured failure and replan
+### R4 — Structured failure and replan (IMPLEMENTED)
 
 **Goal.** Turn a harness refusal into typed feedback that a plan step understands:
 `{ step, error, evidence, retryable }`, and let a failed step revise its own
@@ -519,6 +519,92 @@ non-retryable refusal fails the step and the plan; a retryable one picks the
 alternative.
 
 **Risks.** Medium.
+
+**Implemented (07/10/2026).**
+
+- **The vocabulary is closed and ordered**: `step-failure.mjs` (pure, no imports)
+  exports `FAILURE_KINDS = ['busy','timeout','transient','moved','blocked',
+  'refused','prerequisite','unknown']`, the retryable subset
+  (`busy`,`timeout`,`transient`,`moved`), the switching subset (`blocked`),
+  `MAX_STEP_ATTEMPTS = 2`, `HINTS` and an **ordered** `RULES` table. Order matters:
+  `timeout` before `refused` (a `container_open_timeout` is a timeout),
+  `moved` before `blocked`, `blocked` before `prerequisite`. The table was built
+  from the *real* refusal strings of `bedrock-adapter.mjs` — `no reachable <ore>
+  found nearby`, `<x>_timeout`, `<x>_refused`, `<target>_gone` and
+  `player_not_found` (a human who walked away: a moved target, not a fault),
+  `no_safe_cell`/`no_place_spot`/`not_diggable_*`/`protected_*`/`unsafe_*`,
+  `missing_<item>`/`no_food`/`nothing_to_drop`/`item_not_in_container`.
+- **A refusal outside the vocabulary is `unknown` and terminal.** It is never
+  guessed retryable: an unrecognised error means the plan has to change, not the
+  key. This is the one place the module chooses safety over progress.
+- `classifyFailure(error)` → `{kind, retryable}`; `failureRecord({step, stepId,
+  key, error, evidence, attempts, at})` adds the `hint` for the kind;
+  `failureDisposition(record, {attempts, maxAttempts})` → `{action, reason}` with
+  `action ∈ retry|switch|replan` and a self-explaining `reason`
+  (`<kind>_retry` / `<kind>_exhausted` / `<kind>_alternative` /
+  `<kind>_terminal`). A retryable kind is retried while it has attempts left, then
+  the step fails and the plan replans; `blocked` switches approach while it has
+  attempts left (`blocked_alternative`); everything else is terminal.
+- **The evidence is bounded**: `refusalEvidence({observation, plan, result})` keeps
+  the position, dimension, targets and `ms` plus the small extra fields of the
+  result — a field whose `JSON.stringify` exceeds 200 characters is dropped, so a
+  refusal can never dump the world into a log line.
+- **The step is the unit, not the action**: `activeStepId(plan)` finds the step the
+  plan declares (the step whose `skill` matches `plan.skill`, else the first, else
+  `null`); attempts are counted per step; `reviseSteps(plan, record, {alternatives,
+  maxRevisions})` returns a **new** plan with
+  `steps[i] = {...step, refused: {step, error, kind, retryable, at, alternatives},
+  refusalCount, revisions}` (the last 4 revisions kept) and is inert on a plan
+  without steps.
+- **The alternative is derived, not guessed**: `siblingKeys(key, optionKeys,
+  intentsOf)` returns the offered keys that share at least one intent with the
+  refused one (`optionIntents` from `survival/intents.mjs`), never the key itself,
+  and `unknown` never matches. So `mine_iron_ore` gets `mine_deepslate_iron_ore`
+  and `mine_diamond_ore`.
+- **The controller wires it in the one place the verdict exists** — right after
+  `log('result', …)`: on a failed action (never on `busy`, which is the lock being
+  waited and logged as `harness_busy`, not a verdict) it classifies, counts the
+  attempt for the active step, logs `step_failed` with the disposition, and then
+  *acts* on the disposition:
+  - `retry` → nothing changes: no exclusion (otherwise the retry would not exist)
+    and no plan revision (the step has not decided anything yet).
+  - `switch` → only the refused key is excluded from `/options`
+    (`excludeKeys` with `reason: 'step_refused'`), `step_switch` is logged with the
+    alternatives, and the plan is **revised and published** so the refusal lives
+    inside `steps[].refused` — the step declares it, the whole plan does not
+    replan. Excluding the alternatives too would have made the switch impossible.
+  - `replan` → the step fails: `step_failed:<error>` becomes the replan reason.
+- **`replanReason` lives inside one iteration** (`controller.mjs:2009`), so a
+  reason produced at the end of an iteration was silently lost on the next one. R4
+  carries it in `pendingStepReplan`, declared outside the loop, consumed at the
+  top of the next iteration *before* the anti-loop block so the precise reason is
+  not overwritten by `anti_loop:*`. It is cleared with `stepRefusals`/
+  `stepFailureAttempts` whenever a plan is adopted (human order or replan).
+- **The trace and the skill record carry the type**: `planTrace.record()` gained
+  `kind`/`retryable`/`stepId`, a refusal carries them, `planTraceSteps()` puts
+  `refused: {error, kind, retryable}` + `refusalCount` on the step, and
+  `summarizePlanTrace` adds `refusalsByKind`/`topRefusalKinds`;
+  `tools/run-facts.mjs` prints `tipi: blocked=2, prerequisite=1`.
+  `buildSkillRecord()` gained `failure` (the typed refusal that failed the skill).
+- Tests: `tests/step-failure.test.mjs` (11 — the vocabulary case table built from
+  the real strings, the closed-vocabulary assertion, the terminal `unknown`,
+  the bounded evidence, retry→exhausted→replan, blocked→switch→exhausted,
+  `activeStepId`, `siblingKeys` with the real `optionIntents`, the revision caps),
+  `tests/controller-step-failure.test.mjs` (**new**, 2 — the real controller on the
+  wire: `/options` with two sibling keys, `/act mine_iron_ore` refusing; a `blocked`
+  refusal excludes the key and publishes `steps[].refused` with its alternatives,
+  then the goal is met in 2 actions; a terminal one produces
+  `replan:step_failed:missing_diamond_pickaxe` and no revision),
+  `tests/plan-trace.test.mjs` (+2), and `tests/controller-follow-lost.test.mjs`
+  gained the regression assertion that a retryable refusal publishes no plan.
+  Full suite **1934/1934** (from 1919).
+- The regression that shaped the design: a first version sent `player_not_found` to
+  `unknown`, hence to a replan while a follow order was open — the lost-follow path
+  is deterministic and must not replan. Hence `moved` covers `*_not_found` and
+  `retry` never touches the plan.
+- Honest limit: the alternative is only recorded, not yet *chosen* by a planner —
+  the decision is still Jev's on the reduced option list. A step that needs a
+  different *kind* of approach (not just a sibling mode) still ends in a replan.
 
 ---
 

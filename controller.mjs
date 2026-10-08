@@ -47,6 +47,11 @@ import {narrateGoal, DEFAULT_NARRATE_COOLDOWN_MS} from './chat-narration.mjs';
 import {runDir} from './run-paths.mjs';
 import {withPlanShape} from './plan-shape.mjs';
 import {createPlanTrace} from './plan-trace.mjs';
+// R4: il rifiuto tipizzato del passo. `siblingKeys` prende il vocabolario degli
+// intenti dal modulo dichiarato (R0) per trovare le chiavi alternative che
+// `/options` ha davvero offerto.
+import {failureRecord, failureDisposition, activeStepId, siblingKeys, reviseSteps, refusalEvidence, MAX_STEP_ATTEMPTS} from './step-failure.mjs';
+import {optionIntents} from './survival/intents.mjs';
 import {systemOneDecide} from './system-one.mjs';
 import {
   evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
@@ -1865,6 +1870,18 @@ let lastMountTarget = null;     // ultimo ordine "sali sul mezzo dell'umano" ann
 let lastNeedKey = null;         // ultimo bisogno di sopravvivenza annunciato nei log
 let lastCraftKey = null;        // ultimo passo di approvvigionamento annunciato nei log
 let lastEquipKey = null;        // ultimo ordine di equipaggiamento annunciato nei log
+// R4: lo stato dei rifiuti del passo attivo. `stepRefusals` sono le chiavi che
+// questo passo ha gia' visto rifiutare (`blocked`): restano escluse dalle
+// opzioni finche' il passo e' lo stesso, cosi' il modello sceglie l'alternativa
+// invece di ripetere la chiave appena rifiutata. `stepFailureAttempts` conta i
+// rifiuti per passo: al tetto il passo fallisce e il piano viene ripianificato.
+let stepRefusals = new Set();
+let stepFailureAttempts = new Map();
+// R4: il motivo del replan prodotto da un rifiuto tipizzato. Il rifiuto si
+// classifica a **fine** iterazione (dove l'esito dell'azione e' noto), il replan
+// gira all'inizio di quella dopo: senza questo canale il motivo andrebbe perso
+// (`replanReason` vive dentro un'iterazione).
+let pendingStepReplan = null;
 let lastDropKey = null;         // ultimo ordine "getta" annunciato nei log
 let lastCollectKey = null;      // ultimo ordine "cattura" annunciato nei log
 let lostFollowSteps = 0;        // passi consecutivi con l'ordine "seguimi" aperto ma senza bersaglio
@@ -1976,6 +1993,9 @@ for (let step = 1; step <= maxSteps; step++) {
     goal.plan = plan; goalManager.persist();
     planTrace.adopt({step, reason: 'human_order', plan});
     skillRun = null; // il piano umano sostituisce la skill attiva
+    // R4: un ordine nuovo e' un passo nuovo: le chiavi rifiutate dal passo
+    // precedente non valgono piu' (il mondo e l'obiettivo sono cambiati).
+    stepRefusals = new Set(); stepFailureAttempts = new Map(); pendingStepReplan = null;
     // Un ordine può riorientare un goal nato autonomo: l'esito di *quel* goal
     // deve tornare a chi ha ordinato (non al planner autonomo).
     goal.humanOrder = {from: humanCmd.entry.from, message: humanCmd.entry.message, objective: plan.objective, at: Date.now(), targets: plan.targets ?? null, reasoned: humanCmd.entry.reasoned === true};
@@ -2000,6 +2020,9 @@ for (let step = 1; step <= maxSteps; step++) {
         skill: skillRun.id, status: skillStatus.status, actions: skillRun.actions,
         startedAt: skillRun.startedAt, failureReason: skillStatus.reason,
         context: {milestone: skillRun.milestone, evidence: skillStatus.evidence},
+        // R4: il rifiuto tipizzato che ha portato al fallimento (`{step,
+        // stepId, key, error, kind, retryable, evidence}`), se c'e' stato.
+        failure: skillRun.lastFailure ?? null,
       });
       await appendSkillRecord(SKILLS_LOG, record);
       log(skillStatus.status === 'success' ? 'skill_success' : 'skill_failed', {...record, evidence: skillStatus.evidence});
@@ -2049,6 +2072,12 @@ for (let step = 1; step <= maxSteps; step++) {
     break;
   }
 
+  // R4: un rifiuto tipizzato del passo precedente entra nella decisione di
+  // questo passo. Prima dell'anti-loop, cosi' il motivo preciso (`step_failed:
+  // <errore>`) non viene sovrascritto da quello generico (`anti_loop:*`).
+  if (replanReason == null && pendingStepReplan) replanReason = pendingStepReplan;
+  pendingStepReplan = null;
+
   // Esito dell'azione precedente: senza progresso (posizione, inventario e
   // obiettivo invariati) alimenta l'anti-loop.
   if (lastKey) {
@@ -2088,6 +2117,9 @@ for (let step = 1; step <= maxSteps; step++) {
     planTrace.flush({endedBy: replanTrace, step});
     goal.plan = plan; goalManager.persist();
     planTrace.adopt({step, reason: replanTrace, plan});
+    // Un piano nuovo e' un passo nuovo: i rifiuti del precedente non si portano
+    // dietro (sarebbero esclusioni di chiavi senza piu' un passo che le spiega).
+    stepRefusals = new Set(); stepFailureAttempts = new Map(); pendingStepReplan = null;
     if (!sameSkill || !skillRun) skillRun = startSkillRun(plan, obs);
     log('replan', {step, reason: replanReason, objective: plan.objective, skill: plan.skill ?? null, milestone: plan.milestone ?? null});
     console.log('REPLAN', replanReason, plan.objective, plan.skill ? `[skill ${plan.skill}]` : '');
@@ -2129,6 +2161,10 @@ for (let step = 1; step <= maxSteps; step++) {
   // resta l'unico proprietario della validità.
   const excludeKeys = [];
   if (lastFailedKey) excludeKeys.push({key: lastFailedKey, reason: 'failed'});
+  // R4: la chiave che **questo passo** ha visto rifiutare con un approccio
+  // bloccato. Resta fuori dalle opzioni finche' il passo e' aperto, cosi' la
+  // decisione sceglie l'alternativa invece di ripetere la stessa azione.
+  for (const key of stepRefusals) excludeKeys.push({key, reason: 'step_refused'});
   for (const [key, until] of cooldowns) {
     if (until > step) excludeKeys.push({key, reason: `anti_loop_until_${until}`});
     else cooldowns.delete(key);
@@ -2499,9 +2535,55 @@ for (let step = 1; step <= maxSteps; step++) {
   lastKey = key;
   lastResult = result;
   log('result', {step, key, ok: !!result.ok, error: result.error ?? null, ms: result.ms ?? null, missionId: goal.missionId ?? null});
+  // R4: un rifiuto non e' un errore generico. Si classifica, si marca **il
+  // passo** che l'ha subito e si decide cosa farne: ritentare la stessa chiave,
+  // cambiare approccio (la chiave rifiutata esce dalle opzioni, le alternative
+  // restano) o far fallire il passo e ripianificare. Un rifiuto fuori vocabolario
+  // resta `unknown`: terminale, mai indovinato ritentabile.
+  let stepFailure = null;
+  // `busy` non e' un verdetto sul passo: e' il lock dell'harness (gia' atteso
+  // sopra, con `harness_busy` come traccia). Se il lock non si e' liberato non
+  // c'e' niente da classificare: il prossimo passo ritenta.
+  if (!result.ok && result.error !== 'busy') {
+    const stepId = activeStepId(plan);
+    const attemptKey = stepId ?? plan.skill ?? '_';
+    const attempts = (stepFailureAttempts.get(attemptKey) ?? 0) + 1;
+    stepFailureAttempts.set(attemptKey, attempts);
+    stepFailure = failureRecord({
+      step, stepId, key, error: result.error, attempts,
+      evidence: refusalEvidence({observation: obs, plan, result}),
+    });
+    const disposition = failureDisposition(stepFailure, {attempts, maxAttempts: MAX_STEP_ATTEMPTS});
+    const alternatives = siblingKeys(key, options.map(option => option.key), optionIntents);
+    if (skillRun) skillRun.lastFailure = stepFailure;
+    log('step_failed', {...stepFailure, disposition: disposition.action, dispositionReason: disposition.reason});
+    if (disposition.action === 'switch') {
+      // L'approccio bloccato esce dalle opzioni: la decisione non puo' ripetere
+      // la chiave rifiutata. Le alternative restano offerte (sono il punto dello
+      // `switch`) e vengono **registrate** nella revisione del passo, cosi' anche
+      // un replan successivo sa cosa l'harness aveva gia' respinto.
+      stepRefusals.add(key);
+      log('step_switch', {step, stepId, key, alternatives});
+    }
+    if (disposition.action === 'replan') {
+      pendingStepReplan = pendingStepReplan ?? `step_failed:${stepFailure.error}`;
+    } else if (disposition.action === 'switch') {
+      // La revisione vive **dentro** il passo (`steps[i].refused`) e viene
+      // pubblicata: e' il passo che ha rifiutato un approccio a dichiararlo,
+      // invece di far ripianificare tutto il piano. Un `retry`, invece, non ha
+      // ancora deciso niente: il piano resta com'e' e si ritenta la stessa
+      // chiave (nessuna esclusione, altrimenti il ritentativo non esisterebbe).
+      const revised = reviseSteps(plan, stepFailure, {alternatives});
+      if (revised !== plan) {
+        plan = revised;
+        goal.plan = plan; goalManager.persist();
+        try { plan = await publishPlan(plan); } catch (error) { log('plan_revision_rejected', {step, error: error.message}); }
+      }
+    }
+  }
   // R3: la decisione e il suo esito nella traccia del piano corrente. `by` e' il
   // ramo che ha scelto la chiave (`jev`, `survival_need`, `drop_order`, …).
-  planTrace.record({step, key, by: decision.source ?? null, reason: decision.reason ?? null, ok: !!result.ok, error: result.error ?? null, ms: result.ms ?? null});
+  planTrace.record({step, key, by: decision.source ?? null, reason: decision.reason ?? null, ok: !!result.ok, error: result.error ?? null, ms: result.ms ?? null, kind: stepFailure?.kind ?? null, retryable: stepFailure?.retryable ?? null, stepId: stepFailure?.stepId ?? null});
   if (goal.missionId) {
     // `data.position` dà al consolidamento un'ancora spaziale forte (l'azione
     // riuscita dice *dove* la risorsa è stata trovata).

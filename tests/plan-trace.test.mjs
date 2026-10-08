@@ -160,11 +160,55 @@ test('a segment is bounded: the omitted entries are counted, not hidden', () => 
   assert.equal(summarizePlanTrace([row]).omitted, 6);
 });
 
+test('a refused step carries its typed refusal inside the step, and the kinds are counted', () => {
+  const dir = tmp();
+  const trace = createPlanTrace({ dir });
+  const plan = {
+    objective: 'mine iron',
+    source: 'curriculum',
+    skill: 'mine_iron',
+    steps: [{
+      id: 'mine_iron', skill: 'mine_iron', verify: ['inventoryGte'],
+      refused: { step: 2, error: 'no reachable iron_ore found nearby', kind: 'blocked', retryable: false, at: 1, alternatives: ['mine_deepslate_iron_ore'] },
+      refusalCount: 1,
+      revisions: [{ step: 2, error: 'no reachable iron_ore found nearby' }],
+    }],
+  };
+  trace.adopt({ step: 0, reason: 'start', plan });
+  trace.record({ step: 1, key: 'mine_iron_ore', by: 'jev', ok: true });
+  trace.record({ step: 2, key: 'mine_iron_ore', by: 'jev', ok: false, error: 'no reachable iron_ore found nearby', kind: 'blocked', retryable: false, stepId: 'mine_iron' });
+  trace.flush({ endedBy: 'replan:step_failed:no reachable iron_ore found nearby', step: 2 });
+
+  const [row] = readPlanTrace(dir);
+  // R4: il rifiuto sta **sullo step** (`blocked`, non ritentabile), non solo
+  // nella coda dei rifiuti; l'alternativa e' un dettaglio del passo, non della riga.
+  assert.deepEqual(row.steps[0].refused, { error: 'no reachable iron_ore found nearby', kind: 'blocked', retryable: false });
+  assert.equal(row.steps[0].refusalCount, 1);
+  assert.deepEqual(row.refusals, [{ step: 2, key: 'mine_iron_ore', error: 'no reachable iron_ore found nearby', ms: null, kind: 'blocked', retryable: false, stepId: 'mine_iron' }]);
+
+  const summary = summarizePlanTrace([row]);
+  assert.deepEqual(summary.refusalsByKind, { blocked: 1 });
+  assert.deepEqual(summary.topRefusalKinds, [['blocked', 1]]);
+});
+
+test('a refusal without a known kind does not invent one', () => {
+  const dir = tmp();
+  const trace = createPlanTrace({ dir });
+  trace.adopt({ step: 0, reason: 'start', plan: { objective: 'a', source: 'hermes' } });
+  trace.record({ step: 1, key: 'wait', by: 'jev', ok: false, error: 'harness_blind' });
+  trace.flush({ endedBy: 'run_end', step: 1 });
+
+  const [row] = readPlanTrace(dir);
+  assert.equal('kind' in row.refusals[0], false, 'un rifiuto senza tipo non porta un campo finto');
+  assert.equal('stepId' in row.refusals[0], false);
+  assert.deepEqual(summarizePlanTrace([row]).refusalsByKind, {});
+});
+
 test('readRunFacts exposes the trace summary and tools/run-facts.mjs prints it', () => {
   const dir = tmp();
   const trace = createPlanTrace({ dir });
   trace.adopt({ step: 0, reason: 'start', plan: IRON_PLAN });
-  trace.record({ step: 1, key: 'mine_iron_ore', by: 'jev', ok: false, error: 'no reachable iron_ore found nearby' });
+  trace.record({ step: 1, key: 'mine_iron_ore', by: 'jev', ok: false, error: 'no reachable iron_ore found nearby', kind: 'blocked', retryable: false, stepId: 'mine_iron' });
   trace.flush({ endedBy: 'replan:skill_failed', step: 1 });
   trace.adopt({ step: 2, reason: 'replan:skill_failed', plan: { objective: 'mine coal', source: 'hermes', subgoal: 'gather coal', steps: [{ id: 'mine_coal', skill: 'mine_coal', verify: ['inventoryGte'] }] } });
   trace.flush({ endedBy: 'goal_met', step: 3 });
@@ -183,6 +227,7 @@ test('readRunFacts exposes the trace summary and tools/run-facts.mjs prints it',
   const out = execFileSync(process.execPath, [join(ROOT, 'tools/run-facts.mjs'), dir], { encoding: 'utf8' });
   assert.match(out, /plan-trace: 2 piani \(curriculum=1, hermes=1\), 2 passi, 0 decisioni, 1 rifiuti, 1 replan/);
   assert.match(out, /rifiuti: no reachable iron_ore found nearby=1/);
+  assert.match(out, /tipi: blocked=1/);
   assert.match(out, /ultimo piano: hermes "mine coal" -> gather coal \(1 step\)/);  assert.ok(existsSync(join(dir, 'plan-trace.jsonl')), 'the trace is a file, not a memory');
   // Il file e' JSONL append-only: una riga per segmento, leggibile a mano.
   assert.equal(readFileSync(join(dir, 'plan-trace.jsonl'), 'utf8').trim().split('\n').length, 2);

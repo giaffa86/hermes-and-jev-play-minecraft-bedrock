@@ -1,5 +1,77 @@
 # Log
 
+## [2026-10-07] feat | R4 implementata: un rifiuto è un fatto tipizzato sul passo, non una stringa nel log
+
+Il rifiuto di un'azione non è più un motivo per ripianificare tutto: è un fatto
+**tipizzato sul passo che l'ha subito**, che decide se ritentare, cambiare
+approccio o far fallire il passo. Suite a 1934/1934.
+
+- **Il modulo puro** `step-failure.mjs` (nessun import): vocabolario chiuso e
+  ordinato `busy|timeout|transient|moved|blocked|refused|prerequisite|unknown`,
+  costruito dalle stringhe **reali** di `bedrock-adapter.mjs` (13 famiglie
+  `<x>_timeout`, `<x>_refused`, `<bersaglio>_gone`, `no reachable <ore> found
+  nearby`, `no_safe_cell`, `not_diggable_*`, `missing_<item>`, …). L'ordine conta:
+  `timeout` prima di `refused`, `moved` prima di `blocked`, `blocked` prima di
+  `prerequisite`. Fuori vocabolario = `unknown`, terminale: mai indovinato
+  ritentabile.
+- **La disposizione** `failureDisposition(record, {attempts, maxAttempts: 2})` →
+  `retry | switch | replan` con un motivo autoesplicativo (`<kind>_retry`,
+  `<kind>_exhausted`, `blocked_alternative`, `<kind>_terminal`). L'unità è il
+  **passo** (`activeStepId`), non l'azione: i tentativi si contano per passo e
+  `reviseSteps()` restituisce un piano **nuovo** con `steps[i].refused =
+  {step, error, kind, retryable, at, alternatives}`, `refusalCount` e le ultime 4
+  revisioni.
+- **L'alternativa è derivata, non indovinata**: `siblingKeys` + `optionIntents`
+  (`survival/intents.mjs`) danno le chiavi offerte che condividono un intento con
+  quella rifiutata (`mine_iron_ore` → `mine_deepslate_iron_ore`, `mine_diamond_ore`),
+  mai la chiave stessa e mai `unknown`. Restano una **registrazione**: la scelta è
+  ancora di Jev sulla lista ridotta.
+- **Il cablaggio** vive dove il verdetto esiste (subito dopo `log('result', …)`),
+  con la guardia su `busy` (il lock non è un verdetto: si aspetta e si logga
+  `harness_busy`): `retry` non tocca niente (nessuna esclusione, altrimenti il
+  ritentativo non esiste, e nessuna revisione); `switch` esclude **soltanto** la
+  chiave rifiutata, logga `step_switch` con le alternative e ripubblica il piano con
+  la revisione dentro lo step; `replan` fa fallire il passo con
+  `step_failed:<errore>`. L'evidenza è limitata per costruzione (`refusalEvidence`
+  tiene posizione, dimensione, target, `ms` e i campi piccoli: un campo il cui JSON
+  supera 200 caratteri viene scartato).
+- **Tre difetti reali trovati e corretti**: `replanReason` è dichiarato **dentro**
+  il corpo del loop (`controller.mjs:2009`), quindi un motivo prodotto a fine
+  iterazione andava perso — ora viaggia in `pendingStepReplan`, dichiarato fuori dal
+  loop e consumato all'inizio dell'iterazione successiva **prima** dell'anti-loop;
+  la prima versione escludeva anche le chiavi sorelle (rendendo impossibile lo
+  switch); la prima versione revisionava il piano anche su `retry` (una revisione
+  per un passo che non aveva ancora deciso niente).
+- **La regressione che ha plasmato il vocabolario**: `player_not_found` cadeva in
+  `unknown`, quindi in un replan mentre un ordine di follow era aperto — in un
+  percorso volutamente deterministico. Un umano che si allontana è un **bersaglio
+  spostato**: `moved` copre ora `*_not_found`, e un rifiuto ritentabile non
+  pubblica alcun piano (`tests/controller-follow-lost.test.mjs` asserisce
+  entrambe le cose).
+- **Il tipo arriva nei file**: i rifiuti di `plan-trace.jsonl` portano
+  `kind`/`retryable`/`stepId`, `summarizePlanTrace` conta `refusalsByKind`,
+  `run-facts` stampa `tipi: blocked=1, prerequisite=1`, e `buildSkillRecord()`
+  registra il `failure` che ha fatto fallire la skill.
+- **I test**: `tests/step-failure.test.mjs` (11, tabella dei casi reali + chiusura
+  del vocabolario + evidenza limitata + disposizioni + `reviseSteps`),
+  `tests/controller-step-failure.test.mjs` (**nuovo**, 2: il controller vero sul
+  filo, due chiavi sorelle, `/act` che rifiuta), `tests/plan-trace.test.mjs` (+2) e
+  l'asserzione nuova in `tests/controller-follow-lost.test.mjs`. Suite 1919 →
+  **1934**.
+- **Residuo**: nessun run vivo ha ancora esercitato un rifiuto (serve il riavvio
+  del container che aspettano anche R2/R3); una famiglia di rifiuti aggiunta al
+  `bedrock-adapter.mjs` dopo questa data cade in `unknown` — terminale e visibile in
+  `refusalsByKind`, non ritentabile finché non entra nella tabella.
+
+## [2026-10-07] lint | R4: il rifiuto tipizzato, e i documenti allineati
+
+Lint della wiki dopo R4: righe nuove in `docs/wiki/reasoning-roadmap.md` (riga R4 →
+**implemented** + sezione «Structured failure (R4)»), `docs/wiki/verification.md`
+(riga **47.67**), `docs/raw/ROADMAP_refactoring_reasoning.md` (R4 → IMPLEMENTED +
+blocco «Implemented (07/10/2026)») e una regola nuova in `AGENTS.md`. Nessuna
+contraddizione trovata tra le fonti; `docs/wiki/questioni-aperte.md` resta datata
+2026-10-07.
+
 ## [2026-10-07] feat | R3 implementata: la traccia del piano dice perché il piano è cambiato
 
 Un run adesso si spiega dai suoi file anche nel *perché*: una riga per segmento di
