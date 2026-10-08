@@ -140,8 +140,11 @@ test('an out-of-range choice is not a question', async () => {
 });
 
 test('a broken router reports why, and never turns a question into an order', async () => {
+  // `retry: {retries: 0}`: la politica di retry ha i suoi test
+  // (`system-one-retry.test.mjs`); qui interessa *perché* il router ha fallito,
+  // non quante volte ha provato.
   const failing = stubFetch(() => ({ ok: false, status: 503, json: async () => ({ error: 'upstream down' }) }));
-  const broken = await resolveQuestionIntent('che combini?', { fetchImpl: failing.fetchImpl, url: URL, key: KEY });
+  const broken = await resolveQuestionIntent('che combini?', { fetchImpl: failing.fetchImpl, url: URL, key: KEY, retry: { retries: 0 } });
   assert.equal(broken.action, 'unrouted');
   assert.equal(broken.reason, 'error');
   assert.match(broken.error, /System One HTTP 503/);
@@ -153,7 +156,7 @@ test('a broken router reports why, and never turns a question into an order', as
   assert.match(unparsable.error, /without 'answers'/);
 
   const throwing = async () => { throw new Error('socket hang up'); };
-  const unreachable = await resolveQuestionIntent('che combini?', { fetchImpl: throwing, url: URL, key: KEY });
+  const unreachable = await resolveQuestionIntent('che combini?', { fetchImpl: throwing, url: URL, key: KEY, retry: { retries: 0 } });
   assert.equal(unreachable.action, 'unrouted');
   assert.equal(unreachable.reason, 'error');
   assert.match(unreachable.error, /socket hang up/);

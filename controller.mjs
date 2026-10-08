@@ -52,7 +52,7 @@ import {createPlanTrace} from './plan-trace.mjs';
 // `/options` ha davvero offerto.
 import {failureRecord, failureDisposition, activeStepId, siblingKeys, reviseSteps, refusalEvidence, MAX_STEP_ATTEMPTS} from './step-failure.mjs';
 import {optionIntents} from './survival/intents.mjs';
-import {systemOneDecide} from './system-one.mjs';
+import {systemOneDecideWithRetry} from './system-one.mjs';
 import {
   evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
   resolveMilestone, resolveActiveSkill, skillPreferredIntents, verifySkill, buildSkillRecord, appendSkillRecord,
@@ -1672,7 +1672,7 @@ async function maybeStoreEpilogue (goal, outcome) {
 // ---- controller: Jev via TypeSafe or OpenRouter ---------------------------------------------
 async function jevDecide(observation, options, plan) {
   const criteria = buildCriteria(options);
-  const {answers, model, provider, usage, ms} = await systemOneDecide({
+  const {answers, model, provider, usage, ms, attempts, retries} = await systemOneDecideWithRetry({
     model: JEV_MODEL,
     state: {...observation, plan: observation.plan ?? plan, recent: observation.recent?.slice(-4)},
     questions: {action: {type: 'choice', instructions: buildDecisionInstructions(plan), criteria}},
@@ -1690,7 +1690,8 @@ async function jevDecide(observation, options, plan) {
   log('decision', {
     controller: 'jev', provider, model,
     choice: ans.choice, key: chosen.key, probabilities, confidence: ans.confidence,
-    cost: usage?.cost, ms, candidates,
+    cost: usage?.cost, ms, attempts: attempts ?? 1, retries: retries ?? 0,
+    candidates,
     selectedProbability: probabilityOf(ans.choice), optionsCount: options.length, objective: plan.objective,
   });
   return {key: chosen.key, cost: usage?.cost ?? null};

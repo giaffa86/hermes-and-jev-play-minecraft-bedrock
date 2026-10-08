@@ -1599,3 +1599,20 @@ pinned by a test that fails without its edit ([verification](verification.md)
   wrote its first `plan-trace.jsonl` segment. The swap is a release deploy, not a
   container rebuild, and it interrupts the live chat engine for a few seconds —
   which is why it stays the owner's decision rather than an autonomous one.
+
+## One decision provider, and no fallback (2026-10-08)
+
+- On 08/10/2026 the decision provider (TypeSafe, `JEV_MODEL=jev-latest`) answered
+  `529 system_overloaded` and `504` for about 25 minutes, and every one of those
+  answers closed the live run: the exit is deliberate (`controller.mjs:2960`), but
+  a 5xx of the provider is not a controller error. The retry policy now rides the
+  transient state out (`SYSTEM_ONE_RETRY_*`, row 47.71 of
+  [verification](verification.md)). What stays open is the harder half: the
+  fallback the module documents — the Jev-compatible decisions endpoint on
+  OpenRouter (`system-one.mjs:33`) — is unusable because `OPENROUTER_API_KEY` is
+  **empty**, and `jev-1.13`/`jev`/`typesafe/jev-1.13` are `400 Unknown model`, so
+  the only valid model is `jev-latest`. A retry covers seconds and minutes; an
+  outage longer than the policy still stops the bot, and there is nothing to fail
+  over to. Options, none chosen: fill the OpenRouter key, find a second TypeSafe
+  model name that exists, or make the *goal* survive a decision outage (wait and
+  replan) instead of closing the run.

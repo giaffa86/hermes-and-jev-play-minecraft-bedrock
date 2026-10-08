@@ -196,7 +196,13 @@ Cross-cutting, deterministic, at every step:
 10. **System One — Jev** (`controller.mjs` → `jevDecide`, via the OpenRouter/TypeSafe
    `/decisions` endpoint) chooses **one** bounded action per step from the
    options, with probabilities and confidence. `CONTROLLER=hermes` swaps this for
-   a Hermes call with the same one-action constraint.
+   a Hermes call with the same one-action constraint. A **transient** provider
+   failure is not fatal: `systemOneDecideWithRetry` (`system-one.mjs`) retries
+   `5xx`/`429`/`408` and network errors with exponential backoff and jitter
+   (`SYSTEM_ONE_RETRY_*`, at most 5 calls / ~15 s), and gives up at once on a
+   failure that carried no decision (`401`/`403`, unknown model, no `answers`).
+   `timeoutMs` is the **total** budget — the chat router's 4 s stay 4 s, retries
+   included — and the `decision` ledger line carries `attempts`/`retries`.
 
 11. **World** — the chosen action is executed; the new state feeds the next
    iteration of the loop (re-observe → governor → verify → plan/decision).

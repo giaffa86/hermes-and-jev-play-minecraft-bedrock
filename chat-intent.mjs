@@ -12,7 +12,7 @@
 // probability — a question-shaped message is never silently turned into a goal.
 
 import { intentCriteria, intentFromChoice, looksLikeQuestion, matchQuestionIntent } from './human-questions.mjs';
-import { choiceProbability, systemOneDecide } from './system-one.mjs';
+import { choiceProbability, systemOneDecideWithRetry } from './system-one.mjs';
 
 // A chat reply must not hang the loop on a slow model, but the human is waiting:
 // four seconds is the ceiling before the message is treated as an order.
@@ -35,10 +35,13 @@ export const INTENT_INSTRUCTIONS = [
 // decides what an unreachable router means).
 export async function classifyQuestionIntent (message, {
   from = null, model, url, key, fetchImpl, timeoutMs = DEFAULT_INTENT_TIMEOUT_MS,
-  minProbability = DEFAULT_INTENT_MIN_P,
+  minProbability = DEFAULT_INTENT_MIN_P, retry,
 } = {}) {
-  const result = await systemOneDecide({
-    model, url, key, fetchImpl, timeoutMs,
+  // `timeoutMs` è il budget totale: i retry stanno dentro i 4 secondi che un
+  // umano aspetta, non in aggiunta (un provider che fallisce in fretta viene
+  // ritentato, uno lento consuma il budget al primo tentativo).
+  const result = await systemOneDecideWithRetry({
+    model, url, key, fetchImpl, timeoutMs, retry,
     state: { message: String(message ?? ''), from: from ?? null },
     questions: { intent: { type: 'choice', instructions: INTENT_INSTRUCTIONS, criteria: intentCriteria() } },
   });
