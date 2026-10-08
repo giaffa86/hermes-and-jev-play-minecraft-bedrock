@@ -1616,3 +1616,31 @@ pinned by a test that fails without its edit ([verification](verification.md)
   over to. Options, none chosen: fill the OpenRouter key, find a second TypeSafe
   model name that exists, or make the *goal* survive a decision outage (wait and
   replan) instead of closing the run.
+
+## A composite goal closed without its own boat (2026-10-08)
+
+- The first live run of a composite goal (`CURRICULUM=water_travel`, release
+  `chat-truth-e7b08e5`) closed its chain honestly as far as the ledger can tell —
+  `GOAL MET after 11 actions (curriculum water_travel)`, with `craft_bucket`
+  verified by the harness (`SKILL craft_bucket SUCCESS {"inventory.buckets":1}`) —
+  but `boat_travel` was verified with `{"moved": 22.53}` while `craft_boat` had
+  been refused **twice** with `craft_recipe_missing` and no boat ever entered the
+  inventory: the milestone can close on a walk.
+- Two mechanisms allow it, and both are worth revisiting: (a) `boat_travel`'s own
+  success criterion is `{"movedAtLeast": 8}`, which the skill's `notes` already
+  admit measures “the bot ended up elsewhere”, not rowing; (b) `preconditions`
+  gate the **resolver** (`survival/resolver.mjs:163`
+  `evaluateCriteria(skill.preconditions, observation)`), not the **verifier**
+  (`survival/verify.mjs:345 verifySkill` checks only `success` against
+  before/after), so a skill whose precondition (`inventoryTagGte: {boats: 1}`) is
+  unmet can still be declared successful when the controller runs it through a
+  curriculum plan.
+- The capability gap is separate and pre-existing: `craft_boat` answers
+  `craft_recipe_missing`, so `water_travel` is not honestly reachable in the base
+  room (the skill's notes say the same). Options, none chosen: tighten
+  `boat_travel.success` so the milestone cannot close without a boat (a
+  `ridingBoat`/`mounted` criterion the R4 typed failures could feed), make
+  `verifySkill` refuse a skill whose preconditions are unmet, or keep
+  `water_travel` out of the reachable milestone set until the boat recipe exists.
+- This is the same family as the false «fatto» of 07/10/2026: the failure is not
+  in the plan, it is in what the plan is allowed to call *done*.
