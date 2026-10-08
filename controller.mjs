@@ -304,6 +304,12 @@ const SKILLS_LOG = `${RUN_DIR}/skills.jsonl`;
 const log = (type, data) => appendFileSync(`${RUN_DIR}/controller.jsonl`, JSON.stringify({t: Date.now(), type, ...data}) + '\n');
 // R3: la traccia del piano. Una riga per segmento di piano in
 // `runs/<run>/plan-trace.jsonl` — vedi plan-trace.mjs per il formato.
+// `runProgress` e' lo specchio dei contatori di `runGoal` per il gestore dei
+// segnali: `stepsUsed` e `totalCost` sono locali di quel ciclo, e il gestore
+// SIGTERM vive fuori. Prima del 07/10/2026 leggeva quei due nomi e moriva con
+// `ReferenceError: stepsUsed is not defined`, quindi una run uccisa non
+// lasciava ne' `run_end` ne' la traccia (trovato dai golden R6, scenario G4).
+const runProgress = {steps: 0, cost: 0};
 const planTrace = createPlanTrace({dir: RUN_DIR});
 const api = async (method, path, body) => {
   const r = await fetch(HARNESS + path, {method, body: body ? JSON.stringify(body) : undefined, headers: {'Content-Type': 'application/json', Connection: 'close'}});
@@ -1281,10 +1287,16 @@ async function maybeHumanCommand (obs, {history = [], lastResult = null} = {}) {
     const told = await handleToldFact(obs, {...entry, message}, {message, prefixes});
     if (told === true) continue;
     if (told && typeof told === 'object') {
+      // R1: anche un piano deterministico (la meta' che la memoria gia' conosce)
+      // entra nel goal con la sua forma — `subgoal` e un passo con id. Questa
+      // uscita anticipata era l'unico piano che arrivava a un goal senza passare
+      // da `shapedPlan` (sotto): la traccia R3 lo mostrava con `steps: []` e R4
+      // non poteva attribuirgli un rifiuto (`activeStepId` -> null).
+      const plan = shapedPlan(told);
       log('chat_command', {from: entry.from, xuid: entry.xuid, prefix: match.prefix, message, deterministic: 'told_goto'});
-      const ack = orderAck({from: entry.from, plan: told, maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG});
-      await saySmart('ack', {from: entry.from, message, obs, plan: told, grounding: ack, fallback: ack, prefixes, reasoned});
-      return {plan: told, entry: {...entry, message, reasoned}};
+      const ack = orderAck({from: entry.from, plan, maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG});
+      await saySmart('ack', {from: entry.from, message, obs, plan, grounding: ack, fallback: ack, prefixes, reasoned});
+      return {plan, entry: {...entry, message, reasoned}};
     }
     // M11: con «ragiona» una domanda non ha una frase fatta da leggere — la
     // risposta la compone M7 dai fatti (che cosa sto facendo, che cosa è andato
@@ -1882,8 +1894,10 @@ let lastFailedKey = null;
 let chosenFingerprint = null;  // fingerprint dell'osservazione al momento della scelta
 let lastSurvivalFingerprint = null;
 let totalCost = 0;
+runProgress.cost = 0;
 let goalReached = false;
 let stepsUsed = 0;
+runProgress.steps = 0;
 let prevObs = null;             // osservazione del passo precedente (eventi del mondo)
 let lastFollowTarget = null;    // ultimo ordine "seguimi" annunciato nei log
 let lastEscortTarget = null;    // ultima scorta annunciata nei log
@@ -1939,6 +1953,7 @@ let maxSteps = MAX_STEPS;
 for (let step = 1; step <= maxSteps; step++) {
   obs = await api('GET', '/observe');
   stepsUsed = step;
+  runProgress.steps = step;
   // Saluto proattivo: indipendente dal goal, un umano vicino va informato di
   // come comandare il bot (una volta, con cooldown).
   await maybeGreetHumans(obs);
@@ -2533,6 +2548,7 @@ for (let step = 1; step <= maxSteps; step++) {
     : (CONTROLLER === 'jev' ? await jevDecide(obs, filtered.options, decisionPlan) : await hermesDecide(obs, filtered.options, decisionPlan));
   const key = decision.key;
   if (typeof decision.cost === 'number') totalCost += decision.cost;
+  runProgress.cost = totalCost;
   // Un inseguimento non e' stagnazione: `follow_player` che riesce a distanza e'
   // lo stato desiderato (l'umano e' li'), non un loop da punire con l'anti-loop.
   // Ne' una ricerca ne' un'attesa di recupero sono stagnazione: la prima ha un
@@ -2955,8 +2971,8 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     // Un timeout di deploy uccide il processo prima del `run_end` normale: senza
     // questa riga una run interrotta non lascia né passi né costo (06/10,
     // `diamond-20261006-4`: ultimo record un `result`, nessun totale).
-    log('run_end', {steps: stepsUsed, totalCost, curriculum: CURRICULUM, goalId: goalManager.current?.id ?? null, signal, interrupted: true});
-    planTrace.flush({endedBy: `signal:${signal}`, step: stepsUsed});
+    log('run_end', {steps: runProgress.steps, totalCost: runProgress.cost, curriculum: CURRICULUM, goalId: goalManager.current?.id ?? null, signal, interrupted: true});
+    planTrace.flush({endedBy: `signal:${signal}`, step: runProgress.steps});
     goalManager.flush();
     process.exit(0);
   });

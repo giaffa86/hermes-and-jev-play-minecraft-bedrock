@@ -35,6 +35,15 @@ component every driver must pass through.
 | `runs/<run>/plan-trace.jsonl` | `controller.mjs` via `plan-trace.mjs` (R3) | one line per **plan segment**: its `source`, `objective`/`subgoal`/`steps`, the action keys chosen under it, the typed refusals it saw and the named closure (`endedBy`) |
 | `node tools/run-facts.mjs <run>` | CLI | reads all of the above and prints the facts, including the plan-trace summary, or says plainly that nothing is verifiable |
 
+The SIGTERM/SIGINT flush is the one documented promise that was **false until
+07/10/2026**: the handler read `stepsUsed`/`totalCost`, two variables local to
+`runGoal`, and every signal killed the controller with
+`ReferenceError: stepsUsed is not defined` (exit 1, no `run_end`, no trace, no cost).
+The counters are now mirrored in a module-level `runProgress` and
+`tests/golden-scenarios.test.mjs` (G9) asserts that a killed run still writes
+`run_end` with `interrupted: true` and closes its trace segment with
+`signal:SIGTERM`.
+
 The last of the ledger files answers the question the others leave open: *why did the
 plan change?* The actions say what was attempted and the controller log says what was
 logged, but the reason a plan was abandoned (`human_order`, `replan:anti_loop:…`,

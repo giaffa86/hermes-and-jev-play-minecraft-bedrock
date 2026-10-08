@@ -1,5 +1,17 @@
 # Log
 
+## [2026-10-07] feat | R6 implementata: i golden scenarios congelano l'esito di un ordine (e trovano un bug vero)
+
+- `tests/golden-scenarios.test.mjs`: nove righe (ordine + mondo in, forma del piano / domanda / rifiuto / ledger out) contro il **controller vero** su un harness scriptato; le asserzioni leggono la traccia R3, non l'evento. G1 domanda senza meta, G2 meta nota alla memoria, G3 posto ignoto, G4 (C17) il marcatore «ragiona» tolto prima del planner, G5 (C18) deposito a due bauli, G6 stop, G7 rifiuto tipizzato dentro lo step, G8 ordine ambiguo che non sospende il goal, G9 run uccisa da un segnale che lascia comunque il ledger. Suite 1940 → 1949.
+- **Bug vero trovato dal golden test**: il gestore SIGTERM di `controller.mjs` leggeva `stepsUsed`/`totalCost`, locali di `runGoal` → `ReferenceError: stepsUsed is not defined` a ogni segnale (uscita 1, nessun `run_end`, nessuna traccia, nessun costo): la promessa di `docs/wiki/observability.md` non era mai stata vera. I contatori sono ora specchiati in `runProgress` a livello di modulo; G9 la fissa.
+- **Secondo difetto, minore**: l'uscita deterministica `told_goto` di `maybeHumanCommand` era l'unico piano che non passava da `shapedPlan`, quindi un posto noto alla memoria produceva un segmento di traccia con `steps: []` (e R4 non poteva attribuirgli un rifiuto). Ora prende la forma R1 come tutti gli altri.
+- Fixture: il piano del goal seminato e il piano dell'ordine sono due rami distinti del finto planner; il seme dichiara `targets: {dirt: 99}` (insoddisfacibile) così l'ordine arriva sempre a goal in corso; `stopWhen` attende un atto **dopo** la pubblicazione del piano (`actsAfterPlan`), perché un SIGTERM al momento della pubblicazione uccide il controller prima che adotti il piano nella traccia.
+
+## [2026-10-07] lint | R6: i golden scenarios, e i documenti allineati
+
+- Wiki-lint `--strict` sul repository: nessun errore dopo l'aggiunta di R6 (roadmap grezza, `wiki/reasoning-roadmap.md` con la sezione `### Golden scenarios (R6)`, riga 47.69 di `wiki/verification.md`, `wiki/observability.md` con la nota sul SIGTERM, regola in `AGENTS.md`).
+- Conteggio finale: 54 file, 818 link relativi, 32 pagine wiki, 15 fonti grezze, 1 nota informativa su `log.md`; `Last lint: 2026-10-07`.
+
 ## [2026-10-07] feat | R5 implementata: un goal può chiamare più milestone, e il piano ne dichiara la catena mancante
 
 Un goal del curriculum non è più un solo milestone: `prepare_for_nether` nomina una

@@ -66,7 +66,7 @@ Namespaced `R0`…`R7` to avoid colliding with the repo's own M1–M12 chat mile
 | **R3** Plan trace | One structured `plan_trace` line per decision (objective, subgoal, source, steps, action, refusals, replan reason). Never chain-of-thought | **implemented** — one line per plan *segment* in `runs/<run>/plan-trace.jsonl`, written by the controller |
 | **R4** Structured failure | Harness refusal → typed `{step, error, evidence, retryable}`; a step revises its own steps instead of only a global replan | **implemented** — the step is the unit: `retry` retries, `switch` drops the key and republishes `steps[].refused`, `replan` fails the step |
 | **R5** Composite goals | `prepare_for_nether` as a DAG over existing milestones, expanded deterministically | **implemented** — a goal may name a **list** of milestones; `milestoneChain` returns the missing closure in dependency order and the plan carries it in `steps[]` |
-| **R6** Golden scenarios | Order + observation → expected plan/clarification/refusal, including the C17/C18 negative cases; freezes R1–R5 | proposed |
+| **R6** Golden scenarios | Order + observation → expected plan/clarification/refusal, including the C17/C18 negative cases; freezes R1–R5 | **implemented** — nine scenarios in `tests/golden-scenarios.test.mjs`, driven against a scripted harness and asserted on the **R3 trace**; found and fixed a real bug (the `SIGTERM` handler died on a `ReferenceError`) |
 | **R7** (conditional) contracts over a process boundary | Only if a second consumer appears; MCP explicitly deferred to avoid a second source of truth | deferred |
 
 ### The plan shape (R1)
@@ -318,6 +318,63 @@ scripted world:
   capability that is not a milestone in `knowledge/progression.json` still cannot
   be composed.
 
+### Golden scenarios (R6)
+
+R1–R5 added structure; R6 is what keeps it. `tests/golden-scenarios.test.mjs` is a
+suite of nine **scenarios** — an order text plus a scripted world in, an expected
+plan shape / clarification / refusal out — driven against the **real controller**
+over a scripted HTTP harness. No model, no Bedrock, ~15 s.
+
+```text
+  scenario row = { order: '@bot vai', world: {...}, env: {...}, expect: {...} }
+        |
+        +--> scripted harness  /observe /options /act /plan /say /chat/ask /memory/*
+        +--> scripted planner  decision keys | the order's plan | SEED_PLAN
+        |
+        v   the real controller (subprocess, SIGTERM when the row says so)
+  runs/<run>/controller.jsonl   +   runs/<run>/plan-trace.jsonl
+        |
+        v   checkRow(row, outcome)
+  the assertion reads the TRACE, not the event: the segment whose objective
+  matches the order, with source / subgoal / steps[0].id / targets / verify
+```
+
+The nine rows: **G1** a destination-less order asks once and creates no goal;
+**G2** a place the memory knows is not asked about and the plan is
+`source: 'deterministic'`; **G3** an unknown place asks about the *place*; **G4**
+(C17) `ragiona portami del cibo` asks nothing and the marker never reaches the
+planner; **G5** (C18) a two-chest deposit asks nothing; **G6** a stop is not a
+follow; **G7** a blocked approach is a typed refusal inside the step and in the
+trace; **G8** an ambiguous order asks and lets the goal work; **G9** a killed run
+still writes its ledger.
+
+- **The gate is the trace** (`runs/<run>/plan-trace.jsonl`, R3): one segment per
+  plan, so a scenario asserts on `source`/`subgoal`/`steps`/`verify` as the
+  controller really decided them. The event's `plan` is the goal's shared object
+  and can be mutated afterwards; it is read only for what is *not* a property of
+  the decision (the fields neutralised by a stop, G6).
+- **The seed goal is unsatisfiable on purpose** (`SEED_PLAN.targets = { dirt: 99 }`):
+  an order must arrive *while a goal runs*, which is the case the goal stack
+  (`human_preempt` → child goal) is for. A satisfiable seed made the scenario
+  depend on the polling race.
+- **Stopping is part of the fixture**: `stopWhen` is a poll, and the harness counts
+  the acts published **after** each plan (`planActs`/`actsAfterPlan`) — a SIGTERM
+  sent the instant the plan is published kills the controller *before* it adopts
+  the plan into the trace, and the trace only keeps closed segments.
+- **It found a real bug**: the `SIGTERM` handler read two variables local to
+  `runGoal` (`stepsUsed`, `totalCost`) and died of `ReferenceError` on every
+  signal, so a killed run left no `run_end`, no cost and no trace — the opposite of
+  what this wiki promised. The counters are now mirrored in a module-level
+  `runProgress`; G9 asserts the ledger survives.
+- **It found a second, smaller one**: the deterministic `told_goto` exit of
+  `maybeHumanCommand` skipped `shapedPlan`, so a place the world memory already knew
+  produced a plan with no R1 shape (a trace segment with `steps: []`, and R4 unable
+  to attribute a refusal to it). It is shaped like every other plan now.
+- **It does not duplicate R2's tests**: `tests/controller-clarify.test.mjs` drives
+  the clarification lifecycle over several messages; the golden rows freeze the
+  *outcome* of an order in one look, including the negative cases that must not
+  ask.
+
 ## Real capability surface (the R0 input)
 
 | Layer | Artifact | Count (07/10/2026, from the R0 inventory) |
@@ -360,3 +417,9 @@ New from R0: should `auto_door` and `delay_line` be wired into a milestone (a sk
 whose `success.circuitBuilt.id` names them), or are they deliberately unused
 blueprints? The inventory reports them as orphans on every run until one of the two
 is true.
+
+New from R6: the golden scenarios run the real controller against a **scripted**
+harness, so they freeze the controller's decisions, never the world's answers — no
+row touches a live Bedrock server, and none exercises a model-driven decision
+(`CONTROLLER=jev` needs an API key). What a live golden run should add, and whether
+it belongs in this suite or in the container's collaudo, is open.

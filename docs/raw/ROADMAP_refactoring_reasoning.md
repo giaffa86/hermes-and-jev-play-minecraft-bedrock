@@ -685,7 +685,7 @@ assert.
 
 ---
 
-### R6 — Golden scenarios and regression hardening
+### R6 — Golden scenarios and regression hardening (IMPLEMENTED)
 
 **Goal.** A suite of golden scenarios (order text + observation → expected plan
 shape / expected clarification / expected refusal), including Italian orders and
@@ -697,6 +697,82 @@ the C17/C18 negative cases.
 
 **Acceptance.** every scenario is deterministic; the suite fails if a plan shape
 regresses.
+
+**Implemented (07/10/2026).** `tests/golden-scenarios.test.mjs` — one row per
+scenario, nine rows, each declaring the world (scripted harness), its own env and
+the expected outcome; `checkRow` turns a row into assertions. What the rows
+freeze:
+
+- **G1** a movement order with no destination asks **one** question
+  (`destination`/`no_destination`) and creates no goal;
+- **G2** a place the world memory knows is not asked about, and the plan is
+  `source: 'deterministic'` with the R1 shape (`subgoal`, `steps[0].id`,
+  `targets`, `verify`) — the planner is never called;
+- **G3** a place the memory does **not** know asks about the *place*
+  (`place`/`unknown_place`), not about the destination;
+- **G4** (C17) `ragiona portami del cibo` asks nothing, and the marker is stripped
+  before the planner sees the text: the prompt says `said: "portami del cibo"`,
+  never `said: "ragiona …"`;
+- **G5** (C18) `metti il ferro nel baule` with two chests asks nothing — the
+  deposit target is deterministic (`_depositTargetFor`), so there is no gap to
+  ask about;
+- **G6** a stop order does not become a follow, asks nothing and carries no
+  targets;
+- **G7** a blocked approach leaves the options and the refusal is written inside
+  the step (`steps[i].refused`, `kind: 'blocked'`, `retryable: false`) **and** in
+  the R3 trace, attributed to its step;
+- **G8** an ambiguous order does not suspend the running goal: it asks once and
+  the goal keeps working (`askBeforeLastAct`);
+- **G9** a run killed by a signal still leaves its ledger: `run_end` with
+  `interrupted: true` and the trace segment closed by `signal:SIGTERM`.
+
+The gate is the **trace**, not the event: the plan a scenario asserts on is the
+segment in `runs/<run>/plan-trace.jsonl` whose objective matches the order, with
+`source`/`subgoal`/`steps`/`verify` read from it (R3 made the decision readable
+after the run; the event's plan is the goal's shared object and may have been
+mutated later). A row may still read the event for what is *not* a property of
+the plan — the neutralised fields after a stop (G6).
+
+The fixture is the harness: a scripted HTTP server (`/observe`, `/options`,
+`/act`, `/plan`, `/say`, `/chat/ask`, `/memory/*`) with a scripted world
+(inventory, containers, places, humans) and a scripted planner. The planner is a
+shell script with **three** branches: the decision prompt (`Reply with ONLY the
+key`) reads a key queue, the plan prompt of an **order** (`said: "…"`) returns
+the row's plan, every other plan prompt (the goal seeded at startup) returns
+`SEED_PLAN`. The seed declares `targets: { dirt: 99 }` — unsatisfiable by the
+scripted world — so an order always arrives **while a goal is running**, which is
+the case the stack (`human_preempt` → child goal) must handle; making the seed
+trivially satisfiable made the scenario depend on the polling race.
+
+Stopping a run needs care and is part of the fixture: `stopWhen` fires from a
+poll (40 ms) and the harness counts the acts published **after** each plan
+(`planActs` + `actsAfterPlan`), because a SIGTERM sent at the moment the plan is
+published kills the controller before it adopts the plan into the trace, and the
+trace only keeps the segments it has closed. Rows whose goal ends by itself
+(G1/G2/G3/G8) stop on their own with no `stopWhen`.
+
+**A product bug found by G4/G9 and fixed in the same commit.** The `SIGTERM`
+handler (`controller.mjs`) read `stepsUsed`/`totalCost`, two variables local to
+`runGoal`: every signal killed the controller with
+`ReferenceError: stepsUsed is not defined` (exit 1), so a killed run reported no
+`run_end`, no cost and no trace — the opposite of what `docs/wiki/observability.md`
+and `AGENTS.md` promised. The fix mirrors the two counters into a module-level
+`runProgress` updated where they change (`stepsUsed = step`, `totalCost +=
+decision.cost`), and the handler reads the mirror. G9 now asserts it.
+
+**A second, smaller fix found by G2.** The deterministic exit of
+`maybeHumanCommand` — the one that answers with a place the world memory already
+knows (`told_goto`) — was the only plan that reached a goal **without** passing
+through `shapedPlan`: the R1 shape was missing, so the trace showed a segment with
+`steps: []` and R4 could not attribute a refusal to it (`activeStepId` → `null`).
+It now goes through `shapedPlan` like every other plan, which also makes G2's
+`shape.source: 'deterministic'` assertion possible.
+
+**Deviation from the draft.** The drafts asked for "a suite of golden scenarios";
+the C17/C18 rows are the *negative* cases of the correction register, so they are
+written as "**no** question", which is the assertion that matters. The suite
+does not call a model, does not touch Bedrock and runs in ~15 s (the three rows
+that must observe two chat messages pay the controller's IDLE poll).
 
 **Risks.** Low.
 
