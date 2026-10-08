@@ -5527,6 +5527,19 @@ export class BedrockAdapter {
         result = await this._breedBees();
       } else if (key.startsWith('harvest_')) {
         result = await this._harvestCrop(key.slice('harvest_'.length));
+      // Questi rami stanno *prima* del prefisso `craft_<item>`: le loro chiavi lo
+      // attraversano, e `_craftItem` chiede al server una ricetta con un nome che
+      // non esiste — la barca è per *tipo* (`oak_boat`, `bamboo_raft`), non il
+      // `boat` legacy, e la polvere di blaze e l'occhio di ender hanno un passo
+      // loro. Live 08/10/2026 (curriculum `water_travel`): `/options` offriva
+      // `craft_boat` e ogni tentativo rispondeva `craft_recipe_missing` prima di
+      // arrivare a `_craftBoat` (stessa trappola di `mine_owned` e `place_water`).
+      } else if (key === 'craft_boat') {
+        result = await this._craftBoat();
+      } else if (key === 'craft_blaze_powder') {
+        result = await this._craftPowderFromRods();
+      } else if (key === 'craft_ender_eye') {
+        result = await this._craftEyesOfEnder();
       } else if (key.startsWith('craft_')) {
         result = await this._craftItem(key.slice('craft_'.length));
       } else if (key.startsWith('smelt_')) {
@@ -5560,8 +5573,6 @@ export class BedrockAdapter {
         // (stessa trappola di M5): il bersaglio è il mezzo dell'umano, non "il
         // più vicino del tipo".
         result = await this._joinHumanMount();
-      } else if (key === 'craft_boat') {
-        result = await this._craftBoat();
       } else if (key === 'mount_boat') {
         result = await this._mountBoat();
       } else if (key.startsWith('brew_')) {
@@ -5632,10 +5643,6 @@ export class BedrockAdapter {
         result = await this._avoidGaze({});
       } else if (key === 'equip_pumpkin') {
         result = await this._equipPumpkin();
-      } else if (key === 'craft_blaze_powder') {
-        result = await this._craftPowderFromRods();
-      } else if (key === 'craft_ender_eye') {
-        result = await this._craftEyesOfEnder();
       } else if (key === 'throw_eye_of_ender') {
         result = await this._throwEyeOfEnder({});
       } else if (key === 'find_stronghold') {

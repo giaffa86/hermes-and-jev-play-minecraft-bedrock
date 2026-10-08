@@ -214,6 +214,24 @@ test('_craftPowderFromRods grinds one rod at a time and _craftEyesOfEnder stops 
   assert.equal(empty.inventory.blaze_powder, 4);
 });
 
+test('craft_blaze_powder e craft_ender_eye arrivano ai loro passi, non a _craftItem', async () => {
+  // Le due chiavi attraversano il prefisso `craft_<item>`: senza lo spostamento
+  // dei rami specifici prima del prefisso finirebbero in
+  // `_craftItem('blaze_powder')` / `_craftItem('ender_eye')`, che chiedono al
+  // server una ricetta con quel nome (`craft_recipe_missing`). Qui i due passi
+  // veri sono sostituiti da spie: l'oggetto del test è l'instradamento.
+  const { adapter } = endAdapter({ items: { blaze_rod: 1, blaze_powder: 1, ender_pearl: 1 } });
+  const reached = [];
+  adapter._craftPowderFromRods = async () => { reached.push('powder'); return { ok: true, via: 'powder' }; };
+  adapter._craftEyesOfEnder = async () => { reached.push('eyes'); return { ok: true, via: 'eyes' }; };
+  adapter._craftItem = async (item) => ({ ok: false, error: 'craft_recipe_missing', item });
+
+  const powder = await adapter.executeAction('craft_blaze_powder');
+  const eyes = await adapter.executeAction('craft_ender_eye');
+  assert.deepEqual(reached, ['powder', 'eyes']);
+  assert.deepEqual([powder.via, eyes.via], ['powder', 'eyes']);
+});
+
 test('_throwEyeOfEnder reads the flight direction of the server entity and triangulates a second throw', async () => {
   const { adapter } = endAdapter({ items: { ender_eye: 3 }, inventorySlots: [{ network_id: 5, name: 'ender_eye', count: 3 }] });
   assert.equal((await endAdapter().adapter._throwEyeOfEnder({})).error, 'missing_eye_of_ender');

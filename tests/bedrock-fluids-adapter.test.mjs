@@ -960,6 +960,19 @@ test('_craftBoat chiede la ricetta e le assi giuste', async () => {
   assert.equal(ready.logs.filter(l => l.type === 'boat_crafted').length, 1);
 });
 
+test('craft_boat arriva a _craftBoat, non alla ricetta del `boat` legacy', async () => {
+  // Il ramo del prefisso `craft_<item>` sta *dopo* le chiavi che hanno un passo
+  // loro: se stesse prima, `craft_boat` diventerebbe `_craftItem('boat')` e il
+  // registro del server (che indicizza `oak_boat`, non `boat`) risponderebbe
+  // `craft_recipe_missing` — il rifiuto visto live il 08/10/2026 nel curriculum
+  // `water_travel`, con `/options` che offriva `craft_boat`.
+  const { adapter, logs } = bucketAdapter({ inventory: { oak_planks: 5 } });
+  adapter.recipes = new Map([['oak_boat', { output: 'oak_boat' }]]);
+  const crafted = await adapter.executeAction('craft_boat');
+  assert.deepEqual([crafted.ok, crafted.crafted], [true, 'oak_boat']);
+  assert.equal(logs.filter(l => l.type === 'boat_crafted').length, 1);
+});
+
 test('mount_boat esige la barca e l\'acqua aperta', async () => {
   const noBoat = bucketAdapter({ cells: { '1,71,0': water, '2,71,0': water, '3,71,0': water } });
   assert.equal((await noBoat.adapter._mountBoat()).error, 'missing_boat');

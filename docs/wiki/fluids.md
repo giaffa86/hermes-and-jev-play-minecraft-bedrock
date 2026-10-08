@@ -653,7 +653,12 @@ exists because of a real defect: `place_water` and `mount_boat` were answering
 `missing_item`/`no_rideable_nearby` because the new branches sat **after** the
 generic `key.startsWith('mount_')`/`('place_')` branches; the M5 block now sits
 first, and the test calls `executeAction('fill_bucket' | 'place_water' |
-'mount_boat')` so the ordering cannot regress silently.
+'mount_boat')` so the ordering cannot regress silently. That per-key test is now
+**generalized**: `tests/bedrock-dispatch-order.test.mjs` reads the whole
+`_runAction` chain and fails whenever a `key === 'X'` branch sits behind a
+compatible `startsWith` — the 08/10/2026 `craft_boat` refusal (offered by
+`/options`, answered `craft_recipe_missing` instead of reaching `_craftBoat`) was
+the first key nobody had thought to cover.
 
 ### Live round (03/10/2026)
 
