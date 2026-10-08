@@ -45,6 +45,7 @@ import {
   filterOptionsForGovernor, humanOrderProtectedKeys, loadGameplaySkills, loadProgression, resolveMilestone, resolveActiveSkill,
 } from './survival/index.mjs';
 import { resolveBiomeTarget, planExplorationStep, chunkKey, SUPPORTED_BIOMES, replayRouteFromMission, replayRouteFromPlace, planReplayStep, buildReplayReport, resolveSearchTarget, SUPPORTED_SEARCH_TARGETS, planSearchStep } from './exploration.mjs';
+import { buildCapabilityContract } from './capability-contract.mjs';
 
 console.log('BEDROCK HARNESS VERSION 2');
 const API_PORT = +(process.env.API_PORT || 3077);
@@ -60,6 +61,13 @@ const survivalRules = await loadSurvivalRules(new URL('./knowledge/survival-rule
 const gameplaySkills = loadGameplaySkills();
 const progressionGraph = await loadProgression(new URL('./knowledge/progression.json', import.meta.url));
 const PROGRESSION_GOAL = process.env.PROGRESSION_GOAL || null;
+
+// R7 — il contratto di capacita': una proiezione in sola lettura dei file
+// dichiarativi (skill, circuiti, progressione, vocabolario di /options),
+// costruita alla prima richiesta e poi riusata. Non e' uno stato: se i file non
+// cambiano (immagine immutabile) il contenuto e' lo stesso, e il digest lo dice.
+let capabilityContractCache = null;
+const capabilityContract = () => (capabilityContractCache ??= buildCapabilityContract());
 console.log(`survival layer ready: rules=${survivalRules.length} skills=${gameplaySkills.size} milestones=${Object.keys(progressionGraph.milestones).length}`);
 
 mkdirSync(RUN_DIR, { recursive: true });
@@ -427,6 +435,14 @@ server = createServer(async (req, res) => {
         }
         : null;
       response = [200, { survival, activeSkill: active.skill?.id ?? null, activeSkillSource: active.source, milestone, progressionGoal: PROGRESSION_GOAL, redstone }];
+    } else if (req.method === 'GET' && req.url === '/capabilities') {
+      // R7 — la superficie dichiarata come contratto versionato: `contentHash`
+      // impronta il contenuto, `valid`/`problems` sono il verdetto dei controlli
+      // incrociati, `counts` il riassunto. Sola lettura e derivata dagli stessi
+      // file che il harness carica all'avvio: nessuna seconda fonte di verita'.
+      // Il consumatore (un altro agente, un secondo bot) la valida con
+      // `checkCapabilityContract` prima di usarla.
+      response = [200, capabilityContract()];
     } else if (process.env.BEDROCK_DEBUG && req.method === 'GET' && req.url === '/debug/geom') response = [200, geometryReport(adapter)];
     else if (process.env.BEDROCK_DEBUG && req.method === 'GET' && req.url.startsWith('/debug/reach')) {
       // Componente calpestabile raggiungibile attorno al bot: diagnosi dei

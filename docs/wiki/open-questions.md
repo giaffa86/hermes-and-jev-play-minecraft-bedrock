@@ -5,7 +5,7 @@ and `docs/raw/SURVIVAL-INTELLIGENCE.md` (Verification status). For the per-
 capability collaudo checklist (done / pending live), see
 [verification](verification.md).
 
-Last lint: 2026-10-07.
+Last lint: 2026-10-08.
 
 ## Promoted follow-up tasks (2026-10-04)
 

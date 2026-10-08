@@ -778,7 +778,7 @@ that must observe two chat messages pay the controller's IDLE poll).
 
 ---
 
-### R7 — (conditional) capability contracts across a process boundary
+### R7 — Capability contracts across a process boundary (IMPLEMENTED — the contract, not the service)
 
 **Goal.** Only if a second consumer of the capability surface appears, expose the
 R0 inventory as a validated contract over an explicit transport.
@@ -786,10 +786,43 @@ R0 inventory as a validated contract over an explicit transport.
 **Why.** Drafts A §43/§54 C/D want MCP. There is exactly one consumer today (the
 controller + harness in one codebase). Introducing a transport now would add a
 second source of truth and violate invariant 6. Recorded here so the intent is not
-lost, and explicitly deferred.
+lost.
 
-**Non-goal until then.** MCP, a capability registry service, and any plan IR
-serialized over the wire.
+**Non-goal.** MCP, a capability registry service, and any plan IR serialized over
+the wire.
+
+**Implemented (08/10/2026).** The contract — not the service, and not the second
+consumer, which still does not exist. `capability-contract.mjs` (pure, no network)
+projects the R0 inventory into a **versioned, self-describing** payload:
+`contractVersion` (`CAPABILITY_CONTRACT_VERSION`), `contentHash` (SHA-256 over the
+canonicalised content, `generatedAt` excluded), `valid` + `problems` (R0's typed
+verdict, carried instead of hidden), `counts`, and the surface itself (`intents`,
+`optionVocabulary`, `skills`, `circuits`, `milestones`, `goals`, `criteria`).
+`checkCapabilityContract(payload, {version})` is the door a consumer walks through:
+it never throws, and it refuses a payload that is `not_an_object`, has a
+`missing_key`, an `unknown_key`, a `version_mismatch`, a `hash_mismatch`, or that the
+producer itself declared `surface_invalid`. The shape is frozen by
+`CAPABILITY_CONTRACT_KEYS`, so an added field is a decision (bump the version), not a
+silent extension.
+
+The transport is the boundary the controller already uses: **`GET /capabilities`**
+on `bedrock-harness.mjs`, read-only and memoised on first request. That is why it is
+not the postponed service: the contract is a *projection* — derived, never written —
+of `knowledge/progression.json`, `skills/gameplay/**` and `circuits/*.json`, which
+stay the single source of truth (invariant 6). A separate process would be a second
+thing to keep alive, not a second truth; when a second consumer really appears, the
+transport can move (MCP included) without moving the producer.
+
+Gate: `npm run capabilities:check` (exit 1 when the contract does not hold) and
+`node --test tests/capability-contract.test.mjs` (6 tests: the real surface signs
+valid, two reads sign identically while `generatedAt` changes, an added skill changes
+the signature, a broken link is a typed problem and makes the contract unusable, a
+tampered/unknown-version payload is refused without throwing, and a consumer asking
+for an older version accepts it deliberately).
+
+**Residual.** The route itself is wiring, verified by reading: the harness starts its
+HTTP server only after the bot connects, so no offline test can hit `GET
+/capabilities`. The contract it returns is what the tests cover.
 
 ## 7. Definition of Done (revised)
 
@@ -815,7 +848,8 @@ chain-of-thought.
 - A hierarchical planner that precomputes a long script: the project deliberately
   keeps only one level (R1) so reactivity survives.
 - MCP, a registry service, a workflow engine, a DAG executor with retries/parallel
-  branches (R7 deferred; A §6 confirmed).
+  branches (A §6 confirmed). R7 adds a read-only *projection* on the harness's
+existing HTTP boundary, not a service.
 - Replacing Mineflayer/Java tooling as an execution layer (A §55): other projects'
   schemas are references, not targets.
 - Any behaviour change to `ragiona` beyond what R1–R2 explicitly add.
@@ -835,7 +869,9 @@ chain-of-thought.
 5. Is `CHAT_CLARIFY` default-on acceptable, or must it stay opt-in after the first
    live round?
 6. Does the R0 inventory belong in CI (a wiki-lint-style gate) or only in `npm run
-   inventory`?
+   inventory`? **Partly answered by R7**: `npm run capabilities:check` is the gate
+   (exit 1 when the contract does not hold), so wiring it into the pre-push hook or
+   CI is now a one-line decision — still open.
 
 ## 10. Sources
 

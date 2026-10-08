@@ -11,6 +11,8 @@
     "test": "node --test tests/*.test.mjs",
     "inventory": "node tools/capability-inventory.mjs --summary",
     "inventory:check": "node tools/capability-inventory.mjs --check",
+    "capabilities": "node capability-contract.mjs --summary",
+    "capabilities:check": "node capability-contract.mjs --check",
     "wiki:lint": "node tools/wiki-lint.mjs",
     "wiki:lint:strict": "node tools/wiki-lint.mjs --strict",
     "test-ping": "node test-ping.mjs",

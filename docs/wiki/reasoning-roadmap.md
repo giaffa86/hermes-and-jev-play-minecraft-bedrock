@@ -67,7 +67,7 @@ Namespaced `R0`…`R7` to avoid colliding with the repo's own M1–M12 chat mile
 | **R4** Structured failure | Harness refusal → typed `{step, error, evidence, retryable}`; a step revises its own steps instead of only a global replan | **implemented** — the step is the unit: `retry` retries, `switch` drops the key and republishes `steps[].refused`, `replan` fails the step |
 | **R5** Composite goals | `prepare_for_nether` as a DAG over existing milestones, expanded deterministically | **implemented** — a goal may name a **list** of milestones; `milestoneChain` returns the missing closure in dependency order and the plan carries it in `steps[]` |
 | **R6** Golden scenarios | Order + observation → expected plan/clarification/refusal, including the C17/C18 negative cases; freezes R1–R5 | **implemented** — nine scenarios in `tests/golden-scenarios.test.mjs`, driven against a scripted harness and asserted on the **R3 trace**; found and fixed a real bug (the `SIGTERM` handler died on a `ReferenceError`) |
-| **R7** (conditional) contracts over a process boundary | Only if a second consumer appears; MCP explicitly deferred to avoid a second source of truth | deferred |
+| **R7** Capability contract | R0's inventory as a **versioned, self-describing, consumer-validatable** contract (`capability-contract.mjs`), carried over the harness's existing HTTP boundary (`GET /capabilities`). MCP and any registry service stay non-goals: the contract is a read-only *projection*, never a second source of truth | **implemented** — `contractVersion` + `contentHash` + `valid`/`problems` + the frozen key set; `checkCapabilityContract` is the consumer's handshake; `npm run capabilities:check` is the offline gate |
 
 ### The plan shape (R1)
 
@@ -375,6 +375,51 @@ still writes its ledger.
   *outcome* of an order in one look, including the negative cases that must not
   ask.
 
+### The capability contract (R7)
+
+R7 was written as *conditional*: expose the R0 inventory as a validated contract over
+an explicit transport, but only if a second consumer appears. The second consumer
+still does not exist — so what was built is the **contract**, and the transport is the
+boundary the project already has. No new process, no MCP, no registry: the contract is
+a projection that is *derived* and *never written*.
+
+```text
+  knowledge/progression.json   skills/gameplay/**   circuits/*.json
+        |                            |                    |
+        +----------- buildInventory (R0) ------------------+
+                             |
+                             v
+  capability-contract.mjs   contractVersion / contentHash / valid + problems / counts
+        |                                   |
+        |  GET /capabilities (bedrock-harness.mjs, read-only, memoised)
+        |                                   |
+        v                                   v
+  checkCapabilityContract(payload)   npm run capabilities:check
+  a consumer's handshake             the offline gate (exit 1)
+```
+
+- **The contract describes itself**: `contractVersion`
+  (`CAPABILITY_CONTRACT_VERSION`), `contentHash` (SHA-256 over the canonicalised
+  content — sorted keys, `generatedAt` excluded, so two reads of the same surface
+  sign identically), `valid` + `problems` (R0's typed verdict, *carried* instead of
+  hidden), `counts`, and the surface: `intents`, `optionVocabulary`, `skills`,
+  `circuits`, `milestones`, `goals`, `criteria`.
+- **The consumer validates, it does not interpret**: `checkCapabilityContract`
+  never throws and refuses `not_an_object`, `missing_key`, `unknown_key`,
+  `version_mismatch`, `hash_mismatch`, and `surface_invalid` — a contract the
+  producer itself marked broken is not usable.
+- **The shape is frozen** by `CAPABILITY_CONTRACT_KEYS`: adding a field to the
+  builder fails `tests/capability-contract.test.mjs` until the key list and the
+  version are bumped on purpose.
+- **It adds no second source of truth**: the payload is a projection of the
+  declarative files, read-only; the harness only reads it (`/options` stays the
+  authoritative runtime answer). If a second consumer ever needs to *author* a
+  capability or speak another language, the transport can move — MCP included —
+  without moving the producer.
+- **The honest residual**: the route is wiring, checked by reading. The harness
+  starts its HTTP server only after the bot connects, so no offline test can reach
+  `GET /capabilities`; what the tests cover is exactly what the route returns.
+
 ## Real capability surface (the R0 input)
 
 | Layer | Artifact | Count (07/10/2026, from the R0 inventory) |
@@ -423,3 +468,11 @@ harness, so they freeze the controller's decisions, never the world's answers �
 row touches a live Bedrock server, and none exercises a model-driven decision
 (`CONTROLLER=jev` needs an API key). What a live golden run should add, and whether
 it belongs in this suite or in the container's collaudo, is open.
+
+**R7 partly answered the CI question**: `npm run capabilities:check` is a gate that
+exits 1 when the contract does not hold, so wiring it into the pre-push hook or CI is
+now a one-line decision rather than a new tool — still a decision, still open. New
+from R7: the contract version is bumped by hand, and the only thing enforcing the
+protocol is `tests/capability-contract.test.mjs`. Whether a *second* consumer will
+ever exist (and which one it would be: another agent, a second bot, an editor
+plugin) stays the trigger that would move the transport.

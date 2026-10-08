@@ -1,5 +1,15 @@
 # Log
 
+## [2026-10-08] feat | R7 implementata: la superficie è un contratto che il consumatore valida, non un documento di cui fidarsi
+
+`capability-contract.mjs` proietta l'inventario R0 in un payload che si descrive — `contractVersion`, `contentHash` (SHA-256 sul contenuto canonico, `generatedAt` escluso), `valid` + `problems` (il verdetto tipizzato di R0, portato invece che nascosto), `counts` e la superficie — e `checkCapabilityContract(payload, {version})` è la porta d'ingresso di un consumatore: non lancia mai e rifiuta `not_an_object`, `missing_key`, `unknown_key`, `version_mismatch`, `hash_mismatch`, `surface_invalid`. La forma è congelata da `CAPABILITY_CONTRACT_KEYS`, quindi un campo in più è una decisione (alzare `CAPABILITY_CONTRACT_VERSION`), non un'estensione silenziosa. Il trasporto è la porta che il controller già usa, `GET /capabilities` in `bedrock-harness.mjs`, in sola lettura e costruita alla prima richiesta: nessun processo nuovo, nessun MCP, nessun registry — il contratto è una proiezione **derivata** dei file dichiarativi, che restano l'unica fonte di verità. Gate offline `npm run capabilities:check`; sei test in `tests/capability-contract.test.mjs` (firma valida del repo reale, digest stabile fra due letture e insensibile a `generatedAt`, firma che cambia se cambia la superficie, collegamento rotto = problema tipizzato e contratto inutilizzabile, payload manomesso o di versione futura rifiutato senza eccezioni, versione vecchia accettata di proposito perché la versione sta nel digest). Suite 1949 → 1955. Residuo: il cablaggio della route è verificato per lettura (l'harness apre la porta HTTP solo dopo la connessione del bot) e nessun consumatore usa ancora il contratto, perché il secondo consumatore su cui R7 era condizionata non esiste.
+
+## [2026-10-08] lint | R7: il contratto di capacità, e i documenti allineati
+
+- Lint `--strict` sul repository: nessun errore dopo R7 (roadmap grezza, wiki roadmap, `verification.md` riga 47.70, `AGENTS.md`, questo log).
+- `Last lint` in `docs/wiki/open-questions.md` allineato a `2026-10-08` (la data massima fra le voci di lint di questo log).
+- Conteggio finale: 54 file, 819 link relativi, 32 pagine wiki, 15 fonti grezze, 1 nota informativa su `log.md`.
+
 ## [2026-10-07] feat | R6 implementata: i golden scenarios congelano l'esito di un ordine (e trovano un bug vero)
 
 - `tests/golden-scenarios.test.mjs`: nove righe (ordine + mondo in, forma del piano / domanda / rifiuto / ledger out) contro il **controller vero** su un harness scriptato; le asserzioni leggono la traccia R3, non l'evento. G1 domanda senza meta, G2 meta nota alla memoria, G3 posto ignoto, G4 (C17) il marcatore «ragiona» tolto prima del planner, G5 (C18) deposito a due bauli, G6 stop, G7 rifiuto tipizzato dentro lo step, G8 ordine ambiguo che non sospende il goal, G9 run uccisa da un segnale che lascia comunque il ledger. Suite 1940 → 1949.
