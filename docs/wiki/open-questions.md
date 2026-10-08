@@ -1159,16 +1159,18 @@ Still missing (the rest of the original gap):
 Recorded in [architecture-evolution](architecture-evolution.md): Hermes is best
 framed as a **strategic replanner, not a hierarchical planner** — it emits one
 shallow objective per replan and never decomposes into `goal → subgoal → action`.
-Two open design questions follow from that framing:
+One of the two design questions that followed from that framing is now closed:
 
-- **First-class `subgoal`**: add a `subgoal` field to the plan and let Hermes
-  keep `objective` stable while rotating `subgoal`/`targets`/`skill`
-  (receding-horizon). Today `subgoal` exists only implicitly (the `milestone`
-  field in curriculum mode, the `skill` field in free-goal mode).
-- **Multi-branch progression**: `resolveMilestone` returns a single deterministic
-  `next` (DFS first-hit) — no OR/alternative-path semantics. To support copper /
-  iron / exploration paths the graph needs branch nodes and a Hermes scoring
-  hook, while Jev stays one-action-at-a-time.
+- **First-class `subgoal` — CLOSED by R1** (07/10/2026). `plan.subgoal` and
+  `plan.steps[]` exist, but they are **derived** by the pure module
+  `plan-shape.mjs` from the skill contracts and the milestone graph, not authored
+  by Hermes: the controller holds `goal.objective` and the `subgoal` rotates. The
+  per-chunk verification is the skill's own `success` criteria filtered to
+  `CRITERIA_KEYS`. See [reasoning-roadmap](reasoning-roadmap.md).
+- **Multi-branch progression** (still open): `resolveMilestone` returns a single
+  deterministic `next` (DFS first-hit) — no OR/alternative-path semantics. To
+  support copper / iron / exploration paths the graph needs branch nodes and a
+  Hermes scoring hook, while Jev stays one-action-at-a-time.
 
 ## Material sourcing, the survival ladder and the chat orders (04/10/2026)
 

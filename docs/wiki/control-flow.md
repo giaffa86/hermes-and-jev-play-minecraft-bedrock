@@ -8,26 +8,55 @@ the boundary between the deterministic layer and the two LLM "systems".
 ## The loop at a glance
 
 ```
-                              ┌───────────────────────────────┐
-                              │      Progression Engine       │
-                              │    deterministic macro-graph  │
-                              │   wood → tools → iron → ...   │
-                              │  (curriculum mode: next       │
-                              │   missing milestone)          │
-                              └──────────────┬────────────────┘
-                                             │ next milestone (hint / deterministic plan)
-                                             ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│           INPUT — the chat channel  (chat-inbox.mjs, M1)             │
+│   @bot <order|question>    allowlist · prefixes · rate limit         │
+│   «ragiona» (M12) is a REPLY marker, stripped here: never routed     │
+└──────────────────────────────┬───────────────────────────────────────┘
+                               │
+                 ┌─────────────┴──────────────┐
+                 │  DETERMINISTIC SHORT-CUTS  │  no model, no goal
+                 │   M6 question (chat-intent)│──► answered from observe()
+                 │  M10 told fact (memory-chat)│──► remember / consult
+                 │   drop · farm · collect ·  │──► direct action
+                 │   equip · stop · told_goto │
+                 └─────────────┬──────────────┘
+                               │ a real order → plan
+                               ▼
+              ┌───────────────────────────────────────┐
+              │         Progression Engine            │  (curriculum mode:
+              │       deterministic macro-graph       │   the next missing
+              │      wood → tools → iron → ...        │   prerequisite)
+              └───────────────┬───────────────────────┘
+                              │ next milestone (hint / deterministic plan)
+                              ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │                      SYSTEM TWO — HERMES (planner)                   │
 │                                                                      │
 │    GOAL + observation (+ milestone hint)                             │
-│         → { objective, targets, waypoint, skill }                    │
+│         → { objective, targets, waypoint, follow, skill }            │
 │                                                                      │
 │    • strategic replanner, not hierarchical planner                   │
 │    • replans on skill done/failed, anti-loop, every N steps          │
 │    • does NOT emit an action sequence                                │
 └──────────────────────────────┬───────────────────────────────────────┘
-                               │ plan
+                               │ flat plan
+                               ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│              R1 — the plan shape  (plan-shape.mjs, pure)             │
+│                                                                      │
+│   plan.subgoal  ← skill.description | plan.subgoal | milestone       │
+│   plan.steps[]  ← { id, skill, circuit, targets, verify }            │
+│   verify ⊆ CRITERIA_KEYS · no step ever names a /options key         │
+└──────────────────────────────┬───────────────────────────────────────┘
+                               │ shaped plan
+                               ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                   GOAL MANAGER — the goal stack                      │
+│                                                                      │
+│   parentGoal · suspend / resume · MAX_GOAL_DEPTH · human_order_*     │
+└──────────────────────────────┬───────────────────────────────────────┘
+                               │ active goal.plan
                                ▼
               ┌─────────────────────────────────────┐
               │          Skill Resolver             │
@@ -56,7 +85,9 @@ the boundary between the deterministic layer and the two LLM "systems".
                                ▼
                              WORLD
                                │
-                               └──────────────────► new state (loop)
+                               └──► re-observe → verifySkill → governor ──┐
+                                                                          │
+                                        (next step / next goal) ◄─────────┘
 ```
 
 Cross-cutting, deterministic, at every step:
@@ -74,7 +105,20 @@ Cross-cutting, deterministic, at every step:
 
 ## Stage by stage
 
-1. **Progression Engine** (`survival/progression.mjs` + `knowledge/progression.json`)
+1. **Input — the chat channel** (`chat-inbox.mjs`) turns a line of chat into an
+   order or a question: `CHAT_ALLOWLIST` gates *who* may order, `CHAT_PREFIXES`
+   and `CHAT_SELF_NAME` decide *what* wakes the bot, and `CHAT_ECHO_WINDOW_MS`
+   recognises the bot's own line coming back from the server. The `ragiona`
+   marker (M12) is stripped here, so it changes the *answer* and never the
+   routing — an order with `ragiona` and one without follow the same path.
+
+2. **Deterministic short-cuts** run before any model: a question about the bot's
+   own state is answered from `observe()` (M6 `chat-intent`), a dictated fact is
+   written to the memory (M10 `memory-chat.mjs`, `CLARIFY` when ambiguous), and a
+   direct order (`drop`, farm, `collect`, `equip`, `stop`, `told_goto`) is planned
+   without a planner call. Only the direct orders become a goal.
+
+3. **Progression Engine** (`survival/progression.mjs` + `knowledge/progression.json`)
    is the deterministic macro-graph of milestones (`wood → crafting_table →
    stone_tools → … → enter_nether`). In curriculum mode
    (`CURRICULUM=<milestone>`) it returns the *next missing prerequisite* and the
@@ -82,20 +126,35 @@ Cross-cutting, deterministic, at every step:
    fallback. In free-goal mode it is not consulted: Hermes plans directly from
    `GOAL`.
 
-2. **System Two — Hermes** (`controller.mjs` → `hermesPlan`) turns the goal
+4. **System Two — Hermes** (`controller.mjs` → `hermesPlan`) turns the goal
    (plus the observation and, in curriculum mode, the milestone hint) into a
    single shallow JSON plan: `{objective, targets, waypoint, skill}`. It is a
    *shallow* planner: the prompt asks for "one sentence the controller can act
    on now", and it **never emits a sequence of actions**. It is re-invoked only
    on replan events (skill done/failed, anti-loop, every `REPLAN_EVERY` steps).
 
-3. **Skill Resolver** (`survival/resolver.mjs`) picks the active declarative
+5. **R1 — the plan shape** (`plan-shape.mjs`, pure) derives `subgoal` and
+   `steps[]` from the declarative artifacts (`skills/gameplay/**`,
+   `circuits/*.json`, `progression.json`): each step names its skill, its
+   circuit (`success.circuitBuilt.id`) and the criteria to verify, filtered to
+   `CRITERIA_KEYS`. It is **additive** — a producer that already set
+   `subgoal`/`steps` wins — and it never names an option key, so the one level
+   it adds stays strategic. `{met: true}` is left untouched.
+
+6. **Goal manager** (`goal-manager.mjs`, used from `controller.mjs`): a human
+   order does not reorient the running goal, it becomes a *child* goal
+   (`parentGoal`); the parent resumes when the child closes, revalidated first,
+   so a goal already satisfied while suspended completes without spending an
+   action. A stop order, an order from the same requester, or a chain deeper
+   than `MAX_GOAL_DEPTH` still reorients (`human_order_override`).
+
+7. **Skill Resolver** (`survival/resolver.mjs`) picks the active declarative
    gameplay skill (governor preference → `plan.skill` → governor caution →
    progression milestone) and derives its *preferred intents*. Those intents are
    used only to reorder/boost options that the harness already offers — never to
    invent a key.
 
-4. **Harness / world model** (`bedrock-harness.mjs` + `bedrock-adapter.mjs`)
+8. **Harness / world model** (`bedrock-harness.mjs` + `bedrock-adapter.mjs`)
    owns **validity**: from the current state it computes *only* the actions that
    are executable and useful right now and exposes them as `/options`. The models
    can only choose from that list; bad behaviour is fixed in the harness, not in
@@ -113,12 +172,12 @@ Cross-cutting, deterministic, at every step:
    bot is *connected*, and those two branches (plus the harness `busy` lock) still
    answer it.
 
-5. **System One — Jev** (`controller.mjs` → `jevDecide`, via the OpenRouter/TypeSafe
+9. **System One — Jev** (`controller.mjs` → `jevDecide`, via the OpenRouter/TypeSafe
    `/decisions` endpoint) chooses **one** bounded action per step from the
    options, with probabilities and confidence. `CONTROLLER=hermes` swaps this for
    a Hermes call with the same one-action constraint.
 
-6. **World** — the chosen action is executed; the new state feeds the next
+10. **World** — the chosen action is executed; the new state feeds the next
    iteration of the loop (re-observe → governor → verify → plan/decision).
 
 The **Survival Governor** (`survival/governor.mjs` + `knowledge/survival-rules.json`)
@@ -160,8 +219,11 @@ places instead:
 
 Hermes only supplies the coarse objective/targets/skill; the step-by-step
 "spezzatura in azioni elementari" is System One's job, one bounded action at a
-time. See also [survival-intelligence](survival-intelligence.md) for the
-"deterministic before the prompt" principle.
+time. R1 makes that boundary explicit **without moving it**: `plan-shape.mjs`
+derives `subgoal`/`steps[]` *from* the skill contracts, so the decomposition is
+still written in data and Hermes still never emits the step list. See also
+[survival-intelligence](survival-intelligence.md) for the "deterministic before
+the prompt" principle and [reasoning-roadmap](reasoning-roadmap.md) for R0/R1.
 
 ## Sources
 
@@ -171,5 +233,8 @@ time. See also [survival-intelligence](survival-intelligence.md) for the
 - `survival/resolver.mjs`, `survival/governor.mjs`, `survival/verify.mjs` — the
   deterministic layer.
 - `bedrock-harness.mjs`, `bedrock-adapter.mjs` — validity and execution.
+- `plan-shape.mjs` — the R1 plan shape (`derivePlanShape`, `withPlanShape`).
+- `tools/capability-inventory.mjs` — the R0 offline inventory of the surface above.
 - Related wiki: [overview](overview.md), [survival-intelligence](survival-intelligence.md),
-  [headless-client](headless-client.md), [architecture-evolution](architecture-evolution.md).
+  [headless-client](headless-client.md), [architecture-evolution](architecture-evolution.md),
+  [reasoning-roadmap](reasoning-roadmap.md), [goal-stack](goal-stack.md).

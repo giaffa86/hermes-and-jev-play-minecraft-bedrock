@@ -1,5 +1,28 @@
 # Log
 
+## [2026-10-07] docs | I diagrammi dell'architettura nella wiki, allineati a R0/R1
+
+Il diagramma di flusso esisteva già in `docs/wiki/control-flow.md`, ma si fermava
+all'ingresso di System Two: non c'erano il canale di chat, il livello di
+scomposizione di R1 né lo stack dei goal. L'ho **esteso** invece di aggiungere un
+secondo diagramma accanto (la pagina resta l'unica fonte del flusso): nuovo box di
+input (`chat-inbox.mjs`, con «ragiona»/M12 marcato come marcatore di risposta
+tolto prima del router), box dei corti circuiti deterministici (M6 domanda, M10
+fatti dettati, ordini diretti), box **R1 — plan shape** (`subgoal` + `steps[]`,
+`verify ⊆ CRITERIA_KEYS`, nessuna key di `/options`), box del **goal manager**
+(`parentGoal`, sospendi/riprendi, `MAX_GOAL_DEPTH`) e la freccia di ritorno del
+ciclo (`re-observe → verifySkill → governor`). Aggiornata anche la sezione «Stage
+by stage» (10 tappe) e «What System Two does *not* do», che ora spiega perché R1
+non sposta il confine: la scomposizione resta scritta nei dati.
+
+`docs/wiki/reasoning-roadmap.md` ha il diagramma della forma del piano (input
+piatto → sorgenti dichiarative → `plan.subgoal`/`plan.steps[]`) e la domanda
+aperta su `subgoal` è chiusa. `docs/wiki/architecture-evolution.md` segna
+Evolution A come **implementata come R1** (con la differenza: `subgoal` è
+derivato, non scritto da Hermes) e chiude due domande di design (schema del piano,
+stabilità dell'`objective`). `docs/wiki/open-questions.md`: chiusa la domanda su
+`subgoal`, resta aperta quella sul grafo multi-ramo.
+
 ## [2026-10-07] docs | R1 implementata: il piano ha una forma (`subgoal` + `steps[]`)
 
 Secondo passo della roadmap corretta (`docs/raw/ROADMAP_refactoring_reasoning.md`). Il

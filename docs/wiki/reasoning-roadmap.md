@@ -69,6 +69,33 @@ Namespaced `R0`…`R7` to avoid colliding with the repo's own M1–M12 chat mile
 | **R6** Golden scenarios | Order + observation → expected plan/clarification/refusal, including the C17/C18 negative cases; freezes R1–R5 | proposed |
 | **R7** (conditional) contracts over a process boundary | Only if a second consumer appears; MCP explicitly deferred to avoid a second source of truth | deferred |
 
+### The plan shape (R1)
+
+Hermes still emits a flat JSON; the shape is *derived* from the declarative
+artifacts by a pure module, so the decomposition stays data and no step ever names
+an action key:
+
+```text
+        PLAN IN (flat)                        DERIVATION SOURCES
++---------------------------------+
+| { objective, targets, waypoint, |   plan-shape.mjs    <- skills/gameplay/**  (description,
+|   follow, skill, subgoal? }     |   (pure, additive)  <-   success criteria -> verify)
++----------------+----------------+                     <- circuits/*.json    (success.circuitBuilt.id)
+                 |                                      <- progression.json   (milestone -> subgoal)
+                 v                                      <- CRITERIA_KEYS      (verify filter)
+        plan.subgoal <- skill.description | plan.subgoal | milestone | objective
+        plan.steps[] <- { id, skill, circuit, targets, verify }
+                 |
+                 v
+        PLAN OUT (shaped, goal.plan)
+```
+
+Properties, all covered by `tests/plan-shape.test.mjs`: `verify` is always a
+subset of `CRITERIA_KEYS`; a step's keys are exactly
+`{id, skill, circuit, targets, verify}`; a producer that already set
+`subgoal`/`steps` wins; the `{met: true}` sentinel is untouched; a replan keeps
+`objective` (the controller holds it) and rotates `subgoal`.
+
 ## Real capability surface (the R0 input)
 
 | Layer | Artifact | Count (07/10/2026, from the R0 inventory) |
@@ -86,11 +113,13 @@ The inventory's first run has **zero errors** and one real finding: `auto_door` 
 
 ## Open questions
 
-Carried from the raw doc §9: how `subgoal` is verified without duplicating
-`verifySkill`; whether a held (clarifying) order suspends the running goal; how to
-expose multi-branch progression without breaking `resolveMilestone`'s single-`next`
-contract; whether `CHAT_CLARIFY` stays opt-in; whether the R0 inventory belongs in
-CI.
+Carried from the raw doc §9: whether a held (clarifying) order suspends the
+running goal; how to expose multi-branch progression without breaking
+`resolveMilestone`'s single-`next` contract; whether `CHAT_CLARIFY` stays opt-in;
+whether the R0 inventory belongs in CI. **R1 answered the `subgoal`
+verification question**: it is verified by the skill's own `success` criteria
+(filtered to `CRITERIA_KEYS`), so `verifySkill` is not duplicated and no second
+per-subgoal criterion exists.
 
 New from R0: should `auto_door` and `delay_line` be wired into a milestone (a skill
 whose `success.circuitBuilt.id` names them), or are they deliberately unused

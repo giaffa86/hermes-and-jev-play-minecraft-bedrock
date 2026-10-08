@@ -5,7 +5,8 @@ to *name* it precisely, and the two smallest evolutions that would strengthen
 Hermes' strategic horizon without turning it into a classical hierarchical
 planner. This page records the reasoning and the open design questions; it does
 **not** describe implemented behaviour (that is
-[control-flow](control-flow.md)).
+[control-flow](control-flow.md), and for the plan shape
+[reasoning-roadmap](reasoning-roadmap.md)).
 
 ## The four roles, cleanly separated
 
@@ -49,11 +50,18 @@ only to the next chunk.
 
 | Concept | Status today | Proposal |
 |---|---|---|
-| A subgoal/chunk level | **Partially.** In curriculum mode `planFromMilestone` sets a `milestone` field and `resolveMilestone` advances to the next missing prerequisite. In free-goal mode only the optional `skill` field exists; there is no first-class `subgoal`. | Make `subgoal` a first-class plan field in free-goal mode (see below). |
-| Receding-horizon planning | **Partially.** The replan loop already re-invokes Hermes per chunk. But each free-goal replan re-derives from `GOAL`; the objective is not held stable while only the chunk rotates. | Hermes keeps `objective` stable and rotates `subgoal`/`targets`/`skill` per replan. |
+| A subgoal/chunk level | **Yes, since R1** (07/10/2026). `plan.subgoal` and `plan.steps[]` are derived by `plan-shape.mjs` from the skill contracts and the milestone graph — in free-goal mode too. | Done (R1). |
+| Receding-horizon planning | **Yes, since R1** — but inverted: the controller holds `goal.objective` while the derived `subgoal` rotates. Hermes is not asked to re-emit a stable objective. | Done (R1). |
 | Multi-branch progression | **Not present.** `requires` is an array (a DAG, diamonds allowed), but `resolveMilestone` returns a single deterministic `next` (DFS first-hit). No OR/alternative-path semantics; `goals` maps each goal to one milestone. | Add branch nodes / OR-requirements so the engine exposes candidate branches and Hermes picks one. |
 
 ## Evolution A — a single intermediate decomposition level
+
+> **Implemented as R1** (07/10/2026) — though not literally as sketched below.
+> Rather than asking Hermes to hold `objective` stable and to *author* a
+> `subgoal`, the controller derives the `subgoal` (from the skill's
+> `description`) and a `steps[]` array in the pure module `plan-shape.mjs`. The
+> paragraphs below are kept as the design rationale; see
+> [reasoning-roadmap](reasoning-roadmap.md) for what shipped.
 
 Add exactly **one** level between objective and actions, in free-goal mode, by
 promoting the existing `skill`/`milestone` machinery into an explicit `subgoal`
@@ -124,12 +132,13 @@ branch choice).
 
 ## Open questions
 
-- **Plan schema**: add `subgoal` (string) + keep `skill` + `milestone`? Or reuse
-  `milestone` for free-goal mode too? Where is `subgoal` verified — by the skill's
-  `success` criteria, or by a separate per-subgoal criterion?
-- **Objective stability across replans**: how does the controller know a replan is
-  "advance the subgoal" vs "abandon the objective"? A cheap heuristic (Hermes
-  re-emits the same `objective` + a new `subgoal`) vs an explicit `objectiveId`?
+- **Plan schema**: **Answered by R1** (07/10/2026). `subgoal` is a *derived*
+  field, never a plan input; `skill` and `milestone` keep their meaning; and the
+  per-chunk verification is exactly the skill's `success` criteria filtered to
+  `CRITERIA_KEYS` — no second criterion, no duplicated verifier.
+- **Objective stability across replans**: **Answered by R1**. The controller holds
+  `goal.objective` (a replan does not rewrite it) and only the derived `subgoal`
+  rotates; no `objectiveId` was needed.
 - **Branch semantics**: `requires` needs OR-nodes (`anyOf` of prerequisite sets)
   or dedicated branch nodes. How does `resolveMilestone` expose candidates without
   breaking the current single-`next` contract and its tests?
@@ -146,6 +155,9 @@ branch choice).
 - `survival/progression.mjs`, `knowledge/progression.json` — the graph and the
   single-`next` resolver.
 - `skills/gameplay/**/*.json` — the existing per-chunk skill contracts.
+- `plan-shape.mjs` — the R1 implementation (`derivePlanShape`, `withPlanShape`),
+  which made Evolution A real.
 - Related wiki: [control-flow](control-flow.md),
+  [reasoning-roadmap](reasoning-roadmap.md),
   [survival-intelligence](survival-intelligence.md),
   [open-questions](open-questions.md).
