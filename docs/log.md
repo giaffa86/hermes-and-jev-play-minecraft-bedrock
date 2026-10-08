@@ -1,12 +1,48 @@
 # Log
 
+## [2026-10-07] design | R2: la domanda pendente sta nell'inbox, e un ordine ambiguo non sospende il goal
+
+Tre decisioni prese prima di scrivere `human-clarify.mjs`, e una verifica che le
+rende praticabili.
+
+- **La clarification pendente vive nell'inbox, non nel controller** (scelta
+dell'utente, per separazione delle responsabilità: chat lifecycle → inbox,
+planning → controller, world state → memory/observe, esecuzione → harness +
+`/options`). Verificato che è il posto naturale: l'inbox esiste già lì
+(`bedrock-adapter.mjs:588` `this.chatInbox = []`, voce `{from, message, type,
+xuid, at}`, coda di 32, `observe()` ne espone `chatInbox.slice(-10)` a `:4466`,
+push a `:12042`). Il modello: il controller chiama `POST /chat/ask` (è lui che ha
+già applicato il gate del canale: allowlist, prefisso, età, dedup — il gate vive
+nel controller, `bedrock-harness.mjs:159`), l'inbox conserva
+`pending[from] = {orderId, originalText, question, askedAt}` e **decora** il
+messaggio successivo di quel mittente con `clarifies: {...}`, una volta sola; il
+controller riceve `{message, clarifies}` e rivaluta l'ordine **originale** con la
+risposta invece di trattare il testo come un ordine nuovo.
+- **Un ordine ambiguo non sospende il goal corrente**: non diventa un goal, quindi
+non c'è niente da sospendere; il goal in corso resta intatto e l'ordine trattenuto
+vive solo nell'inbox. (Era la domanda aperta n. 3 della roadmap.)
+- Regole che ne derivano: il pendente scade su `CHAT_MAX_AGE_MS` (la stessa
+finestra che rende `chat_stale` un ordine vecchio); un ordine di stop/cancellazione
+vince sempre e non viene consumato come risposta; **una sola domanda per ordine**
+(dopo la risposta `human-clarify` rigira sull'ordine unito e, se non basta
+ancora, il bot **rifiuta** con un messaggio tipizzato invece di chiedere di
+nuovo); la voce porta `originalText` perché `observe()` espone solo gli ultimi 10
+messaggi. Vantaggio della scelta: la domanda pendente **sopravvive a un riavvio
+del controller** (sta nell'adapter), quindi la risposta del giocatore non si perde.
+- **Resta aperto**: se `CHAT_CLARIFY` debba essere default-on alla prima release o
+restare opt-in dopo un giro live.
+
+Correzione: nel diagramma di `docs/wiki/control-flow.md` (commit `9efcd6c`) avevo
+scritto `chat-inbox.mjs`, un file che **non esiste**; il box di input ora dice
+`inbox: chatInbox, in the adapter` e la tappa 1 cita `bedrock-adapter.mjs:588`.
+
 ## [2026-10-07] docs | I diagrammi dell'architettura nella wiki, allineati a R0/R1
 
 Il diagramma di flusso esisteva già in `docs/wiki/control-flow.md`, ma si fermava
 all'ingresso di System Two: non c'erano il canale di chat, il livello di
 scomposizione di R1 né lo stack dei goal. L'ho **esteso** invece di aggiungere un
 secondo diagramma accanto (la pagina resta l'unica fonte del flusso): nuovo box di
-input (`chat-inbox.mjs`, con «ragiona»/M12 marcato come marcatore di risposta
+input (l'inbox dell'adapter, `chatInbox`, con «ragiona»/M12 marcato come marcatore di risposta
 tolto prima del router), box dei corti circuiti deterministici (M6 domanda, M10
 fatti dettati, ordini diretti), box **R1 — plan shape** (`subgoal` + `steps[]`,
 `verify ⊆ CRITERIA_KEYS`, nessuna key di `/options`), box del **goal manager**

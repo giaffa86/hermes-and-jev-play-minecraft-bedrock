@@ -279,16 +279,67 @@ silently resolved to a default (e.g. a movement order with no destination become
 never asked for.
 
 **Existing code involved.** `memory-chat.mjs` `CLARIFY` + reasons (the real,
-working precedent), `controller.mjs:554` (`CLARIFY_TOLD`), `:732-738`
-(`tell_clarify`), `humanCommandPlan` (the gate wraps it), `human-replies.mjs` /
-`chat-i18n.mjs` (the question text goes through the catalogue, in every language).
+working precedent), `controller.mjs:564` (`CLARIFY_TOLD`), `:742`
+(`tell_clarify`), `humanCommandPlan` (`controller.mjs:924`, the gate wraps it),
+`human-replies.mjs` / `chat-i18n.mjs` (the question text goes through the
+catalogue, in every language), and — for the pending store — the harness-side
+inbox: `bedrock-adapter.mjs:588` (`this.chatInbox = []`), the push site at
+`:12042`, the `observe()` slice at `:4466` (`chat: this.chatInbox.slice(-10)`),
+and the route block of `bedrock-harness.mjs` (`POST /say`, `/act`,
+`/memory/tell/*`).
 
 **New files.** `human-clarify.mjs` (pure): `orderGaps(text, plan, obs, { memory })`
 → `{ status: 'ready' | 'needs_input', missing: [{ field, reason }], question, options }`.
 
-**Data structures.** `ClarificationRequest { orderId, from, field, reason, question,
-askedAt, originalText }`, held in controller memory (one per sender), dropped on
-`CHAT_MAX_AGE_MS`.
+**Data structures.** `ClarificationRequest { orderId, from, xuid, field, reason,
+question, askedAt, originalText }`.
+
+**Where the pending question lives (decided 07/10/2026): in the inbox, not in the
+controller.** The chat lifecycle belongs to the inbox side; the controller stays
+(nearly) stateless with respect to the conversation.
+
+```text
+chat inbox  (harness side: bedrock-adapter.mjs `chatInbox`)
+  entry = { from, message, type, xuid, at }
+      + per-sender pending clarification
+
+  controller                              inbox
+  ----------                              -----
+  message -> humanCommandPlan -> human-clarify
+                    |
+                    +-- ready        -> plan -> goal            (as today)
+                    +-- needs_input  -> CLARIFY --- POST /chat/ask ---> pending[from] = {orderId, originalText, question, askedAt}
+                                       (no goal is created)
+
+  next message, same sender
+      -> the inbox decorates that entry with `clarifies: {orderId, originalText, question}`
+         (one shot: the entry is cleared, never two answers to one question)
+      -> the controller sees { message, clarifies } and re-evaluates the ORIGINAL
+         order with the answer instead of treating the text as a fresh order
+```
+
+Consequences and rules:
+
+- **No goal is suspended** (decided 07/10/2026): an under-specified order never
+  becomes a goal, so there is nothing to suspend. The running goal keeps running,
+  and the held order lives only in the inbox.
+- **`POST /chat/ask` is the only writer** and it is called by the controller, which
+  has already applied the channel gate (allowlist, prefix, age, dedupe — the gate
+  lives in the controller, `bedrock-harness.mjs:159`). A stranger can therefore not
+  create a pending entry, and an allowlist check on the answer is unnecessary.
+- **A pending entry is dropped** after `CHAT_MAX_AGE_MS` (the same window that
+  already makes an order `chat_stale`), and it is written by the inbox exactly once.
+- **A stop/cancel order always wins**: it clears the pending entry untouched
+  instead of being consumed as the answer.
+- **One question per order**: after the answer, `human-clarify` runs again on the
+  merged order; if it is still not enough the bot **refuses with a typed message**
+  and does not ask a second time (no question loop).
+- **The entry carries `originalText`**, not just an `orderId`: `observe()` exposes
+  only `chatInbox.slice(-10)`, so after a controller restart the original message
+  may have scrolled out of the window — the pending record is the only copy.
+- **Bonus of this choice**: the pending question survives a controller restart
+  (it is in the adapter), so a player's answer is not lost because the planner was
+  restarted in between.
 
 **Policy ("resolve before asking", restated for this repo).** In order: (1) explicit
 request, (2) conversational context, (3) world memory (`resolvePlace`,
@@ -302,8 +353,10 @@ decide (goal, destination, target, quantity, an irreversible choice). The gate m
 order with a remembered place resolves and does not ask; «metti il ferro nel baule»
 with several chests does **not** ask (deposit policy); «portami del cibo» does not
 ask; a follow-up from the same sender completes the held order; a follow-up from a
-different sender does not; an expired held order is dropped; a question-shaped
-message never enters the gate.
+different sender does not; a stop order while a question is pending is not consumed
+as the answer; a second unanswered reply **refuses** instead of asking again; a
+pending question survives a controller restart (the adapter holds it); an expired
+held order is dropped; a question-shaped message never enters the gate.
 
 **Acceptance.** two consecutive chat messages complete one order; the ack/outcome
 still reach the real sender; no new goal is created by the question.
@@ -441,12 +494,13 @@ chain-of-thought.
 
 ## 9. Open questions
 
-1. `plan.subgoal` in free-goal mode: is the objective held stable by a heuristic
-   ("same objective + new subgoal") or by an explicit `objectiveId`?
-2. Where is a `subgoal` verified — the skill's own `success`, or a separate
-   criterion? (R1 must not duplicate `verifySkill`.)
-3. The clarification gate (R2): does a held order suspend the running goal the way
-   a normal order does, or does it never start one until the answer arrives?
+1. ~~`plan.subgoal` in free-goal mode~~ — **answered by R1**: the controller holds
+   `goal.objective` and the derived `subgoal` rotates; no `objectiveId` was needed.
+2. ~~Where a `subgoal` is verified~~ — **answered by R1**: the skill's own
+   `success` criteria filtered to `CRITERIA_KEYS`; `verifySkill` is not duplicated.
+3. ~~Does a held order suspend the running goal?~~ — **answered 07/10/2026: no.** An
+   under-specified order never becomes a goal; it is held in the inbox and the
+   running goal is untouched. See the R2 section for the pending-store design.
 4. Multi-branch progression (architecture-evolution "Evolution B"): how to expose
    candidate branches from `resolveMilestone` without breaking the single-`next`
    contract, and what deterministic pre-filter feeds the branch score?

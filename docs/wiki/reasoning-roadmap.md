@@ -62,7 +62,7 @@ Namespaced `R0`…`R7` to avoid colliding with the repo's own M1–M12 chat mile
 |---|---|---|
 | **R0** Capability inventory | One command emits a machine-checkable inventory of intents, option vocabulary, skills, circuits, milestones, criteria, and the cross-checks between them (`tools/capability-inventory.mjs`) — the drafts' "registry" with the MCP fiction removed | **implemented** |
 | **R1** Typed plan | Add `plan.subgoal` + `plan.steps[]` (each naming a skill/circuit + its verify criteria), derived from the declarative files; exactly one level above actions ("Evolution A") | **implemented** |
-| **R2** Clarification gate | Wrap `humanCommandPlan`: `orderGaps(text, plan, obs, {memory})` → `ready` \| `needs_input`; ask one question, hold the order, resume on the same sender's answer. Behind `CHAT_CLARIFY` | proposed |
+| **R2** Clarification gate | Wrap `humanCommandPlan`: `orderGaps(text, plan, obs, {memory})` → `ready` \| `needs_input`; ask one question, hold the order, resume on the same sender's answer. **Design decided 07/10/2026**: the pending question lives in the harness-side inbox (`chatInbox`), not in the controller, and an under-specified order never becomes a goal (so no running goal is suspended) | proposed |
 | **R3** Plan trace | One structured `plan_trace` line per decision (objective, subgoal, source, steps, action, refusals, replan reason). Never chain-of-thought | proposed |
 | **R4** Structured failure | Harness refusal → typed `{step, error, evidence, retryable}`; a step revises its own steps instead of only a global replan | proposed |
 | **R5** Composite goals | `prepare_for_nether` as a DAG over existing milestones, expanded deterministically | proposed |
@@ -113,13 +113,15 @@ The inventory's first run has **zero errors** and one real finding: `auto_door` 
 
 ## Open questions
 
-Carried from the raw doc §9: whether a held (clarifying) order suspends the
-running goal; how to expose multi-branch progression without breaking
-`resolveMilestone`'s single-`next` contract; whether `CHAT_CLARIFY` stays opt-in;
-whether the R0 inventory belongs in CI. **R1 answered the `subgoal`
+Carried from the raw doc §9: how to expose multi-branch progression without
+breaking `resolveMilestone`'s single-`next` contract; whether `CHAT_CLARIFY` stays
+opt-in; whether the R0 inventory belongs in CI. **R1 answered the `subgoal`
 verification question**: it is verified by the skill's own `success` criteria
 (filtered to `CRITERIA_KEYS`), so `verifySkill` is not duplicated and no second
-per-subgoal criterion exists.
+per-subgoal criterion exists. **R2's suspension question is answered too** (no: an
+under-specified order is not a goal, so nothing is suspended) and the pending
+question is stored in the harness inbox, which also makes it survive a controller
+restart.
 
 New from R0: should `auto_door` and `delay_line` be wired into a milestone (a skill
 whose `success.circuitBuilt.id` names them), or are they deliberately unused

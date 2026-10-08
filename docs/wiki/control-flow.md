@@ -9,7 +9,7 @@ the boundary between the deterministic layer and the two LLM "systems".
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│           INPUT — the chat channel  (chat-inbox.mjs, M1)             │
+│   INPUT — the chat channel  (inbox: chatInbox, in the adapter)       │
 │   @bot <order|question>    allowlist · prefixes · rate limit         │
 │   «ragiona» (M12) is a REPLY marker, stripped here: never routed     │
 └──────────────────────────────┬───────────────────────────────────────┘
@@ -105,8 +105,9 @@ Cross-cutting, deterministic, at every step:
 
 ## Stage by stage
 
-1. **Input — the chat channel** (`chat-inbox.mjs`) turns a line of chat into an
-   order or a question: `CHAT_ALLOWLIST` gates *who* may order, `CHAT_PREFIXES`
+1. **Input — the chat channel** (the harness-side inbox: `chatInbox` in
+   `bedrock-adapter.mjs:588`, exposed by `observe()` as `chat.slice(-10)`) turns a
+   line of chat into an order or a question: `CHAT_ALLOWLIST` gates *who* may order, `CHAT_PREFIXES`
    and `CHAT_SELF_NAME` decide *what* wakes the bot, and `CHAT_ECHO_WINDOW_MS`
    recognises the bot's own line coming back from the server. The `ragiona`
    marker (M12) is stripped here, so it changes the *answer* and never the
