@@ -161,4 +161,7 @@ export default Object.freeze({
   told_ambiguous: 'I have {count} places called "{name}": {options}. Which one do you mean?',
   told_memory_unavailable: 'I cannot read my memory right now ({reason})',
   told_noun_container: 'chest',
+  clarify_destination: 'where do you want me to go? Name a place I know, give me coordinates (for example "coordinates 120 64 -230"), or say "come to me"',
+  clarify_unknown_place: 'I do not know "{name}": where is it? Give me coordinates (for example "coordinates 120 64 -230"), or say "where I am now" if you are there',
+  clarify_refusal: 'I still have not understood where to go: reply only with a place I know, some coordinates, or "come to me"',
 });

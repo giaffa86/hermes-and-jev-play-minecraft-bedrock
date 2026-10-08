@@ -5,6 +5,11 @@
 //   POST /act {key} -> esegue un'azione
 //   POST /plan {objective, waypoint, targets} -> registra il piano corrente
 //   POST /say {message, type?} -> il bot scrive in chat (pacchetto `text`)
+// R2 — chiarificazione (CHAT_CLARIFY=off la spegne nel controller):
+//   POST /chat/ask {from,xuid,orderId,originalText,question,field,reason} -> il bot ha
+//        chiesto una cosa a un umano: il suo prossimo messaggio e' la risposta, non un
+//        ordine nuovo, e l'inbox lo dira' in `entry.clarifies` (una volta sola)
+//   GET  /chat/pending -> le domande in attesa di risposta (una voce per domanda)
 //   GET  /memory/hints?resource=<item>&limit=N -> località provate (episodico → semantico)
 //   GET  /memory/placements?circuitId=&limit=N -> registro dei blocchi piazzati dal bot (R4)
 //   POST /memory/consolidate {limit,since} -> backfill idempotente dei consolidamenti
@@ -931,6 +936,15 @@ server = createServer(async (req, res) => {
       }
     }
     else if (req.method === 'GET' && req.url === '/stats') response = [200, { run: RUN, pid: process.pid, uptimeMs: Math.round(process.uptime() * 1000), ...ledger.summary() }];
+    else if (req.method === 'POST' && req.url === '/chat/ask') {
+      // R2: il chiamante e' il controller, che ha gia' applicato il gate del
+      // canale (allowlist, prefisso, eta'). Qui si conserva solo il legame «a
+      // questo mittente ho chiesto questo», con l'ordine originale: l'inbox
+      // espone gli ultimi 10 messaggi e la risposta arrivera' dopo.
+      const payload = body ? JSON.parse(body) : {};
+      response = [200, adapter.askChat(payload)];
+    }
+    else if (req.method === 'GET' && req.url === '/chat/pending') response = [200, { pending: adapter._chatPendingView() }];
     else if (req.method === 'POST' && req.url === '/plan') { adapter.setPlan(JSON.parse(body)); response = [200, { ok: true, plan: adapter.plan }]; }
     else if (req.method === 'POST' && req.url === '/say') {
       // Il bot scrive in chat (M5): unico modo per rispondere a un umano o

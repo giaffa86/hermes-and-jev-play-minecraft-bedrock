@@ -397,6 +397,15 @@ const CHAT_MIN_INTERVAL_MS = +(process.env.CHAT_MIN_INTERVAL_MS || 1000);
 // inviato entro questa finestra.
 const CHAT_ECHO_WINDOW_MS = +(process.env.CHAT_ECHO_WINDOW_MS || 15000);
 const CHAT_ECHO_MEMORY = 8;
+// R2: quanto a lungo una domanda in attesa resta valida. È la stessa finestra con
+// cui il controller scarta un ordine vecchio (`CHAT_MAX_AGE_MS`): una risposta
+// arrivata dopo non sta più rispondendo a quella domanda, e una domanda senza
+// risposta non deve accumularsi per sempre.
+const CHAT_ASK_TTL_MS = +(process.env.CHAT_ASK_TTL_MS || 300000);
+// La chiave di un mittente nella chat: gamertag (o xuid) senza differenze di
+// maiuscole. È la stessa normalizzazione con cui il controller riconosce i
+// mittenti autorizzati, così «Steve» e «steve» sono la stessa persona.
+const chatKey = (value) => String(value ?? '').trim().toLowerCase();
 // Raggio entro cui un giocatore umano è "percepito" (gli saluta e gli spiega
 // come dare un ordine). Separato dal tracking entità (64 blocchi).
 const HUMAN_RANGE = +(process.env.HUMAN_RANGE || 32);
@@ -586,6 +595,11 @@ export class BedrockAdapter {
     }
     this.armor = { helmet: null, chestplate: null, leggings: null, boots: null }; // pezzi indossati
     this.chatInbox = [];             // messaggi chat recenti { from, message, type, xuid, at }
+    // R2: la domanda in attesa di risposta, per mittente. Vive **qui** e non nel
+    // controller perché è il ciclo di vita della chat («a chi ho appena chiesto
+    // qualcosa?»), e perché così sopravvive a un riavvio del controller: l'umano
+    // risponde quando vuole, anche a bot già ripartito.
+    this.chatPending = new Map();    // chiave: gamertag/xuid minuscolo -> { orderId, from, originalText, question, field, reason, askedAt, keys }
     this._lastChatAt = 0;            // ultimo invio chat (rate limit del bot che parla)
     this._sentChat = [];             // testo dei messaggi inviati { text, at } (riconoscere l'eco)
     this.selfName = null;            // gamertag che il server attribuisce al bot (imparato dall'eco)
@@ -4464,6 +4478,8 @@ export class BedrockAdapter {
       mountFollow: this._mountFollowView(),
       craft: this._craftNeeds({ liveGather: true }),
       chat: this.chatInbox.slice(-10),
+      // R2: le domande in attesa di risposta (una voce per domanda viva).
+      chatPending: this._chatPendingView(),
       nearby: this.nearbyBlocks,
       structures: this.structures.slice(0, 8),
       structureSurvey: this._structureSurvey,
@@ -12039,9 +12055,77 @@ export class BedrockAdapter {
     }
     if (this.isSelfName(from)) return;
     const entry = { from, message, type, xuid: packet.xuid != null ? String(packet.xuid) : null, at: Date.now() };
+    // R2: se a questo mittente è stata appena fatta una domanda, il suo primo
+    // messaggio successivo è la *risposta* a quella domanda — non un ordine
+    // nuovo. L'inbox lo dice (una volta sola) e il controller rilancia l'ordine
+    // originale con la risposta attaccata. La decorazione è un suggerimento: il
+    // controller resta padrone di scartarla (un ordine di stop, per esempio).
+    const pending = this._chatPendingTake(entry);
+    if (pending) {
+      entry.clarifies = { orderId: pending.orderId, originalText: pending.originalText, question: pending.question };
+      this.log('chat_clarify_reply', { from, orderId: pending.orderId, askedMsAgo: entry.at - pending.askedAt, message: message.slice(0, 160) });
+    }
     this.chatInbox.push(entry);
     if (this.chatInbox.length > 32) this.chatInbox.shift();
     this.log('chat', { from, chatType: type, xuid: entry.xuid, message: message.slice(0, 160) });
+  }
+
+  // R2 — la domanda in attesa. Il bot ha chiesto qualcosa a un umano e la
+  // risposta arriverà in un messaggio successivo, che l'inbox espone come un
+  // messaggio qualunque: senza questo legame «a chi ho chiesto che cosa» il
+  // controller non saprebbe che quella frase non è un ordine nuovo. Si conserva
+  // l'**ordine originale** perché `observe()` porta solo gli ultimi 10 messaggi.
+  // Chiama solo il controller, che ha già applicato il gate del canale.
+  askChat ({ from, xuid = null, orderId, originalText = '', question, field = null, reason = null } = {}) {
+    const who = String(from ?? '').trim();
+    const text = String(question ?? '').trim();
+    if (!who || !text) return { ok: false, error: 'ask_requires_sender_and_question' };
+    const keys = [...new Set([chatKey(who), chatKey(xuid)].filter(Boolean))];
+    const record = {
+      orderId: String(orderId ?? ''),
+      from: who,
+      originalText: String(originalText ?? '').slice(0, CHAT_MAX_LENGTH),
+      question: text.slice(0, CHAT_MAX_LENGTH),
+      field,
+      reason,
+      askedAt: Date.now(),
+      keys,
+    };
+    for (const key of keys) this.chatPending.set(key, record);
+    this.log('chat_ask', { to: who, orderId: record.orderId, field, reason, question: record.question.slice(0, 160) });
+    return { ok: true, pending: this._chatPendingView(record) };
+  }
+
+  // La risposta consuma la domanda: **una volta sola**. Il record si toglie
+  // sempre (anche se è scaduto), altrimenti una domanda vecchia resterebbe lì a
+  // decorare i messaggi di domani.
+  _chatPendingTake (entry) {
+    const now = Date.now();
+    for (const key of [...new Set([chatKey(entry?.from), chatKey(entry?.xuid)].filter(Boolean))]) {
+      const record = this.chatPending.get(key);
+      if (!record) continue;
+      for (const other of record.keys) this.chatPending.delete(other);
+      if (now - record.askedAt > CHAT_ASK_TTL_MS) {
+        this.log('chat_ask_stale', { to: entry?.from, orderId: record.orderId, ageMs: now - record.askedAt });
+        return null;
+      }
+      return record;
+    }
+    return null;
+  }
+
+  // Vista (una riga per domanda viva, non una per chiave) per `/observe` e per la
+  // rotta di lettura: serve a un umano o a un agente per sapere che cosa il bot
+  // sta aspettando di sapere.
+  _chatPendingView (only = null) {
+    const seen = new Set();
+    const out = [];
+    for (const record of only ? [only] : this.chatPending.values()) {
+      if (seen.has(record.orderId)) continue;
+      seen.add(record.orderId);
+      out.push({ orderId: record.orderId, from: record.from, field: record.field, reason: record.reason, question: record.question, askedAt: record.askedAt });
+    }
+    return out;
   }
 
   // Testo identico a un messaggio appena inviato dal bot (entro la finestra): è

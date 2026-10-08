@@ -266,7 +266,7 @@ wins" rule, and the sentinel. The live `CURRICULUM` acceptance round is still op
 
 ---
 
-### R2 — Clarification gate for human orders
+### R2 — Clarification gate for human orders (IMPLEMENTED)
 
 **Goal.** Add the one decision the drafts get genuinely right: before planning an
 order, decide whether it is specified enough — and if not, ask **one** question
@@ -362,8 +362,64 @@ held order is dropped; a question-shaped message never enters the gate.
 still reach the real sender; no new goal is created by the question.
 
 **Risks.** Medium-high: it changes live chat behaviour. Mitigation: behind
-`CHAT_CLARIFY` (default off in the first release), full offline test suite, and a
-live round before enabling.
+`CHAT_CLARIFY` (**default on**, decided 07/10/2026; kill-switch
+`CHAT_CLARIFY=off`), full offline test suite, and `off` is the fallback to the old
+planner behaviour for every order.
+
+**Implemented (07/10/2026).** As built, and the decisions taken while building:
+
+- `human-clarify.mjs` (pure, no I/O) exports `orderGaps(text, plan, obs, { memory,
+  lang, names })`, `mergeClarifyAnswer(originalText, answer)`,
+  `restatesOrder(text)`, `renderClarifyRefusal({lang})`, `planHasDestination`,
+  `planIsOtherOrder` and the `CLARIFY_*` constants. Two gaps exist:
+  `destination`/`no_destination` (a movement verb with no target anywhere) and
+  `place`/`unknown_place` (a name the world memory does not know).
+- The gate runs **after** `humanCommandPlan`, on the decided plan — so a plan that
+  already carries `waypoint`/`escort.to`, or that is a construction/collect/farm/
+  drop/equip order, is never asked about. The ladder is: destination verb? →
+  destination in the plan or another order? → follow-verb / `here` / explicit
+  coordinates? → an activity after `vai a …`? → the place is in memory (or the
+  memory is down → fail-open)? → the name is an object a partitive introduces
+  («portami **del** cibo»)? → ask. `planHasDestination` deliberately ignores
+  `plan.follow`: the planner fallback always sets it, so it proves nothing.
+- The question goes through the five catalogues (`clarify_destination`,
+  `clarify_unknown_place` with `{name}`, `clarify_refusal`), never a hardcoded
+  string; the refusal is reached when a reply does not close the gap (one question
+  per order, then a typed no).
+- **The decoration is a hint, not an order** (`replyIsOwnOrder`): a reply that is
+  itself a complete order — `restatesOrder` («vai al mulino»), a stop («fermati»
+  always wins), or any order the deterministic planner recognises alone (drop,
+  collect, equip, farm) — replaces the held order instead of being merged into it.
+  Otherwise the held text and the reply are joined (`mergeClarifyAnswer`).
+- **The answer is still an addressed message** (`@bot coordinate 120 64 -230`): the
+  prefix gate (`matchChatPrefix`) runs before the decoration is read, so the pending
+  question never opens a second, unaddressed channel — important with several bots
+  on one server. The decoration only supplies the *context* of the reply.
+- **The small-talk branch is skipped while a question is pending**: the closed
+  `SMALL_TALK` list contains exactly the confirmation shapes a human uses to answer
+  («va bene», «perfetto», «ottimo», «d accord»), so a decorated entry must never be
+  read as a greeting.
+- The reply is offered to the told-fact handler **alone** (`handleToldFact(…,
+  {message})`), never as the merged text: a reply that *teaches* a fact («l ingresso
+  ora è a 130, 62, -240») must be recognised as a told fact, while the merged text
+  is what the planner sees. Every branch logs (`chat_clarify`, `chat_clarify_refused`,
+  `chat_clarify_reply` in the adapter, and `chat_command` carries `clarifies`).
+- Adapter/harness: `askChat({from, xuid, orderId, originalText, question, field,
+  reason})` is the **only writer** (`POST /chat/ask`), plus `GET /chat/pending` and
+  `observe().chatPending`; the record lives under both the gamertag and the xuid,
+  is consumed by exactly one later message from that sender (`_chatPendingTake`
+  deletes every key, a second take finds nothing), and expires at
+  `CHAT_ASK_TTL_MS` (default `300000`, the same window as `CHAT_MAX_AGE_MS`), which
+  is logged as `chat_ask_stale`.
+- Known limitation (accepted, documented): a destination name that *contains* an
+  item word and is not in memory («vai al campo di patate») is read as an object
+  order and never asked about — better a missed question than a wrong one.
+- Tests: `tests/human-clarify.test.mjs` (13, the pure gate),
+  `tests/bedrock-chat-ask.test.mjs` (6, the inbox store),
+  `tests/controller-clarify.test.mjs` (5, the real controller on the wire: no goal
+  from an ambiguous order, the question is recorded before it is spoken, a known
+  place does not ask, `off` switches the gate off, and Hermes receives the original
+  order with the answer attached — and not the answer alone). Full suite 1909/1909.
 
 ---
 

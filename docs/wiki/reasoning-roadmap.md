@@ -62,7 +62,7 @@ Namespaced `R0`…`R7` to avoid colliding with the repo's own M1–M12 chat mile
 |---|---|---|
 | **R0** Capability inventory | One command emits a machine-checkable inventory of intents, option vocabulary, skills, circuits, milestones, criteria, and the cross-checks between them (`tools/capability-inventory.mjs`) — the drafts' "registry" with the MCP fiction removed | **implemented** |
 | **R1** Typed plan | Add `plan.subgoal` + `plan.steps[]` (each naming a skill/circuit + its verify criteria), derived from the declarative files; exactly one level above actions ("Evolution A") | **implemented** |
-| **R2** Clarification gate | Wrap `humanCommandPlan`: `orderGaps(text, plan, obs, {memory})` → `ready` \| `needs_input`; ask one question, hold the order, resume on the same sender's answer. **Design decided 07/10/2026**: the pending question lives in the harness-side inbox (`chatInbox`), not in the controller, and an under-specified order never becomes a goal (so no running goal is suspended) | proposed |
+| **R2** Clarification gate | Wrap `humanCommandPlan`: `orderGaps(text, plan, obs, {memory})` → `ready` \| `needs_input`; ask one question, hold the order, resume on the same sender's answer. **Design decided 07/10/2026**: the pending question lives in the harness-side inbox (`chatInbox`), not in the controller, and an under-specified order never becomes a goal (so no running goal is suspended). `CHAT_CLARIFY` **default on**, kill-switch `off` | **implemented** |
 | **R3** Plan trace | One structured `plan_trace` line per decision (objective, subgoal, source, steps, action, refusals, replan reason). Never chain-of-thought | proposed |
 | **R4** Structured failure | Harness refusal → typed `{step, error, evidence, retryable}`; a step revises its own steps instead of only a global replan | proposed |
 | **R5** Composite goals | `prepare_for_nether` as a DAG over existing milestones, expanded deterministically | proposed |
@@ -96,6 +96,60 @@ subset of `CRITERIA_KEYS`; a step's keys are exactly
 `subgoal`/`steps` wins; the `{met: true}` sentinel is untouched; a replan keeps
 `objective` (the controller holds it) and rotates `subgoal`.
 
+### The clarification gate (R2)
+
+An under-specified order is not planned on a hunch: the gate runs on the *decided*
+plan, and only two gaps exist — a movement verb with no destination anywhere, and a
+place name the world memory does not know.
+
+```text
+  ORDER IN "@bot vai"                    human-clarify.mjs (pure, no I/O)
+     |                                    YES  dest. verb at all?
+     +--> humanCommandPlan    --> plan    YES  plan has waypoint/escort, or is another order?
+     |      (deterministic,              YES  follow verb / "here" / explicit coordinates?
+     |       else Hermes)                YES  "vai a dormire" (activity after vai a …)?
+     |                                   YES  the place is in memory (memory down -> open)?
+     +--> orderGaps(text, plan, obs)     YES  an object a partitive names ("portami DEL cibo")?
+          |
+          +-- ready       -> goal (exactly as before)
+          +-- needs_input -> POST /chat/ask
+                              inbox: pending[from] = { orderId, from, question,
+                                                       originalText, field, reason, askedAt }
+                              one chat line: "@Ale dove vuoi che vada?"
+                              (NO goal is created)
+
+  NEXT ADDRESSED MESSAGE, SAME SENDER -> the inbox stamps `clarifies` ONCE
+          +-- the reply is itself an order ("vai al mulino", "fermati")?
+          |      -> it REPLACES the held order (a stop always wins)
+          +-- otherwise -> merged: "vai" + "coordinate 120 64 -230" -> the planner
+                 still not enough -> a typed refusal, never a second question
+```
+
+Properties, covered by `tests/human-clarify.test.mjs` (13),
+`tests/bedrock-chat-ask.test.mjs` (6) and `tests/controller-clarify.test.mjs` (5):
+
+- The refusal is reached when a reply does not close the gap: **one question per
+  order**, then a typed no (`clarify_refusal`), never a question loop.
+- The answer is still an **addressed** message (`@bot coordinate 120 64 -230`): the
+  prefix gate runs first, so the pending question does not open a second,
+  unaddressed channel — it only supplies the *context* of the reply.
+- The decoration is a **hint**: the controller discards the held order when the
+  reply is a complete order of its own (`restatesOrder`, stop, drop, collect,
+  equip, farm).
+- The small-talk branch is skipped while a question is pending, because the closed
+  `SMALL_TALK` list contains exactly the confirmation shapes («va bene»,
+  «perfetto», «ottimo»).
+- The raw reply is offered to the told-fact handler (M10) *alone*, so «l ingresso
+  ora è a 130, 62, -240» stays a told fact; the merged text is what the planner
+  sees.
+- In the adapter the record is stored under both the gamertag and the xuid, is
+  consumed by exactly one later message from that sender, and expires at
+  `CHAT_ASK_TTL_MS` (default `300000`, the same window as `CHAT_MAX_AGE_MS`), so it
+  also survives a controller restart.
+- Fail-open: if the place memory is unavailable the gate does not ask.
+- Known limitation: a destination that *contains* an item word and is not in memory
+  («vai al campo di patate») is read as an object order and never asked about.
+
 ## Real capability surface (the R0 input)
 
 | Layer | Artifact | Count (07/10/2026, from the R0 inventory) |
@@ -114,14 +168,15 @@ The inventory's first run has **zero errors** and one real finding: `auto_door` 
 ## Open questions
 
 Carried from the raw doc §9: how to expose multi-branch progression without
-breaking `resolveMilestone`'s single-`next` contract; whether `CHAT_CLARIFY` stays
-opt-in; whether the R0 inventory belongs in CI. **R1 answered the `subgoal`
+breaking `resolveMilestone`'s single-`next` contract; whether the R0 inventory
+belongs in CI. **R1 answered the `subgoal`
 verification question**: it is verified by the skill's own `success` criteria
 (filtered to `CRITERIA_KEYS`), so `verifySkill` is not duplicated and no second
 per-subgoal criterion exists. **R2's suspension question is answered too** (no: an
 under-specified order is not a goal, so nothing is suspended) and the pending
 question is stored in the harness inbox, which also makes it survive a controller
-restart.
+restart. **`CHAT_CLARIFY` is not opt-in**: it is on by default, with `off` as the
+kill-switch that restores the old planner fallback.
 
 New from R0: should `auto_door` and `delay_line` be wired into a milestone (a skill
 whose `success.circuitBuilt.id` names them), or are they deliberately unused

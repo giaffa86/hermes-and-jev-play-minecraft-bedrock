@@ -161,4 +161,7 @@ export default Object.freeze({
   told_ambiguous: 'tengo {count} lugares llamados "{name}": {options}. ¿Cuál?',
   told_memory_unavailable: 'no puedo leer mi memoria ahora mismo ({reason})',
   told_noun_container: 'cofre',
+  clarify_destination: '¿adónde quieres que vaya? Dime un lugar que conozca, dame coordenadas (por ejemplo "coordenadas 120 64 -230") o di "ven a mí"',
+  clarify_unknown_place: 'no conozco "{name}": ¿dónde está? Dame coordenadas (por ejemplo "coordenadas 120 64 -230") o di "dónde estoy" si estás ahí',
+  clarify_refusal: 'sigo sin entender adónde ir: responde solo con un lugar que conozca, unas coordenadas o "ven a mí"',
 });

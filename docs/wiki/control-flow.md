@@ -21,7 +21,15 @@ the boundary between the deterministic layer and the two LLM "systems".
                  │   drop · farm · collect ·  │──► direct action
                  │   equip · stop · told_goto │
                  └─────────────┬──────────────┘
-                               │ a real order → plan
+                               │ a real order → humanCommandPlan → plan
+                               ▼
+              ┌──────────────────────────────────────────────┐
+              │  R2 — clarification gate (human-clarify.mjs) │
+              │  needs_input → 1 question, held in the inbox │──► POST /chat/ask
+              │  the answer is merged and the gate retried   │    (no goal yet)
+              │  ready → the plan goes on exactly as before  │
+              └───────────────────────┬──────────────────────┘
+                               │ plan
                                ▼
               ┌───────────────────────────────────────┐
               │         Progression Engine            │  (curriculum mode:
@@ -119,7 +127,19 @@ Cross-cutting, deterministic, at every step:
    direct order (`drop`, farm, `collect`, `equip`, `stop`, `told_goto`) is planned
    without a planner call. Only the direct orders become a goal.
 
-3. **Progression Engine** (`survival/progression.mjs` + `knowledge/progression.json`)
+3. **R2 — the clarification gate** (`human-clarify.mjs`, pure) runs on the plan a
+   human order produced, **before** it becomes a goal. Two gaps only: a movement
+   verb with no destination anywhere, and a place name the world memory does not
+   know. On `needs_input` the controller speaks one question and records it in the
+   harness inbox through `POST /chat/ask`; **no goal is created**. The sender's
+   next addressed message comes back stamped with `clarifies` (once): if it is
+   itself an order it replaces the held one, otherwise it is merged with the
+   original text and the gate runs again. A second gap is a typed refusal, never a
+   second question, and a place memory that is down leaves the gate open. Verified
+   on the wire by `tests/controller-clarify.test.mjs`; `CHAT_CLARIFY=off` restores
+   the old planner fallback.
+
+4. **Progression Engine** (`survival/progression.mjs` + `knowledge/progression.json`)
    is the deterministic macro-graph of milestones (`wood → crafting_table →
    stone_tools → … → enter_nether`). In curriculum mode
    (`CURRICULUM=<milestone>`) it returns the *next missing prerequisite* and the
@@ -127,14 +147,14 @@ Cross-cutting, deterministic, at every step:
    fallback. In free-goal mode it is not consulted: Hermes plans directly from
    `GOAL`.
 
-4. **System Two — Hermes** (`controller.mjs` → `hermesPlan`) turns the goal
+5. **System Two — Hermes** (`controller.mjs` → `hermesPlan`) turns the goal
    (plus the observation and, in curriculum mode, the milestone hint) into a
    single shallow JSON plan: `{objective, targets, waypoint, skill}`. It is a
    *shallow* planner: the prompt asks for "one sentence the controller can act
    on now", and it **never emits a sequence of actions**. It is re-invoked only
    on replan events (skill done/failed, anti-loop, every `REPLAN_EVERY` steps).
 
-5. **R1 — the plan shape** (`plan-shape.mjs`, pure) derives `subgoal` and
+6. **R1 — the plan shape** (`plan-shape.mjs`, pure) derives `subgoal` and
    `steps[]` from the declarative artifacts (`skills/gameplay/**`,
    `circuits/*.json`, `progression.json`): each step names its skill, its
    circuit (`success.circuitBuilt.id`) and the criteria to verify, filtered to
@@ -142,20 +162,20 @@ Cross-cutting, deterministic, at every step:
    `subgoal`/`steps` wins — and it never names an option key, so the one level
    it adds stays strategic. `{met: true}` is left untouched.
 
-6. **Goal manager** (`goal-manager.mjs`, used from `controller.mjs`): a human
+7. **Goal manager** (`goal-manager.mjs`, used from `controller.mjs`): a human
    order does not reorient the running goal, it becomes a *child* goal
    (`parentGoal`); the parent resumes when the child closes, revalidated first,
    so a goal already satisfied while suspended completes without spending an
    action. A stop order, an order from the same requester, or a chain deeper
    than `MAX_GOAL_DEPTH` still reorients (`human_order_override`).
 
-7. **Skill Resolver** (`survival/resolver.mjs`) picks the active declarative
+8. **Skill Resolver** (`survival/resolver.mjs`) picks the active declarative
    gameplay skill (governor preference → `plan.skill` → governor caution →
    progression milestone) and derives its *preferred intents*. Those intents are
    used only to reorder/boost options that the harness already offers — never to
    invent a key.
 
-8. **Harness / world model** (`bedrock-harness.mjs` + `bedrock-adapter.mjs`)
+9. **Harness / world model** (`bedrock-harness.mjs` + `bedrock-adapter.mjs`)
    owns **validity**: from the current state it computes *only* the actions that
    are executable and useful right now and exposes them as `/options`. The models
    can only choose from that list; bad behaviour is fixed in the harness, not in
@@ -173,12 +193,12 @@ Cross-cutting, deterministic, at every step:
    bot is *connected*, and those two branches (plus the harness `busy` lock) still
    answer it.
 
-9. **System One — Jev** (`controller.mjs` → `jevDecide`, via the OpenRouter/TypeSafe
+10. **System One — Jev** (`controller.mjs` → `jevDecide`, via the OpenRouter/TypeSafe
    `/decisions` endpoint) chooses **one** bounded action per step from the
    options, with probabilities and confidence. `CONTROLLER=hermes` swaps this for
    a Hermes call with the same one-action constraint.
 
-10. **World** — the chosen action is executed; the new state feeds the next
+11. **World** — the chosen action is executed; the new state feeds the next
    iteration of the loop (re-observe → governor → verify → plan/decision).
 
 The **Survival Governor** (`survival/governor.mjs` + `knowledge/survival-rules.json`)

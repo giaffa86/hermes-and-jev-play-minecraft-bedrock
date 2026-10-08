@@ -1077,6 +1077,49 @@ Per una risposta ragionata scrivi ragiona nel messaggio, es. "@bot ragiona: perc
 sent on the public `chat` channel, and `type` can be overridden to `whisper` if a
 quieter hello is preferred (still an open question).
 
+## R2 — an ambiguous order asks once (the clarification gate)
+
+Since 07/10/2026 (`CHAT_CLARIFY`, **on by default**) an order that asks for a
+destination and carries none does not become a goal on a hunch: the bot asks
+**one** question and holds the order.
+
+| In chat | What happens |
+|---|---|
+| `@bot vai` | «@Ale dove vuoi che vada?» — no goal, the order is held |
+| `@bot vai al rifugio` (in memory) | no question, the order starts |
+| `@bot vai al villaggio` (unknown) | it asks which place that is |
+| `@bot portami del cibo` | no question: that is an object, not a place |
+| the answer `@bot coordinate 120 64 -230` | the held order restarts with the answer attached |
+| the answer `@bot vai al mulino` | it is an order of its own: it replaces the held one |
+| `@bot fermati` while a question is pending | the stop wins, the question dies |
+| a second answer that is not enough | a typed refusal, never a second question |
+
+Operating rules:
+
+- The question is recorded in the **harness inbox** (`POST /chat/ask`) *before* it
+  is spoken, together with the original order: that is what makes the answer
+  recognisable and what makes it survive a controller restart. The record expires
+  with `CHAT_ASK_TTL_MS` (default `300000`, the same window as `CHAT_MAX_AGE_MS`).
+- The answer is an **addressed** message like every other one. The `clarifies`
+  stamp gives the context; it does not open a channel without a prefix
+  (important with several bots on one server).
+- The gate never asks what the repo already resolves — the policy is "resolve
+  before asking": a destination in the plan, a follow verb, «here», explicit
+  coordinates, an activity («vai a dormire»), a place the world memory knows, an
+  object a partitive introduces («portami **del** cibo»). If the place memory is
+  down, the gate stays open (fail-open): a guess is better than a mute bot.
+- Chat does not become an interrogation: one question per order, then a typed
+  refusal (`clarify_refusal`, five languages).
+- The gate is pure and lives in `human-clarify.mjs`; the plan it judges comes from
+  `humanCommandPlan`, so an order with a destination, or a construction/farm/
+  collect/drop/equip order, is never asked about.
+- `CHAT_CLARIFY=off` goes back to the previous behaviour (the planner falls back
+  to «I follow whoever wrote to me»).
+
+Known limit: a destination that *contains* an item word and is not in memory
+(«vai al campo di patate») is read as an order about an object and never asks.
+Better a missed question than a wrong one.
+
 ## Open questions
 
 - **Trigger**: settled to a **list** of triggers (`CHAT_PREFIXES`, default

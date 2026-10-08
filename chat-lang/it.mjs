@@ -176,4 +176,7 @@ export default Object.freeze({
   told_ambiguous: 'ho {count} posti chiamati "{name}": {options}. Quale intendi?',
   told_memory_unavailable: 'non riesco a leggere la memoria adesso ({reason})',
   told_noun_container: 'baule',
+  clarify_destination: 'dove vuoi che vada? Dimmi un posto che conosco, delle coordinate (per esempio "coordinate 120 64 -230"), oppure "vieni da me"',
+  clarify_unknown_place: 'non conosco "{name}": dov\'è? Dammi le coordinate (per esempio "coordinate 120 64 -230") o dimmi "dove sono adesso" se sei lì',
+  clarify_refusal: 'non ho ancora capito dove andare: rispondi solo con un posto che conosco, delle coordinate, oppure "vieni da me"',
 });

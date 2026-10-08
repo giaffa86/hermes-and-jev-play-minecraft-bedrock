@@ -1,5 +1,52 @@
 # Log
 
+## [2026-10-07] feat | R2 implementata: un ordine ambiguo fa una domanda, non un goal
+
+Il cancello di chiarificazione è in codice, acceso di default (`CHAT_CLARIFY=on`,
+kill-switch `off`), con 24 test nuovi e la suite a 1909/1909.
+
+- **La porta pura** `human-clarify.mjs`: `orderGaps(text, plan, obs, {memory, lang,
+  names})` → `{status, missing, question, options}` con due soli buchi — movimento
+  senza meta (`destination`/`no_destination`) e luogo che la memoria non conosce
+  (`place`/`unknown_place`). La scala è "risolvi prima di chiedere": meta nel
+  piano, verbo di follow / «qui» / coordinate esplicite, un'attività («vai a
+  dormire»), un luogo noto, un oggetto introdotto da un partitivo («portami **del**
+  cibo»). Se la memoria è giù la porta resta aperta (fail-open). Più
+  `mergeClarifyAnswer`, `restatesOrder`, `renderClarifyRefusal`,
+  `planHasDestination`, `planIsOtherOrder`.
+- **La domanda vive nell'inbox dell'harness**, non nel controller: `askChat`
+  (unico scrittore) registra l'ordine originale e la domanda *prima* che venga
+  detta, il messaggio successivo dello stesso mittente (per gamertag o xuid) porta
+  un timbro `clarifies` una volta sola e la consuma, `CHAT_ASK_TTL_MS` (300000) la
+  fa scadere (`chat_ask_stale`); `observe().chatPending` e `GET /chat/pending` la
+  espongono. Il controller la interroga via `POST /chat/ask` e la testuale resta la
+  sua.
+- **Il cablaggio nel controller**: la porta gira sul piano deciso da
+  `humanCommandPlan`, crea **nessun goal**, e la risposta è un messaggio
+  **indirizzato** come tutti gli altri — il timbro dà il contesto, non apre un
+  canale senza prefisso (regola che tiene separabili più bot sullo stesso server).
+  Se la risposta è a sua volta un ordine sostituisce quello trattenuto
+  (`replyIsOwnOrder`: `restatesOrder`, stop, drop, collect, equip, farm), altrimenti
+  viene unita all'ordine originale e la porta rigira; un secondo buco produce un
+  rifiuto tipizzato, mai una seconda domanda.
+- **Trovati due difetti reali**, entrambi dal test sul filo: l'import mancante di
+  `restatesOrder` (`ReferenceError` a `controller.mjs:1174`, crash alla prima
+  risposta decorata) e l'assunto che la risposta non avesse bisogno del prefisso
+  (senza `@bot` il messaggio non entra nel loop).
+- **Test**: `tests/human-clarify.test.mjs` (13), `tests/bedrock-chat-ask.test.mjs`
+  (6), `tests/controller-clarify.test.mjs` (5, controller vero contro harness
+  scriptato). Le tre chiavi `clarify_*` sono in tutte e cinque le lingue.
+- **Documentato**: `docs/raw/ROADMAP_refactoring_reasoning.md` (R2 → IMPLEMENTED con
+  il blocco "as built"), `docs/wiki/reasoning-roadmap.md`,
+  `docs/wiki/control-flow.md` (box nel diagramma + nuovo stadio 3),
+  `docs/wiki/human-command.md` (§R2 con la tabella degli esempi),
+  `docs/wiki/verification.md` (riga 47.65), `AGENTS.md` (due variabili d'ambiente e
+  una gotcha).
+- **Residuo**: nessun giro in chat su un BDS vivo — serve il riavvio del container
+  (controller, adapter e harness sono cambiati). Limite noto e documentato: una meta
+  che contiene una parola di oggetto e non è in memoria («vai al campo di patate»)
+  viene letta come ordine su un oggetto e non fa domande.
+
 ## [2026-10-07] design | R2: la domanda pendente sta nell'inbox, e un ordine ambiguo non sospende il goal
 
 Tre decisioni prese prima di scrivere `human-clarify.mjs`, e una verifica che le

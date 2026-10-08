@@ -36,6 +36,7 @@ import {
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_FARM_MAX_HARVES, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
 import {toldIntentFromText, TELL, CLARIFY, formatPosition, dimensionLabel} from './memory-chat.mjs';
+import {orderGaps, mergeClarifyAnswer, renderClarifyRefusal, restatesOrder, CLARIFY_NEEDS_INPUT} from './human-clarify.mjs';
 import {planGreetings, DEFAULT_GREET_RANGE, DEFAULT_GREET_COOLDOWN_MS} from './human-greeting.mjs';
 import {orderAck, orderOutcome, lostNotice, escortWaiting, mountWaitingShore, isSelfTriggering, normalizePrefixes, matchChatPrefix, selfPrefixes, renderReply, clampMessage, DEFAULT_REPLY_MAX_LENGTH} from './human-replies.mjs';
 import {answerIntent, renderAnswer, renderFarmNothing, renderNoArmor, renderNoDrop, renderNoItem, renderUnrouted, looksLikeQuestion, looksLikeSmallTalk} from './human-questions.mjs';
@@ -559,6 +560,24 @@ function isAllowedSender (entry) {
 // (preemption e ripresa normali).
 const TOLD_FACTS = process.env.TOLD_FACTS !== 'off';
 
+// R2 (07/10/2026): la porta della chiarificazione. Un ordine che chiede una meta
+// e non ne porta una non diventa un goal: si chiede **una volta** la cosa che
+// solo l'umano può decidere, e la risposta chiude l'ordine (non ne apre uno
+// nuovo). `off` è l'interruttore di sicurezza: la porta sparisce e ogni ordine
+// torna al comportamento di prima (fallback del planner).
+const CHAT_CLARIFY_ON = (process.env.CHAT_CLARIFY ?? 'on').toLowerCase() !== 'off';
+
+// La memoria dei luoghi, vista dalla porta. Il controller non ha accesso al
+// `WorldMemory` (vive nell'harness): chiede per HTTP, come per i fatti dettati.
+// Un errore o una rotta giù valgono `null`, e la porta non chiede (fail-open).
+const clarifyMemory = {
+  async places (name, {limit = 5} = {}) {
+    const out = await api('GET', `/memory/places?name=${encodeURIComponent(name)}&limit=${limit}`);
+    if (!out || out.error) return {error: out?.error ?? 'memory_unavailable'};
+    return {places: Array.isArray(out.places) ? out.places : []};
+  },
+};
+
 // Il motivo per cui la frase non si è potuta scrivere → la domanda da fare. Un
 // comando riconosciuto e incompleto non scrive niente: chiede.
 const CLARIFY_TOLD = Object.freeze({
@@ -594,6 +613,30 @@ async function toldSay (entry, {message, prefixes, key, vars = {}}) {
   await replyChat(text, {to: entry.from, context: 'told', prefixes});
   chatMemory.remember(entry.from, message, text);
   return text;
+}
+
+// La domanda della chiarificazione: testo dal catalogo, come per i fatti dettati
+// (i numeri e i nomi *sono* l'informazione, e una domanda riformulata dall'LLM
+// perderebbe l'esempio che l'umano deve imitare). La domanda si registra
+// nell'inbox dell'harness: la risposta arriverà come *messaggio successivo* dello
+// stesso mittente, e sarà l'inbox a dire che non è un ordine nuovo.
+async function clarifySay (entry, {message, prefixes, orderId, question, field = null, reason = null, originalText = null}) {
+  const body = renderReply(question, {}, CHAT_REPLY_MAX_LENGTH);
+  const text = entry.from && !body.startsWith('@') ? clampMessage(`@${entry.from} ${body}`, CHAT_REPLY_MAX_LENGTH) : body;
+  // Prima si deposita la domanda, poi si parla: se il bot non riuscisse a
+  // scrivere, la risposta dell'umano verrebbe comunque riconosciuta.
+  const stored = await api('POST', '/chat/ask', {
+    from: entry.from,
+    xuid: entry.xuid ?? null,
+    orderId,
+    originalText: originalText ?? message,
+    question,
+    field,
+    reason,
+  });
+  await replyChat(text, {to: entry.from, context: 'clarify', prefixes});
+  chatMemory.remember(entry.from, message, text);
+  return {text, stored: stored?.ok === true};
 }
 
 // Un nome che vale per più di un posto non si risolve: si chiede quale. Mai il
@@ -1121,6 +1164,21 @@ async function resolveQuestion (obs, entry) {
 
 // Cerca nell'ultima osservazione un nuovo comando umano valido. Restituisce
 // {plan, entry} oppure null. Dedup per non rieseguire lo stesso messaggio.
+// R2: la risposta a una domanda è già un ordine a sé? Allora l'ordine trattenuto
+// è superato — si esegue la risposta. Vale per un movimento («vai al mulino»),
+// per uno stop («fermati»: un ordine di stop vince sempre) e per qualunque
+// ordine deterministico che il planner riconosce da solo (prendi/getta/indossa/
+// mieti). Il caso opposto è la risposta che *non* è un ordine — «coordinate 120
+// 64 -230» — che si unisce all'ordine trattenuto.
+function replyIsOwnOrder (message, obs) {
+  return restatesOrder(message)
+    || isStopOrder(message)
+    || isDropOrder(message, obs)
+    || isCollectOrder(message, obs)
+    || isEquipOrder(message)
+    || !!farmOrderFromText(message);
+}
+
 async function maybeHumanCommand (obs, {history = [], lastResult = null} = {}) {
   if (CHAT_CONTROL === 'off' || !CHAT_ALLOWLIST.size) return null;
   const chat = obs.chat || [];
@@ -1164,6 +1222,15 @@ async function maybeHumanCommand (obs, {history = [], lastResult = null} = {}) {
     const reasoned = asked?.reason === true;
     const message = reasoned ? asked.message : raw;
     if (!message) continue;
+    // R2: se questo messaggio risponde a una domanda del bot, l'inbox ha
+    // timbrato `clarifies` (una volta sola). L'ordine da eseguire è quello
+    // **originale** con la risposta attaccata: la risposta da sola non è un
+    // ordine («coordinate 120 64 -230»), ma una risposta che è già un ordine
+    // completo («vai al mulino») lo sostituisce. Una risposta non è mai small
+    // talk: la lista chiusa contiene proprio le forme di conferma («va bene»).
+    const pending = entry.clarifies && typeof entry.clarifies === 'object' && entry.clarifies.orderId ? entry.clarifies : null;
+    const held = pending && !replyIsOwnOrder(message, obs) ? pending : null;
+    const orderText = held ? mergeClarifyAnswer(held.originalText, message) : message;
     // Fatti dettati (M10): ricorda / consulta / correggi / dimentica, e «vai al
     // <luogo nominato>». Riconoscimento deterministico e risposta dal catalogo:
     // nessun modello, nessun goal (tranne il movimento, che è un ordine come gli
@@ -1203,14 +1270,44 @@ async function maybeHumanCommand (obs, {history = [], lastResult = null} = {}) {
     // M7: un saluto o un ringraziamento non è un ordine e non deve diventare un
     // goal. Solo un match esatto (lista chiusa di frasi) arriva qui: un ordine
     // vero non viene mai inghiottito.
-    if (looksLikeSmallTalk(message)) {
+    if (!pending && looksLikeSmallTalk(message)) {
       const fallback = renderReply(CHAT_SMALLTALK_TEMPLATE, {name: entry.from ?? '?'}, CHAT_REPLY_MAX_LENGTH);
       log('chat_smalltalk', {from: entry.from, xuid: entry.xuid, message});
       await saySmart('smalltalk', {from: entry.from, message, obs, grounding: null, fallback, prefixes});
       continue;
     }
-    log('chat_command', {from: entry.from, xuid: entry.xuid, prefix: match.prefix, message});
-    const plan = shapedPlan(await humanCommandPlan(obs, {...entry, message}));
+    log('chat_command', {from: entry.from, xuid: entry.xuid, prefix: match.prefix, message, clarifies: pending?.orderId ?? null});
+    const decided = await humanCommandPlan(obs, {...entry, message: orderText});
+    // R2 — la porta. Un ordine che chiede una meta e non ne porta una, quando
+    // nessuna fonte può risolverla, non diventa un goal: il planner ripiegherebbe
+    // su «seguo chi mi ha scritto», che è la risposta a un'altra domanda. Si
+    // chiede invece l'unica cosa che può decidere solo l'umano, **una volta per
+    // ordine**; il goal nasce quando l'ordine è eseguibile. Se la memoria dei
+    // luoghi è giù la porta è aperta (fail-open): meglio un'ipotesi che un bot
+    // muto.
+    if (CHAT_CLARIFY_ON) {
+      const gap = await orderGaps(orderText, decided, obs, {memory: clarifyMemory, lang: CHAT_LANG});
+      if (gap.status === CLARIFY_NEEDS_INPUT) {
+        const field = gap.missing?.[0]?.field ?? null;
+        const reason = gap.missing?.[0]?.reason ?? null;
+        if (held) {
+          // Ha già risposto e non basta: non si chiede una seconda volta (una
+          // domanda che si ripete è un bot che non ascolta). L'ordine muore qui,
+          // e questo *è* l'esito: la chat lo dice.
+          const body = renderReply(renderClarifyRefusal({lang: CHAT_LANG}), {}, CHAT_REPLY_MAX_LENGTH);
+          const text = entry.from && !body.startsWith('@') ? clampMessage(`@${entry.from} ${body}`, CHAT_REPLY_MAX_LENGTH) : body;
+          log('chat_clarify_refused', {from: entry.from, xuid: entry.xuid, orderId: held.orderId, field, reason, message: orderText});
+          await replyChat(text, {to: entry.from, context: 'clarify', prefixes});
+          chatMemory.remember(entry.from, message, text);
+          continue;
+        }
+        const orderId = `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+        const asked = await clarifySay(entry, {message: orderText, prefixes, orderId, question: gap.question, field, reason, originalText: orderText});
+        log('chat_clarify', {from: entry.from, xuid: entry.xuid, orderId, field, reason, stored: asked.stored, question: gap.question});
+        continue;
+      }
+    }
+    const plan = shapedPlan(decided);
     // M5: conferma dell'ordine in chat. Best-effort (l'adapter applica rate
     // limit e lunghezza); l'esito arriva alla chiusura del goal.
     const ack = orderAck({from: entry.from, plan, maxLength: CHAT_REPLY_MAX_LENGTH, lang: CHAT_LANG});
