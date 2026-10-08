@@ -901,9 +901,12 @@ segment `endedBy: goal_blocked`, and that `goto_waypoint`/`sneak_to` never reach
 
 **Residual.** Deliberately deferred: the chain does not yet expand a skill's
 prerequisites (option 3), so a milestone whose prerequisite is unreachable now blocks
-instead of preparing itself. **Not deployed**: this lives in `bedrock-adapter.mjs`,
-`survival/*` and `controller.mjs`, and the bot container is rebuilt only when the owner
-authorises the restart — the same one the M11 ore alert waits for.
+instead of preparing itself. **Deployed on the harness side (08/10/2026)**: the bot
+container was rebuilt from this commit, so the criterion, the odometer and
+`observe().riding` are live (`/capabilities` reports 29 criteria); the
+**controller-side** half — the gate, `skill_blocked`/`goal_blocked` and the verifier's
+`blocked` in the real loop — lands with the next controller release, because the chat
+engine still runs `chat-truth-e7b08e5`.
 
 ## 7. Definition of Done (revised)
 
@@ -969,7 +972,7 @@ confuse, so every claim above is meant to be read against this table:
 | **implemented** | the code exists and a caller can use it | the modules and their tests in this repository |
 | **tested** | `node --test tests/*.test.mjs` exercises it offline | the suite, green on the machine that wrote it |
 | **wired** | a live entry point reaches it: a route, a chat path, a hook, a CI job | the wiring is read, or the job ran |
-| **deployed** | the running process serves that code | both processes are on the pushed commit: the `hermes-jev-bedrock` container rebuilt (08/10/2026) and the controller swapped to release `chat-truth-4e9f2c0` (08/10/2026) — hashes, live check and live `plan-trace.jsonl` below |
+| **deployed** | the running process serves that code | both processes are on the pushed commit: the `hermes-jev-bedrock` container rebuilt (08/10/2026, again after R8) and the controller swapped to release `chat-truth-e7b08e5` (08/10/2026) — hashes, live check and live `plan-trace.jsonl` below |
 | **consumed** | something other than its own tests uses it in anger | nothing on this roadmap is here yet |
 
 R0–R6 are implemented, tested and wired. R7 is implemented, tested and wired
@@ -983,9 +986,12 @@ controller wrote its own `runs/chat-truth-4e9f2c0/plan-trace.jsonl` on the first
 plan segment (`endedBy: goal_met`). **Consumed is still false for everything on
 this roadmap**: nothing but its own tests and the controller itself uses these
 surfaces yet. R8 (a live defect rather than a planned milestone, section 6) is
-implemented, tested and wired, but **not deployed**: it lives in
-`bedrock-adapter.mjs`, `survival/*` and `controller.mjs`, and the bot container is
-rebuilt only when the owner authorises the restart. The limits worth writing down are these:
+implemented, tested and wired; it is **half deployed**: the bot container was rebuilt
+from the R8 commit on 08/10/2026, so the criterion, the aboard odometer and
+`observe().riding` are live (`/capabilities` reports 29 criteria), while the
+controller-side gate — `skill_blocked`/`goal_blocked` and the verifier's `blocked` in
+the real loop — arrives with the next controller release, since the chat engine still
+runs `chat-truth-e7b08e5`. The limits worth writing down are these:
 
 1. **`GET /capabilities` has no offline end-to-end test — and should not get one.**
    The harness opens its HTTP server only after the bot has connected, so no offline

@@ -68,7 +68,7 @@ Namespaced `R0`…`R8` to avoid colliding with the repo's own M1–M12 chat mile
 | **R5** Composite goals | `prepare_for_nether` as a DAG over existing milestones, expanded deterministically | **implemented** — a goal may name a **list** of milestones; `milestoneChain` returns the missing closure in dependency order and the plan carries it in `steps[]` |
 | **R6** Golden scenarios | Order + observation → expected plan/clarification/refusal, including the C17/C18 negative cases; freezes R1–R5 | **implemented** — nine scenarios in `tests/golden-scenarios.test.mjs`, driven against a scripted harness and asserted on the **R3 trace**; found and fixed a real bug (the `SIGTERM` handler died on a `ReferenceError`) |
 | **R7** Capability contract | R0's inventory as a **versioned, self-describing, consumer-validatable** contract (`capability-contract.mjs`), carried over the harness's existing HTTP boundary (`GET /capabilities`). MCP and any registry service stay non-goals: the contract is a read-only *projection*, never a second source of truth | **implemented** — `contractVersion` + `contentHash` + `valid`/`problems` + the frozen key set; `checkCapabilityContract` is the consumer's handshake; `npm run capabilities:check` is the offline gate, wired into **CI** (`.github/workflows/ci.yml`, mirrored in `.gitea/workflows/ci.yml`) and into `pre-push` |
-| **R8** The prerequisite gate | A segment neither executes nor is declared done on an absent prerequisite: the verifier can answer `blocked` (`preconditions_unmet`) instead of a false `success`, the controller takes the executing keys away and closes the goal after `SKILL_BLOCKED_MAX_STEPS`, and `boat_travel` proves navigation with a real aboard odometer (`ridingDistanceAtLeast`) instead of `movedAtLeast`. Not a planned milestone: it answers a defect the 08/10/2026 live run exposed | **implemented** — `survival/verify.mjs`, `bedrock-adapter.mjs`, `skills/gameplay/fluids/boat_travel.json`, `controller.mjs`; see [verification](verification.md) 47.74 |
+| **R8** The prerequisite gate | A segment neither executes nor is declared done on an absent prerequisite: the verifier can answer `blocked` (`preconditions_unmet`) instead of a false `success`, the controller takes the executing keys away and closes the goal after `SKILL_BLOCKED_MAX_STEPS`, and `boat_travel` proves navigation with a real aboard odometer (`ridingDistanceAtLeast`) instead of `movedAtLeast`. Not a planned milestone: it answers a defect the 08/10/2026 live run exposed | **implemented** (harness side deployed 08/10/2026) — `survival/verify.mjs`, `bedrock-adapter.mjs`, `skills/gameplay/fluids/boat_travel.json`, `controller.mjs`; see [verification](verification.md) 47.74 |
 
 ### The plan shape (R1)
 
@@ -475,32 +475,32 @@ The properties the change is meant to hold:
 A milestone can be **implemented**, **tested**, **wired**, **deployed** and
 **consumed**, and here those are five different things. R0–R7 are implemented,
 tested and wired. **Deployed is true for both sides since 08/10/2026**: the
-`hermes-jev-bedrock` container was rebuilt from the pushed commit, the modules in
-`/app` hash identically to the local ones, and `GET /capabilities` answers 200 with
-the 13 expected keys, `valid: true` and counts (23/62/8/41/8/23/9/28) equal to
-`npm run capabilities:check` on the same commit — the same `contentHash`
-(`a7405c55…`). The **controller** was swapped the same day, from the
-`chat-truth-ce8dea7` snapshot to the `chat-truth-4e9f2c0` release built from the
-same commit (six modules hashing identically, the process running from the new
-directory, and a live `runs/chat-truth-4e9f2c0/plan-trace.jsonl` the old release
-could not write). Nothing is **consumed** yet: the contract has no consumer beyond
-its own tests. The raw roadmap closes with §10 *Known limitations and operational
-notes*, which keeps the full list and the five-state definition; in short:
+`hermes-jev-bedrock` container was rebuilt from the pushed commit (again later the
+same day, after R8), the modules in `/app` hash identically to the local ones, and
+`GET /capabilities` answers 200 with the 13 expected keys, `valid: true` and counts
+(23/62/8/41/8/23/9/**29**) equal to `npm run capabilities:check` on the same commit.
+The **controller** runs the `chat-truth-e7b08e5` release (08/10/2026), built from the
+same pushed commit — the `chat-truth-4e9f2c0` swap first put R2–R6 in the planner
+loop, the later release added the retry policy for System One's 5xx. Nothing is
+**consumed** yet: the contract has no consumer beyond its own tests. The raw roadmap
+closes with §10 *Known limitations and operational notes*, which keeps the full list
+and the five-state definition; in short:
 
-| State | R0–R6 | R7 |
-|---|---|---|
-| implemented | yes | yes |
-| tested | yes (`node --test tests/*.test.mjs`) | yes (6 contract cases) |
-| wired | yes (controller, harness, routes) | yes (`GET /capabilities`, the CI job, `pre-push`) |
-| deployed | **yes, both sides** (08/10/2026): the harness rebuilt, the controller swapped to `chat-truth-4e9f2c0`, so the R2 gate, the R3 trace, the R4 step failures and the R5 composite goals are in the running planner loop | **yes**: `GET /capabilities` → 200 with the expected keys and counts |
-| consumed | by the controller itself | by nothing but its own tests |
+| State | R0–R6 | R7 | R8 |
+|---|---|---|---|
+| implemented | yes | yes | yes |
+| tested | yes (`node --test tests/*.test.mjs`) | yes (6 contract cases) | yes (suite 1970 → 1973) |
+| wired | yes (controller, harness, routes) | yes (`GET /capabilities`, the CI job, `pre-push`) | yes (the controller gate, the verifier, `observe().riding`) |
+| deployed | **yes, both sides** (08/10/2026): the harness rebuilt, the controller on `chat-truth-e7b08e5`, so the R2 gate, the R3 trace, the R4 step failures and the R5 composite goals are in the running planner loop | **yes**: `GET /capabilities` → 200 with the expected keys and counts | **harness side yes, controller side no**: the criterion, the odometer and `observe().riding` are live (29 criteria in `/capabilities`), while `skill_blocked`/`goal_blocked` and the verifier's `blocked` need the next controller release |
+| consumed | by the controller itself | by nothing but its own tests | by nothing |
 
 Three limits, stated so they are not read as defects: the route has **no offline
 end-to-end test** (the harness binds HTTP only after the bot connects, and a fake
 server would test the fake); the contract has **no real consumer** (the trigger for
 the future adapter is a second consumer, not a date); and the deploy is a **state,
 not a bug** — resolved for the harness and for the controller on 08/10/2026. The
-harness rebuild is what brought the M11 ore alert live.
+harness rebuild is what brought the M11 ore alert live, together with the
+`craft_boat` dispatch fix.
 
 ## Real capability surface (the R0 input)
 
