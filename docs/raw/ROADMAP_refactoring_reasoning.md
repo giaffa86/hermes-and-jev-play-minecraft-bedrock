@@ -423,7 +423,7 @@ planner behaviour for every order.
 
 ---
 
-### R3 — Plan trace and structured observability
+### R3 — Plan trace and structured observability (IMPLEMENTED)
 
 **Goal.** One structured line per plan decision (`plan_trace`): objective, subgoal,
 source (`deterministic|hermes|curriculum`), steps, the chosen action key, the
@@ -443,6 +443,61 @@ the *why* of a replan is scattered across `log()` calls.
 **Acceptance.** a run can be explained from its files alone, without the chat.
 
 **Risks.** Low.
+
+**Implemented (07/10/2026).** As built, and the one place it deliberately differs
+from the goal above:
+
+- **The line is per plan *segment*, not per decision.** A segment opens when the
+  controller adopts a plan and closes when that plan is replaced or the run ends:
+  `runs/<run>/plan-trace.jsonl`, one JSON line per segment, written by the
+  controller (the same side that writes `controller.jsonl`). The decision-level
+  data lives **inside** the line (`decisions[]`, `refusals[]`), so a reader gets
+  the plan, its provenance, what was tried under it and why it ended *without*
+  joining files — and the file stays proportional to the number of plans, not to
+  the number of actions.
+- `plan-trace.mjs` (pure + writer) exports `PLAN_TRACE_VERSION`, `PLAN_SOURCES`,
+  `planTraceSource(plan)`, `planTraceSteps(plan, {limit})`, `planTraceShape(plan)`,
+  `createPlanTrace({dir, now, write})` (`adopt`/`decided`/`refused`/`record`/`flush`)
+  and `summarizePlanTrace(rows, {top})`, plus `readPlanTrace(dir)`. The row is
+  `{v, planId, step, reason, source, objective, subgoal, steps[], stepCount,`
+  `startedAt, endedAt, ms, endedBy, untilStep, actions, ok, failed, decisions[],`
+  `refusals[], omitted}`.
+- **`source` is stamped on the plan where the plan is born** (`plan.source`), never
+  guessed later: `planForStep` stamps `curriculum`/`construction`, `hermesPlan`
+  stamps `hermes` (including its static fallback), and the deterministic order
+  branches in `humanCommandPlan` plus the told-fact movement (`told_goto`) stamp
+  `deterministic`. The vocabulary is the roadmap's three plus `construction` (a
+  static plan that never came from a planner); a value outside it reads back as
+  `hermes`. `setPlan()` in the adapter stores the plan as it is, so the field is
+  inert at runtime and visible in `observe().plan`.
+- **The closure is named**: `endedBy` is `replaced` (an `adopt` closed a segment
+  nobody flushed), `human_order`, `human_order_override` (the `max_goal_depth`
+  case, which throws the running plan away instead of delegating it to a child
+  goal), `replan:<reason>` (`skill_failed`, `anti_loop:<key>:<n>`, `skill_complete`,
+  `periodic`, `curriculum`), `goal_met`, `goal_met:<reason>`, `run_end`, `goal_end`
+  or `signal:<SIG>`. That single field is the *why* that used to be scattered
+  across `log()` calls.
+- **A missed flush loses nothing**: `adopt()` closes an open segment by itself and
+  `flush()` is idempotent, so the worst case is a segment that spans two plans
+  instead of a missing row.
+- **The trace can never break a run**: write errors are swallowed
+  (`console.error('[plan-trace] write failed:', …)`). There is no env flag — the
+  trace is always on because it only appends a line per plan.
+- Caps: `steps` is compacted to 12 entries (the real `stepCount` is kept),
+  `decisions`/`refusals` to 64 each, the overflow counted in `omitted`.
+- `readRunFacts(dir)` gained `planTrace: {count, summary}`, and
+  `node tools/run-facts.mjs <run>` prints the block
+  (`plan-trace: 2 piani (curriculum=1, hermes=1), 2 passi, 0 decisioni, 1 rifiuti, 1 replan`)
+  plus the refusals by typed error, the closure reasons and the last plan's shape.
+- Tests: `tests/plan-trace.test.mjs` (9 — the module: source vocabulary, one line
+  per segment, idempotent flush, a missed flush, the caps, the three replan
+  reasons, the CLI block) and a 6th test in `tests/controller-clarify.test.mjs` that
+  drives the **real controller** against the scripted harness for three steps and
+  reads the file back (provenance, the preemption's `endedBy: 'human_order'`, the
+  chosen keys, `actions === decisions.length`, `failed === 0`). Full suite 1919/1919.
+- Honest limit: a goal the goal contract closes **before** any plan is published
+  (`GOAL_CONTRACT` already satisfied at step 0) leaves no trace — there was no plan
+  to trace. The wire test asserts exactly that; the sixth test covers real steps.
 
 ---
 

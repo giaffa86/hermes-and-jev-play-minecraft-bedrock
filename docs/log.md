@@ -1,5 +1,82 @@
 # Log
 
+## [2026-10-07] feat | R3 implementata: la traccia del piano dice perché il piano è cambiato
+
+Un run adesso si spiega dai suoi file anche nel *perché*: una riga per segmento di
+piano in `runs/<run>/plan-trace.jsonl`, scritta dal controller, con la suite a
+1919/1919.
+
+- **Il file** `runs/<run>/plan-trace.jsonl` (uno per run, accanto a `controller.jsonl`):
+  una riga JSON per **segmento di piano** — aperto da `adopt()` quando il controller
+  adotta un piano, chiuso quando quel piano viene sostituito o il run finisce — con
+  `{v, planId, reason, source, objective, subgoal, steps[], stepCount, startedAt,
+  endedAt, ms, endedBy, untilStep, actions, ok, failed, decisions[], refusals[],
+  omitted}`. I dati per decisione stanno **dentro** la riga (`decisions[]` dalla
+  scala di decisione, `refusals[]` con l'errore tipizzato), così il file resta
+  proporzionale al numero di piani e non a quello delle azioni: azioni e durate
+  restano in `actions.jsonl`. Il goal della roadmap diceva «una riga per decisione»;
+  la deviazione è deliberata e documentata.
+- **`plan-trace.mjs`** (puro + writer): `PLAN_TRACE_VERSION`, `PLAN_SOURCES`,
+  `planTraceSource`, `planTraceSteps`, `planTraceShape`,
+  `createPlanTrace({dir, now, write})` con `adopt`/`decided`/`refused`/`record`/`flush`,
+  `summarizePlanTrace(rows, {top})` e `readPlanTrace(dir)`.
+- **`plan.source` è timbrato dove il piano nasce**, mai dedotto: `planForStep`
+  timbra `curriculum`/`construction`, `hermesPlan` timbra `hermes` (anche nel
+  fallback statico), i rami deterministici di `humanCommandPlan` e il movimento
+  dettato (`told_goto`) timbrano `deterministic`. Il vocabolario è chiuso
+  (`PLAN_SOURCES`) e un valore forestiero come il `'governor:normal'` della copia
+  del governor rilegge come `hermes`; `setPlan()` dell'adapter memorizza il piano
+  com'è, quindi il campo è inerte a runtime e visibile in `observe().plan`.
+- **`endedBy` nomina la chiusura**: `replaced`, `human_order`, `human_order_override`
+  (il caso `max_goal_depth`, che butta via il piano in corso invece di delegarlo a
+  un goal figlio — prima quel ramo scriveva il generico `human_order`),
+  `replan:<skill_failed|anti_loop:<key>:<n>|skill_complete|periodic|curriculum>`,
+  `goal_met`, `goal_met:<reason>`, `run_end`, `goal_end`, `signal:<SIG>`.
+- **Due proprietà di sicurezza, asserite e non sperate**: `adopt()` chiude da sé un
+  segmento rimasto aperto e `flush()` è idempotente, quindi una `flush` mancata
+  costa una segmentazione più grossolana e mai una riga persa; e un errore di
+  scrittura viene inghiottito (`console.error('[plan-trace] write failed:', …)`)
+  perché l'osservabilità non deve poter uccidere il bot — non c'è nessun flag per
+  spegnerla. Tetti: `steps` compattato a 12 voci (col `stepCount` vero), `decisions`
+  e `refusals` a 64 ciascuno con l'eccedenza contata in `omitted`.
+- **Lettura**: `readRunFacts` espone `planTrace: {count, summary}` e
+  `node tools/run-facts.mjs <run>` stampa `plan-trace: N piani (source=…), N passi,
+  N decisioni, N rifiuti, N replan`, i rifiuti per errore, i motivi di chiusura e la
+  forma dell'ultimo piano; il riassunto non esiste se il file non c'è (nessuna riga
+  inventata).
+- **Test**: `tests/plan-trace.test.mjs` (9 — vocabolario di `source`, una riga per
+  segmento, flush idempotente, `flush` mancata, i tre motivi di replan, i tetti, il
+  blocco CLI) e un 6° test in `tests/controller-clarify.test.mjs` che guida il
+  **controller vero** per tre passi e rilegge il file (provenienza, l'`endedBy:
+  'human_order'` del preempt, le chiavi scelte, `actions === decisions.length`,
+  `failed === 0`). Il test sul filo ha anche fissato il limite onesto: un goal che
+  il contratto chiude **prima** di pubblicare un piano non lascia traccia — non
+  c'era un piano da tracciare — e l'assert è `null`, non una riga inventata.
+- Documentazione: roadmap R3 → IMPLEMENTED (con la deviazione «segmento, non
+  decisione»); `docs/wiki/reasoning-roadmap.md` (riga + sezione «The plan trace
+  (R3)» con il diagramma); `docs/wiki/observability.md` (la riga del file e perché
+  serve); `docs/wiki/verification.md` riga **47.66**; una regola in `AGENTS.md`.
+- **Residuo**: nessun run vivo è stato ancora letto — la prima lettura di
+  `run-facts` su un run con `CURRICULUM` (che richiede il riavvio del container)
+  è quella che mostrerà un `source: curriculum` in produzione.
+
+## [2026-10-07] lint | R3: la traccia del piano, e i documenti allineati
+
+`npm run wiki:lint:strict` (lo stesso script del hook `pre-commit`; `pre-push`
+rilancia con `--strict`) è pulito dopo R3: 54 file, 810 link relativi, 32 pagine
+wiki, 15 fonti grezze, più una nota informativa sull'ordine cronologico di
+`log.md`. Nessuna pagina orfana, nessun link rotto, nessuna fonte grezza non
+citata.
+
+- La nuova riga **47.66** di `docs/wiki/verification.md` è l'evidenza di R3; la
+  pagina `docs/wiki/observability.md` ha guadagnato il file `plan-trace.jsonl` nella
+  tabella degli artefatti e il perché serve; `docs/wiki/reasoning-roadmap.md` ha la
+  sezione «The plan trace (R3)» e `docs/raw/ROADMAP_refactoring_reasoning.md`
+  l'etichetta IMPLEMENTED con il blocco «as built» (compresa la deviazione
+  «segmento, non decisione»).
+- `Last lint:` in `docs/wiki/open-questions.md` resta `2026-10-07`, che è la data
+  massima dei lint nel log: nessun aggiornamento necessario.
+
 ## [2026-10-07] feat | R2 implementata: un ordine ambiguo fa una domanda, non un goal
 
 Il cancello di chiarificazione è in codice, acceso di default (`CHAT_CLARIFY=on`,

@@ -18,6 +18,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readPlanTrace, PLAN_SOURCES } from '../plan-trace.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SENDER_AT = { x: 120, y: 64, z: -230 };
@@ -209,6 +210,11 @@ test('un posto che la memoria conosce non fa chiedere niente: la porta è traspa
       assert.match(replies[0], /^@Ale /);
       assert.equal(replies.some(r => r.includes('?')), false, `nessuna domanda in chat (got ${JSON.stringify(replies)})`);
       assert.ok(readEvents(runId).some(e => e.type === 'human_order'), 'l ordine è diventato un goal');
+      // R3: quel goal si chiude **prima** di adottare un piano (il contratto
+      // e' gia' soddisfatto all'osservazione 0), quindi non lascia traccia di
+      // piano: nessun passo eseguito, nessuna riga. La traccia con dei passi
+      // dentro e' il caso dell'ultimo test del file.
+      assert.equal(readPlanTrace(join(ROOT, 'runs', runId)), null, 'nessun piano adottato, nessuna traccia');
     });
   } finally { harness.server.close(); rmSync(fake.dir, { recursive: true, force: true }); }
 });
@@ -263,6 +269,39 @@ test('una risposta che è già un ordine lo sostituisce: niente fusione', async 
       const prompt = fake.read();
       assert.match(prompt, /The human \(gamertag "Ale"\) said: "vai al mulino"\./);
       assert.equal(/vai coordinate/.test(prompt), false);
+    });
+  } finally { harness.server.close(); rmSync(fake.dir, { recursive: true, force: true }); }
+});
+
+// R3: un run vero lascia la traccia del piano. Il modulo sa scriverla; questo
+// test prova che sia il **controller** a scriverla, e con che cosa dentro —
+// provenienza, forma del piano, decisioni prese e motivo di chiusura. Il goal
+// qui non e' mai soddisfatto (chiede diamanti che non arrivano), quindi il
+// ciclo esegue davvero dei passi.
+test('il run lascia la traccia del piano: provenienza, decisioni e chiusura', async () => {
+  const harness = await startClarifyHarness({});
+  const fake = fakeHermes({ objective: 'mine 4 diamond ore', subgoal: null, targets: { diamond: 4 }, waypoint: null, follow: null, notes: 'test' });
+  try {
+    await withRun(async (runId) => {
+      const { code } = await runController(baseEnv(runId, harness.port, fake.dir, { GOAL_CONTRACT: '', SESSION: '' }));
+      const trace = readPlanTrace(join(ROOT, 'runs', runId));
+      assert.ok(Array.isArray(trace) && trace.length >= 1, `la traccia del piano esiste (code ${code}, got ${JSON.stringify(trace)})`);
+      assert.ok(trace.every(r => r.v === 1 && PLAN_SOURCES.includes(r.source)), `ogni segmento dichiara una provenienza ammessa (got ${JSON.stringify(trace.map(r => r.source))})`);
+      assert.ok(trace.every(r => typeof r.objective === 'string' && r.objective.length), 'ogni segmento porta l objective del piano che ha adottato');
+      // Il piano autonomo e' stato interrotto da un ordine: il segmento si
+      // chiude **con il motivo**, non con un troncamento silenzioso.
+      assert.equal(trace[0].reason, 'start');
+      assert.equal(trace[0].source, 'hermes', 'il piano autonomo viene dal planner');
+      assert.ok(trace.some(r => r.endedBy === 'human_order'), `la sostituzione dice perche ha chiuso il segmento (got ${JSON.stringify(trace.map(r => r.endedBy))})`);
+      // Il segmento che ha davvero eseguito dei passi porta le decisioni prese.
+      const worked = trace.find(r => r.decisions.length >= 2);
+      assert.ok(worked, `un segmento porta le decisioni prese (got ${JSON.stringify(trace)}, eventi: ${readEvents(runId).map(e => e.type).join(',')})`);
+      assert.equal(worked.objective, 'mine 4 diamond ore', 'la traccia porta l objective del piano');
+      assert.equal(worked.stepCount, 1);
+      assert.equal(worked.decisions.every(d => d.key === 'wait'), true, `l unica chiave offerta era wait (got ${JSON.stringify(worked.decisions)})`);
+      assert.equal(worked.actions, worked.decisions.length, 'ogni decisione e un tentativo contato');
+      assert.ok(worked.ok >= 2 && worked.failed === 0, `nessuna azione fallita (got ok=${worked.ok} failed=${worked.failed})`);
+      assert.ok(worked.endedBy, 'il segmento dice come si e chiuso');
     });
   } finally { harness.server.close(); rmSync(fake.dir, { recursive: true, force: true }); }
 });

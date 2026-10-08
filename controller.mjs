@@ -46,6 +46,7 @@ import {chatLangConfig, t, languageName, LANGS, listAnd} from './chat-i18n.mjs';
 import {narrateGoal, DEFAULT_NARRATE_COOLDOWN_MS} from './chat-narration.mjs';
 import {runDir} from './run-paths.mjs';
 import {withPlanShape} from './plan-shape.mjs';
+import {createPlanTrace} from './plan-trace.mjs';
 import {systemOneDecide} from './system-one.mjs';
 import {
   evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
@@ -296,6 +297,9 @@ const RUN_DIR = runDir(RUN);
 mkdirSync(RUN_DIR, {recursive: true});
 const SKILLS_LOG = `${RUN_DIR}/skills.jsonl`;
 const log = (type, data) => appendFileSync(`${RUN_DIR}/controller.jsonl`, JSON.stringify({t: Date.now(), type, ...data}) + '\n');
+// R3: la traccia del piano. Una riga per segmento di piano in
+// `runs/<run>/plan-trace.jsonl` — vedi plan-trace.mjs per il formato.
+const planTrace = createPlanTrace({dir: RUN_DIR});
 const api = async (method, path, body) => {
   const r = await fetch(HARNESS + path, {method, body: body ? JSON.stringify(body) : undefined, headers: {'Content-Type': 'application/json', Connection: 'close'}});
   return r.json();
@@ -499,7 +503,7 @@ async function hermesPlan(observation, { recall = '' } = {}) {
   const out = await runHermes(prompt);
   if (out == null) {
     const construction = CONSTRUCTION ?? constructionFromText(GOAL, observation);
-    const plan = {objective: GOAL, targets: construction ? {} : TARGETS, waypoint: WAYPOINT, ...(construction ? {construction} : {}), notes: 'hermes unavailable; static fallback plan'};
+    const plan = {objective: GOAL, targets: construction ? {} : TARGETS, waypoint: WAYPOINT, ...(construction ? {construction} : {}), source: 'hermes', notes: 'hermes unavailable; static fallback plan'};
     log('plan_fallback', {plan, ms: Date.now() - started});
     return plan;
   }
@@ -512,6 +516,9 @@ async function hermesPlan(observation, { recall = '' } = {}) {
   if (WAYPOINT && !plan.waypoint) plan.waypoint = WAYPOINT;
   plan.construction = CONSTRUCTION ?? plan.construction ?? constructionFromText(GOAL, observation);
   if (plan.construction) { plan.targets = {}; plan.construction.brief ??= GOAL; }
+  // R3: la provenienza del piano. `source` non e' chi l'ha chiesto (questo lo
+  // dicono i `notes: human:<from>`), e' chi l'ha prodotto.
+  if (!plan.source) plan.source = 'hermes';
   log('plan', {plan, ms: Date.now() - started});
   return plan;
 }
@@ -519,12 +526,13 @@ async function hermesPlan(observation, { recall = '' } = {}) {
 // In modalità curriculum il piano è deterministico; Hermes resta il fallback
 // per gli errori del motore e per le situazioni ambigue.
 async function planForStep (observation, reason, goal = null) {
-  if (CONSTRUCTION) return {objective: GOAL, targets: {}, construction: CONSTRUCTION};
+  if (CONSTRUCTION) return {objective: GOAL, targets: {}, construction: CONSTRUCTION, source: 'construction'};
   if (CURRICULUM) {
     const milestone = nextMilestone(observation);
     if (milestone.status === 'met') return {met: true};
-    const plan = planFromMilestone(milestone);
-    if (plan) {
+    const declared = planFromMilestone(milestone);
+    if (declared) {
+      const plan = {...declared, source: 'curriculum'};
       log('plan', {plan, ms: 0, curriculum: true, reason});
       return plan;
     }
@@ -811,6 +819,7 @@ async function handleToldFact (obs, entry, {message, prefixes}) {
       waypoint: {x: Math.round(place.position.x), z: Math.round(place.position.z)},
       follow: null,
       notes: `human:${entry.from} told_place:${place.id}`,
+      source: 'deterministic',
     };
     log('plan', {plan, ms: 0, source: 'human', deterministic: 'told_goto'});
     return plan;
@@ -999,6 +1008,7 @@ async function humanCommandPlan (obs, entry) {
       follow: null,
       drop: {token: item.token ?? null, word: item.word ?? null, count: dropCountFromText(entry.message), items, before, recipient:entry.from},
       notes: `human:${entry.from} drop:${item.token}`,
+      source: 'deterministic',
     };
     log('plan', {plan, ms: 0, source: 'human', deterministic: 'drop'});
     return plan;
@@ -1020,6 +1030,7 @@ async function humanCommandPlan (obs, entry) {
       follow: null,
       farm: {...farm, before: farmSnapshot(obs, farm.crop)},
       notes: `human:${entry.from} farm:${farm.crop}`,
+      source: 'deterministic',
     };
     log('plan', {plan, ms: 0, source: 'human', deterministic: 'farm'});
     return plan;
@@ -1039,6 +1050,7 @@ async function humanCommandPlan (obs, entry) {
       follow: null,
       collect: {token: item.token ?? null, word: item.word ?? null, items: [...new Set(drops.map(d => d.item))].sort(), beforeTotal: tokenInventoryTotal(obs.inventory, item.token)},
       notes: `human:${entry.from} collect:${item.token}`,
+      source: 'deterministic',
     };
     log('plan', {plan, ms: 0, source: 'human', deterministic: 'collect'});
     return plan;
@@ -1056,6 +1068,7 @@ async function humanCommandPlan (obs, entry) {
       need: 'wear_armor',
       equip: true,
       notes: `human:${entry.from} equip`,
+      source: 'deterministic',
     };
     log('plan', {plan, ms: 0, source: 'human', deterministic: 'equip'});
     return plan;
@@ -1073,6 +1086,7 @@ async function humanCommandPlan (obs, entry) {
         waypoint: null,
         follow: null,
         notes: `human:${entry.from} ${note}`,
+        source: 'hermes',
       }
     : {
         objective: t(CHAT_LANG, 'fallback.follow', {from: entry.from, message: entry.message}),
@@ -1080,15 +1094,16 @@ async function humanCommandPlan (obs, entry) {
         waypoint: senderPos ? { x: Math.round(senderPos.x), z: Math.round(senderPos.z) } : null,
         follow: entry.from,
         notes: `human:${entry.from} ${note}`,
+        source: 'hermes',
       });
   const construction = constructionFromText(entry.message, obs);
-  if (out == null && construction) return {objective: entry.message, targets: {}, construction, notes: 'deterministic construction command'};
+  if (out == null && construction) return {objective: entry.message, targets: {}, construction, source: 'deterministic', notes: 'deterministic construction command'};
   if (out == null) { log('plan_fallback', {plan: fallback('hermes unavailable'), ms: Date.now() - started, source: 'human'}); return fallback('hermes unavailable'); }
   const m = out.match(/\{[\s\S]*\}/);
   let plan = null;
   try { plan = m ? JSON.parse(m[0]) : null; } catch { plan = null; }
   if (!plan || typeof plan !== 'object' || typeof plan.objective !== 'string') {
-    if (construction) return {objective: entry.message, targets: {}, construction, notes: 'deterministic construction command'};
+    if (construction) return {objective: entry.message, targets: {}, construction, source: 'deterministic', notes: 'deterministic construction command'};
     log('plan_fallback', {plan: fallback('parse'), ms: Date.now() - started, source: 'human'});
     return fallback('parse');
   }
@@ -1110,6 +1125,7 @@ async function humanCommandPlan (obs, entry) {
   } else if (plan.follow == null && /follow|stay near|come with|escort|seguimi|accompagn/i.test(entry.message)) plan.follow = entry.from;
   plan.notes = `human:${entry.from} ${plan.notes || ''}`.trim();
   if (construction || plan.construction) { plan.construction ??= construction; plan.construction.brief = entry.message; plan.targets = {}; plan.follow = null; }
+  if (!plan.source) plan.source = 'hermes';
   log('plan', {plan, ms: Date.now() - started, source: 'human'});
   return plan;
 }
@@ -1815,6 +1831,13 @@ if (initialPlan?.escort) goal.escort = initialPlan.escort;
 if (CONSTRUCTION && !plan.construction) plan = {...plan, targets: {}, construction: CONSTRUCTION};
 plan = await publishPlan(plan);
 goal.plan = plan; goalManager.persist();
+// R3: il primo segmento di traccia del goal. `human_order` se il piano e' nato
+// da un ordine in chat (il goal se lo porta dietro), `start` altrimenti. Se un
+// segmento e' ancora aperto (questo ordine ha preemptato un goal in corsa) si
+// chiude dicendo perche', invece di lasciarlo marcato `replaced`.
+const traceReason = (goal.source === GOAL_SOURCE.CHAT || goal.humanOrder) ? 'human_order' : 'start';
+if (planTrace.current) planTrace.flush({endedBy: traceReason, step: 0});
+planTrace.adopt({step: 0, reason: traceReason, plan});
 // Archi di goal: ogni target dell'obiettivo diventa una risorsa cercata
 // (mission --seeks--> resource:<item>). Best-effort, non blocca il loop.
 if (goal.missionId && plan?.targets) {
@@ -1935,7 +1958,12 @@ for (let step = 1; step <= maxSteps; step++) {
       // si restituisce solo l'ordine da accodare.
       return {status: 'preempted', human: {plan: humanCmd.plan, entry: humanCmd.entry}, steps: stepsUsed, totalCost};
     }
-    if (!stopOrder && !sameRequester && goal.source !== GOAL_SOURCE.EMERGENCY) {
+    // `human_order_override` e' il caso in cui l'ordine **non** viene delegato a
+    // un goal figlio (catena troppo profonda): il piano in corso viene buttato
+    // via, e la traccia deve dirlo con quel nome, non con un generico
+    // `human_order`.
+    const overridden = !stopOrder && !sameRequester && goal.source !== GOAL_SOURCE.EMERGENCY;
+    if (overridden) {
       log('human_order_override', {goalId: goal.id, from: humanCmd.entry.from, depth: goalManager.depth(goal.id), maxDepth: MAX_GOAL_DEPTH, reason: 'max_goal_depth'});
     }
     plan = humanCmd.plan;
@@ -1943,8 +1971,10 @@ for (let step = 1; step <= maxSteps; step++) {
     // altro ordine lo chiude (altrimenti resterebbe appeso per sempre).
     if (plan.follow) goal.follow = plan.follow; else delete goal.follow;
     if (plan.escort) goal.escort = plan.escort; else delete goal.escort;
+    planTrace.flush({endedBy: overridden ? 'human_order_override' : 'human_order', step});
     plan = await publishPlan(plan);
     goal.plan = plan; goalManager.persist();
+    planTrace.adopt({step, reason: 'human_order', plan});
     skillRun = null; // il piano umano sostituisce la skill attiva
     // Un ordine può riorientare un goal nato autonomo: l'esito di *quel* goal
     // deve tornare a chi ha ordinato (non al planner autonomo).
@@ -1983,6 +2013,7 @@ for (let step = 1; step <= maxSteps; step++) {
         if (CURRICULUM && finished.milestone === CURRICULUM) {
           console.log(`GOAL MET after ${step - 1} actions (curriculum ${CURRICULUM})`);
           log('goal_met', {steps: step - 1, totalCost, curriculum: CURRICULUM, completedMilestones: [...completedMilestones]});
+          planTrace.flush({endedBy: 'goal_met', step: step - 1});
           goalReached = true;
           break;
         }
@@ -2013,6 +2044,7 @@ for (let step = 1; step <= maxSteps; step++) {
   if ((!humanOrder || !openPlan || hasWorked) && goalMet(obs, stickyPlan, skillStatus, humanOrderTargets(goal))) {
     console.log(`GOAL MET after ${step - 1} actions`, JSON.stringify({position: obs.position, inventory: obs.inventory}));
     log('goal_met', {steps: step - 1, totalCost, obs});
+    planTrace.flush({endedBy: 'goal_met', step: step - 1});
     goalReached = true;
     break;
   }
@@ -2046,11 +2078,16 @@ for (let step = 1; step <= maxSteps; step++) {
   }
   if (replanReason) {
     const candidatePlan = shapedPlan(await planForStep(obs, replanReason, goal));
-    if (candidatePlan?.met) { log('curriculum_goal_met', {step, reason: replanReason}); goalReached = true; break; }
+    if (candidatePlan?.met) { log('curriculum_goal_met', {step, reason: replanReason}); planTrace.flush({endedBy: `goal_met:${replanReason}`, step}); goalReached = true; break; }
     const sameSkill = candidatePlan?.skill && candidatePlan.skill === plan.skill;
+    const replanTrace = `replan:${replanReason}`;
     plan = withStickyEscort(withStickyFollow(candidatePlan, goal.follow), goal.escort);
     plan = await publishPlan(plan);
+    // Il piano pubblicato ha sostituito il precedente: il segmento nuovo si apre
+    // solo dopo, cosi' una pubblicazione rifiutata non chiude la traccia vecchia.
+    planTrace.flush({endedBy: replanTrace, step});
     goal.plan = plan; goalManager.persist();
+    planTrace.adopt({step, reason: replanTrace, plan});
     if (!sameSkill || !skillRun) skillRun = startSkillRun(plan, obs);
     log('replan', {step, reason: replanReason, objective: plan.objective, skill: plan.skill ?? null, milestone: plan.milestone ?? null});
     console.log('REPLAN', replanReason, plan.objective, plan.skill ? `[skill ${plan.skill}]` : '');
@@ -2462,6 +2499,9 @@ for (let step = 1; step <= maxSteps; step++) {
   lastKey = key;
   lastResult = result;
   log('result', {step, key, ok: !!result.ok, error: result.error ?? null, ms: result.ms ?? null, missionId: goal.missionId ?? null});
+  // R3: la decisione e il suo esito nella traccia del piano corrente. `by` e' il
+  // ramo che ha scelto la chiave (`jev`, `survival_need`, `drop_order`, …).
+  planTrace.record({step, key, by: decision.source ?? null, reason: decision.reason ?? null, ok: !!result.ok, error: result.error ?? null, ms: result.ms ?? null});
   if (goal.missionId) {
     // `data.position` dà al consolidamento un'ancora spaziale forte (l'azione
     // riuscita dice *dove* la risorsa è stata trovata).
@@ -2522,6 +2562,7 @@ if (!goalReached && goalContract && lastContractStatus === 'running') {
 }
 if (!goalReached) {
   log('run_end', {steps: stepsUsed, totalCost, curriculum: CURRICULUM, completedMilestones: [...completedMilestones], goalId: goal.id});
+  planTrace.flush({endedBy: 'run_end', step: stepsUsed});
 }
 // Non si esce dal processo: l'esito torna al session loop (main), che decide se
 // registrarlo e passare a IDLE o terminare (modalità one-shot).
@@ -2738,6 +2779,7 @@ async function main () {
     const final = goalManager.get(goal.id);
     console.log(`GOAL ${goal.id} ${final.status.toUpperCase()}${final.reason ? ` (${final.reason})` : ''} after ${outcome.steps ?? '?'} actions`);
     log('goal_end', {goalId: goal.id, status: final.status, reason: final.reason, steps: outcome.steps, totalCost: outcome.totalCost});
+    planTrace.flush({endedBy: 'goal_end'});
     // M5: l'ordine umano riceve l'esito in chat (goal nato da un ordine, oppure
     // goal riorientato da un ordine). Il destinatario è l'ultimo richiedente.
     await reportHumanOutcome(goal, {status: outcome.status, steps: outcome.steps ?? null, reason: final.reason ?? outcome.reason ?? null});
@@ -2805,6 +2847,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     // questa riga una run interrotta non lascia né passi né costo (06/10,
     // `diamond-20261006-4`: ultimo record un `result`, nessun totale).
     log('run_end', {steps: stepsUsed, totalCost, curriculum: CURRICULUM, goalId: goalManager.current?.id ?? null, signal, interrupted: true});
+    planTrace.flush({endedBy: `signal:${signal}`, step: stepsUsed});
     goalManager.flush();
     process.exit(0);
   });

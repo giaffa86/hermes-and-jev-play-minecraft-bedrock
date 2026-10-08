@@ -63,7 +63,7 @@ Namespaced `R0`…`R7` to avoid colliding with the repo's own M1–M12 chat mile
 | **R0** Capability inventory | One command emits a machine-checkable inventory of intents, option vocabulary, skills, circuits, milestones, criteria, and the cross-checks between them (`tools/capability-inventory.mjs`) — the drafts' "registry" with the MCP fiction removed | **implemented** |
 | **R1** Typed plan | Add `plan.subgoal` + `plan.steps[]` (each naming a skill/circuit + its verify criteria), derived from the declarative files; exactly one level above actions ("Evolution A") | **implemented** |
 | **R2** Clarification gate | Wrap `humanCommandPlan`: `orderGaps(text, plan, obs, {memory})` → `ready` \| `needs_input`; ask one question, hold the order, resume on the same sender's answer. **Design decided 07/10/2026**: the pending question lives in the harness-side inbox (`chatInbox`), not in the controller, and an under-specified order never becomes a goal (so no running goal is suspended). `CHAT_CLARIFY` **default on**, kill-switch `off` | **implemented** |
-| **R3** Plan trace | One structured `plan_trace` line per decision (objective, subgoal, source, steps, action, refusals, replan reason). Never chain-of-thought | proposed |
+| **R3** Plan trace | One structured `plan_trace` line per decision (objective, subgoal, source, steps, action, refusals, replan reason). Never chain-of-thought | **implemented** — one line per plan *segment* in `runs/<run>/plan-trace.jsonl`, written by the controller |
 | **R4** Structured failure | Harness refusal → typed `{step, error, evidence, retryable}`; a step revises its own steps instead of only a global replan | proposed |
 | **R5** Composite goals | `prepare_for_nether` as a DAG over existing milestones, expanded deterministically | proposed |
 | **R6** Golden scenarios | Order + observation → expected plan/clarification/refusal, including the C17/C18 negative cases; freezes R1–R5 | proposed |
@@ -150,6 +150,52 @@ Properties, covered by `tests/human-clarify.test.mjs` (13),
 - Known limitation: a destination that *contains* an item word and is not in memory
   («vai al campo di patate») is read as an object order and never asked about.
 
+### The plan trace (R3)
+
+A run already proved *what* it did (`actions.jsonl`) and *what it cost*
+(`summary.json`, `run-facts`). R3 adds *why the plan changed*: one JSON line per
+plan **segment** — opened when the controller adopts a plan, closed when that plan
+is replaced or the run ends — in `runs/<run>/plan-trace.jsonl`.
+
+```text
+  plan born                        plan replaced / run ends
+  ---------                        ------------------------
+  planForStep  ---> curriculum | construction      \
+  hermesPlan   ---> hermes      (+ fallback)        >-- plan.source stamps the plan
+  humanCommandPlan | told_goto -> deterministic     /
+
+  planTrace.adopt({step, reason, plan})   <-- per ogni adozione
+        |  planTrace.record({step, key, by, reason, ok, error, ms})   <-- per ogni azione
+        v
+  runs/<run>/plan-trace.jsonl
+  { v:1, planId, reason, source, objective, subgoal, steps[], stepCount,
+    startedAt, endedAt, ms, endedBy, untilStep, actions, ok, failed,
+    decisions[], refusals[], omitted }
+
+  endedBy = replaced | human_order | human_order_override
+          | replan:<skill_failed|anti_loop:<key>:<n>|skill_complete|periodic|curriculum>
+          | goal_met | goal_met:<reason> | run_end | goal_end | signal:<SIG>
+```
+
+Properties, covered by `tests/plan-trace.test.mjs` (9) and by a 6th test in
+`tests/controller-clarify.test.mjs` that drives the **real controller** and reads
+the file back:
+
+- The line answers the three questions a post-mortem asks — *which plan, where it
+  came from, why it stopped* — without joining `controller.jsonl` to
+  `actions.jsonl` by hand.
+- **A missed flush loses nothing**: `adopt()` closes an open segment by itself, and
+  `flush()` is idempotent, so the worst case is a segment spanning two plans.
+- **The vocabulary of `source` is closed** (`hermes`, `deterministic`, `curriculum`,
+  `construction`) and a value from outside it (e.g. the governor's
+  `'governor:normal'`) reads back as `hermes`.
+- **It is not a chain-of-thought**: no prompt, no model text, no free prose —
+  identifiers, keys and typed errors only.
+- **It cannot break a run**: a write error is swallowed and logged once as
+  `[plan-trace] write failed:`; there is no env flag to disable it.
+- Honest limit: a goal the goal contract closes before any plan is *published*
+  leaves no line — there was no plan to trace.
+
 ## Real capability surface (the R0 input)
 
 | Layer | Artifact | Count (07/10/2026, from the R0 inventory) |
@@ -176,7 +222,10 @@ per-subgoal criterion exists. **R2's suspension question is answered too** (no: 
 under-specified order is not a goal, so nothing is suspended) and the pending
 question is stored in the harness inbox, which also makes it survive a controller
 restart. **`CHAT_CLARIFY` is not opt-in**: it is on by default, with `off` as the
-kill-switch that restores the old planner fallback.
+kill-switch that restores the old planner fallback. **R3 answered where a run's
+*motives* live**: in `runs/<run>/plan-trace.jsonl`, one line per plan segment (not
+per action), with `source` stamped on the plan when it is born and `endedBy` naming
+its closure (`human_order`, `replan:anti_loop:…`, `goal_met`, `signal:SIGTERM`, …).
 
 New from R0: should `auto_door` and `delay_line` be wired into a milestone (a skill
 whose `success.circuitBuilt.id` names them), or are they deliberately unused

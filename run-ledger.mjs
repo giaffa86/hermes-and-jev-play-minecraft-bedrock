@@ -6,6 +6,7 @@
 // has to survive a kill; the aggregate is written to `summary.json` on shutdown.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { readPlanTrace, summarizePlanTrace } from './plan-trace.mjs';
 
 // A refusal before execution is not an action: `busy` is the adapter's lock, not a
 // verdict on the action (tests/controller-busy.test.mjs). Counting `busy` replies
@@ -126,6 +127,10 @@ export function readRunFacts (dir) {
   const skills = readJsonl(join(dir, 'skills.jsonl'));
   const circuits = readJsonl(join(dir, 'circuits.jsonl'));
   const summary = readJson(join(dir, 'summary.json'));
+  // R3: la traccia del piano e' un artefatto del controller, come
+  // `controller.jsonl`; una run che non ne ha una (avviata a mano sull'API) non
+  // e' meno leggibile, ma non puo' spiegare *perche'* un piano e' cambiato.
+  const planTrace = readPlanTrace(dir);
 
   const facts = {
     dir,
@@ -136,6 +141,7 @@ export function readRunFacts (dir) {
     events: events ? { count: events.length, types: countBy(events, r => r.type ?? 'unknown'), firstAt: events.at(0)?.t ?? null, lastAt: events.at(-1)?.t ?? null } : null,
     skills: skills ? { count: skills.length, ok: skills.filter(s => s.ok === true).length } : null,
     circuits: circuits ? { count: circuits.length, ok: circuits.filter(c => c.ok === true).length } : null,
+    planTrace: planTrace ? { count: planTrace.length, summary: summarizePlanTrace(planTrace) } : null,
   };
 
   if (controller) {

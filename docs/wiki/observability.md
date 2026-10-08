@@ -5,8 +5,9 @@ it cost** without asking anybody's memory. Every number a human is told about a
 run (`"circa 7 minuti"`, `"25 azioni"`, a cost in dollars) must come from a file
 read in the same turn, or from `GET /stats` on the live harness.
 
-Sources: `run-ledger.mjs`, `run-paths.mjs`, `bedrock-harness.mjs`, `controller.mjs`,
-`tools/run-facts.mjs`, `tests/run-ledger.test.mjs`, `tests/run-paths.test.mjs`.
+Sources: `run-ledger.mjs`, `plan-trace.mjs`, `run-paths.mjs`, `bedrock-harness.mjs`,
+`controller.mjs`, `tools/run-facts.mjs`, `tests/run-ledger.test.mjs`,
+`tests/plan-trace.test.mjs`, `tests/run-paths.test.mjs`.
 
 ## Why this exists
 
@@ -31,7 +32,15 @@ component every driver must pass through.
 | `runs/<run>/summary.json` | `shutdown()` in `bedrock-harness.mjs` | the aggregate: attempts, executed, ok/failed, refusals, action seconds, wall clock, per-key counts |
 | `GET /stats` | the running harness | the same aggregate, plus `pid`/`uptimeMs` |
 | `runs/<run>/controller.jsonl` | `controller.mjs` | per-step `decision`/`result`, and a `run_end` carrying `totalCost` — now also on SIGTERM/SIGINT, so a run killed by the deploy timeout still reports its cost |
-| `node tools/run-facts.mjs <run>` | CLI | reads all of the above and prints the facts, or says plainly that nothing is verifiable |
+| `runs/<run>/plan-trace.jsonl` | `controller.mjs` via `plan-trace.mjs` (R3) | one line per **plan segment**: its `source`, `objective`/`subgoal`/`steps`, the action keys chosen under it, the typed refusals it saw and the named closure (`endedBy`) |
+| `node tools/run-facts.mjs <run>` | CLI | reads all of the above and prints the facts, including the plan-trace summary, or says plainly that nothing is verifiable |
+
+The last of the ledger files answers the question the others leave open: *why did the
+plan change?* The actions say what was attempted and the controller log says what was
+logged, but the reason a plan was abandoned (`human_order`, `replan:anti_loop:…`,
+`goal_met`, `signal:SIGTERM`) used to be scattered across `log()` calls with no single
+place to read it. See [reasoning-roadmap](reasoning-roadmap.md) for the R3 shape and
+`plan-trace.mjs` for the writer.
 
 ## What is counted, and what is not
 

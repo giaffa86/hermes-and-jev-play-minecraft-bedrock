@@ -60,6 +60,14 @@ if (facts.controller) {
   const keys = Object.entries(c.byKey).sort((a, b) => b[1] - a[1]).slice(0, TOP);
   for (const [key, count] of keys) console.log(`    ${key}: ${count} azioni`);
 }
+if (facts.planTrace) {
+  const p = facts.planTrace.summary;
+  const sources = Object.entries(p.bySource).map(([k, v]) => `${k}=${v}`).join(', ');
+  console.log(`  plan-trace: ${p.plans} piani (${sources}), ${p.steps} passi, ${p.decisions} decisioni, ${p.refusals} rifiuti, ${p.replans} replan`);
+  if (p.topRefusals.length) console.log(`    rifiuti: ${p.topRefusals.map(([k, v]) => `${k}=${v}`).join(', ')}`);
+  if (p.topEndedBy.length) console.log(`    chiusure: ${p.topEndedBy.map(([k, v]) => `${k ?? 'open'}=${v}`).join(', ')}`);
+  if (p.lastPlan) console.log(`    ultimo piano: ${p.lastPlan.source} "${p.lastPlan.objective ?? ''}"${p.lastPlan.subgoal ? ` -> ${p.lastPlan.subgoal}` : ''} (${p.lastPlan.stepCount} step)`);
+}
 if (facts.summary) console.log(`  summary.json: ${JSON.stringify({ attempts: facts.summary.attempts, actionSeconds: facts.summary.actionSeconds, wallClockMs: facts.summary.wallClockMs })}`);
 if (facts.events) console.log(`  events: ${facts.events.count} (${Object.entries(facts.events.types).map(([k, v]) => `${k}=${v}`).join(', ')})`);
 if (facts.skills) console.log(`  skills: ${facts.skills.count} tentativi, ${facts.skills.ok} ok`);
