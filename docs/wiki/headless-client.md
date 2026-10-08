@@ -224,6 +224,26 @@ Item movement, crafting and smelting are `item_stack_request` transactions
   (`tests/bedrock-storage.test.mjs`). The live proof is still pending — both attempts ended
   with the server dropping the session at ~34 s (`container_read_failed` → `not_connected`),
   the transport failure of [row 47.34](verification.md), not a fault of the filter.
+- **The click that opens a container is prepared, escalated and declared** (08/10/2026, from
+  [row 47.75](verification.md)). The live expedition stood 1.1–3.4 blocks from a chest for
+  70 minutes with every attempt ending `container_open_timeout`, and the artifact said only
+  that. Four holes closed: the block about to be clicked is **verified to be known to the
+  client** first (`_ensureBlockKnown` refreshes the chunk section and waits, because an
+  unloaded section makes `runtimeIdAt()` answer `null` → `block_runtime_id: 0`, which a
+  server validating the declared block reads as «no block» and discards in silence — the
+  same preparation the break confirmation does); the approach walks to **radius 2** (not 3)
+  and closes to 1.5 when the sampled **sightline** is obstructed; an empty hand is filled
+  from the second attempt; and every attempt is logged with distance, feet, face, runtime
+  id, `blockAt`, held item and sightline (`container_open_attempt`, `container_open_failed`,
+  `container_unknown_block`, `container_hand_selected`), with the same payload reaching
+  `/act` and `storage_open_failure` through `error.details.attempts`. The read's own walk
+  budget now obeys the action budget (`min(STORAGE_READ_WALK_MS, time left)`), so the four
+  extra seconds per chest cannot push a read past `STORAGE_READ_BUDGET_MS`.
+- **The eight `take_*` slots are ranked by what the trip kit is missing too.** A plan whose
+  targets fill the list (`take_diamond ×2`, `take_copper_ingot ×2`, `take_golden_leggings
+  ×2`, …) used to hide `take_torch`/`take_coal` completely, so a chest could be open with
+  the gear in it and the kit still impossible to complete (`_tripKitView().missing`, food
+  excluded on purpose).
 - **Refreshing the mirror must not cost the session.** Fresh stack ids used to come
   only from a reconnect (`disconnect` + `connect`), which against a BDS that has not
   released the previous NetherNet session fails with `connecterror:9` (negotiation

@@ -11,7 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { BedrockWorld } from './bedrock-world.mjs';
 import { HIVE_BLOCKS, BEE_CRAFT_ITEMS, BEE_SCAN_RADIUS, BEE_SCAN_LIMIT, isBeeProtected, hiveVerdict, honeyLevel, beeFlower, beeFlowerCount } from './bedrock-bees.mjs';
 import { trackNethernetClient, closeBedrockClient } from './bedrock-lifecycle.mjs';
-import { tagCount } from './survival/item-tags.mjs';
+import { tagCount, itemMatchesTag } from './survival/item-tags.mjs';
 import { bestFood, isHostileType, isTraderType, isFarmAnimalType, isMilkableType, isTameableType, isRideTameableType, isCompanionType, isRideableType, animalFeed, tameFeed, cropForSeed, cropMaturity, seedForCrop, isCropBlock, mountCapacity, seatInfo, entityHeight, normalizeEntityType, estimatedTimeOfDay, isNightTime, timePhase, awayDirection, rotateDirection, PLANTABLE_ITEMS, FOODS, LAST_RESORT_FOODS, BUCKET_INGREDIENTS, SHIELD_INGREDIENTS, STARVING_FOOD } from './bedrock-survival.mjs';
 // Missione «segui l'umano che si imbarca»: la decisione è pura, l'adapter
 // raccoglie solo i fatti (link, flag `riding`, raggiungibilità).
@@ -211,7 +211,12 @@ const STORAGE_READ_BUDGET_MS = 90000;
 // per-blocco più stretto (live 03/10: con 30 s per blocco una lettura ha toccato
 // il watchdog dei 180 s e il BDS ha chiuso la sessione), mentre un `take_*`
 // esplicito tiene il timeout generoso.
-const STORAGE_READ_WALK_MS = 8000;
+// Live 08/10/2026: 8 s non bastavano a coprire 1-2 blocchi in un villaggio con
+// portici e animali, e la lettura non riusciva nemmeno a *vedere* i bauli. Il
+// tetto per blocco sale a 15 s, ma la somma resta chiusa dal budget della lettura
+// (`_readContainers` passa `min(tetto, tempo rimasto)`), quindi il watchdog dei
+// 180 s resta fuori portata.
+const STORAGE_READ_WALK_MS = 15000;
 // Un `take_*` su un contenitore *ricordato* può essere a venti e più blocchi: il
 // cammino verso la cassa del raccolto a (92,73,165) è durato 31 s per 21 blocchi
 // (live 04/10/2026, il bot è arrivato a tre blocchi dal baule quando il default di
@@ -5235,9 +5240,19 @@ export class BedrockAdapter {
         takeEntries.push({ c, item, count, index: index++, remembered: true });
       }
     }
+    // Il kit da spedizione incompleto pesa come un bisogno di craft: senza questo
+    // boost un tetto di 8 posti riempito dai primi item del baule più ricco non
+    // offre mai `take_torch`/`take_coal`/cibo, e un obiettivo che chiede il kit
+    // resta irraggiungibile *anche con il baule aperto* (live 08/10/2026: la lista
+    // offrì take_diamond ×2, take_copper_ingot ×2, take_golden_leggings ×2 e mai
+    // una torcia o un carbone).
+    // Solo l'attrezzatura: il cibo lo offre in blocco qualunque contenitore del
+    // villaggio e promuoverlo riempirebbe la lista da solo (`food` resta fuori).
+    const kitMissingTags = this._tripKitView().missing.map(entry => entry.tag).filter(tag => tag !== 'food');
+    const kitWanted = item => kitMissingTags.some(tag => itemMatchesTag(item, tag));
     takeEntries.sort((a, b) =>
       (Number(wantedTargets.has(b.item)) - Number(wantedTargets.has(a.item))) ||
-      (Number(wantedItems.has(b.item)) - Number(wantedItems.has(a.item))) || (a.index - b.index));
+      (Number(wantedItems.has(b.item) || kitWanted(b.item)) - Number(wantedItems.has(a.item) || kitWanted(a.item))) || (a.index - b.index));
     for (const e of takeEntries.slice(0, 8)) {
       const from = e.remembered
         ? `the ${e.c.type} at ${JSON.stringify(e.c.position)} (remembered: re-read on arrival)`
@@ -8002,6 +8017,51 @@ export class BedrockAdapter {
     }
   }
 
+  // Il blocco che stiamo per cliccare deve essere noto al client: `blockAt` null
+  // (sezione non caricata) fa scrivere `block_runtime_id: 0` — un blocco che il
+  // server non ha — e un click su un blocco inesistente non produce nessun
+  // errore, solo silenzio. Il pattern è quello del mining: si richiede la sezione
+  // e si aspetta che torni (vedi la conferma del break in `_mineBlock`).
+  async _ensureBlockKnown (position, name, { timeoutMs = 3000 } = {}) {
+    const check = () => {
+      const block = this.world?.blockAt?.(position) ?? null;
+      if (!block) return { ok: false, error: 'block_unknown', block: null };
+      if (name && block.name !== name) return { ok: false, error: 'block_mismatch', block };
+      if (this.world.runtimeIdAt(position) == null) return { ok: false, error: 'block_unknown', block };
+      return { ok: true, block };
+    };
+    let state = check();
+    if (state.ok || !this.client?.queue) return state;
+    const refreshed = state.error;
+    this.world.refreshSection(this.client, position);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await delay(50);
+      state = check();
+      if (state.ok) break;
+    }
+    return { ...state, refreshed };
+  }
+
+  // Linea di vista campionata sui blocchi (come la sonda delle entità): dice se
+  // il click è stato scartato perché c'era un muro in mezzo e non perché la
+  // transazione era sbagliata.
+  _sightlineTo (point) {
+    const eye = this.position;
+    if (!eye || !point) return [];
+    const out = [];
+    for (let i = 1; i <= 3; i++) {
+      const t = i / 4;
+      const block = this.world.blockAt({
+        x: Math.floor(eye.x + (point.x - eye.x) * t),
+        y: Math.floor(eye.y + (point.y - eye.y) * t),
+        z: Math.floor(eye.z + (point.z - eye.z) * t),
+      });
+      out.push(block ? `${block.name}${this._passable(block) ? '' : '!'}` : 'null');
+    }
+    return out;
+  }
+
   async _openStorageWindow (target, { contentTimeoutMs = 2000, walkTimeoutMs = 30000 } = {}) {
     const alreadyOpen = this._openContainer?.type === 'container' && this._openContainerBlock
       && this._openContainerBlock.position.x === target.position.x
@@ -8014,20 +8074,72 @@ export class BedrockAdapter {
     if (this._reachabilityUsable() && !this.approachReachable(target.position)) {
       throw new Error('storage_unreachable');
     }
+    const centre = { x: target.position.x + 0.5, y: target.position.y + 0.5, z: target.position.z + 0.5 };
+    const approach = stop => this._moveTo({ x: centre.x, y: target.position.y, z: centre.z }, stop, walkTimeoutMs);
     if ((target.distance ?? this._pointDistance(target.position)) > 3.5) {
-      await this._moveTo({ x: target.position.x + 0.5, y: target.position.y, z: target.position.z + 0.5 }, 3, walkTimeoutMs);
+      // Si cammina finché il contenitore non è *addosso*: le aperture che
+      // falliscono stanno tutte fra 3,5 e 4,7 blocchi (live 08/10/2026), dove la
+      // mano del bot non arriva più al blocco.
+      await approach(2);
     }
     await delay(100);
     let lastError = null;
+    const attempts = [];
     for (let attempt = 1; attempt <= 3; attempt++) {
+      // Il blocco che stiamo per cliccare deve essere *noto* al client: con
+      // `blockAt` null (sezione non caricata) il click dichiara
+      // `block_runtime_id: 0`, e un click su un blocco che il server non ha non
+      // produce nessun errore — solo silenzio e `container_open_timeout`.
+      const known = await this._ensureBlockKnown(target.position, target.name);
+      const runtimeId = this.world.runtimeIdAt(target.position);
+      const detail = {
+        attempt,
+        position: target.position,
+        distance: Math.round(this._pointDistance(target.position) * 10) / 10,
+        feet: this._feet ? { x: Math.round(this._feet.x * 100) / 100, y: Math.round(this._feet.y * 100) / 100, z: Math.round(this._feet.z * 100) / 100 } : null,
+        face: this._faceForBlock(target.position, this.position),
+        runtimeId: runtimeId ?? null,
+        blockAt: this.world.blockAt(target.position)?.name ?? null,
+        held: this._slotItemName((this.inventorySlots ?? [])[this.selectedHotbar]) ?? null,
+        sightline: this._sightlineTo(centre),
+        openContainer: this._openContainer?.id ?? null,
+      };
+      if (!known.ok) {
+        // Il blocco non è (ancora) noto al client: il click parte lo stesso — chi
+        // decide è il server — ma il tentativo lo *dichiara*, perché un
+        // `block_runtime_id` nullo/0 è una causa possibile di rifiuto silenzioso.
+        this.log('container_unknown_block', { ...detail, error: known.error, refreshed: known.refreshed ?? null });
+      }
+      const unknown = known.ok ? null : { block: known.error, refreshed: known.refreshed ?? null };
+      // Mano vuota: il client vanilla può interagire a mani nude, ma in questo
+      // harness l'unico interact riuscito live era *con un oggetto in mano* e il
+      // server risponde con un resync d'inventario quando `held_item` è vuoto
+      // (variante `item_in_hand` della sonda entità). Dal secondo tentativo la
+      // mano si riempie: così il log dice se è quello il rifiuto, invece di
+      // ripetere tre volte la stessa transazione.
+      if (attempt > 1 && !this.inventorySlots?.[this.selectedHotbar]?.network_id) {
+        const slots = this.inventorySlots ?? [];
+        const slot = slots.findIndex((s, i) => i < 9 && s?.network_id);
+        try {
+          if (slot >= 0 && this._selectHotbarSlot(slot)) {
+            detail.held = this._slotItemName(slots[slot]) ?? null;
+            this.log('container_hand_selected', { slot, item: detail.held });
+          }
+        } catch (error) { this.log('container_hand_failed', { error: error.message }); }
+      }
       const wait = this._waitForContainerOpen(p => p.window_type === 'container', 2500);
-      const yaw = this._yawTo(this._feet, { x: target.position.x + 0.5, z: target.position.z + 0.5 });
-      const pitch = this._lookAt({ x: target.position.x + 0.5, y: target.position.y + 0.5, z: target.position.z + 0.5 }).pitch;
+      const yaw = this._yawTo(this._feet, { x: centre.x, z: centre.z });
+      const pitch = this._lookAt(centre).pitch;
       try {
         await this._queueAuthInput({ yaw, pitch, transaction: this._blockUseTransaction(target.position) });
         await wait;
       } catch (error) {
         lastError = error;
+        this.log('container_open_attempt', { ...detail, error: error.message });
+        attempts.push({ ...detail, error: error.message, ...(unknown || {}) });
+        // Un click scartato con la vista ostruita si ritenta da più vicino: 1,5
+        // blocchi è il passo che l'approccio a 2 lascia fuori.
+        if (detail.sightline.some(entry => entry.endsWith('!'))) await approach(1.5).catch(() => {});
         await delay(300);
         continue;
       }
@@ -8037,10 +8149,18 @@ export class BedrockAdapter {
       // ancora piena. Se il contenuto non arriva si ritenta l'apertura.
       if (await this._waitForContainerContent(this._openContainer.id, contentTimeoutMs)) return;
       lastError = new Error('container_content_timeout');
+      this.log('container_open_attempt', { ...detail, error: 'container_content_timeout' });
+      attempts.push({ ...detail, error: 'container_content_timeout', ...(unknown || {}) });
       await this._closeContainer().catch(() => {});
       await delay(300);
     }
-    throw lastError || new Error(`${target.name}_not_opened`);
+    const finalError = lastError || new Error(`${target.name}_not_opened`);
+    // Il fallimento porta con sé *tentativo per tentativo* cosa il client credeva
+    // di cliccare: senza questo l'artefatto dice «container_open_timeout» e non
+    // perché il server non ha risposto.
+    finalError.details = { ...(finalError.details || {}), block: target.name, position: target.position, attempts };
+    this.log('container_open_failed', { block: target.name, position: target.position, error: finalError.message, attempts });
+    throw finalError;
   }
 
   async _readContainers ({ budgetMs = STORAGE_READ_BUDGET_MS } = {}) {
@@ -8063,10 +8183,14 @@ export class BedrockAdapter {
     const read = [];
     let budgetExceeded = false;
     for (const block of batch) {
-      // Almeno un contenitore viene letto, poi il budget decide se continuare.
-      if (read.length && Date.now() - started > budgetMs) { budgetExceeded = true; break; }
+      // Il budget della lettura vale anche per il cammino: prima il tetto per
+      // blocco si sommava agli altri, quindi otto bauli potevano superare di molto
+      // il budget e sfiorare il watchdog dei 180 s. Almeno un contenitore viene
+      // letto, poi il budget decide se continuare.
+      const remaining = budgetMs - (Date.now() - started);
+      if (read.length && remaining <= 0) { budgetExceeded = true; break; }
       try {
-        await this._ensureStorageOpen(block, { walkTimeoutMs: STORAGE_READ_WALK_MS });
+        await this._ensureStorageOpen(block, { walkTimeoutMs: Math.max(1000, Math.min(STORAGE_READ_WALK_MS, remaining)) });
         const contents = this._storageContentsFromSlots(this._openContainerSlots);
         const key = this._containerCacheKey(block.position);
         this._setContainerContents({ key, type: block.name, position: block.position }, contents);

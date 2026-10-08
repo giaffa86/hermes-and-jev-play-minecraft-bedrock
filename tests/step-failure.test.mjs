@@ -52,6 +52,11 @@ test('il vocabolario reale del harness cade nei tipi dichiarati', () => {
     ['protected_chest', 'blocked', false],
     ['unsafe_block_lava', 'blocked', false],
     ['block_still_present', 'blocked', false],
+    // Il blocco che il client credeva di cliccare non c'e' o non e' quello: un
+    // approccio nuovo puo' funzionare, e comunque non e' un guasto da ritentare
+    // allo stesso modo (live 08/10/2026: bauli non aperti per 70 minuti).
+    ['block_unknown', 'blocked', false],
+    ['block_mismatch', 'blocked', false],
     // Regola del harness che dice no: il piano deve cambiare.
     ['fell_tree_refused', 'refused', false],
     // Manca qualcosa al passo: il piano deve aggiungere il passo che lo procura.

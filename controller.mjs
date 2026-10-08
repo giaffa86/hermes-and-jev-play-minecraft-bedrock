@@ -3027,7 +3027,15 @@ async function main () {
     // Un errore fatale chiude il run (dopo aver chiuso la missione): niente
     // cicli di retry silenziosi in session mode.
     if (outcome.error) { exitCode = outcome.exitCode ?? 1; break; }
-    if (!SESSION) { exitCode = outcome.exitCode; break; }
+    if (!SESSION) {
+      // Un padre appena rimesso in coda (`resume` lo riporta a PENDING) e' lavoro
+      // ancora aperto: uscire qui lo lasciava orfano a meta' spedizione — live
+      // 08/10/2026 il run e' finito con `EXIT=0` subito dopo `RESUME g1`, alla
+      // prima morte. Il run one-shot esce solo quando la coda e' vuota.
+      if (goalManager.pending().length) continue;
+      exitCode = outcome.exitCode;
+      break;
+    }
   }
   goalManager.flush();
   // Le connessioni keep-alive di fetch tengono vivo il processo: esci esplicitamente.

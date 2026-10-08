@@ -644,6 +644,9 @@ test('a slow read stops on its budget instead of running to the action timeout',
   assert.equal(result.read, opened);
 });
 
+// Live 08/10/2026: il tetto per blocco è salito a 15 s (8 s non coprivano 1-2
+// blocchi in un villaggio con portici e animali) e la somma dei cammini è chiusa
+// dal budget della lettura: `_readContainers` passa `min(tetto, tempo rimasto)`.
 test('the read walks with a short timeout, an explicit take keeps the generous one', async () => {
   const adapter = storageAdapter();
   const chest = { name: 'chest', position: { x: 20, y: 64, z: 0 }, distance: 20 };
@@ -654,12 +657,30 @@ test('the read walks with a short timeout, an explicit take keeps the generous o
   adapter._openContainerSlots = [];
   adapter._waitForContainerOpen = async () => { throw new Error('container_open_timeout'); };
   adapter._waitForContainerContent = async () => false;
-  await adapter._readContainers({ budgetMs: 1000 }).catch(() => {});
+  await adapter._readContainers().catch(() => {});
   assert.equal(walks.length, 1);
-  assert.equal(walks[0].timeoutMs, 8000, 'nella lettura il cammino è corto');
+  assert.equal(walks[0].timeoutMs, 15000, 'nella lettura il cammino è corto');
   // Un `take_*` esplicito non cambia il timeout generoso.
   await adapter._ensureStorageOpen(chest).catch(() => {});
   assert.equal(walks[1].timeoutMs, 30000, 'il take mantiene il default');
+});
+
+// Il budget della lettura chiude anche il cammino: prima il tetto per blocco si
+// sommava agli altri, quindi otto bauli potevano superare di molto il budget e
+// sfiorare il watchdog dei 180 s che il 03/10 aveva fatto cadere la sessione.
+test('a read never spends more walk time than the budget it has left', async () => {
+  const adapter = storageAdapter();
+  const chest = { name: 'chest', position: { x: 20, y: 64, z: 0 }, distance: 20 };
+  adapter.world.findBlocks = (name) => (name === 'chest' ? [chest] : []);
+  adapter._reachabilityUsable = () => false;
+  const walks = [];
+  adapter._moveTo = async (target, radius, timeoutMs) => { walks.push({ target, radius, timeoutMs }); return { ok: true }; };
+  adapter._openContainerSlots = [];
+  adapter._waitForContainerOpen = async () => { throw new Error('container_open_timeout'); };
+  adapter._waitForContainerContent = async () => false;
+  await adapter._readContainers({ budgetMs: 5000 }).catch(() => {});
+  assert.equal(walks.length, 1);
+  assert.ok(walks[0].timeoutMs <= 5000 && walks[0].timeoutMs >= 1000, `il budget chiude il cammino: ${walks[0].timeoutMs}`);
 });
 
 // Live 04/10/2026: le opzioni `take_*` derivano dalla memoria durevole dei
@@ -1120,4 +1141,56 @@ test('options offer the single dump when there is something to store', () => {
   const option = adapter.options().find(o => o.key === 'dump_inventory');
   assert.ok(option, 'con un baule noto e roba da riporre il dump è offerto');
   assert.match(option.description, /1 item type\(s\) \(cobblestone\)/);
+});
+
+// 08/10/2026: `block_runtime_id` della transazione vale 0 quando la sezione del
+// blocco non è caricata (`runtimeIdAt` null >>> 0), cioè «nessun blocco» per un
+// server che valida il blocco dichiarato: la transazione viene scartata senza
+// errore e resta solo un `container_open_timeout` a 1,1 blocchi dallo scrigno.
+// Prima di cliccare si richiede la sezione, come si fa per confermare un break.
+test('a container in an unloaded section is refreshed before the click', async () => {
+  const adapter = storageAdapter();
+  const requested = [];
+  adapter.client = { write: () => {}, queue: (...args) => requested.push(args) };
+  let loaded = false;
+  adapter.world.refreshSection = () => { loaded = true; };
+  adapter.world.blockAt = () => (loaded ? { name: 'chest', position: { x: 2, y: 64, z: 0 } } : null);
+  adapter.world.runtimeIdAt = () => (loaded ? 42 : null);
+  const known = await adapter._ensureBlockKnown({ x: 2, y: 64, z: 0 }, 'chest');
+  assert.equal(known.ok, true, 'dopo il refresh il blocco è noto');
+  assert.equal(known.refreshed, 'block_unknown', 'il motivo del refresh resta nel payload');
+  assert.equal(adapter.world.runtimeIdAt({ x: 2, y: 64, z: 0 }), 42, 'il runtime id vero è disponibile per la transazione');
+});
+
+test('a remembered container where the block changed is declared, not clicked blind', async () => {
+  const adapter = storageAdapter();
+  adapter.world.blockAt = () => ({ name: 'grass_block' });
+  adapter.world.runtimeIdAt = () => 7;
+  const known = await adapter._ensureBlockKnown({ x: 92, y: 73, z: 160 }, 'chest');
+  assert.equal(known.ok, false, 'la posizione ricordata non è più un baule');
+  assert.equal(known.error, 'block_mismatch');
+});
+
+// 08/10/2026: con gli otto posti `take_*` riempiti dai bersagli del piano il bot
+// non ha *mai* visto `take_torch`/`take_coal`, e il kit è rimasto incompleto con
+// il baule aperto davanti. L'attrezzatura mancante del kit passa avanti.
+test('missing trip-kit gear keeps a take option when loot would fill the eight slots', () => {
+  const adapter = storageAdapter();
+  const loot = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`loot_${i}`, 64]));
+  seedContainer(adapter, { x: 2, contents: { ...loot, torch: 19 } });
+  seedContainer(adapter, { x: 3, contents: { loot_a: 1 } });
+  seedContainer(adapter, { x: 4, contents: { loot_b: 1 } });
+  seedContainer(adapter, { x: 5, contents: { loot_c: 1 } });
+  adapter.inventory = {};
+  const keys = adapter.options().filter(o => o.key.startsWith('take_')).map(o => o.key);
+  assert.equal(keys.length, 8, 'il tetto dei prelievi resta otto');
+  assert.ok(keys.includes('take_torch'), `una torcia mancante deve avere un posto: ${keys.join(', ')}`);
+});
+
+test('food does not outrank loot in the take options', () => {
+  const adapter = storageAdapter();
+  seedContainer(adapter, { x: 2, contents: { potato: 2216, iron_ingot: 3 } });
+  adapter.inventory = {};
+  const keys = adapter.options().filter(o => o.key.startsWith('take_')).map(o => o.key);
+  assert.deepEqual(keys, ['take_potato', 'take_iron_ingot'], 'il cibo non riordina la lista da solo');
 });

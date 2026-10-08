@@ -451,7 +451,7 @@ test('resume off (RESUME=off) does not resurrect a suspended goal', async () => 
   }
 });
 
-function startEmergencyHarness () {
+function startEmergencyHarness ({ dirtAt = 4 } = {}) {
   return new Promise(resolve => {
     let acts = 0;
     let deathSite = null;
@@ -471,8 +471,10 @@ function startEmergencyHarness () {
         if (acts === 1) deathSite = { position: { x: 0, y: 64, z: 0 }, at: Date.now() };
         // recover_loot clears the site only on the 3rd call, so the emergency
         // goal survives a periodic replan (REPLAN_EVERY=2) without losing
-        // `plan.recover`.
-        if (deathSite && acts >= 4) { deathSite = null; dirt = 5; }
+        // `plan.recover`; `dirtAt` decide quando il bottino recuperato porta la
+        // scorta al bersaglio del padre.
+        if (deathSite && acts >= 4) deathSite = null;
+        if (acts >= dirtAt) dirt = 5;
         res.end(JSON.stringify({ ok: true, ms: 1 }));
       } else {
         res.end('{}');
@@ -523,6 +525,47 @@ test('emergency: a death preempts the running goal, recovers loot and resumes it
     const events = readFileSync(join(dir, 'controller.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     assert.ok(events.some(e => e.type === 'replan_skipped' && e.recover === true),
       'the emergency goal must skip replanning to keep plan.recover');
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(hermes.dir, { recursive: true, force: true });
+  }
+});
+
+// 08/10/2026, in missione (`SESSION=off`): la morte del bot sospende il goal, il
+// goal di emergenza recupera il bottino, il padre viene rimesso in coda… e il
+// processo esce con `EXIT=0` subito dopo il `RESUME`, lasciando il goal padre
+// orfano a metà spedizione. Un goal rimesso in coda è lavoro ancora aperto: si
+// esce solo quando la coda è vuota.
+test('one-shot mode: a resumed parent is finished before the process exits', async () => {
+  const { server, port } = await startEmergencyHarness({ dirtAt: 6 });
+  const runId = `test-emergency-oneshot-${process.pid}-${Date.now()}`;
+  const dir = join(ROOT, 'runs', runId);
+  const hermes = fakeHermesBin({ objective: 'collect dirt', targets: {}, waypoint: null });
+  try {
+    const { code, stdout } = await runController({
+      HARNESS: `http://127.0.0.1:${port}`,
+      RUN_ID: runId,
+      CONTROLLER: 'hermes',
+      MAX_STEPS: '6',
+      TARGETS: '{"dirt":5}',
+      WAYPOINT: '',
+      GOAL: 'Collect 5 dirt',
+      SESSION: 'off',
+      EMERGENCY: 'on',
+      AUTONOMY: 'off',
+      REPLAN_EVERY: '2',
+      ANTI_LOOP_THRESHOLD: '10',
+      OPENROUTER_API_KEY: '',
+      TYPESAFE_API_KEY: '',
+      CHAT_ALLOWLIST: '',
+      PATH: `${hermes.path}:${process.env.PATH}`,
+    });
+    assert.equal(code, 0, `unexpected exit code; stdout:\n${stdout}`);
+    assert.match(stdout, /RESUME g1 \(suspended while g2 ran\)/, 'il padre torna in coda');
+    assert.match(stdout, /GOAL g1 COMPLETED/, 'e viene portato a termine prima di uscire');
+    const saved = JSON.parse(readFileSync(join(dir, 'goals', 'world.json'), 'utf8'));
+    assert.equal(Object.fromEntries(saved.records.map(r => [r.id, r])).g1.status, 'completed');
   } finally {
     server.close();
     rmSync(dir, { recursive: true, force: true });

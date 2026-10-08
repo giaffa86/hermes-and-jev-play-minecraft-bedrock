@@ -1669,3 +1669,27 @@ pinned by a test that fails without its edit ([verification](verification.md)
   itself; `craft_boat`'s `craft_recipe_missing` remains the real capability gap
   behind `water_travel`. See [verification](verification.md) 47.74 and
   [reasoning-roadmap](reasoning-roadmap.md) §R8.
+
+## A chest that never opens again: the silent click (2026-10-08)
+
+- **What was seen.** The diamond expedition of 08/10/2026
+  (`runs/diamond-20261008-1`) spent 154 minutes on the village and never left it:
+  118 `storage_open_failure` (54 `movement timeout`, 63 `container_open_timeout`, one
+  `connection_lost`), 1507.8 s of the 3614.4 s of action time inside 23 `read_container`
+  attempts, three deaths, an inventory reduced to `{porkchop: 6}` and no mining at all.
+  The decisive row: after the last successful open (16:45:39 UTC, window 28) **nothing
+  opened again for 70 minutes** — no `container_open` event at all — while the bot stood
+  **1.1–3.4 blocks** from the chests it had read minutes earlier.
+- **What is now implemented** (offline, [row 47.75](verification.md)): the section of the
+  block about to be clicked is refreshed and waited for (`_ensureBlockKnown`), the approach
+  walks to radius 2 and closes to 1.5 on an obstructed sightline, an empty hand is filled
+  from the second attempt, every attempt is logged with distance/face/runtime id/`blockAt`/
+  sightline and the payload reaches `/act`, and the read's walk budget cannot exceed the
+  action budget. **Still open**: the live round — the rebuild on VM 100 was not made in
+  that session, so none of the four causes is proven to be the one that cost those 70
+  minutes. The next live failure has to be read from `container_open_failed.attempts`,
+  which is exactly the field the 08/10 artifact did not have.
+- **Still open, and not addressed by the fix**: the `mount_trader_llama` →
+  `vehicle_unreachable` loop and the `deposit_unverified` of the same run are untouched;
+  the trip-kit take ranking changes which keys are offered, not whether the planner
+  picks them.

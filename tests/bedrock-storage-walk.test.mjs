@@ -128,3 +128,42 @@ test('a refused action carries the walk detail in its result', async () => {
   assert.equal(result.details.progressed, false, 'un /act rifiutato dice dove, non solo come');
   assert.deepEqual(result.details.position, { x: 3, y: 64, z: 3 });
 });
+
+// 08/10/2026: per 70 minuti ogni apertura di baule e' finita
+// `container_open_timeout` — anche con il bot a 1,1 blocchi dallo scrigno — e
+// l'artefatto diceva solo quello. Due cose sono cambiate: l'apertura cammina
+// finche' il contenitore non e' addosso (non si ferma a tre blocchi) e il
+// fallimento porta con se' che cosa il client credeva di cliccare.
+test('opening a chest walks up to two blocks and reports every attempt', async () => {
+  const a = adapter();
+  a._reachabilityUsable = () => false;
+  const walks = [];
+  a._moveTo = async (target, radius, timeoutMs) => { walks.push({ target, radius, timeoutMs }); return { ok: true }; };
+  let opens = 0;
+  a._queueAuthInput = async () => { opens++; };
+  a._waitForContainerOpen = () => {
+    // Come l'adapter vero: la promise della finestra si rigetta una volta sola e
+    // qualcuno la ascolta, altrimenti il test muore di unhandled rejection.
+    const pending = Promise.reject(new Error('container_open_timeout'));
+    pending.catch(() => {});
+    return pending;
+  };
+  const events = [];
+  a.onLog = entry => events.push(entry);
+  const target = { name: 'chest', position: { x: 2, y: 64, z: 0 }, distance: 12 };
+  await assert.rejects(
+    a._openStorageWindow(target, { walkTimeoutMs: 15000 }),
+    error => {
+      assert.equal(error.message, 'container_open_timeout', 'il rifiuto del server resta quello vero');
+      assert.equal(error.details.attempts.length, 3, 'tre tentativi, tutti dichiarati');
+      assert.equal(error.details.attempts[0].block, 'block_unknown', 'il blocco non noto e scritto, non taciuto');
+      assert.equal(typeof error.details.attempts[0].distance, 'number');
+      assert.equal(typeof error.details.attempts[0].held, 'object');
+      return true;
+    },
+  );
+  assert.equal(walks[0].radius, 2, 'il contenitore si apre da addosso');
+  assert.equal(opens, 3, 'un click per tentativo');
+  assert.deepEqual(walks[0].target, { x: 2.5, y: 64, z: 0.5 });
+  assert.ok(events.some(event => event.type === 'container_open_failed'), 'il fallimento finale si registra con i tentativi');
+});
