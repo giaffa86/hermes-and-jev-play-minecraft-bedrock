@@ -886,7 +886,67 @@ existing HTTP boundary, not a service.
    local hook can be skipped (`git push --no-verify`), CI cannot, which is why the
    hook is not the only place.
 
-## 10. Sources
+## 10. Known limitations and operational notes
+
+R7 closes the roadmap, but "closed" is not one state. Five of them are easy to
+confuse, so every claim above is meant to be read against this table:
+
+| State | What it means here | How it is established |
+|---|---|---|
+| **implemented** | the code exists and a caller can use it | the modules and their tests in this repository |
+| **tested** | `node --test tests/*.test.mjs` exercises it offline | the suite, green on the machine that wrote it |
+| **wired** | a live entry point reaches it: a route, a chat path, a hook, a CI job | the wiring is read, or the job ran |
+| **deployed** | the running process serves that code | after the container restart below |
+| **consumed** | something other than its own tests uses it in anger | nothing on this roadmap is here yet |
+
+R0–R6 are implemented, tested and wired. R7 is implemented, tested and wired
+(the CI job included, once it has run). The last two states are honestly not
+true yet, and this is the whole cost:
+
+1. **`GET /capabilities` has no offline end-to-end test — and should not get one.**
+   The harness opens its HTTP server only after the bot has connected, so no offline
+   test can reach the route without a fake server, and a fake server would test the
+   fake. The useful coverage is the one we have: the producer of the payload is
+   tested (`tests/capability-contract.test.mjs`, 6 cases), the shape is frozen by
+   `CAPABILITY_CONTRACT_KEYS`, and the route itself is verified by reading. That is
+   coherent with the current lifecycle; changing the lifecycle to make the route
+   testable is its own change, not a test.
+
+2. **R7 prepared an exportable boundary; it did not validate a real consumer.**
+   The contract is a projection, so the transport can move later without moving the
+   source of truth:
+
+   ```
+   R0 capability inventory   (knowledge/progression.json, skills/gameplay/**,
+            |                 circuits/*.json — the only source of truth)
+            v
+   GET /capabilities                      <-- today
+            |
+            v
+   an adapter, if a consumer appears
+            |
+            v
+   MCP / another protocol                 <-- non-goal until then
+   ```
+
+   The trigger to write that adapter is a **second consumer**, not a date.
+
+3. **The third limit is a deploy state, not a defect.** The code is in the image,
+   but the process running in `hermes-jev-bedrock:/app` predates it. After the
+   container restart the entire live check is:
+
+   ```
+   GET /capabilities  ->  200
+                       ->  the expected keys (CAPABILITY_CONTRACT_KEYS)
+                       ->  counts identical to `npm run capabilities:check`
+                           on the same commit
+   ```
+
+   Nothing more. A mismatch means the restart did not pick up the commit, not that
+   the contract is wrong. The same restart is what brings the M11 ore alert (the bot
+   saying in chat that it saw an ore) live.
+
+## 11. Sources
 
 - `docs/raw/roadmap_reasoning_avanzato.md` (superseded draft A)
 - `docs/raw/clarification_missing_information_phase.md` (superseded draft B)

@@ -420,6 +420,30 @@ a projection that is *derived* and *never written*.
   starts its HTTP server only after the bot connects, so no offline test can reach
   `GET /capabilities`; what the tests cover is exactly what the route returns.
 
+### Closed is not one state
+
+A milestone can be **implemented**, **tested**, **wired**, **deployed** and
+**consumed**, and here those are five different things. R0–R7 are implemented,
+tested and wired; the last two states are not true yet. The raw roadmap closes with
+§10 *Known limitations and operational notes*, which keeps the full list and the
+five-state definition; in short:
+
+| State | R0–R6 | R7 |
+|---|---|---|
+| implemented | yes | yes |
+| tested | yes (`node --test tests/*.test.mjs`) | yes (6 contract cases) |
+| wired | yes (controller, harness, routes) | yes (`GET /capabilities`, the CI job, `pre-push`) |
+| deployed | the running container predates the newest commits | no: the route exists only after a restart |
+| consumed | by the controller itself | by nothing but its own tests |
+
+Three limits, stated so they are not read as defects: the route has **no offline
+end-to-end test** (the harness binds HTTP only after the bot connects, and a fake
+server would test the fake); the contract has **no real consumer** (the trigger for
+the future adapter is a second consumer, not a date); and the deploy is a **state,
+not a bug** — after the restart the whole live check is `GET /capabilities` → 200 →
+the expected keys → counts equal to `npm run capabilities:check` on the same commit.
+The same restart brings the M11 ore alert live.
+
 ## Real capability surface (the R0 input)
 
 | Layer | Artifact | Count (07/10/2026, from the R0 inventory) |
