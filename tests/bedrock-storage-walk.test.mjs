@@ -97,7 +97,7 @@ test('an exhausted budget is still a movement timeout, with its detail', async (
   );
 });
 
-test('a refused storage walk writes where it stopped into storage_open_failure', async () => {
+test('a refused storage walk writes where it stopped, and does not hide the container', async () => {
   const a = adapter();
   const events = [];
   a.onLog = entry => events.push(entry);
@@ -108,11 +108,31 @@ test('a refused storage walk writes where it stopped into storage_open_failure',
   };
   const target = { name: 'chest', position: { x: 90, y: 72, z: 160 } };
   await assert.rejects(a._ensureStorageOpen(target), /movement timeout/);
-  const failure = events.find(event => event.type === 'storage_open_failure');
-  assert.ok(failure, 'il fallimento si registra');
+  const failure = events.find(event => event.type === 'storage_approach_failure');
+  assert.ok(failure, `il fallimento del cammino si registra: ${events.map(e => e.type).join(', ')}`);
   assert.equal(failure.block, 'chest');
   assert.equal(failure.details.position.x, 0, 'il payload dice dove il bot si è fermato');
   assert.equal(failure.details.progressed, false);
+  // 08/10/2026: un `movement timeout` non è una memoria sbagliata — metteva il
+  // baule in cooldown per dieci minuti (`container_read_skipped` 17 volte nel
+  // run della spedizione) mentre il cammino del tentativo dopo poteva riuscire.
+  assert.equal(a._inOpenFailureCooldown(target.position), false, 'il baule resta offribile');
+});
+
+test('the sightline does not call the target block itself an obstruction', () => {
+  const a = adapter();
+  a.position = { x: 0.5, y: 65.62, z: 0.5 };
+  // Live 08/10/2026: il payload diceva `["air","chest!","chest!"]` su un baule a
+  // 1,8 blocchi e la lettura si ri-avvicinava a 1,5 per un muro che non c'era.
+  a.world.blockAt = cell => (cell.x >= 2 ? { name: 'chest' } : { name: 'air' });
+  const target = { x: 2, y: 65, z: 0 };
+  const clear = a._sightlineTo({ x: 2.5, y: 65.5, z: 0.5 }, target);
+  assert.ok(clear.includes('chest'), `il baule si vede: ${clear.join(',')}`);
+  assert.ok(!clear.some(sample => sample.endsWith('!')), `il bersaglio solido non è un muro: ${clear.join(',')}`);
+  // Un muro *prima* del baule resta un'ostruzione.
+  a.world.blockAt = cell => (cell.x >= 2 ? { name: 'chest' } : cell.x >= 1 ? { name: 'oak_planks' } : { name: 'air' });
+  const blocked = a._sightlineTo({ x: 2.5, y: 65.5, z: 0.5 }, target);
+  assert.ok(blocked.some(sample => sample.endsWith('!')), `un muro davanti resta segnalato: ${blocked.join(',')}`);
 });
 
 test('a refused action carries the walk detail in its result', async () => {

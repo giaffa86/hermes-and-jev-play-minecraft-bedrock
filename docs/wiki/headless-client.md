@@ -239,6 +239,19 @@ Item movement, crafting and smelting are `item_stack_request` transactions
   `/act` and `storage_open_failure` through `error.details.attempts`. The read's own walk
   budget now obeys the action budget (`min(STORAGE_READ_WALK_MS, time left)`), so the four
   extra seconds per chest cannot push a read past `STORAGE_READ_BUDGET_MS`.
+- **The prepared click is verified live** (08/10/2026, [row 47.76](verification.md)). The rebuilt
+  harness read **8 of 8 containers in 18.4 s** on the first hand-driven `read_container`, against
+  1507.8 s for 11 successful reads in the expedition of the same day, and the probe exposed three
+  further holes that are now closed: the sampled sightline called the **target block itself** an
+  obstruction (`["air","chest!","chest!"]` on a chest 1.8 blocks away), so
+  `_sightlineTo(point, target)` names the target without the `!`; the read's walk ceiling rose from
+  15 s to 30 s, because three of six attempts died `movement timeout` with `progressed: true` on
+  21–23-node paths (still closed by `min(ceiling, time left)` and the 90 s budget); and a failed
+  **walk** no longer sends the container into the ten-minute cooldown that hides it from
+  `/options` — it logs `storage_approach_failure` instead, while a click that fails still cools
+  down. The read budget now counts attempts rather than successes, so a read where nothing opens
+  stops on time. The probe's four reads came back 8/8 each from 0 to 35 blocks away, with no
+  `storage_open_failure`, no `container_read_failed` and no `container_read_skipped`.
 - **The eight `take_*` slots are ranked by what the trip kit is missing too.** A plan whose
   targets fill the list (`take_diamond ×2`, `take_copper_ingot ×2`, `take_golden_leggings
   ×2`, …) used to hide `take_torch`/`take_coal` completely, so a chest could be open with

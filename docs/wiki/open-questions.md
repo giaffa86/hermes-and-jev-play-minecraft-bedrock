@@ -1685,10 +1685,16 @@ pinned by a test that fails without its edit ([verification](verification.md)
   walks to radius 2 and closes to 1.5 on an obstructed sightline, an empty hand is filled
   from the second attempt, every attempt is logged with distance/face/runtime id/`blockAt`/
   sightline and the payload reaches `/act`, and the read's walk budget cannot exceed the
-  action budget. **Still open**: the live round — the rebuild on VM 100 was not made in
-  that session, so none of the four causes is proven to be the one that cost those 70
-  minutes. The next live failure has to be read from `container_open_failed.attempts`,
-  which is exactly the field the 08/10 artifact did not have.
+  action budget. **The live round is done** (08/10/2026, [row 47.76](verification.md)): the
+  rebuilt harness read 8 of 8 containers in 18.4 s on the first `read_container`, four reads
+  in a row at 8/8 from 0 to 35 blocks, with zero `storage_open_failure`,
+  `container_read_failed` and `container_read_skipped`. The probe then exposed three more
+  holes, now closed: the sightline called the target block itself an obstruction, the 15 s
+  walk ceiling was too tight for a village, and a failed walk entered the ten-minute cooldown
+  that hides a chest. **Still open**: what the 70 minutes were made of is not *proven* — the
+  08/10 artifact has no per-attempt payload, so none of the four causes of row 47.75 can be
+  singled out — and `container_content_timeout` (a window that opens late) is now the most
+  frequent refusal of a read, which is what the next round has to watch.
 - **Still open, and not addressed by the fix**: the `mount_trader_llama` →
   `vehicle_unreachable` loop and the `deposit_unverified` of the same run are untouched;
   the trip-kit take ranking changes which keys are offered, not whether the planner

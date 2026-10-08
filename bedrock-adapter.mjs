@@ -213,10 +213,11 @@ const STORAGE_READ_BUDGET_MS = 90000;
 // esplicito tiene il timeout generoso.
 // Live 08/10/2026: 8 s non bastavano a coprire 1-2 blocchi in un villaggio con
 // portici e animali, e la lettura non riusciva nemmeno a *vedere* i bauli. Il
-// tetto per blocco sale a 15 s, ma la somma resta chiusa dal budget della lettura
-// (`_readContainers` passa `min(tetto, tempo rimasto)`), quindi il watchdog dei
-// 180 s resta fuori portata.
-const STORAGE_READ_WALK_MS = 15000;
+// tetto per blocco sale a 30 s — il probe dal vivo ha poi mostrato tre cammini da
+// 5,8-10,8 blocchi (21-23 nodi) scadere a 15 s *mentre avanzavano* — ma la somma
+// resta chiusa dal budget della lettura (`_readContainers` passa `min(tetto,
+// tempo rimasto)`), quindi il watchdog dei 180 s resta fuori portata.
+const STORAGE_READ_WALK_MS = 30000;
 // Un `take_*` su un contenitore *ricordato* può essere a venti e più blocchi: il
 // cammino verso la cassa del raccolto a (92,73,165) è durato 31 s per 21 blocchi
 // (live 04/10/2026, il bot è arrivato a tre blocchi dal baule quando il default di
@@ -8004,15 +8005,30 @@ export class BedrockAdapter {
       this._storageOpenFailures.delete(key);
       return result;
     } catch (error) {
-      this._storageOpenFailures.set(key, { at: Date.now(), error: error.message });
-      this.log('storage_open_failure', {
-        block: target.name, position: target.position, error: error.message,
-        distance: Math.round(this._pointDistance(target.position) * 10) / 10,
-        // Il dettaglio del fallimento di camminata (`from`, `position`, `pathNodes`,
-        // `reachedWaypoints`, `progressed`) è già calcolato da `_moveTo`: senza
-        // questo campo l'artefatto dice "movement timeout" e non *dove*.
-        ...(error.details ? { details: error.details } : {}),
-      });
+      // Un cammino fallito non dice nulla del contenitore: il cooldown da dieci
+      // minuti esiste perché una *memoria sbagliata* (il baule non è più lì)
+      // smetta di costare un tentativo a ogni lettura. Live 08/10/2026 un
+      // `movement timeout` verso i bauli della missione li nascondeva per dieci
+      // minuti (`container_read_skipped` 17 volte) e li toglieva dalle opzioni,
+      // mentre il cammino del tentativo dopo poteva riuscire.
+      const approachFailure = /^(movement timeout|path_failed|stuck|no_progress|storage_unreachable)$|^no reachable /.test(error.message);
+      if (approachFailure) {
+        this.log('storage_approach_failure', {
+          block: target.name, position: target.position, error: error.message,
+          distance: Math.round(this._pointDistance(target.position) * 10) / 10,
+          ...(error.details ? { details: error.details } : {}),
+        });
+      } else {
+        this._storageOpenFailures.set(key, { at: Date.now(), error: error.message });
+        this.log('storage_open_failure', {
+          block: target.name, position: target.position, error: error.message,
+          distance: Math.round(this._pointDistance(target.position) * 10) / 10,
+          // Il dettaglio del fallimento di camminata (`from`, `position`, `pathNodes`,
+          // `reachedWaypoints`, `progressed`) è già calcolato da `_moveTo`: senza
+          // questo campo l'artefatto dice "movement timeout" e non *dove*.
+          ...(error.details ? { details: error.details } : {}),
+        });
+      }
       throw error;
     }
   }
@@ -8046,18 +8062,24 @@ export class BedrockAdapter {
   // Linea di vista campionata sui blocchi (come la sonda delle entità): dice se
   // il click è stato scartato perché c'era un muro in mezzo e non perché la
   // transazione era sbagliata.
-  _sightlineTo (point) {
+  _sightlineTo (point, target = null) {
     const eye = this.position;
     if (!eye || !point) return [];
     const out = [];
     for (let i = 1; i <= 3; i++) {
       const t = i / 4;
-      const block = this.world.blockAt({
+      const cell = {
         x: Math.floor(eye.x + (point.x - eye.x) * t),
         y: Math.floor(eye.y + (point.y - eye.y) * t),
         z: Math.floor(eye.z + (point.z - eye.z) * t),
-      });
-      out.push(block ? `${block.name}${this._passable(block) ? '' : '!'}` : 'null');
+      };
+      const block = this.world.blockAt(cell);
+      // Il blocco bersaglio è solido: marcarlo come ostruzione direbbe che la
+      // linea di vista è *sempre* bloccata (live 08/10/2026 il payload diceva
+      // `sightline: ["air","chest!","chest!"]` su un baule a 1,8 blocchi, e la
+      // lettura si ri-avvicinava a 1,5 per un muro che non c'era).
+      const isTarget = !!target && cell.x === target.x && cell.y === target.y && cell.z === target.z;
+      out.push(block ? `${block.name}${isTarget || this._passable(block) ? '' : '!'}` : 'null');
     }
     return out;
   }
@@ -8101,7 +8123,7 @@ export class BedrockAdapter {
         runtimeId: runtimeId ?? null,
         blockAt: this.world.blockAt(target.position)?.name ?? null,
         held: this._slotItemName((this.inventorySlots ?? [])[this.selectedHotbar]) ?? null,
-        sightline: this._sightlineTo(centre),
+        sightline: this._sightlineTo(centre, target.position),
         openContainer: this._openContainer?.id ?? null,
       };
       if (!known.ok) {
@@ -8182,13 +8204,17 @@ export class BedrockAdapter {
     const batch = blocks.slice(0, STORAGE_READ_LIMIT);
     const read = [];
     let budgetExceeded = false;
+    let attempted = 0;
     for (const block of batch) {
       // Il budget della lettura vale anche per il cammino: prima il tetto per
       // blocco si sommava agli altri, quindi otto bauli potevano superare di molto
       // il budget e sfiorare il watchdog dei 180 s. Almeno un contenitore viene
-      // letto, poi il budget decide se continuare.
+      // *tentato* — anche un fallimento costa un cammino — e poi il budget decide:
+      // con la guardia su `read.length` una lettura in cui nessun baule si apriva
+      // proseguiva oltre il budget, un blocco alla volta.
       const remaining = budgetMs - (Date.now() - started);
-      if (read.length && remaining <= 0) { budgetExceeded = true; break; }
+      if (attempted > 0 && remaining <= 0) { budgetExceeded = true; break; }
+      attempted++;
       try {
         await this._ensureStorageOpen(block, { walkTimeoutMs: Math.max(1000, Math.min(STORAGE_READ_WALK_MS, remaining)) });
         const contents = this._storageContentsFromSlots(this._openContainerSlots);

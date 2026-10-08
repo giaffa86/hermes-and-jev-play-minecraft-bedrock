@@ -644,9 +644,11 @@ test('a slow read stops on its budget instead of running to the action timeout',
   assert.equal(result.read, opened);
 });
 
-// Live 08/10/2026: il tetto per blocco è salito a 15 s (8 s non coprivano 1-2
-// blocchi in un villaggio con portici e animali) e la somma dei cammini è chiusa
-// dal budget della lettura: `_readContainers` passa `min(tetto, tempo rimasto)`.
+// Live 08/10/2026: il tetto per blocco è salito a 30 s (8 s non coprivano 1-2
+// blocchi in un villaggio con portici e animali, e il probe dal vivo ha mostrato
+// tre cammini da 5,8-10,8 blocchi scadere a 15 s mentre avanzavano) e la somma dei
+// cammini è chiusa dal budget della lettura: `_readContainers` passa `min(tetto,
+// tempo rimasto)`.
 test('the read walks with a short timeout, an explicit take keeps the generous one', async () => {
   const adapter = storageAdapter();
   const chest = { name: 'chest', position: { x: 20, y: 64, z: 0 }, distance: 20 };
@@ -659,7 +661,7 @@ test('the read walks with a short timeout, an explicit take keeps the generous o
   adapter._waitForContainerContent = async () => false;
   await adapter._readContainers().catch(() => {});
   assert.equal(walks.length, 1);
-  assert.equal(walks[0].timeoutMs, 15000, 'nella lettura il cammino è corto');
+  assert.equal(walks[0].timeoutMs, 30000, 'nella lettura il cammino ha lo stesso tetto del take');
   // Un `take_*` esplicito non cambia il timeout generoso.
   await adapter._ensureStorageOpen(chest).catch(() => {});
   assert.equal(walks[1].timeoutMs, 30000, 'il take mantiene il default');
@@ -681,6 +683,45 @@ test('a read never spends more walk time than the budget it has left', async () 
   await adapter._readContainers({ budgetMs: 5000 }).catch(() => {});
   assert.equal(walks.length, 1);
   assert.ok(walks[0].timeoutMs <= 5000 && walks[0].timeoutMs >= 1000, `il budget chiude il cammino: ${walks[0].timeoutMs}`);
+});
+
+// Con la guardia su `read.length` una lettura in cui *nessun* baule si apriva
+// proseguiva oltre il budget, un blocco alla volta (un fallimento costa comunque
+// un cammino): la guardia conta i tentativi, non le letture riuscite.
+test('a read where nothing opens still stops on its budget', async () => {
+  const adapter = storageAdapter();
+  const chests = [];
+  for (let i = 0; i < 8; i++) chests.push({ name: 'chest', position: { x: i, y: 64, z: 0 }, distance: i });
+  adapter.world.findBlocks = (name) => (name === 'chest' ? [...chests] : []);
+  adapter._reachabilityUsable = () => false;
+  let attempts = 0;
+  adapter._ensureStorageOpen = async () => { attempts++; await new Promise(r => setTimeout(r, 25)); throw new Error('movement timeout'); };
+  const result = await adapter._readContainers({ budgetMs: 40 });
+  assert.equal(result.ok, false, 'senza nemmeno un baule letto la lettura è un fallimento');
+  assert.equal(result.error, 'container_read_failed');
+  assert.ok(attempts < 8, `non si tenta tutta la parete con il budget: ${attempts}`);
+});
+
+// 08/10/2026: un cammino fallito non è una memoria sbagliata. Il cooldown da
+// dieci minuti esiste per un baule che non c'è più; applicato a un
+// `movement timeout` nascondeva i bauli della missione a ogni cammino scaduto
+// (`container_read_skipped` 17 volte nel run della spedizione).
+test('a failed walk does not send the container into the open-failure cooldown', async () => {
+  const adapter = storageAdapter();
+  const events = [];
+  adapter.log = (type, data) => events.push([type, data]);
+  const target = { name: 'chest', position: { x: 90, y: 73, z: 160 } };
+  adapter._openStorageWindow = async () => {
+    const error = new Error('movement timeout');
+    error.details = { from: { x: 0, y: 64, z: 0 }, position: { x: 0, y: 64, z: 1 }, pathNodes: 20, reachedWaypoints: 4, progressed: true };
+    throw error;
+  };
+  await assert.rejects(adapter._ensureStorageOpen(target), /movement timeout/);
+  assert.ok(events.some(e => e[0] === 'storage_approach_failure'), `il cammino fallito si registra: ${events.map(e => e[0]).join(', ')}`);
+  assert.equal(adapter._inOpenFailureCooldown(target.position), false, 'il baule resta offribile');
+  adapter._openStorageWindow = async () => { throw new Error('container_open_timeout'); };
+  await assert.rejects(adapter._ensureStorageOpen(target), /container_open_timeout/);
+  assert.equal(adapter._inOpenFailureCooldown(target.position), true, 'un click che non apre resta un fallimento da cooldown');
 });
 
 // Live 04/10/2026: le opzioni `take_*` derivano dalla memoria durevole dei
