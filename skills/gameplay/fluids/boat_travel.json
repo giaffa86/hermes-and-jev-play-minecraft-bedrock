@@ -3,8 +3,8 @@
   "description": "Craft and ride a boat across open water.",
   "category": "fluids",
   "preconditions": { "inventoryTagGte": { "boats": 1 } },
-  "success": { "movedAtLeast": 8 },
+  "success": { "ridingDistanceAtLeast": 8 },
   "intents": ["travel", "craft", "fluid"],
   "planTargets": { "boat": 1 },
-  "notes": "`movedAtLeast` dice che il bot è finito altrove in barca, non che ha remato: la verifica del montaggio resta quella dell'azione (`mount_boat` confermato dal server). Serve acqua aperta (`boatVerdict`: 3 celle entro 16 blocchi) e una barca in inventario: nella stanza base non c'è né l'una né l'altra, quindi la skill resta non esercitabile live (limite ambientale, non di codice)."
+  "notes": "R8: il criterio è la distanza percorsa *a bordo* di una barca (`observe().riding.distance`, un odometro che l'adapter muove solo mentre il bot è su una barca): un `movedAtLeast` misurava anche una camminata a piedi fino alla meta, ed è così che l'08/10/2026 il milestone si è chiuso senza una barca. Non è ancora una prova di aver *remato* (una barca trascinata dalla corrente conta), ma è l'evidenza del tratto in barca; il montaggio confermato dal server resta il controllo dell'azione `mount_boat`. La precondizione (una barca in inventario) è controllata dal gate del segmento e ripetuta da `verifySkill`, che senza di essa dichiara `blocked` e non `success`."
 }

@@ -1344,3 +1344,45 @@ test('M1: enterWater non si tuffa in una colonna che sta in fondo a un dirupo', 
   assert.equal(report.headInWater, true);
   assert.equal(nodes.length, 1);
 });
+
+// R8: `boat_travel` non si verifica più con «la posizione è cambiata» ma con i
+// metri percorsi **a bordo**: l'odometro è monotono, conta una barca (non un
+// cavallo o un maiale) e ignora il movimento verticale.
+test('R8: l\'odometro conta i metri a bordo di una barca, e solo quelli', () => {
+  const { adapter } = bucketAdapter({ cells: { '3,71,0': water } });
+  const step = (from, to) => adapter._trackRidingDistance(from, to);
+
+  // A piedi: nessun metro, e la vista lo dice.
+  step({ x: 0, y: 71, z: 0 }, { x: 10, y: 71, z: 0 });
+  assert.equal(adapter.ridingDistance, 0, 'camminare non è navigare');
+  assert.deepEqual(adapter.observe().riding, { mounted: false, entityId: null, boat: false, distance: 0 });
+
+  // Montato su un cavallo: nemmeno.
+  adapter.riding = { riddenEntityId: 9, at: Date.now() };
+  adapter.entities.set('9', { kind: 'mob', type: 'horse', position: { x: 0, y: 71, z: 0 }, runtimeId: 9 });
+  step({ x: 0, y: 71, z: 0 }, { x: 10, y: 71, z: 0 });
+  assert.equal(adapter.ridingDistance, 0, 'solo la barca conta');
+  assert.deepEqual(adapter.observe().riding, { mounted: true, entityId: 9, boat: false, distance: 0 });
+
+  // A bordo di una barca: conta il tratto in x/z, non la discesa nel fiume.
+  adapter.riding = { riddenEntityId: 7, at: Date.now() };
+  adapter.entities.set('7', { kind: 'mob', type: 'oak_boat', position: { x: 0, y: 71, z: 0 }, runtimeId: 7 });
+  step({ x: 0, y: 71, z: 0 }, { x: 3, y: 71, z: 4 });   // 5 metri
+  step({ x: 3, y: 60, z: 4 }, { x: 3, y: 62, z: 4 });   // verticale: 0 metri
+  step({ x: 3, y: 62, z: 4 }, { x: 3, y: 62, z: 14 });  // 10 metri
+  assert.deepEqual(adapter.observe().riding, { mounted: true, entityId: 7, boat: true, distance: 15 });
+
+  // Il montaggio può arrivare con l'id numerico o stringa a seconda del
+  // percorso: la vista della barca li accetta entrambi.
+  adapter.riding = { riddenEntityId: '7', at: Date.now() };
+  assert.equal(adapter.observe().riding.boat, true, 'l\'id numerico e quello stringa sono la stessa barca');
+
+  // La distanza è monotona: un ultimo tratto a piedi non la riduce né la inventa.
+  adapter.riding = null;
+  step({ x: 3, y: 62, z: 14 }, { x: 40, y: 62, z: 40 });
+  assert.equal(adapter.observe().riding.distance, 15);
+  // E non si azzera con un respawn: i segmenti la leggono come differenza.
+  adapter.ridingDistance = 42;
+  adapter._forgetDroppedInventory('death');
+  assert.equal(adapter.observe().riding.distance, 42, 'il respawn non cancella i metri già percorsi a bordo');
+});

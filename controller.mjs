@@ -54,7 +54,7 @@ import {failureRecord, failureDisposition, activeStepId, siblingKeys, reviseStep
 import {optionIntents} from './survival/intents.mjs';
 import {systemOneDecideWithRetry} from './system-one.mjs';
 import {
-  evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
+  evaluateCriteria, evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
   resolveMilestone, resolveActiveSkill, skillPreferredIntents, verifySkill, buildSkillRecord, appendSkillRecord,
   chooseNeedAction,
   contractFromEnv, contractStop, hasContractConfig,
@@ -1790,6 +1790,13 @@ const planIsOpen = (plan) => !plan.follow && !plan.need && !plan.recover && !pla
   !Object.keys(plan.targets || {}).length && !Object.keys(TARGETS).length &&
   !plan.waypoint && !WAYPOINT;
 
+// R8: i target del piano ancora da soddisfare. Sono la preparazione possibile
+// di un segmento bloccato: finche' ce n'e' uno la skill puo' ancora guadagnarsi
+// il prerequisito, quando non ne resta nessuno il blocco e' definitivo.
+const unmetTargets = (targets, obs) => Object.entries(targets ?? {})
+  .filter(([item, want]) => (obs?.inventory?.[item] || 0) < want)
+  .map(([item, want]) => ({item, want, have: obs?.inventory?.[item] || 0}));
+
 // Rivalutazione di un goal sospeso prima di rimetterlo in coda: lo stesso
 // predicato di successo del loop, sulla osservazione attuale. Il resume non
 // riprende un'azione a metà: se il criterio è già soddisfatto (l'ordine umano
@@ -1934,6 +1941,15 @@ let blindSteps = 0;             // passi consecutivi con harness cieco (sessione
 // veniva solo registrata in `wait_only`.
 const HARNESS_BLIND_MAX_STEPS = Number(process.env.HARNESS_BLIND_MAX_STEPS ?? 6);
 const HARNESS_BLIND_WAIT_MS = Number(process.env.HARNESS_BLIND_WAIT_MS ?? 5000);
+// R8: per quanti passi un segmento puo' restare bloccato (prerequisito mai
+// comparso) prima che il goal si chiuda come `goal_blocked`. Durante questi
+// passi la skill non si esegue e resta solo la preparazione: se il prerequisito
+// arriva (una barca fabbricata) il blocco cade da solo.
+const SKILL_BLOCKED_MAX_STEPS = Number(process.env.SKILL_BLOCKED_MAX_STEPS ?? 6);
+// R8: le chiavi che *eseguono* il segmento bloccato: la meta del piano. Sono
+// fuori dalle opzioni finche' il prerequisito manca; le chiavi di preparazione
+// (fabbricare, prendere, cercare) restano offerte.
+const BLOCKED_SKILL_KEYS = ['goto_waypoint', 'sneak_to'];
 // Combattere a vita bassa e senza arma e' una condizione di morte: la scala
 // deterministica non lo sceglie (07/10/2026: `SURVIVAL FIGHT attack_skeleton` a
 // hp 4 con l'inventario vuoto, poi morte). Il modello resta libero di scegliere
@@ -2049,10 +2065,58 @@ for (let step = 1; step <= maxSteps; step++) {
   // --- verifica deterministica della skill attiva -----------------------------
   let skillStatus = null;
   let replanReason = null;
+  // R8: il prerequisito del segmento. Finche' manca la skill non si esegue
+  // (l'azione che la esegue esce dalle opzioni) e, se non e' mai comparso, il
+  // goal si chiude esplicitamente dopo `SKILL_BLOCKED_MAX_STEPS` passi: un
+  // prerequisito assente e' un blocco, non un «in corso» che consuma il budget.
+  // La preparazione (`targets` del piano) resta possibile: se il prerequisito
+  // arriva durante il segmento il blocco cade — e' la distinzione fra
+  // preparazione ed esecuzione che `verifySkill` ripete sul verdetto.
+  let segmentBlocked = false;
   if (skillRun) {
     skillRun.sawNight = skillRun.sawNight || obs.time?.night === true;
+    const pre = skillRun.def?.preconditions ? evaluateCriteria(skillRun.def.preconditions, obs) : {ok: true};
+    skillRun.preconditionsMet = pre.ok === true;
+    if (pre.ok) {
+      if (!skillRun.preconditionsEverMet) log('skill_unblocked', {step, skill: skillRun.id, milestone: skillRun.milestone ?? null});
+      skillRun.preconditionsEverMet = true;
+    } else if (!skillRun.preconditionsEverMet) {
+      segmentBlocked = true;
+      skillRun.blockedSteps = (skillRun.blockedSteps ?? 0) + 1;
+      skillRun.preconditionReason = pre.reason ?? null;
+      if (!skillRun.blockedLogged) {
+        skillRun.blockedLogged = true;
+        log('skill_blocked', {
+          step, skill: skillRun.id, milestone: skillRun.milestone ?? null,
+          reason: 'preconditions_unmet', precondition: pre.reason ?? null,
+          preparing: unmetTargets(plan.targets, obs), maxSteps: SKILL_BLOCKED_MAX_STEPS,
+        });
+        console.log(`SKILL BLOCKED ${skillRun.id}: prerequisito mancante (${pre.reason ?? 'preconditions'})`);
+      }
+      if (skillRun.blockedSteps > SKILL_BLOCKED_MAX_STEPS) {
+        failureReason = `skill_preconditions_unmet:${skillRun.id}`;
+        console.log(`GOAL BLOCKED after ${step - 1} actions: ${skillRun.id} (${skillRun.preconditionReason ?? 'preconditions_unmet'})`);
+        log('goal_blocked', {
+          steps: step - 1, totalCost, skill: skillRun.id, milestone: skillRun.milestone ?? null,
+          reason: 'preconditions_unmet', precondition: skillRun.preconditionReason ?? null,
+          blockedSteps: skillRun.blockedSteps, curriculum: CURRICULUM ?? null,
+          completedMilestones: [...completedMilestones],
+        });
+        planTrace.flush({endedBy: 'goal_blocked', step: step - 1});
+        break;
+      }
+    }
     skillStatus = verifySkill(skillRun.def, skillRun.startObservation, obs, {context: {sawNight: skillRun.sawNight}});
-    if (skillStatus.status === 'success' || skillStatus.status === 'failed') {
+    if (skillStatus.status === 'blocked') {
+      // Il verdetto protegge gli altri percorsi d'ingresso: prerequisito assente
+      // all'inizio **e** alla fine del segmento -> non e' successo (il criterio
+      // l'ha soddisfatto qualcos'altro). Il gate qui sopra lo ha gia' dichiarato;
+      // nel ledger resta la conferma del verifier, una volta per segmento.
+      if (!skillRun.verdictLogged) {
+        skillRun.verdictLogged = true;
+        log('skill_unverifiable', {step, skill: skillRun.id, reason: skillStatus.reason, precondition: skillStatus.evidence?.precondition ?? null});
+      }
+    } else if (skillStatus.status === 'success' || skillStatus.status === 'failed') {
       const record = buildSkillRecord({
         skill: skillRun.id, status: skillStatus.status, actions: skillRun.actions,
         startedAt: skillRun.startedAt, failureReason: skillStatus.reason,
@@ -2204,6 +2268,10 @@ for (let step = 1; step <= maxSteps; step++) {
   // resta l'unico proprietario della validità.
   const excludeKeys = [];
   if (lastFailedKey) excludeKeys.push({key: lastFailedKey, reason: 'failed'});
+  // R8: un segmento bloccato non esegue la sua skill. Il waypoint e' la meta
+  // della skill — camminarci a piedi era il falso «fatto» dell'08/10 — e resta
+  // fuori dalle opzioni finche' il prerequisito manca. La preparazione no.
+  if (segmentBlocked) for (const key of BLOCKED_SKILL_KEYS) excludeKeys.push({key, reason: 'skill_preconditions_unmet'});
   // R4: la chiave che **questo passo** ha visto rifiutare con un approccio
   // bloccato. Resta fuori dalle opzioni finche' il passo e' aperto, cosi' la
   // decisione sceglie l'alternativa invece di ripetere la stessa azione.

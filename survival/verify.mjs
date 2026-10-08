@@ -43,6 +43,17 @@ function positionOf (observation) {
   return { x, y, z };
 }
 
+// R8: odometro a bordo. L'adapter conta i metri percorsi mentre il bot è
+// montato su una barca (`observe().riding.distance`); il criterio ne legge la
+// differenza fra inizio e fine del segmento. `null` = non misurabile (adapter
+// vecchio, osservazione senza la vista): il criterio fallisce chiuso, non
+// indovina.
+function ridingDistanceOf (observation) {
+  const view = observationOf(observation).riding;
+  const distance = view?.distance ?? view?.ridingDistance ?? null;
+  return Number.isFinite(distance) ? distance : null;
+}
+
 function round2 (value) {
   return Math.round(value * 100) / 100;
 }
@@ -62,7 +73,13 @@ export function evaluateCriteria (criteria, observation, { before = null, contex
   const evidence = {};
   const fail = (reason) => ({ ok: false, evidence, reason });
 
-  if (criteria == null) return { ok: true, evidence };
+  // Un oggetto vuoto non è un criterio: «nessun prerequisito» e «nessun criterio
+  // di successo» sono la stessa cosa di `null`. Senza questo caso `escape_lava`
+  // (`"preconditions": {}`) risultava inapplicabile al resolver e bloccata al
+  // gate R8, perché il ciclo sotto non riconosceva nessuna chiave.
+  if (criteria == null || (typeof criteria === 'object' && !Array.isArray(criteria) && Object.keys(criteria).length === 0)) {
+    return { ok: true, evidence };
+  }
 
   if (Array.isArray(criteria)) {
     criteria = { allOf: criteria };
@@ -262,6 +279,18 @@ export function evaluateCriteria (criteria, observation, { before = null, contex
       ? { ok: true, evidence }
       : fail(`moved ${round2(moved)} < ${criteria.movedAtLeast}`);
   }
+  if ('ridingDistanceAtLeast' in criteria) {
+    const from = ridingDistanceOf(before);
+    const to = ridingDistanceOf(after);
+    evidence.ridingDistanceBefore = from;
+    evidence.ridingDistanceAfter = to;
+    if (from == null || to == null) return fail('riding distance unknown');
+    const rode = to - from;
+    evidence.ridingDistance = round2(rode);
+    return rode >= criteria.ridingDistanceAtLeast
+      ? { ok: true, evidence }
+      : fail(`rode ${round2(rode)} < ${criteria.ridingDistanceAtLeast}`);
+  }
   if ('waterBreathing' in criteria) {
     const view = after.fluids?.waterBreathing;
     // La vista può essere il booleano della percezione o l'oggetto dell'adapter
@@ -349,6 +378,24 @@ export function verifySkill (skill, before, after, { context = {} } = {}) {
   if (after.dead === true && !skill?.allowDeath) {
     return { status: 'failed', skill: id, evidence: { dead: true }, reason: 'died' };
   }
+  // R8: un prerequisito assente non diventa «fatto». Se le precondizioni
+  // mancavano all'inizio del segmento **e** mancano ancora adesso, il criterio di
+  // successo è stato soddisfatto da qualcos'altro (nella stanza base il
+  // `movedAtLeast` di `boat_travel` lo soddisfaceva camminando a piedi): il
+  // verdetto è `blocked`, non `success`. Se invece il prerequisito è comparso
+  // durante il segmento la preparazione è legittima e il verdetto normale vale;
+  // così pure se c'era all'inizio ed è stato consumato dall'azione (secchio,
+  // semi, acciarino). Senza osservazione iniziale il controllo non si applica:
+  // la protezione serve ai percorsi che hanno un `before`. Il blocco si applica
+  // **solo** al successo: un segmento in corso resta `running`.
+  let preconditionBlocked = null;
+  if (skill?.preconditions && before) {
+    const atStart = evaluateCriteria(skill.preconditions, before, { context });
+    if (!atStart.ok) {
+      const atEnd = evaluateCriteria(skill.preconditions, after, { before, context });
+      if (!atEnd.ok) preconditionBlocked = { evidence: atEnd.evidence, reason: atEnd.reason ?? null };
+    }
+  }
   if (skill?.failure) {
     const failure = evaluateCriteria(skill.failure, after, { before, context });
     Object.assign(evidence, failure.evidence);
@@ -357,7 +404,17 @@ export function verifySkill (skill, before, after, { context = {} } = {}) {
   if (skill?.success) {
     const success = evaluateCriteria(skill.success, after, { before, context });
     Object.assign(evidence, success.evidence);
-    if (success.ok) return { status: 'success', skill: id, evidence, reason: null };
+    if (success.ok) {
+      if (preconditionBlocked) {
+        return {
+          status: 'blocked',
+          skill: id,
+          evidence: {...evidence, preconditions: preconditionBlocked.evidence, precondition: preconditionBlocked.reason},
+          reason: 'preconditions_unmet',
+        };
+      }
+      return { status: 'success', skill: id, evidence, reason: null };
+    }
     return { status: 'running', skill: id, evidence, reason: success.reason };
   }
   // Una skill senza criteri non può essere verificata: non dichiarare successo.
@@ -374,7 +431,7 @@ export const CRITERIA_KEYS = [
   'dimension', 'nearbyBlock', 'bossDefeated', 'foodIncreased', 'healthIncreased', 'noHostileWithin',
   'threatDistanceIncreasedBy', 'nightSurvived', 'deathsAtLeast', 'itemPreserved',
   'inWater', 'notInLava', 'airAtLeast', 'waterBreathing',
-  'descendedAtLeast', 'climbedAtLeast', 'movedAtLeast',
+  'descendedAtLeast', 'climbedAtLeast', 'movedAtLeast', 'ridingDistanceAtLeast',
   'blockPoweredAt', 'circuitActive', 'circuitBuilt', 'structureBuilt',
   'allOf', 'anyOf',
 ];
@@ -412,7 +469,7 @@ export function validateCriteria (criteria, where = 'criteria') {
     if (key === 'nearbyBlock' && typeof value !== 'string' && (typeof value !== 'object' || !value?.name)) errors.push(`${where}.${key}: must be a block name or {name, within}`);
     if (key === 'bossDefeated' && value !== true) errors.push(`${where}.${key}: only true is verifiable (the boss bar cycle is a server signal, there is no static check for "not defeated")`);
     if (key === 'waterBreathing' && typeof value !== 'boolean') errors.push(`${where}.${key}: must be a boolean`);
-    if ((key === 'descendedAtLeast' || key === 'climbedAtLeast' || key === 'movedAtLeast')
+    if ((key === 'descendedAtLeast' || key === 'climbedAtLeast' || key === 'movedAtLeast' || key === 'ridingDistanceAtLeast')
       && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) {
       errors.push(`${where}.${key}: must be a positive number`);
     }

@@ -94,6 +94,7 @@ the boundary between the deterministic layer and the two LLM "systems".
                              WORLD
                                │
                                └──► re-observe → verifySkill → governor ──┐
+                                    (success | failed | running | blocked) │
                                                                           │
                                         (next step / next goal) ◄─────────┘
 ```
@@ -175,7 +176,23 @@ Cross-cutting, deterministic, at every step:
    used only to reorder/boost options that the harness already offers — never to
    invent a key.
 
-9. **Harness / world model** (`bedrock-harness.mjs` + `bedrock-adapter.mjs`)
+9. **R8 — the prerequisite gate and the verdict** (`controller.mjs` +
+   `survival/verify.mjs`). The segment's skill declares `preconditions`, and while
+   they have never been satisfied the keys that *perform* the segment
+   (`goto_waypoint`, `sneak_to`) leave `/options`; `skill_blocked` is logged once
+   with what is missing (`preparing: [{item, want, have}]` from the plan's own
+   targets), and after `SKILL_BLOCKED_MAX_STEPS` (default 6) blocked steps the goal
+   closes as `goal_blocked` — with `planTrace.flush({endedBy: 'goal_blocked'})` —
+   instead of spending the budget on attempts that cannot succeed. When the
+   prerequisite appears the gate lifts (`skill_unblocked`). The verifier repeats the
+   check as a belt for every other entry path: `verifySkill` answers **`blocked`**
+   (`reason: 'preconditions_unmet'`) instead of a `success` when the preconditions
+   fail on the segment's first observation *and* on the last, while a prerequisite
+   consumed by the action or acquired during the segment stays legitimate, and a
+   segment still in progress stays `running` (R8 was not on the roadmap: it answers
+   the live round of 08/10/2026, where `water_travel` closed on a walk).
+
+10. **Harness / world model** (`bedrock-harness.mjs` + `bedrock-adapter.mjs`)
    owns **validity**: from the current state it computes *only* the actions that
    are executable and useful right now and exposes them as `/options`. The models
    can only choose from that list; bad behaviour is fixed in the harness, not in
@@ -193,7 +210,7 @@ Cross-cutting, deterministic, at every step:
    bot is *connected*, and those two branches (plus the harness `busy` lock) still
    answer it.
 
-10. **System One — Jev** (`controller.mjs` → `jevDecide`, via the OpenRouter/TypeSafe
+11. **System One — Jev** (`controller.mjs` → `jevDecide`, via the OpenRouter/TypeSafe
    `/decisions` endpoint) chooses **one** bounded action per step from the
    options, with probabilities and confidence. `CONTROLLER=hermes` swaps this for
    a Hermes call with the same one-action constraint. A **transient** provider
@@ -204,7 +221,7 @@ Cross-cutting, deterministic, at every step:
    `timeoutMs` is the **total** budget — the chat router's 4 s stay 4 s, retries
    included — and the `decision` ledger line carries `attempts`/`retries`.
 
-11. **World** — the chosen action is executed; the new state feeds the next
+12. **World** — the chosen action is executed; the new state feeds the next
    iteration of the loop (re-observe → governor → verify → plan/decision).
 
 The **Survival Governor** (`survival/governor.mjs` + `knowledge/survival-rules.json`)

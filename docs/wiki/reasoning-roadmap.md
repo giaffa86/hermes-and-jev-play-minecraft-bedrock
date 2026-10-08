@@ -56,7 +56,7 @@ the Hermes call with a deterministic plan via `planFromMilestone`.
 
 ## Roadmap
 
-Namespaced `R0`…`R7` to avoid colliding with the repo's own M1–M12 chat milestones.
+Namespaced `R0`…`R8` to avoid colliding with the repo's own M1–M12 chat milestones.
 
 | Milestone | What | Status |
 |---|---|---|
@@ -68,6 +68,7 @@ Namespaced `R0`…`R7` to avoid colliding with the repo's own M1–M12 chat mile
 | **R5** Composite goals | `prepare_for_nether` as a DAG over existing milestones, expanded deterministically | **implemented** — a goal may name a **list** of milestones; `milestoneChain` returns the missing closure in dependency order and the plan carries it in `steps[]` |
 | **R6** Golden scenarios | Order + observation → expected plan/clarification/refusal, including the C17/C18 negative cases; freezes R1–R5 | **implemented** — nine scenarios in `tests/golden-scenarios.test.mjs`, driven against a scripted harness and asserted on the **R3 trace**; found and fixed a real bug (the `SIGTERM` handler died on a `ReferenceError`) |
 | **R7** Capability contract | R0's inventory as a **versioned, self-describing, consumer-validatable** contract (`capability-contract.mjs`), carried over the harness's existing HTTP boundary (`GET /capabilities`). MCP and any registry service stay non-goals: the contract is a read-only *projection*, never a second source of truth | **implemented** — `contractVersion` + `contentHash` + `valid`/`problems` + the frozen key set; `checkCapabilityContract` is the consumer's handshake; `npm run capabilities:check` is the offline gate, wired into **CI** (`.github/workflows/ci.yml`, mirrored in `.gitea/workflows/ci.yml`) and into `pre-push` |
+| **R8** The prerequisite gate | A segment neither executes nor is declared done on an absent prerequisite: the verifier can answer `blocked` (`preconditions_unmet`) instead of a false `success`, the controller takes the executing keys away and closes the goal after `SKILL_BLOCKED_MAX_STEPS`, and `boat_travel` proves navigation with a real aboard odometer (`ridingDistanceAtLeast`) instead of `movedAtLeast`. Not a planned milestone: it answers a defect the 08/10/2026 live run exposed | **implemented** — `survival/verify.mjs`, `bedrock-adapter.mjs`, `skills/gameplay/fluids/boat_travel.json`, `controller.mjs`; see [verification](verification.md) 47.74 |
 
 ### The plan shape (R1)
 
@@ -419,6 +420,55 @@ a projection that is *derived* and *never written*.
 - **The honest residual**: the route is wiring, checked by reading. The harness
   starts its HTTP server only after the bot connects, so no offline test can reach
   `GET /capabilities`; what the tests cover is exactly what the route returns.
+
+### The prerequisite gate (R8)
+
+R8 was not on the roadmap: it answers a defect the first live composite goal
+exposed. The chain was honest as far as the ledger could tell — `craft_bucket`
+verified by the harness — but `water_travel` closed with `GOAL MET` while
+`craft_boat` had been refused twice (`craft_recipe_missing`) and no boat had ever
+existed. The skill's only criterion was `movedAtLeast: 8`, and walking satisfies
+it; the `preconditions` were read by the resolver for ranking, never as the
+door of the segment.
+
+```text
+  curriculum: water_travel            (a boat is the prerequisite)
+        |
+        v
+  controller gate  ---- preconditions unmet ----> the executing keys leave /options
+        |                     |                     (goto_waypoint, sneak_to)
+        |                     +-- logged once ------> skill_blocked + what is missing
+        |                     +-- N blocked steps --> goal_blocked, endedBy: goal_blocked
+        v
+  the segment runs  --- verifySkill ---> success | failed | running | blocked
+                                              ^
+                                              +-- replaces only a `success`:
+                                                  the prerequisite was absent at
+                                                  the start *and* at the end
+```
+
+The properties the change is meant to hold:
+
+- **`blocked` protects the verdict, not the loop.** It replaces only a `success`,
+  never a `running`: a segment in progress stays in progress. A prerequisite
+  consumed by the action (a bucket, seeds, flint) or acquired during the segment is
+  legitimate preparation, so the check compares the first and the last observation.
+- **The executing keys leave the option set**, and only those: `goto_waypoint` and
+  `sneak_to` are what *perform* a segment. Preparation — the plan's own `targets` —
+  stays reachable, and if the prerequisite appears the gate lifts (`skill_unblocked`).
+- **A block is explicit and bounded**: one `skill_blocked` per segment carrying
+  `preparing: [{item, want, have}]`, then `goal_blocked` with `completedMilestones:
+  []` after `SKILL_BLOCKED_MAX_STEPS` (default 6) instead of burning the budget on
+  attempts that cannot succeed. R8 joins R3 here: the trace's last segment says
+  `endedBy: goal_blocked`.
+- **The navigation is measured.** `observe().riding.distance` is an odometer that
+  counts only metres travelled while the ridden entity is a boat, monotonic, ignoring
+  vertical movement; `boat_travel.success` is `{ridingDistanceAtLeast: 8}`. Being
+  dragged by the current still counts — that is proof of being aboard and moving —
+  while the mount confirmation stays the action's own check.
+- **The chain does not expand prerequisites yet.** That was option 3 of the four
+  considered and it is deliberately deferred: today a milestone whose prerequisite is
+  unreachable blocks instead of preparing itself, which is honest and measurable.
 
 ### Closed is not one state
 

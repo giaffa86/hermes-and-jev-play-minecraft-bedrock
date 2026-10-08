@@ -232,9 +232,12 @@ test('verification fails when the bot died', () => {
 });
 
 test('eat success comes from a food increase or an already healthy food bar', () => {
-  assert.equal(verifySkill(EAT, { food: 10 }, { food: 10 }).status, 'running');
-  assert.equal(verifySkill(EAT, { food: 10 }, { food: 16 }).status, 'success');
-  assert.equal(verifySkill(EAT, { food: 17 }, { food: 17 }).status, 'success');
+  const fed = { inventory: { bread: 1 } };
+  assert.equal(verifySkill(EAT, { food: 10, ...fed }, { food: 10, ...fed }).status, 'running');
+  assert.equal(verifySkill(EAT, { food: 10, ...fed }, { food: 16, ...fed }).status, 'success');
+  assert.equal(verifySkill(EAT, { food: 17, ...fed }, { food: 17, ...fed }).status, 'success');
+  // R8: mangiare è «fatto» solo se il cibo c'era; il criterio non basta da solo.
+  assert.equal(verifySkill(EAT, { food: 10 }, { food: 16 }).status, 'blocked');
 });
 
 test('escape success comes from distance gained or no hostiles left', () => {
@@ -253,9 +256,12 @@ test('first_night needs an observed night and a new day', () => {
 });
 
 test('iron skill accepts either ingots or crafted iron tools', () => {
-  assert.equal(verifySkill(IRON, {}, { inventory: { raw_iron: 4 } }).status, 'running');
-  assert.equal(verifySkill(IRON, {}, { inventory: { iron_ingot: 3 } }).status, 'success');
-  assert.equal(verifySkill(IRON, {}, { inventory: { iron_pickaxe: 1 } }).status, 'success');
+  const starter = { inventory: { stone_pickaxe: 1 } };
+  assert.equal(verifySkill(IRON, starter, { inventory: { raw_iron: 4 } }).status, 'running');
+  assert.equal(verifySkill(IRON, starter, { inventory: { iron_ingot: 3 } }).status, 'success');
+  assert.equal(verifySkill(IRON, starter, { inventory: { iron_pickaxe: 1 } }).status, 'success');
+  // R8: senza lo strumento di pietra il ferro non è un successo dello skill.
+  assert.equal(verifySkill(IRON, {}, { inventory: { iron_ingot: 3 } }).status, 'blocked');
 });
 
 test('nearbyBlock criterion is satisfied by a placed crafting table', () => {
@@ -326,8 +332,11 @@ test('the fluid skills verify on real observations, never on a claim', () => {
   assert.equal(verifySkill(bucket, {}, { inventory: { iron_ingot: 3, bucket: 1 } }).status, 'success');
 
   const pour = skills.get('bucket_and_place_water');
+  const withLava = { inventory: { bucket: 1 }, nearby: { lava: [{ distance: 3 }] } };
   assert.equal(verifySkill(pour, {}, { inventory: { water_bucket: 1 }, nearby: { lava: [{ distance: 3 }] } }).status, 'running');
-  assert.equal(verifySkill(pour, {}, { inventory: { bucket: 1 }, nearby: { obsidian: [{ distance: 3 }] } }).status, 'success');
+  assert.equal(verifySkill(pour, withLava, { inventory: { bucket: 1 }, nearby: { lava: [{ distance: 3 }], obsidian: [{ distance: 2 }] } }).status, 'success');
+  // R8: senza lava da solidificare il criterio è soddisfatto da qualcos'altro.
+  assert.equal(verifySkill(pour, { inventory: { bucket: 1 } }, { inventory: { bucket: 1 }, nearby: { obsidian: [{ distance: 2 }] } }).status, 'blocked');
 
   const lava = skills.get('escape_lava');
   assert.equal(verifySkill(lava, {}, { fluids: { inLava: true }, health: 8 }).status, 'running');
@@ -348,23 +357,60 @@ test('the spatial criteria compare the two observations instead of trusting a st
   assert.equal(verifySkill(up, bottom, top).status, 'success');
 
   const boat = skills.get('boat_travel');
-  // Lo spostamento si misura fra due osservazioni: senza `before` non c'è nulla
-  // da confrontare e la skill resta in corso, anche se la barca è in inventario.
-  assert.equal(verifySkill(boat, {}, { position: { x: 30, y: 64, z: 40 }, inventory: { oak_boat: 1 } }).status, 'running');
-  assert.equal(verifySkill(boat, { position: { x: 4, y: 64, z: 4 } }, { position: { x: 30, y: 64, z: 40 }, inventory: { oak_boat: 1 } }).status, 'success');
-  assert.equal(verifySkill(boat, { position: { x: 30, y: 64, z: 40 } }, { position: { x: 32, y: 64, z: 41 } }).status, 'running');
+  const aboard = { inventory: { oak_boat: 1 }, riding: { boat: true, distance: 0 } };
+  // Il tratto percorso **a bordo** (`observe().riding.distance`) si misura fra due
+  // osservazioni: senza `before` non c'è nulla da confrontare e la skill resta in corso.
+  assert.equal(verifySkill(boat, {}, { inventory: { oak_boat: 1 }, riding: { boat: true, distance: 20 } }).status, 'running');
+  assert.equal(verifySkill(boat, aboard, { inventory: { oak_boat: 1 }, riding: { boat: true, distance: 20 } }).status, 'success');
+  // Camminare a piedi non è una traversata.
+  assert.equal(verifySkill(boat, { inventory: { oak_boat: 1 }, riding: { boat: false, distance: 0 } }, { position: { x: 30, y: 64, z: 40 }, inventory: { oak_boat: 1 }, riding: { boat: false, distance: 0 } }).status, 'running', 'senza tratto a bordo non si dichiara una traversata');
+  // R8: la barca non c'era all'inizio e non c'è alla fine: il criterio non basta.
+  assert.equal(verifySkill(boat, { inventory: {}, riding: { boat: true, distance: 0 } }, { inventory: {}, riding: { boat: true, distance: 20 } }).status, 'blocked');
+  // La preparazione è legittima: la barca può arrivare durante il segmento.
+  assert.equal(verifySkill(boat, { inventory: {}, riding: { boat: true, distance: 0 } }, { inventory: { oak_boat: 1 }, riding: { boat: true, distance: 20 } }).status, 'success');
 
-  // Validazione: i tre criteri vogliono un numero positivo, `waterBreathing` un booleano.
+  // Validazione: i criteri numerici vogliono un numero positivo, `waterBreathing` un booleano.
   assert.ok(validateCriteria({ descendedAtLeast: 0 }).some(error => error.includes('must be a positive number')));
   assert.ok(validateCriteria({ movedAtLeast: -1 }).some(error => error.includes('must be a positive number')));
+  assert.ok(validateCriteria({ ridingDistanceAtLeast: 0 }).some(error => error.includes('must be a positive number')));
   assert.ok(validateCriteria({ waterBreathing: 'sì' }).some(error => error.includes('must be a boolean')));
   assert.deepEqual(validateCriteria({ allOf: [{ climbedAtLeast: 3 }, { waterBreathing: true }] }), []);
 });
 
 test('waterBreathing reads the server effect, in either shape the adapter exposes', () => {
   const brew = skills.get('brew_water_breathing');
-  assert.equal(verifySkill(brew, {}, { fluids: { waterBreathing: { active: false } } }).status, 'running');
-  assert.equal(verifySkill(brew, {}, { fluids: { waterBreathing: { active: true, sources: [{ kind: 'effect' }] } } }).status, 'success');
-  assert.equal(verifySkill(brew, {}, { fluids: { waterBreathing: true } }).status, 'success');
-  assert.equal(verifySkill(brew, {}, { fluids: {} }).status, 'running');
+  const ready = { inventory: { potion: 1 }, nearby: { brewing_stand: [{ distance: 2 }] } };
+  assert.equal(verifySkill(brew, ready, { ...ready, fluids: { waterBreathing: { active: false } } }).status, 'running');
+  assert.equal(verifySkill(brew, ready, { ...ready, fluids: { waterBreathing: { active: true, sources: [{ kind: 'effect' }] } } }).status, 'success');
+  assert.equal(verifySkill(brew, ready, { ...ready, fluids: { waterBreathing: true } }).status, 'success');
+  assert.equal(verifySkill(brew, ready, { ...ready, fluids: {} }).status, 'running');
+  // R8: senza il tavolo e la pozione l'effetto non è un successo dello skill.
+  assert.equal(verifySkill(brew, {}, { fluids: { waterBreathing: true } }).status, 'blocked');
+});
+
+// R8: il verifier non promuove un criterio soddisfatto «per caso». Il caso
+// vero: nella stanza base `boat_travel` si chiudeva camminando a piedi, perché
+// l'unico criterio era lo spostamento e la barca non era mai esistita.
+test('R8: un prerequisito assente non diventa «fatto»', () => {
+  const boat = skills.get('boat_travel');
+  const noBoat = { inventory: {}, riding: { boat: true, distance: 0 } };
+  const rodeAnyway = { inventory: {}, riding: { boat: true, distance: 20 } };
+
+  const blocked = verifySkill(boat, noBoat, rodeAnyway);
+  assert.equal(blocked.status, 'blocked');
+  assert.equal(blocked.reason, 'preconditions_unmet');
+  assert.match(String(blocked.evidence.precondition), /inventory\.boats=0 < 1/);
+  assert.equal(blocked.evidence.ridingDistance, 20, 'l\'evidenza del criterio resta leggibile');
+
+  // Un prerequisito consumato dall'azione non blocca: c'era all'inizio.
+  assert.equal(verifySkill(boat, { inventory: { oak_boat: 1 }, riding: { boat: true, distance: 0 } }, { inventory: {}, riding: { boat: true, distance: 20 } }).status, 'success');
+  // Uno che arriva durante il segmento è preparazione legittima.
+  assert.equal(verifySkill(boat, noBoat, { inventory: { oak_boat: 1 }, riding: { boat: true, distance: 20 } }).status, 'success');
+  // Senza osservazione iniziale non c'è nemmeno l'evidenza da confrontare.
+  assert.equal(verifySkill(boat, null, rodeAnyway).status, 'running');
+  // La protezione non si applica ai percorsi senza `before`: non c'è un inizio
+  // rispetto al quale il prerequisito mancasse.
+  assert.equal(verifySkill(skills.get('acquire_iron'), null, { inventory: { iron_ingot: 3 } }).status, 'success');
+  // `blocked` protegge il **successo**: un segmento in corso resta in corso.
+  assert.equal(verifySkill(boat, noBoat, { inventory: {}, riding: { boat: true, distance: 3 } }).status, 'running');
 });

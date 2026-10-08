@@ -778,7 +778,9 @@ executed with server confirmation.
   static fact that says "the bot crossed").
 - `movedAtLeast` measures displacement between two observations: it cannot tell a
   crossing from a walk along the shore, which is why `cross_water` also requires
-  `inWater: false` and its notes say the criterion is a proxy.
+  `inWater: false` and its notes say the criterion is a proxy. Since R8
+  `boat_travel` no longer relies on it: it measures the distance travelled **aboard**
+  (below).
 - `nearbyBlock` reads the adapter's nearby block list (capped): `obsidian` proves
   the pour only because the new block is close enough to be in that list.
 
@@ -793,6 +795,37 @@ executed with server confirmation.
 | M4 | Lava: avoid (cross later) | Absolute obstacle + repulsion; `move_to_safe`; lava-death marking; never mine into lava; bucket bridging (`place_water` → obsidian); Nether crossing gated behind `fire_resistance` + bridging. | ◑ implemented + live 03/10/2026: `bedrock-lava.mjs` (death verdict, water-preferring shore plan, gap measurement, crossing gate), the `move_to_safe`/`cross_lava` actions with typed refusals, the drop filter and the destroyed-loot verdict on `recover_loot` are implemented and unit-tested; live the bot has no reachable lava (nearest is 15.4 blocks below the base room) so only the refusals were observable — the bridge build and the real escape move stay unit-tested |
 | M5 | Buckets, boats, potions | `craft_bucket`/`craft_boat`; `fill_bucket`/`empty_bucket`/`place_water`; boat travel on open water via `mount_*`/`_rideToward`; brewing. | ◑ implemented + live 03/10/2026: `bedrock-bucket.mjs` (source/placement verdicts, bucket delta, boat gate, brew plan), `fill_bucket`/`fill_bottle`/`place_water`/`place_lava`/`craft_boat`/`mount_boat`/`brew_*` actions, `_bucketView` + `GET /observe.bucket`, and the **lava bridge** (`_bridgeLava`, which closes M4's `bridge_not_implemented`) are implemented and unit-tested; live every action answers a typed refusal in milliseconds (no bucket, no boat, no stand, no reachable lava) — the `craft_bucket`→`fill_bucket`→`place_water` chain, the boat ride and the brewing-stand interaction stay unit-tested (see the M5 section) |
 | M6 | Survival Intelligence integration | Gameplay skills in `skills/gameplay/fluids/`; progression milestones `bucket`, `water_travel`, gated `nether_cross_lava`; docs + tests. | ◑ implemented + live 03/10/2026: 9 skill contracts (`skills/gameplay/fluids/`), the tags `buckets`/`boats`/`potions`, four new verifier criteria (`waterBreathing`, `descendedAtLeast`, `climbedAtLeast`, `movedAtLeast`), the `blocked` field on the skill schema, the three milestones + the matching `CURRICULUM` goals; live the container loads 35 skills (9 fluids), resolves `CURRICULUM=water_travel` through the new chain (`wood` → … → `bucket` → `water_travel`) and closes a run with real actions. The five skills that depend on swimming/brewing declare their own `blocked` reason instead of pretending to be executable |
+
+## R8 — the boat is measured, and a missing prerequisite blocks (08/10/2026)
+
+The live composite round of 08/10/2026 closed `water_travel` with `GOAL MET` while
+`craft_boat` had been refused twice and no boat existed: the milestone had closed on
+a walk, because `boat_travel`'s success criterion was `{movedAtLeast: 8}` and its
+`preconditions` gated the **resolver** (ranking), never the segment.
+
+- **The criterion is a measurement, not a proxy.** `boat_travel.success` is now
+  `{ridingDistanceAtLeast: 8}`, evaluated over a new observation view:
+  `observe().riding = {mounted, entityId, boat, distance}`. The distance is an
+  **odometer** incremented while the ridden entity is a boat (`_trackRidingDistance`,
+  fed by the position the server sends in `move_player`), monotonic, ignoring
+  vertical movement, accepting the numeric and the string entity id. A boat dragged
+  by the current counts: it proves being aboard and moving, and the mount
+  confirmation stays `mount_boat`'s own check.
+- **A false success cannot be declared.** `verifySkill` can answer `blocked` —
+  `reason: 'preconditions_unmet'` — when the preconditions fail on the segment's
+  first observation *and* on the last; it replaces only a `success`, never a
+  `running`, and a prerequisite consumed by the action (a bucket, seeds, flint) or
+  acquired during the segment is legitimate preparation.
+- **The segment does not execute either.** While the prerequisite has never been
+  satisfied the controller takes the keys that perform the segment
+  (`goto_waypoint`, `sneak_to`) out of `/options`, logs `skill_blocked` once with
+  `preparing: [{item, want, have}]`, and after `SKILL_BLOCKED_MAX_STEPS` (default 6)
+  blocked steps closes the goal as `goal_blocked` instead of burning the budget;
+  `skill_unblocked` records the prerequisite appearing.
+- **Still open**: the chain does not expand a skill's prerequisites, so a milestone
+  whose prerequisite is unreachable now **blocks** instead of preparing itself, and
+  the capability gap behind `water_travel` is still `craft_boat`'s recipe. See
+  [verification](verification.md) 47.74.
 
 ## Key risks / open questions
 

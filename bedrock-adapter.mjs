@@ -645,6 +645,7 @@ export class BedrockAdapter {
     this.shieldUp = false;             // l'ultimo frame auth dichiarava l'uso dell'item
     this._ridingForward = false;       // vettore avanti continuo mentre cavalca
     this._ridingYaw = 0;               // yaw verso cui cavalcare
+    this.ridingDistance = 0;           // R8: metri percorsi a bordo di una barca (monotono)
     this._openDoors = new Set();       // celle di porte aperte (fisica passabile)
     this._doorWatchers = new Map();    // key -> runtime id della porta chiusa
     this.recipes = null;               // output -> ricette da crafting_data
@@ -969,6 +970,7 @@ export class BedrockAdapter {
             onGround: packet.on_ground ?? null,
           });
         }
+        this._trackRidingDistance(this.position, packet.position);
         this.position = packet.position;
         this.world.requestAround(client, this.position);
       });
@@ -3937,6 +3939,29 @@ export class BedrockAdapter {
     return Object.keys(this.inventory).filter(name => isBoatItem(name)).reduce((sum, name) => sum + (this.inventory[name] || 0), 0);
   }
 
+  // R8: il bot è a bordo di una barca? `this.riding` dice solo che è montato su
+  // qualcosa: il tipo dell'entità cavalcata lo distingue da cavallo, maiale o
+  // minecart.
+  _ridingBoat () {
+    if (!this.riding) return false;
+    // L'id è numerico nel pacchetto e stringa nella mappa delle entità (dipende
+    // dal percorso che ha confermato il montaggio): si provano entrambe le chiavi.
+    const id = this.riding.riddenEntityId;
+    const entity = this.entities.get(id) ?? this.entities.get(String(id)) ?? null;
+    return !!entity && isBoatItem(normalizeEntityType(entity.type));
+  }
+
+  // R8: odometro a bordo. La posizione autorevole arriva ~20 volte al secondo
+  // (`move_player`): mentre il bot è su una barca il tratto percorso è
+  // l'evidenza che `boat_travel` usa al posto di «la posizione è cambiata». Un
+  // contatore monotono, mai azzerato: i segmenti lo leggono come differenza fra
+  // inizio e fine, quindi un respawn o una nuova sessione non inventano metri.
+  _trackRidingDistance (from, to) {
+    if (!from || !to || !this._ridingBoat()) return;
+    const step = Math.hypot(to.x - from.x, to.z - from.z);
+    if (Number.isFinite(step)) this.ridingDistance += step;
+  }
+
   _nearestBoat (limit = 8) {
     const rows = [];
     for (const entity of this.entities.values()) {
@@ -4457,6 +4482,13 @@ export class BedrockAdapter {
       heldDurability: heldInfo?.maxDurability
         ? { damage: this._itemDamage(heldSlot), max: heldInfo.maxDurability }
         : null,
+      // R8: odometro a bordo, per il criterio `ridingDistanceAtLeast`.
+      riding: {
+        mounted: !!this.riding,
+        entityId: this.riding?.riddenEntityId ?? null,
+        boat: this._ridingBoat(),
+        distance: Math.round(this.ridingDistance * 100) / 100,
+      },
       drops: this.drops.slice(0, 8).map(d => ({ ...d, reachable: this.dropReachable(d.position) })),
       containers: this._cachedContainers().map(c => ({
         position: c.position,

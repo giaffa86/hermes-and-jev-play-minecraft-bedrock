@@ -504,3 +504,125 @@ test('CURRICULUM=first_night: satisfied prerequisites are skipped, only the open
     rmSync(hermes.dir, { recursive: true, force: true });
   }
 });
+
+// Scripted world for the R8 precondition gate: every early-game milestone is
+// already satisfied (the bucket is in the inventory), so the chain resolves
+// straight to `water_travel -> boat_travel` — a skill whose precondition (a
+// boat) the world never provides. The options stay valid (there *is* something
+// to do) without ever advancing the milestone: the segment is blocked, not slow.
+function startBlockedHarness () {
+  return new Promise(resolve => {
+    const state = {
+      inventory: { oak_log: 8, crafting_table: 1, stone_pickaxe: 1, iron_pickaxe: 1, bucket: 1 },
+      health: 20,
+      food: 20,
+      time: { ticks: 2000, night: false, phase: 'day' },
+      acts: [],
+    };
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (req.method === 'GET' && req.url === '/observe') {
+        res.end(JSON.stringify({
+          position: { x: 0, y: 64, z: 0 },
+          dimension: 'overworld',
+          inventory: { ...state.inventory },
+          health: state.health,
+          food: state.food,
+          dead: false,
+          time: { ...state.time },
+          entities: [],
+          chat: [],
+          drops: [],
+          containers: [],
+        }));
+      } else if (req.method === 'GET' && req.url === '/options') {
+        // `goto_waypoint`/`sneak_to` are the keys that would *execute* the
+        // segment: the gate must take them away while the prerequisite is
+        // missing. Mining stays possible (preparation), it just never advances.
+        res.end(JSON.stringify({
+          options: [
+            { key: 'mine_iron_ore', description: 'mine iron ore' },
+            { key: 'goto_waypoint', description: 'walk to the plan waypoint' },
+            { key: 'sneak_to', description: 'sneak toward a position' },
+          ],
+        }));
+      } else if (req.method === 'POST' && req.url === '/act') {
+        let body = '';
+        req.on('data', c => { body += c; });
+        req.on('end', () => {
+          let key = null;
+          try { key = JSON.parse(body || '{}').key; } catch { key = null; }
+          state.acts.push(key);
+          if (key === 'mine_iron_ore') state.inventory.raw_iron = (state.inventory.raw_iron ?? 0) + 1;
+          res.end(JSON.stringify({ ok: true, ms: 1 }));
+        });
+      } else {
+        res.end('{}');
+      }
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, state }));
+  });
+}
+
+test('CURRICULUM=water_travel: a missing prerequisite blocks the goal instead of faking progress (R8)', async () => {
+  const { server, port, state } = await startBlockedHarness();
+  const runId = `test-curriculum-blocked-${process.pid}-${Date.now()}`;
+  const dir = join(ROOT, 'runs', runId);
+  const hermes = fakeHermesQueue(['goto_waypoint', 'sneak_to', 'mine_iron_ore', 'mine_iron_ore']);
+  try {
+    const { code, stdout, stderr } = await runController({
+      HARNESS: `http://127.0.0.1:${port}`,
+      RUN_ID: runId,
+      CONTROLLER: 'hermes',
+      CURRICULUM: 'water_travel',
+      MAX_STEPS: '8',
+      SKILL_BLOCKED_MAX_STEPS: '2',
+      TARGETS: '{}',
+      WAYPOINT: '',
+      SESSION: '',
+      AUTONOMY: 'off',
+      OPENROUTER_API_KEY: '',
+      TYPESAFE_API_KEY: '',
+      CHAT_ALLOWLIST: '',
+      PATH: `${hermes.path}:${process.env.PATH}`,
+    });
+    assert.equal(code, 0, `unexpected exit code ${code}; stdout:\n${stdout}\nstderr:\n${stderr}`);
+    assert.match(stdout, /SKILL BLOCKED boat_travel: prerequisito mancante/);
+    assert.match(stdout, /GOAL BLOCKED after 2 actions: boat_travel/);
+    assert.doesNotMatch(stdout, /GOAL MET/, 'il milestone non si chiude senza il prerequisito');
+    assert.doesNotMatch(stdout, /SKILL boat_travel SUCCESS/, 'nessun «fatto» senza il prerequisito');
+
+    const events = readFileSync(join(dir, 'controller.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const blocked = events.filter(e => e.type === 'skill_blocked');
+    assert.equal(blocked.length, 1, 'il blocco si registra una volta per segmento, non a ogni passo');
+    assert.equal(blocked[0].skill, 'boat_travel');
+    assert.equal(blocked[0].milestone, 'water_travel');
+    assert.equal(blocked[0].reason, 'preconditions_unmet');
+    assert.equal(blocked[0].maxSteps, 2);
+    assert.deepEqual(blocked[0].preparing, [{ item: 'boat', want: 1, have: 0 }],
+      'il blocco dice *cosa* manca, così la preparazione resta possibile');
+    assert.match(String(blocked[0].precondition), /inventory\.boats=0 < 1/);
+    assert.ok(!events.some(e => e.type === 'skill_success'), 'nessun skill_success nel ledger');
+    assert.ok(!events.some(e => e.type === 'goal_met'));
+
+    const goalBlocked = events.find(e => e.type === 'goal_blocked');
+    assert.equal(goalBlocked.reason, 'preconditions_unmet');
+    assert.equal(goalBlocked.skill, 'boat_travel');
+    assert.equal(goalBlocked.milestone, 'water_travel');
+    assert.equal(goalBlocked.curriculum, 'water_travel');
+    assert.equal(goalBlocked.steps, 2);
+    assert.deepEqual(goalBlocked.completedMilestones, [], 'il milestone bloccato non è completato');
+    // Le chiavi che eseguono il segmento escono dalle opzioni finché il
+    // prerequisito manca: nessun tentativo ripetuto sull'azione impossibile.
+    assert.ok(!state.acts.includes('goto_waypoint'), 'goto_waypoint non deve essere tentata');
+    assert.ok(!state.acts.includes('sneak_to'), 'sneak_to non deve essere tentata');
+    assert.deepEqual(state.acts, ['mine_iron_ore', 'mine_iron_ore'],
+      'la preparazione resta possibile, ma non avanza il segmento');
+    const trace = readFileSync(join(dir, 'plan-trace.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    assert.equal(trace.at(-1).endedBy, 'goal_blocked', 'la traccia dice perché il piano è finito');
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(hermes.dir, { recursive: true, force: true });
+  }
+});

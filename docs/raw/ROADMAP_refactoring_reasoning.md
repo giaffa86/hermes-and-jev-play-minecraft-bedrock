@@ -832,6 +832,79 @@ place: a hook can be skipped with `--no-verify`, CI cannot.
 **Residual.** The route itself is wiring, verified by reading: the harness starts its
 HTTP server only after the bot connects, so no offline test can hit `GET
 /capabilities`. The contract it returns is what the tests cover.
+### R8 — A missing prerequisite is a block, not a slow segment (IMPLEMENTED)
+
+**Goal.** A segment must neither execute nor be declared done when its skill's
+prerequisite is absent. A success criterion is evidence about the world; it is not
+proof that the skill ran.
+
+**Why.** Seen live on 08/10/2026: the composite goal `water_travel` closed with
+`GOAL MET after 11 actions (curriculum water_travel)` while the boat had never
+existed — `craft_boat` had been refused twice with `craft_recipe_missing` and the
+inventory held none. The skill's only criterion was `movedAtLeast: 8`, which walking
+satisfies, and its `preconditions` (`inventoryTagGte: {boats: 1}`) were read by the
+resolver for *ranking* only, never as the door of the segment. Same family as the
+false «fatto» of 07/10/2026: the error is not in the plan, it is in what the plan is
+allowed to call done.
+
+**Options considered** (recorded because the rejection is the decision): (1) make the
+criterion causal; (2) refuse the false success in the verifier; (3) expand the chain
+with the skill's prerequisites; (4) keep `water_travel` out of the reachable
+milestones and document it. Owner's decision (08/10/2026): **2, correcting 1** — losing
+the boat from the inventory proves nothing (it could have been placed, dropped or
+lost), and «boat consumed + displacement» would be a false success again; 3 deferred.
+
+**Implemented (08/10/2026).**
+
+- **The verifier refuses a false success.** `verifySkill` can now answer `blocked` with
+  `reason: 'preconditions_unmet'`: if the skill's preconditions failed on the segment's
+  first observation and fail again on the last, the success criterion was satisfied by
+  something else. It replaces **only** a `success`, never a `running`; a prerequisite
+  consumed by the action (`before` ok: bucket, seeds, flint) or acquired during the
+  segment (`after` ok) does not block — preparation is legitimate; with no `before`
+  there is nothing to compare and the protection does not apply.
+- **The navigation is measured, not inferred.** New criterion
+  `ridingDistanceAtLeast` (the 29th key of `CRITERIA_KEYS`) over a new view
+  `observe().riding = {mounted, entityId, boat, distance}`. The distance is an
+  **odometer** incremented only while the ridden entity is a boat
+  (`_trackRidingDistance`, fed by the position the server sends in `move_player`),
+  monotonic, ignoring vertical movement, accepting both the numeric and the string
+  entity id. `boat_travel.success` is now `{ridingDistanceAtLeast: 8}` (it was
+  `{movedAtLeast: 8}`); `preconditions` and `planTargets` are unchanged. A boat
+  dragged by the current does count: this is proof of being aboard and moving, and the
+  mount confirmation stays the action's own check.
+- **The segment does not execute on an unmet prerequisite.** In the controller's
+  verification block the gate runs first: while the precondition has never been
+  satisfied the keys that *execute* the segment (`goto_waypoint`, `sneak_to`) go into
+  `excludeKeys`; the block is logged once per segment (`skill_blocked`, carrying
+  `preparing: [{item, want, have}]` read from the plan's own `targets`, `maxSteps`),
+  and after `SKILL_BLOCKED_MAX_STEPS` (default 6) blocked steps the goal closes
+  **explicitly** — `goal_blocked` in the ledger, `planTrace.flush({endedBy:
+  'goal_blocked'})`, `failureReason = skill_preconditions_unmet:<skill>` — instead of
+  burning the budget on attempts that cannot succeed. If the prerequisite appears the
+  gate lifts (`skill_unblocked`) and the segment continues; the verifier's `blocked`
+  is the belt for every other entry path.
+- **Empty criteria are «nothing to check»**, like `null`, in `evaluateCriteria`. This
+  also fixes `escape_lava` (`"preconditions": {}`), which the resolver had been
+  treating as inapplicable because the empty object fell through to
+  `unknown success criterion`.
+
+**Gate.** `node --test tests/gameplay-skills.test.mjs tests/controller-curriculum.test.mjs
+
+tests/bedrock-fluids-adapter.test.mjs`. The curriculum test drives the real controller
+with `SKILL_BLOCKED_MAX_STEPS=2` against a scripted world where the chain resolves to
+`water_travel -> boat_travel` and the boat never appears: it asserts one `skill_blocked`
+(not one per step), `GOAL BLOCKED after 2 actions`, `goal_blocked` in the ledger with
+`completedMilestones: []`, no `skill_success`/`goal_met`, the last `plan-trace.jsonl`
+segment `endedBy: goal_blocked`, and that `goto_waypoint`/`sneak_to` never reach
+`/act`. Full suite 1970 → 1973.
+
+**Residual.** Deliberately deferred: the chain does not yet expand a skill's
+prerequisites (option 3), so a milestone whose prerequisite is unreachable now blocks
+instead of preparing itself. **Not deployed**: this lives in `bedrock-adapter.mjs`,
+`survival/*` and `controller.mjs`, and the bot container is rebuilt only when the owner
+authorises the restart — the same one the M11 ore alert waits for.
+
 ## 7. Definition of Done (revised)
 
 The drafts' ultimate DoD (A §65) is the right *end state* but assumes MCP. The
@@ -888,7 +961,7 @@ existing HTTP boundary, not a service.
 
 ## 10. Known limitations and operational notes
 
-R7 closes the roadmap, but "closed" is not one state. Five of them are easy to
+R7 closes the planned roadmap, but "closed" is not one state. Five of them are easy to
 confuse, so every claim above is meant to be read against this table:
 
 | State | What it means here | How it is established |
@@ -909,7 +982,10 @@ failures and the composite goals are in the running planner loop, and the live
 controller wrote its own `runs/chat-truth-4e9f2c0/plan-trace.jsonl` on the first
 plan segment (`endedBy: goal_met`). **Consumed is still false for everything on
 this roadmap**: nothing but its own tests and the controller itself uses these
-surfaces yet. The limits worth writing down are these:
+surfaces yet. R8 (a live defect rather than a planned milestone, section 6) is
+implemented, tested and wired, but **not deployed**: it lives in
+`bedrock-adapter.mjs`, `survival/*` and `controller.mjs`, and the bot container is
+rebuilt only when the owner authorises the restart. The limits worth writing down are these:
 
 1. **`GET /capabilities` has no offline end-to-end test — and should not get one.**
    The harness opens its HTTP server only after the bot has connected, so no offline

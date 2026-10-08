@@ -1617,7 +1617,7 @@ pinned by a test that fails without its edit ([verification](verification.md)
   model name that exists, or make the *goal* survive a decision outage (wait and
   replan) instead of closing the run.
 
-## A composite goal closed without its own boat (2026-10-08)
+## A composite goal closed without its own boat (2026-10-08) — answered by R8
 
 - The first live run of a composite goal (`CURRICULUM=water_travel`, release
   `chat-truth-e7b08e5`) closed its chain honestly as far as the ledger can tell —
@@ -1637,10 +1637,23 @@ pinned by a test that fails without its edit ([verification](verification.md)
   curriculum plan.
 - The capability gap is separate and pre-existing: `craft_boat` answers
   `craft_recipe_missing`, so `water_travel` is not honestly reachable in the base
-  room (the skill's notes say the same). Options, none chosen: tighten
-  `boat_travel.success` so the milestone cannot close without a boat (a
-  `ridingBoat`/`mounted` criterion the R4 typed failures could feed), make
-  `verifySkill` refuse a skill whose preconditions are unmet, or keep
-  `water_travel` out of the reachable milestone set until the boat recipe exists.
+  room (the skill's notes say the same).
 - This is the same family as the false «fatto» of 07/10/2026: the failure is not
   in the plan, it is in what the plan is allowed to call *done*.
+- **Answered by R8 (08/10/2026).** The three options above were weighed against a
+  fourth (policy only) and the owner chose the stricter pair: `verifySkill` now
+  refuses a false success — `blocked`, `reason: preconditions_unmet`, when the
+  skill's preconditions fail on the segment's first observation *and* on the last,
+  so a prerequisite consumed by the action or acquired during the segment stays
+  legitimate — and `boat_travel.success` is `{ridingDistanceAtLeast: 8}`, measured
+  by an **aboard odometer** (`observe().riding.distance`, incremented only while
+  the ridden entity is a boat; a criterion weaker than that would just move the
+  false success). The controller adds the execution gate: while the prerequisite
+  has never been satisfied the keys that perform the segment leave `/options`,
+  `skill_blocked` is logged once, and after `SKILL_BLOCKED_MAX_STEPS` blocked steps
+  the goal closes as `goal_blocked` instead of burning the budget.
+- **Still open, deliberately**: the chain does not expand a skill's prerequisites,
+  so a milestone whose prerequisite is unreachable blocks rather than preparing
+  itself; `craft_boat`'s `craft_recipe_missing` remains the real capability gap
+  behind `water_travel`. See [verification](verification.md) 47.74 and
+  [reasoning-roadmap](reasoning-roadmap.md) §R8.
