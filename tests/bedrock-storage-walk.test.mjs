@@ -45,6 +45,23 @@ test('a walk that stops closing in on the target ends as no_progress', () => {
   assert.equal(a._motion.active, false);
 });
 
+test('un tratto che si allontana dal bersaglio per prendere la porta non è no_progress', () => {
+  // 08/10/2026: uscendo da casa per seguire il giocatore il bot doveva prima
+  // puntare alla porta (che stava *dietro* al bersaglio) e il watchdog del
+  // bersaglio chiudeva il tratto come `no_progress` dopo 8 s mentre il percorso
+  // avanzava regolarmente. Un nodo di percorso superato è progresso: il tratto
+  // non si chiude finché il percorso avanza.
+  const a = adapter();
+  a._motion = walkingMotion({
+    target: { x: 10.5, y: 64, z: 0.5 },
+    bestTargetDist: 5, lastTargetProgressAt: Date.now() - 9000,
+    lastIndexProgressAt: Date.now() - 200,
+  });
+  a._feet = { x: 0, y: 64, z: 0 };
+  a._updateMotionState();
+  assert.equal(a._motion.active, true, 'il nodo superato è progresso');
+});
+
 test('a walk that keeps closing in on the target is left alone', () => {
   const a = adapter();
   a._motion = walkingMotion({

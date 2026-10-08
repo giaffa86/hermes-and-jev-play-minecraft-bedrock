@@ -1699,3 +1699,40 @@ pinned by a test that fails without its edit ([verification](verification.md)
   `vehicle_unreachable` loop and the `deposit_unverified` of the same run are untouched;
   the trip-kit take ranking changes which keys are offered, not whether the planner
   picks them.
+
+## A closed door the bot cannot open (2026-10-08) — fixed offline, awaiting the rebuild
+
+- **The report** (household bot, `runs/house-20261008-1`): «il bot non riusciva a
+  seguirmi perchè la porta era chiusa e non riusciva ad aprirla. ho dovuto aprire io
+  per liberarlo».
+- **What the ledger shows**: `follow_player` failed after 27,952 ms with the bot at
+  `(113.69, 77.62, 194.09)`, one block from the door cell `(114,76,194)`; that cell's
+  `door_state` is `open: true` at `t=1791490947240` (before the order) and the door is
+  recorded closed only at `t=1791491270734`, **after the human opened it**, with no
+  `door_state`/`door_opened`/`door_closed` in between — the bot never touched it. Two
+  later follows succeeded, then the controller looped `follow_player ok` with `ms: 0`
+  for 100+ decisions.
+- **Not provable from that artifact**: whether the blocker was the door **panel** or the
+  **`trader_llama` standing in the bot's own cell** `(113,76,194)`. The 08/10 release
+  logged no per-attempt door payload, so the fix addresses the whole openable family
+  instead of naming one culprit.
+- **What was wrong** (three defects, offline reproducible, [row 47.77](verification.md)):
+  a closed **fence gate** was not traversable for the A\*, was never clicked and
+  `DIG_PROTECTED` (`_fence_gate$`) forbids mining it — i.e. a **pen with a closed gate is
+  a cage**; `_doorAhead` only looked where the **yaw** pointed, so the door on the path
+  node stayed invisible when the yaw pointed at the player outside (often diagonally);
+  and `_authTick` clicked a door the world already reported open, toggling it shut.
+- **What is implemented**: `_isDoorBlock` covers `*_door`, `*_fence_gate`, `*_trapdoor`;
+  `_doorParts` normalises a door's two halves; `_doorAhead` searches the own cell, the yaw
+  cell and the next path nodes; `_isOpenAt` registers an already-open door instead of
+  clicking it; the motion stall watchdog counts a passed path node as progress.
+- **Still open**: (1) the harness image on VM 100 is the previous one, so both the fix and
+  a live round (a follow through a door, and a walk out of a pen with a closed gate) are
+  **pending**; (2) **closing is not automatic** — the adapter never closes a door or gate
+  behind the bot, `close_door` stays a deliberate action whose target is the nearest open
+  door/gate within 8 blocks (so in a village it may close one a villager opened, and the
+  bot may leave a gate open); (3) a trapdoor **used as a floor hatch** is deliberately
+  never toggled (`_doorAhead` only looks at the feet/head cells), so a hatch in a corridor
+  that must be opened from the side is covered but the one under the feet is not;
+  (4) the nearby obstacles of the same run — a `trader_llama` in the bot's cell and the
+  repeated `mount_trader_llama → vehicle_unreachable` — are untouched.

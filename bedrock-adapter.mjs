@@ -10557,19 +10557,29 @@ export class BedrockAdapter {
     let pitch = this._lastPitch;
     let transaction = null;
     if (use && !use.sent && !this._openDoors.has(use.key)) {
-      const look = this._lookAt({ x: use.pos.x + 0.5, y: use.pos.y + 0.5, z: use.pos.z + 0.5 });
-      yaw = look.yaw;
-      pitch = look.pitch;
-      this._lastYaw = yaw;
-      this._lastPitch = pitch;
-      transaction = this._blockUseTransaction(use.pos);
-      use.sent = true;
-      use.at = Date.now();
-      // Il server risponde con update_block sulla cella della porta: osserva il cambio.
-      for (const y of [use.pos.y, use.pos.y + (this._isDoorBlock(this.world.blockAt({ x: use.pos.x, y: use.pos.y - 1, z: use.pos.z })) ? -1 : 1)]) {
-        const key = `${use.pos.x},${y},${use.pos.z}`;
-        const runtimeId = this.world.runtimeIdAt({ x: use.pos.x, y, z: use.pos.z });
-        if (runtimeId != null && !this._doorWatchers.has(key)) this._doorWatchers.set(key, runtimeId);
+      // Si rilegge il blocco prima di cliccare. Se il mondo lo dice già aperto la
+      // credenza era vecchia e il click lo **richiuderebbe** addosso al bot (il
+      // 08/10/2026 il bot è rimasto 28 s a un blocco dalla cella della porta
+      // senza mai registrare un `door_state`): si registra e si passa.
+      if (this._isOpenAt(use.pos)) {
+        for (const part of this._doorParts(use.pos)) this._openDoors.add(this._doorKey(part));
+        use.sent = true;
+        use.at = Date.now();
+      } else {
+        const look = this._lookAt({ x: use.pos.x + 0.5, y: use.pos.y + 0.5, z: use.pos.z + 0.5 });
+        yaw = look.yaw;
+        pitch = look.pitch;
+        this._lastYaw = yaw;
+        this._lastPitch = pitch;
+        transaction = this._blockUseTransaction(use.pos);
+        use.sent = true;
+        use.at = Date.now();
+        // Il server risponde con update_block sulla cella della porta: osserva il cambio.
+        for (const part of this._doorParts(use.pos)) {
+          const key = this._doorKey(part);
+          const runtimeId = this.world.runtimeIdAt(part);
+          if (runtimeId != null && !this._doorWatchers.has(key)) this._doorWatchers.set(key, runtimeId);
+        }
       }
     }
     try {
@@ -10746,8 +10756,39 @@ export class BedrockAdapter {
 
   // ---- fisica locale ---------------------------------------------------------------
 
+  // Blocchi che il bot può **aprire** con un `click_block` e che per il
+  // pathfinding valgono come percorribili anche da chiusi: porta, cancelletto e
+  // botola. Fino all'08/10/2026 questa famiglia conteneva solo `*_door`: un
+  // cancelletto chiuso non era né percorribile (A* lo scavalcava o falliva) né
+  // cliccabile, e `DIG_PROTECTED` vieta di romperlo, quindi un passaggio con un
+  // cancelletto diventava una gabbia. La botola è inclusa perché `_doorAhead`
+  // guarda solo le celle dei piedi e della testa: il portello **sotto** i piedi
+  // non viene mai aperto, quindi non si sprofonda nella botola su cui si cammina.
   _isDoorBlock (block) {
-    return !!block && typeof block.name === 'string' && block.name.endsWith('_door');
+    if (!block || typeof block.name !== 'string') return false;
+    const name = block.name;
+    return name.endsWith('_door') || name.endsWith('_fence_gate') || name.endsWith('_trapdoor');
+  }
+
+  // Celle occupate da un blocco apribile: la porta ne occupa due (metà inferiore
+  // e superiore, l'open bit sta solo in basso), cancelletto e botola una sola.
+  // `position` può essere una delle due metà della porta: si normalizza sulla base.
+  _doorParts (position, block = this.world.blockAt(position)) {
+    if (!this._isDoorBlock(block)) return [position];
+    const properties = block.getProperties?.() ?? {};
+    const base = properties.upper_block_bit === true || properties.upper_block_bit === 1
+      ? { ...position, y: position.y - 1 } : position;
+    return block.name.endsWith('_door')
+      ? [base, { ...base, y: base.y + 1 }]
+      : [base];
+  }
+
+  // Il mondo dice che è già aperto? Serve a non richiudere la porta creduta
+  // chiusa: un click su una porta aperta la toggla, cioè la sbatte addosso al bot.
+  _isOpenAt (position) {
+    const parts = this._doorParts(position);
+    const open = this.world.blockAt(parts[0])?.getProperties?.()?.open_bit;
+    return open === true || open === 1;
   }
 
   _doorKey (position) {
@@ -10778,8 +10819,7 @@ export class BedrockAdapter {
     if (this._isDoorBlock(lower) && (typeof open === 'boolean' || open === 0 || open === 1)) {
       // Only the lower half carries the open bit. BDS can leave the upper
       // runtime id unchanged, and a villager can close either half again.
-      for (const y of [base.y, base.y + 1]) {
-        const part = { ...base, y };
+      for (const part of this._doorParts(base, lower)) {
         if (!this._isDoorBlock(this.world.blockAt(part))) continue;
         const partKey = this._doorKey(part);
         if (open) this._openDoors.add(partKey);
@@ -11305,7 +11345,7 @@ export class BedrockAdapter {
         yaw: this._yawTo(this._feet, { x: goalNode.x + 0.5, z: goalNode.z + 0.5 }),
         forward: true, jumpQueued: false, jumpHeldTicks: 0, jumpStart: false,
         bestWaypointDist: Infinity, lastProgressAt: Date.now(), stuckTries: 0,
-        bestTargetDist: Infinity, lastTargetProgressAt: Date.now(),
+        bestTargetDist: Infinity, lastTargetProgressAt: Date.now(), lastIndexProgressAt: Date.now(),
         useRequest: null, guard: null,
       };
       // `_updateMotionState` gira solo sui tick del client: se la connessione cade (o
@@ -11407,7 +11447,11 @@ export class BedrockAdapter {
     if (targetHoriz < (motion.bestTargetDist ?? Infinity) - 0.25) {
       motion.bestTargetDist = targetHoriz;
       motion.lastTargetProgressAt = Date.now();
-    } else if (Date.now() - (motion.lastTargetProgressAt ?? motion.lastProgressAt) > MOVE_STALL_MS) {
+    } else if (Date.now() - Math.max(motion.lastTargetProgressAt ?? motion.lastProgressAt ?? 0, motion.lastIndexProgressAt ?? 0) > MOVE_STALL_MS) {
+      // Anche il **nodo di percorso** superato è progresso: uscendo da una casa il
+      // tratto che porta alla porta si allontana dal bersaglio, e senza questo
+      // termine una deviazione corretta veniva chiusa come `no_progress` dopo 8 s
+      // (live 08/10/2026: `follow_player` fermo a un blocco dalla porta per 28 s).
       return this._finishMotion('no_progress');
     }
 
@@ -11423,6 +11467,7 @@ export class BedrockAdapter {
       motion.index++;
       motion.bestWaypointDist = Infinity;
       motion.lastProgressAt = Date.now();
+      motion.lastIndexProgressAt = Date.now();
       motion.stuckTries = 0;
       waypoint = motion.path[motion.index];
       if (!waypoint) return this._finishMotion('path_end');
@@ -11481,15 +11526,23 @@ export class BedrockAdapter {
     // movimento lo rifiuta il server. Va aperta come quella davanti, con lo
     // stesso click_block e la stessa conferma dal cambio di runtime id.
     const fx = Math.floor(feet.x), fz = Math.floor(feet.z);
-    for (const y of [cy, cy + 1]) {
-      const key = `${fx},${y},${fz}`;
-      if (this._openDoors.has(key)) continue;
-      if (this._isDoorBlock(this.world.blockAt({ x: fx, y, z: fz }))) return { x: fx, y, z: fz };
+    // Oltre alla cella addosso e a quella davanti (yaw) si guarda il **nodo di
+    // percorso** che il bot sta attraversando: è il blocco apribile che gli
+    // serve davvero. Uscendo da una casa il nodo davanti è la porta, mentre lo
+    // yaw punta al giocatore fuori, spesso in diagonale: la porta restava
+    // invisibile e il bot si fermava contro di essa (live 08/10/2026).
+    const cells = [{ x: fx, z: fz }, { x: cx, z: cz }];
+    for (const node of [motion.path?.[motion.index], motion.path?.[motion.index + 1]]) {
+      if (!node) continue;
+      if (Math.hypot(node.x + 0.5 - feet.x, node.z + 0.5 - feet.z) > 2.5) continue;
+      if (!cells.some(cell => cell.x === node.x && cell.z === node.z)) cells.push({ x: node.x, z: node.z });
     }
-    for (const y of [cy, cy + 1]) {
-      const key = `${cx},${y},${cz}`;
-      if (this._openDoors.has(key)) continue;
-      if (this._isDoorBlock(this.world.blockAt({ x: cx, y, z: cz }))) return { x: cx, y, z: cz };
+    for (const cell of cells) {
+      for (const y of [cy, cy + 1]) {
+        const key = `${cell.x},${y},${cell.z}`;
+        if (this._openDoors.has(key)) continue;
+        if (this._isDoorBlock(this.world.blockAt({ x: cell.x, y, z: cell.z }))) return { x: cell.x, y, z: cell.z };
+      }
     }
     return null;
   }

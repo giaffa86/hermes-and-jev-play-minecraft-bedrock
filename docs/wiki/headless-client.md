@@ -141,7 +141,17 @@ The adapter instead:
    door on the bot and the server then refuses every step out of that cell
    (03/10); the body's own cells are also exempt from the collision test
    (`_collides(..., { ignoreSelf: true })`), so a solid block in the cell the bot
-   occupies can never freeze the model;
+   occupies can never freeze the model. The openable family is **door, fence gate
+   and trapdoor** (`_isDoorBlock`), not only `*_door` — a closed gate was not
+   traversable for the A\*, was never clicked and `DIG_PROTECTED` (`_fence_gate$`)
+   forbids breaking it, so a pen with a closed gate was a cage (08/10, the human
+   had to open it by hand). The blocks to open are looked for in the bot's own
+   cell, in the cell the yaw points at **and in the path nodes the route is about
+   to cross**: leaving a house the next node is the door while the yaw points at
+   the player outside, often diagonally, and the yaw-only search walked into it.
+   A door the **world already reports open** (`_isOpenAt`, read from the block's
+   own `open_bit`) is registered as open instead of clicked, because a click on an
+   open door toggles it shut on the bot;
 5. accepts server corrections beyond `0.75` blocks (`MAX_CORRECTION_DRIFT`) and
    realigns the tick anchor.
 

@@ -576,3 +576,84 @@ test('_entityVisible tests door geometry and every intervening cell', () => {
   world.set(6, 72, 0, STONE);
   assert.deepEqual(adapter._entityVisible(entity).blockedAt, { x: 6, y: 72, z: 0 });
 });
+
+// 08/10/2026: in casa il bot non seguiva il giocatore — «la porta era chiusa e non
+// riusciva ad aprirla, ho dovuto aprire io per liberarlo». La famiglia apribile
+// conteneva solo `*_door`: un cancelletto chiuso non era percorribile per l'A*,
+// non veniva mai cliccato e `DIG_PROTECTED` (`_fence_gate$`) vieta di romperlo,
+// quindi un recinto con cancello era una gabbia. Questi test tengono fermi i tre
+// pezzi: la famiglia, la cella che il percorso attraversa, e il click che non
+// richiude una porta che il mondo dice già aperta.
+test('un cancello chiuso è una via di uscita, non una gabbia', () => {
+  const gate = { name: 'oak_fence_gate', boundingBox: 'block', getProperties: () => ({ open_bit: false }) };
+  const world = flatWorld({ minX: 0, maxX: 6, maxZ: 0 });
+  world.set(3, 71, 0, gate);
+  const adapter = reachAdapter(world, { feet: { x: 2.5, y: 71, z: 0.5 } });
+  assert.equal(adapter._isDoorBlock(gate), true, 'il cancelletto entra nella famiglia apribile');
+  assert.equal(adapter._passableForPath(gate), true, 'da chiuso si attraversa: il movimento lo apre');
+  assert.equal(adapter._standable(3, 71, 0), true, 'la cella del cancelletto resta nel grafo');
+  adapter._motion = { active: true, yaw: 180, index: 0, path: [{ x: 3, y: 71, z: 0 }, { x: 4, y: 71, z: 0 }] };
+  assert.deepEqual(adapter._doorAhead(), { x: 3, y: 71, z: 0 }, 'il cancelletto è il prossimo nodo: va aperto');
+  assert.equal(adapter._doorParts({ x: 3, y: 71, z: 0 }, gate).length, 1, 'occupa una cella sola');
+});
+
+test('una botola sotto i piedi non viene aperta camminandoci sopra', () => {
+  const trapdoor = { name: 'oak_trapdoor', boundingBox: 'block', getProperties: () => ({ open_bit: false }) };
+  const world = flatWorld({ minX: 0, maxX: 3, maxZ: 0 });
+  world.set(1, 70, 0, trapdoor); // il pavimento su cui il bot cammina
+  const adapter = reachAdapter(world, { feet: { x: 1.5, y: 71, z: 0.5 } });
+  adapter._motion = { active: true, yaw: 0, index: 0, path: [{ x: 2, y: 71, z: 0 }] };
+  assert.equal(adapter._doorAhead(), null, 'il portello sotto i piedi non è un ostacolo da aprire');
+});
+
+test('una porta chiusa davanti si vede anche se lo yaw punta altrove', () => {
+  const door = { name: 'oak_door', boundingBox: 'block', getProperties: () => ({ upper_block_bit: false, open_bit: false }) };
+  const upper = { name: 'oak_door', boundingBox: 'block', getProperties: () => ({ upper_block_bit: true, open_bit: false }) };
+  const world = flatWorld({ minX: 0, maxX: 4, maxZ: 0 });
+  world.set(2, 71, 0, door);
+  world.set(2, 72, 0, upper);
+  const adapter = reachAdapter(world, { feet: { x: 1.5, y: 71, z: 0.5 } });
+  // Lo yaw punta a +z (il giocatore è fuori, di lato); la porta è a +x, sul percorso.
+  adapter._motion = { active: true, yaw: 0, index: 0, path: [{ x: 2, y: 71, z: 0 }, { x: 3, y: 71, z: 0 }] };
+  assert.deepEqual(adapter._doorAhead(), { x: 2, y: 71, z: 0 }, 'il nodo di percorso basta a vedere la porta');
+});
+
+test('_doorParts normalizza la metà superiore e parte dalla base', () => {
+  const lower = { name: 'oak_door', getProperties: () => ({ upper_block_bit: false, open_bit: false }) };
+  const upper = { name: 'oak_door', getProperties: () => ({ upper_block_bit: true, open_bit: false }) };
+  const air = { name: 'air', boundingBox: 'empty' };
+  const adapter = reachAdapter(flatWorld({ minX: 0, maxX: 1, maxZ: 0 }));
+  assert.deepEqual(adapter._doorParts({ x: 1, y: 71, z: 0 }, lower), [{ x: 1, y: 71, z: 0 }, { x: 1, y: 72, z: 0 }]);
+  assert.deepEqual(adapter._doorParts({ x: 1, y: 72, z: 0 }, upper), [{ x: 1, y: 71, z: 0 }, { x: 1, y: 72, z: 0 }]);
+  assert.deepEqual(adapter._doorParts({ x: 1, y: 71, z: 0 }, air), [{ x: 1, y: 71, z: 0 }], 'un blocco qualsiasi è la sua cella');
+});
+
+test('il click non richiude una porta che il mondo dice già aperta', () => {
+  const plate = { name: 'wooden_door', boundingBox: 'block' };
+  const upper = { ...plate, getProperties: () => ({ upper_block_bit: true, open_bit: false }) };
+  const world = flatWorld({ minX: 0, maxX: 3, maxZ: 0 });
+  world.set(1, 71, 0, { ...plate, getProperties: () => ({ upper_block_bit: false, open_bit: true }) });
+  world.set(1, 72, 0, upper);
+  world.runtimeIdAt = () => 42;
+  const adapter = reachAdapter(world, { feet: { x: 0.5, y: 71, z: 0.5 } });
+  const sent = [];
+  adapter._sendAuthInput = input => sent.push(input);
+  adapter._driveMotion = () => {};
+  adapter._survivalTick = () => {};
+  adapter._blockUseTransaction = pos => ({ click: pos });
+  const request = () => ({ pos: { x: 1, y: 71, z: 0 }, key: '1,71,0', sent: false, at: Date.now() });
+  adapter._motion = { active: true, yaw: -90, index: 0, path: [], useRequest: request() };
+  adapter._authTick();
+  assert.equal(sent[0].transaction, null, 'nessun click: la porta è già aperta');
+  assert.equal(adapter._openDoors.has('1,71,0'), true);
+  assert.equal(adapter._openDoors.has('1,72,0'), true, 'la credenza cade su entrambe le metà');
+
+  // Credenza opposta: la porta è chiusa e il click parte, con i due watcher.
+  world.set(1, 71, 0, { ...plate, getProperties: () => ({ upper_block_bit: false, open_bit: false }) });
+  adapter._openDoors.clear();
+  adapter._doorWatchers.clear();
+  adapter._motion.useRequest = request();
+  adapter._authTick();
+  assert.deepEqual(sent[1].transaction, { click: { x: 1, y: 71, z: 0 } }, 'una porta chiusa si clicca');
+  assert.equal(adapter._doorWatchers.size, 2, 'si osserva il cambio di entrambe le metà');
+});
