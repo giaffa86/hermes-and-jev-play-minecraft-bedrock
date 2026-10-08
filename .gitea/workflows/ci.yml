@@ -1,0 +1,50 @@
+# CI — the household copy, for the Gitea Actions runner on CT 111.
+#
+# `.github/workflows/ci.yml` is the source of truth for this pipeline: this file
+# is the same set of jobs, kept in step by hand, so the gates also hold if this
+# repository is mirrored on Gitea. The only deliberate difference is the missing
+# `concurrency` block, which older Gitea runners do not implement. Gitea
+# resolves `actions/checkout` and `actions/setup-node` from github.com.
+#
+# Why the capability contract is here and not only in the `pre-push` hook: a
+# local hook can be skipped (`git push --no-verify`), CI cannot. See
+# `docs/wiki/reasoning-roadmap.md` (R7) and `npm run capabilities:check`.
+name: ci
+
+permissions:
+  contents: read
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gates:
+    name: gates (contract, inventory, wiki)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: capability contract (R7)
+        run: npm run capabilities:check
+      - name: capability inventory (R0)
+        run: npm run inventory:check
+      - name: wiki lint, strict (includes the privacy gate)
+        run: npm run wiki:lint:strict
+
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test

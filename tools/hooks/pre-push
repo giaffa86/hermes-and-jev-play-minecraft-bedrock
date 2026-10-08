@@ -1,5 +1,13 @@
 #!/bin/sh
-# LLM-wiki pre-push gate: strict lint (warnings, incl. the privacy scan, block).
+# LLM-wiki pre-push gate: strict lint (warnings, incl. the privacy scan, block),
+# plus the R7 capability contract — CI runs both too, so this is only the fast
+# local copy that cannot be forgotten (see .github/workflows/ci.yml).
 # Activate once per clone:  git config core.hooksPath tools/hooks
 ROOT="$(git rev-parse --show-toplevel)"
+# The contract check is verbose on purpose (it prints the whole contract); a
+# passing push stays quiet, a failing one prints the verdict before stopping.
+if ! OUT="$(node "$ROOT/capability-contract.mjs" --check 2>&1)"; then
+  [ -n "$OUT" ] && printf '%s\n' "$OUT"
+  exit 1
+fi
 exec node "$ROOT/tools/wiki-lint.mjs" --strict

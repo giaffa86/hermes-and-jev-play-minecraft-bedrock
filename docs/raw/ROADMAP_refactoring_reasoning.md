@@ -820,10 +820,18 @@ the signature, a broken link is a typed problem and makes the contract unusable,
 tampered/unknown-version payload is refused without throwing, and a consumer asking
 for an older version accepts it deliberately).
 
+**The gate is in CI, not only in a hook (decided 08/10/2026).** `.github/workflows/ci.yml`
+(the only remote is GitHub) runs `npm ci` and then, on every push, pull request and
+manual dispatch, two jobs: `gates` (`capabilities:check`, `inventory:check`,
+`wiki:lint:strict`) and `tests` (`node --test tests/*.test.mjs`).
+`.gitea/workflows/ci.yml` holds the same jobs for the household Gitea Actions runner
+(CT 111), minus the `concurrency` block older runners do not implement. The `pre-push`
+hook gained the contract check as the fast local copy, deliberately *not* as the only
+place: a hook can be skipped with `--no-verify`, CI cannot.
+
 **Residual.** The route itself is wiring, verified by reading: the harness starts its
 HTTP server only after the bot connects, so no offline test can hit `GET
 /capabilities`. The contract it returns is what the tests cover.
-
 ## 7. Definition of Done (revised)
 
 The drafts' ultimate DoD (A §65) is the right *end state* but assumes MCP. The
@@ -869,9 +877,14 @@ existing HTTP boundary, not a service.
 5. Is `CHAT_CLARIFY` default-on acceptable, or must it stay opt-in after the first
    live round?
 6. Does the R0 inventory belong in CI (a wiki-lint-style gate) or only in `npm run
-   inventory`? **Partly answered by R7**: `npm run capabilities:check` is the gate
-   (exit 1 when the contract does not hold), so wiring it into the pre-push hook or
-   CI is now a one-line decision — still open.
+   inventory`? **Answered 08/10/2026: both, with CI as the authority.**
+   `capability-contract.mjs --check` is the gate (it builds the R0 inventory and
+   fails on any `level: 'error'` problem), `.github/workflows/ci.yml` — mirrored in
+   `.gitea/workflows/ci.yml` for the household Gitea runner — runs it together with
+   `inventory:check`, the strict wiki lint and the full test suite on every push and
+   pull request, and `tools/hooks/pre-push` runs it first as the fast local copy. A
+   local hook can be skipped (`git push --no-verify`), CI cannot, which is why the
+   hook is not the only place.
 
 ## 10. Sources
 

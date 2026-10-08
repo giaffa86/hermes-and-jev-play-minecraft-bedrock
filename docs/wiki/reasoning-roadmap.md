@@ -67,7 +67,7 @@ Namespaced `R0`…`R7` to avoid colliding with the repo's own M1–M12 chat mile
 | **R4** Structured failure | Harness refusal → typed `{step, error, evidence, retryable}`; a step revises its own steps instead of only a global replan | **implemented** — the step is the unit: `retry` retries, `switch` drops the key and republishes `steps[].refused`, `replan` fails the step |
 | **R5** Composite goals | `prepare_for_nether` as a DAG over existing milestones, expanded deterministically | **implemented** — a goal may name a **list** of milestones; `milestoneChain` returns the missing closure in dependency order and the plan carries it in `steps[]` |
 | **R6** Golden scenarios | Order + observation → expected plan/clarification/refusal, including the C17/C18 negative cases; freezes R1–R5 | **implemented** — nine scenarios in `tests/golden-scenarios.test.mjs`, driven against a scripted harness and asserted on the **R3 trace**; found and fixed a real bug (the `SIGTERM` handler died on a `ReferenceError`) |
-| **R7** Capability contract | R0's inventory as a **versioned, self-describing, consumer-validatable** contract (`capability-contract.mjs`), carried over the harness's existing HTTP boundary (`GET /capabilities`). MCP and any registry service stay non-goals: the contract is a read-only *projection*, never a second source of truth | **implemented** — `contractVersion` + `contentHash` + `valid`/`problems` + the frozen key set; `checkCapabilityContract` is the consumer's handshake; `npm run capabilities:check` is the offline gate |
+| **R7** Capability contract | R0's inventory as a **versioned, self-describing, consumer-validatable** contract (`capability-contract.mjs`), carried over the harness's existing HTTP boundary (`GET /capabilities`). MCP and any registry service stay non-goals: the contract is a read-only *projection*, never a second source of truth | **implemented** — `contractVersion` + `contentHash` + `valid`/`problems` + the frozen key set; `checkCapabilityContract` is the consumer's handshake; `npm run capabilities:check` is the offline gate, wired into **CI** (`.github/workflows/ci.yml`, mirrored in `.gitea/workflows/ci.yml`) and into `pre-push` |
 
 ### The plan shape (R1)
 
@@ -469,10 +469,14 @@ row touches a live Bedrock server, and none exercises a model-driven decision
 (`CONTROLLER=jev` needs an API key). What a live golden run should add, and whether
 it belongs in this suite or in the container's collaudo, is open.
 
-**R7 partly answered the CI question**: `npm run capabilities:check` is a gate that
-exits 1 when the contract does not hold, so wiring it into the pre-push hook or CI is
-now a one-line decision rather than a new tool — still a decision, still open. New
-from R7: the contract version is bumped by hand, and the only thing enforcing the
-protocol is `tests/capability-contract.test.mjs`. Whether a *second* consumer will
+**R7 answered the CI question (08/10/2026)**: `capability-contract.mjs --check` is
+the gate, and it runs in **CI** — `.github/workflows/ci.yml` (the only remote is
+GitHub), mirrored in `.gitea/workflows/ci.yml` for the household Gitea runner —
+next to `inventory:check`, the strict wiki lint and the full test suite, on every
+push and pull request. `tools/hooks/pre-push` runs the same check first as the fast
+local copy, deliberately not as the only place: a hook can be skipped with
+`--no-verify`, CI cannot. What stays open is the contract's own lifecycle: the
+version is bumped by hand, and the only thing enforcing the protocol is
+`tests/capability-contract.test.mjs`. Whether a *second* consumer will
 ever exist (and which one it would be: another agent, a second bot, an editor
 plugin) stays the trigger that would move the transport.

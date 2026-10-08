@@ -1,0 +1,53 @@
+# CI — the project's offline gates, the same ones a human runs by hand.
+#
+# This repository has one remote (GitHub), so this file is the authoritative
+# gate. An identical copy lives in `.gitea/workflows/ci.yml` for the household
+# runner (Gitea, CT 111), so the same checks hold on an internal mirror too;
+# keep the two files in step when either changes.
+#
+# Why the capability contract is here and not only in the `pre-push` hook: a
+# local hook can be skipped (`git push --no-verify`), CI cannot. See
+# `docs/wiki/reasoning-roadmap.md` (R7) and `npm run capabilities:check`.
+name: ci
+
+permissions:
+  contents: read
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: gates (contract, inventory, wiki)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: capability contract (R7)
+        run: npm run capabilities:check
+      - name: capability inventory (R0)
+        run: npm run inventory:check
+      - name: wiki lint, strict (includes the privacy gate)
+        run: npm run wiki:lint:strict
+
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
