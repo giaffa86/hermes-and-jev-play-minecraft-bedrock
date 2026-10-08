@@ -424,29 +424,33 @@ a projection that is *derived* and *never written*.
 
 A milestone can be **implemented**, **tested**, **wired**, **deployed** and
 **consumed**, and here those are five different things. R0–R7 are implemented,
-tested and wired. **Deployed is true for the harness side since 08/10/2026**: the
+tested and wired. **Deployed is true for both sides since 08/10/2026**: the
 `hermes-jev-bedrock` container was rebuilt from the pushed commit, the modules in
 `/app` hash identically to the local ones, and `GET /capabilities` answers 200 with
 the 13 expected keys, `valid: true` and counts (23/62/8/41/8/23/9/28) equal to
 `npm run capabilities:check` on the same commit — the same `contentHash`
-(`a7405c55…`). Nothing is **consumed** yet. The raw roadmap closes with §10
-*Known limitations and operational notes*, which keeps the full list and the
-five-state definition; in short:
+(`a7405c55…`). The **controller** was swapped the same day, from the
+`chat-truth-ce8dea7` snapshot to the `chat-truth-4e9f2c0` release built from the
+same commit (six modules hashing identically, the process running from the new
+directory, and a live `runs/chat-truth-4e9f2c0/plan-trace.jsonl` the old release
+could not write). Nothing is **consumed** yet: the contract has no consumer beyond
+its own tests. The raw roadmap closes with §10 *Known limitations and operational
+notes*, which keeps the full list and the five-state definition; in short:
 
 | State | R0–R6 | R7 |
 |---|---|---|
 | implemented | yes | yes |
 | tested | yes (`node --test tests/*.test.mjs`) | yes (6 contract cases) |
 | wired | yes (controller, harness, routes) | yes (`GET /capabilities`, the CI job, `pre-push`) |
-| deployed | **harness side yes** (rebuilt 08/10/2026); the **controller side no** — the live chat engine still runs the `chat-truth-ce8dea7` release, so the R2 gate, the R3 trace, the R4 step failures and the R5 composite goals are not in the running planner loop | **yes**: `GET /capabilities` → 200 with the expected keys and counts |
+| deployed | **yes, both sides** (08/10/2026): the harness rebuilt, the controller swapped to `chat-truth-4e9f2c0`, so the R2 gate, the R3 trace, the R4 step failures and the R5 composite goals are in the running planner loop | **yes**: `GET /capabilities` → 200 with the expected keys and counts |
 | consumed | by the controller itself | by nothing but its own tests |
 
 Three limits, stated so they are not read as defects: the route has **no offline
 end-to-end test** (the harness binds HTTP only after the bot connects, and a fake
 server would test the fake); the contract has **no real consumer** (the trigger for
 the future adapter is a second consumer, not a date); and the deploy is a **state,
-not a bug** — resolved for the harness on 08/10/2026, still open for the controller
-release. The same rebuild brought the M11 ore alert live.
+not a bug** — resolved for the harness and for the controller on 08/10/2026. The
+harness rebuild is what brought the M11 ore alert live.
 
 ## Real capability surface (the R0 input)
 

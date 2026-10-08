@@ -1584,18 +1584,18 @@ pinned by a test that fails without its edit ([verification](verification.md)
   (`success.circuitBuilt.id`), so no milestone can currently ask for them. Either
   wire them into a skill/milestone or document them as unused fixtures.
 
-## The live chat engine is one release behind the roadmap (2026-10-08)
+## The live chat engine now runs the roadmap (2026-10-08)
 
 - The `hermes-jev-bedrock` container — the harness behind `/observe`, `/options`,
   `/act`, `/say`, `/memory/*` and now `GET /capabilities` — was rebuilt on
   08/10/2026 from the pushed commit `a2f68d5`, so the R7 contract route and the
   M11 ore alert are live (row 47.70 of [verification](verification.md)).
 - The **controller** is a separate process, started from a release snapshot
-  (`chat-truth-ce8dea7`, the M7–M12 chat engine deployed on 07/10) inside the
-  `hermes` container. The controller side of the roadmap — the R2 clarification
-  gate, the R3 plan trace, the R4 typed step failures and the R5 composite goals —
-  is therefore **not** in the running planner loop yet.
-- Swapping it is a release deploy (`/opt/data/minecraft-releases/<release>` plus a
-  restart of the controller process), not a container rebuild, and it interrupts
-  the live chat engine while it happens; that is the owner's decision, not an
-  autonomous one.
+  (`/opt/data/minecraft-releases/<release>`) inside the `hermes` container. On
+  08/10/2026 the `chat-truth-ce8dea7` snapshot (the M7–M12 chat engine deployed on
+  07/10) was swapped for `chat-truth-4e9f2c0`, built from the same pushed commit:
+  the R2 clarification gate, the R3 plan trace, the R4 typed step failures and the
+  R5 composite goals are now in the running planner loop, and the live controller
+  wrote its first `plan-trace.jsonl` segment. The swap is a release deploy, not a
+  container rebuild, and it interrupts the live chat engine for a few seconds —
+  which is why it stays the owner's decision rather than an autonomous one.

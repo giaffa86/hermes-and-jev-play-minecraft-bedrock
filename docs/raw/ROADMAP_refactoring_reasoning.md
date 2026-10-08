@@ -896,19 +896,20 @@ confuse, so every claim above is meant to be read against this table:
 | **implemented** | the code exists and a caller can use it | the modules and their tests in this repository |
 | **tested** | `node --test tests/*.test.mjs` exercises it offline | the suite, green on the machine that wrote it |
 | **wired** | a live entry point reaches it: a route, a chat path, a hook, a CI job | the wiring is read, or the job ran |
-| **deployed** | the running process serves that code | the container rebuilt from the pushed commit (08/10/2026), hashes and live check below |
+| **deployed** | the running process serves that code | both processes are on the pushed commit: the `hermes-jev-bedrock` container rebuilt (08/10/2026) and the controller swapped to release `chat-truth-4e9f2c0` (08/10/2026) — hashes, live check and live `plan-trace.jsonl` below |
 | **consumed** | something other than its own tests uses it in anger | nothing on this roadmap is here yet |
 
 R0–R6 are implemented, tested and wired. R7 is implemented, tested and wired
-(the CI job included, and it has now run green). **Deployed is true for the
-harness side**: on 08/10/2026 `hermes-jev-bedrock` was rebuilt from the pushed
-commit and the process it runs serves that code. **Consumed is still false for
-everything on this roadmap**, and the controller side of R0–R6 is not deployed
-either: the live chat engine still runs an earlier release snapshot
-(`chat-truth-ce8dea7`), so the clarification gate, the plan trace, the typed step
-failures and the composite goals are not in the running planner loop. That is a
-separate release deploy, not a defect of the code. The limits worth writing down
-are these:
+(the CI job included, and it has now run green). **Deployed is true for both
+sides since 08/10/2026**: `hermes-jev-bedrock` was rebuilt from the pushed commit
+and the process it runs serves that code, and the live chat engine was swapped
+from the `chat-truth-ce8dea7` snapshot to the `chat-truth-4e9f2c0` release built
+from the same commit — so the clarification gate, the plan trace, the typed step
+failures and the composite goals are in the running planner loop, and the live
+controller wrote its own `runs/chat-truth-4e9f2c0/plan-trace.jsonl` on the first
+plan segment (`endedBy: goal_met`). **Consumed is still false for everything on
+this roadmap**: nothing but its own tests and the controller itself uses these
+surfaces yet. The limits worth writing down are these:
 
 1. **`GET /capabilities` has no offline end-to-end test — and should not get one.**
    The harness opens its HTTP server only after the bot has connected, so no offline
@@ -960,6 +961,20 @@ are these:
    Nothing more was needed. A mismatch would have meant that the restart did not
    pick up the commit, not that the contract was wrong. The same rebuild is what
    brought the M11 ore alert (the bot saying in chat that it saw an ore) live.
+
+   The **controller** side is a release deploy rather than a rebuild, because the
+   chat engine runs in the `hermes` container from a release directory
+   (`/opt/data/minecraft-releases/<release>`). On 08/10/2026 it was swapped the
+   same way: `chat-truth-4e9f2c0` was created by copying the running release
+   (so its `runs/` state — the ledger and the goal store — carried over),
+   overlaid with the new code, checked with `node --check` on nine modules plus a
+   smoke import of the controller's module graph, and started with the previous
+   process's own environment (`/proc/<pid>/environ`) so nothing but the code and
+   the release name changed. The evidence is the same shape as above: the six
+   modules hash identically to the local ones, the process runs from the new
+   directory, and the run directory gained the `plan-trace.jsonl` the old release
+   could not write. The swap interrupts the live chat engine for a few seconds,
+   which is why it stays the owner's call.
 
 ## 11. Sources
 
