@@ -3,8 +3,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  loadProgression, validateProgression, resolveMilestone, progressionSnapshot,
-  isKnownTag, itemMatchesTag, tagCount, tagItems,
+  loadProgression, validateProgression, resolveMilestone, milestoneChain, goalTargets,
+  progressionSnapshot, isKnownTag, itemMatchesTag, tagCount, tagItems,
 } from '../survival/index.mjs';
 
 const PROGRESSION_URL = new URL('../knowledge/progression.json', import.meta.url);
@@ -228,4 +228,97 @@ test('the bucket milestone is satisfied by a crafted bucket, not by raw iron', (
   assert.equal(iron.skill, 'craft_bucket');
   const crafted = resolveMilestone(graph, { goal: 'bucket', observation: { inventory: { bucket: 1 }, nearby: {}, time: { phase: 'day' } } });
   assert.equal(crafted.status, 'met');
+});
+
+// --- R5: goal compositi -----------------------------------------------------
+
+test('a composite goal expands into its targets, in dependency order', () => {
+  assert.deepEqual(goalTargets(graph, 'prepare_for_nether'), ['enter_nether', 'nether_survival']);
+  // Un goal semplice resta una lista di uno.
+  assert.deepEqual(goalTargets(graph, 'enter_nether'), ['enter_nether']);
+
+  const result = resolveMilestone(graph, { goal: 'prepare_for_nether', observation: empty });
+  assert.equal(result.status, 'next');
+  assert.equal(result.milestone, 'wood', 'il goal composito non cambia il contratto del primo passo');
+  assert.deepEqual(result.targets, ['enter_nether', 'nether_survival']);
+  assert.deepEqual(result.chain, [
+    'wood', 'crafting_table', 'stone_tools', 'iron_age',
+    'diamonds', 'nether_portal', 'enter_nether', 'nether_survival',
+  ]);
+  // Il primo elemento della catena è il `next`: chi lo consuma non deve fidarsi dell'ordine.
+  assert.equal(result.chain[0], result.milestone);
+  assert.equal(result.steps.length, result.chain.length, 'uno step per milestone mancante');
+  for (const step of result.steps) {
+    assert.equal(step.id, step.milestone);
+    assert.ok(graph.milestones[step.id].skill === step.skill, `skill dichiarata per ${step.id}`);
+  }
+  // `missing` è ciò che manca **adesso** al passo, non ciò che mancherà quando
+  // sarà il suo turno: il primo passo è l'unico a mani libere, gli altri
+  // dichiarano ancora il prerequisito che li blocca.
+  assert.deepEqual(result.steps[0].missing, [], 'il passo attivo ha tutti i prerequisiti soddisfatti');
+  assert.deepEqual(result.steps.find(step => step.id === 'crafting_table').missing, ['wood']);
+  assert.deepEqual(result.steps[0].verify, ['inventoryTagGte'], 'il criterio del milestone viaggia con lo step');
+  assert.ok(result.steps.find(step => step.id === 'enter_nether').verify.includes('dimension'));
+  assert.equal(result.steps.find(step => step.id === 'nether_survival').verify.length, 0, 'nether_survival non ha satisfiedWhen: lo chiude la skill');
+});
+
+test('a satisfied prerequisite is skipped, and the chain shortens', () => {
+  const withWood = resolveMilestone(graph, {
+    goal: 'prepare_for_nether',
+    observation: { inventory: { oak_log: 8 }, nearby: {}, time: { phase: 'day' } },
+  });
+  assert.equal(withWood.milestone, 'crafting_table');
+  assert.deepEqual(withWood.chain.slice(0, 3), ['crafting_table', 'stone_tools', 'iron_age']);
+  assert.equal(withWood.chain.includes('wood'), false);
+
+  const completed = new Set(['wood', 'crafting_table', 'stone_tools', 'iron_age', 'diamonds', 'nether_portal', 'enter_nether']);
+  const almost = resolveMilestone(graph, { goal: 'prepare_for_nether', observation: empty, completed });
+  assert.equal(almost.milestone, 'nether_survival');
+  assert.deepEqual(almost.chain, ['nether_survival'], 'la catena racconta solo ciò che manca davvero');
+});
+
+test('a composite goal closes only when every target is satisfied', () => {
+  const deps = ['wood', 'crafting_table', 'stone_tools', 'iron_age', 'diamonds', 'nether_portal'];
+  // `enter_nether` è soddisfatto dal mondo (sei nel Nether), `nether_survival` no:
+  // un target caduto non chiude il goal.
+  const half = resolveMilestone(graph, {
+    goal: 'prepare_for_nether',
+    observation: { inventory: {}, nearby: {}, time: { phase: 'day' }, dimension: 'nether' },
+    completed: new Set(deps),
+  });
+  assert.equal(half.status, 'next');
+  assert.equal(half.milestone, 'nether_survival');
+  assert.deepEqual(half.chain, ['nether_survival']);
+
+  const met = resolveMilestone(graph, {
+    goal: 'prepare_for_nether',
+    observation: { inventory: {}, nearby: {}, time: { phase: 'day' }, dimension: 'nether' },
+    completed: new Set([...deps, 'nether_survival']),
+  });
+  assert.equal(met.status, 'met');
+  assert.deepEqual(met.targets, ['enter_nether', 'nether_survival']);
+  assert.deepEqual(met.chain, []);
+});
+
+test('milestoneChain reports an unusable chain instead of guessing', () => {
+  const tiny = { milestones: { a: { requires: [], description: 'a', skill: 's_a' }, b: { requires: ['a'] } }, goals: {} };
+  assert.deepEqual(milestoneChain(tiny, { goal: 'a' }).chain, ['a']);
+  const ghost = milestoneChain(tiny, { goal: 'ghost' });
+  assert.equal(ghost.status, 'error');
+  assert.match(ghost.reason, /unknown milestone "ghost"/);
+  assert.deepEqual(ghost.steps, [], 'un errore non porta passi');
+  const broken = { milestones: { a: { requires: ['ghost'] } }, goals: {} };
+  const dangling = milestoneChain(broken, { goal: 'a' });
+  assert.equal(dangling.status, 'error');
+  assert.match(dangling.reason, /unknown requirement "ghost"/);
+  const cyclic = { milestones: { a: { requires: ['b'] }, b: { requires: ['a'] } }, goals: {} };
+  assert.match(milestoneChain(cyclic, { goal: 'a' }).reason, /cycle through/);
+});
+
+test('validation rejects a composite goal that names an unknown milestone or nothing', () => {
+  const bad = validateProgression({ milestones: { a: { requires: [] } }, goals: { trip: ['a', 'ghost'] } });
+  assert.ok(bad.some(error => error.includes('goal "trip": unknown milestone "ghost"')));
+  const emptyList = validateProgression({ milestones: { a: { requires: [] } }, goals: { trip: [] } });
+  assert.ok(emptyList.some(error => error.includes('goal "trip": empty milestone list')));
+  assert.deepEqual(validateProgression({ milestones: { a: { requires: [] } }, goals: { trip: ['a'] } }), []);
 });

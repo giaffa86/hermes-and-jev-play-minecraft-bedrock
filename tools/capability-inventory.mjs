@@ -94,9 +94,14 @@ export function buildInventory ({ skillsRoot, circuitsRoot, progressionPath } = 
     }
   }
 
-  for (const [goal, target] of Object.entries(goals)) {
-    if (!milestoneIds.has(target)) {
-      error('goal_target_missing', `goal "${goal}" points at milestone "${target}", which does not exist`);
+  for (const [goal, declared] of Object.entries(goals)) {
+    // R5: un goal e' un id di milestone oppure una lista (goal composito).
+    const targets = Array.isArray(declared) ? declared : [declared];
+    if (!targets.length) error('goal_target_missing', `goal "${goal}" names no milestone`);
+    for (const target of targets) {
+      if (!milestoneIds.has(target)) {
+        error('goal_target_missing', `goal "${goal}" points at milestone "${target}", which does not exist`);
+      }
     }
   }
 

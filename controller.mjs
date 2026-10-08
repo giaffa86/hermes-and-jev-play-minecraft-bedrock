@@ -45,7 +45,7 @@ import {composeChatReply, chatLlmConfig, compactChatFacts, createChatMemory, rea
 import {chatLangConfig, t, languageName, LANGS, listAnd} from './chat-i18n.mjs';
 import {narrateGoal, DEFAULT_NARRATE_COOLDOWN_MS} from './chat-narration.mjs';
 import {runDir} from './run-paths.mjs';
-import {withPlanShape} from './plan-shape.mjs';
+import {withPlanShape, planStep} from './plan-shape.mjs';
 import {createPlanTrace} from './plan-trace.mjs';
 // R4: il rifiuto tipizzato del passo. `siblingKeys` prende il vocabolario degli
 // intenti dal modulo dichiarato (R0) per trovare le chiavi alternative che
@@ -369,10 +369,30 @@ function startSkillRun (plan, observation) {
   };
 }
 
+// R5: uno step del curriculum e' un milestone con la skill che lo chiude. La
+// forma e' quella di R1 (`planStep`: skill, circuito, targets, criteri), con
+// l'id del **milestone** — in una catena il passo e' il milestone — e i criteri
+// dichiarati dal milestone (`satisfiedWhen`) uniti a quelli della skill. La
+// scelta dell'azione resta di `/options`: qui non entra nessuna key.
+function milestoneStep (entry) {
+  const base = planStep({ skill: entry.skill, objective: entry.description, targets: {} }, gameplaySkills);
+  return {
+    ...base,
+    id: entry.id,
+    milestone: entry.id,
+    verify: [...new Set([...base.verify, ...(entry.verify || [])])].sort(),
+  };
+}
+
 // Piano deterministico da un risultato del progression engine.
 function planFromMilestone (result) {
   if (result?.status !== 'next' || !result.skill) return null;
   const def = gameplaySkills.get(result.skill);
+  // R5: il piano dichiara **tutta** la catena mancante (`result.steps`), in
+  // ordine di dipendenza; il primo e' il passo attivo (`plan.skill`), gli altri
+  // sono la previsione — il motore la ricalcola dopo ogni milestone chiuso, e
+  // una deviazione del mondo la riscrive senza cerimonie.
+  const steps = (result.steps || []).map(milestoneStep);
   return {
     objective: def?.description || `Complete the "${result.milestone}" milestone.`,
     skill: result.skill,
@@ -386,6 +406,7 @@ function planFromMilestone (result) {
     waypoint: null,
     priority: 'progression',
     notes: `curriculum:${result.milestone}`,
+    ...(steps.length ? { steps } : {}),
   };
 }
 
@@ -2033,9 +2054,15 @@ for (let step = 1; step <= maxSteps; step++) {
       skillRun = null;
       if (skillStatus.status === 'success') {
         if (finished.milestone) completedMilestones.add(finished.milestone);
-        if (CURRICULUM && finished.milestone === CURRICULUM) {
+        // R5: chiude il goal il **motore**, non l'uguaglianza con una stringa.
+        // Per un goal semplice e' la stessa cosa (il milestone appena verificato
+        // entra in `completedMilestones`); per un goal composito e' l'unica cosa
+        // che lo puo' chiudere: si chiude quando **tutti** i target sono
+        // soddisfatti, non quando ne e' caduto uno.
+        const reached = CURRICULUM ? nextMilestone(obs) : null;
+        if (reached?.status === 'met') {
           console.log(`GOAL MET after ${step - 1} actions (curriculum ${CURRICULUM})`);
-          log('goal_met', {steps: step - 1, totalCost, curriculum: CURRICULUM, completedMilestones: [...completedMilestones]});
+          log('goal_met', {steps: step - 1, totalCost, curriculum: CURRICULUM, targets: reached.targets ?? null, completedMilestones: [...completedMilestones]});
           planTrace.flush({endedBy: 'goal_met', step: step - 1});
           goalReached = true;
           break;

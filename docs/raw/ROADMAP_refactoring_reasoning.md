@@ -608,7 +608,7 @@ alternative.
 
 ---
 
-### R5 — Composite goals as a DAG over milestones
+### R5 — Composite goals as a DAG over milestones (IMPLEMENTED)
 
 **Goal.** An explicit multi-step goal (`prepare_for_nether`) expressed as a DAG of
 existing milestones, resolved deterministically.
@@ -627,6 +627,61 @@ bypassed.
 **Risks.** Medium: `nextMilestone` currently returns a single deterministic `next`
 (DFS first hit). Extending it must not break the single-`next` contract its tests
 assert.
+
+**Implemented (07/10/2026).**
+
+- **A composite goal is data, not a new engine**: `goals` accepts an id **or an
+  array of ids** (`"prepare_for_nether": ["enter_nether", "nether_survival"]`).
+  No milestone is invented and no new node is added: the composite goal is the
+  union of the closures of its targets. `validateProgression` checks every element
+  (`goal "x": unknown milestone "y"`) and rejects an empty list
+  (`goal "x": empty milestone list`); `goalTargets(graph, goal)` normalises both
+  forms to an array.
+- **The engine gained a chain, the resolver kept its contract**: new
+  `milestoneChain(graph, {goal, observation, completed})` returns
+  `{status, targets, chain, steps, next, missing}` where `chain` is the missing
+  milestones in a **stable topological order** (prerequisites first, in the
+  order of `requires`; a satisfied milestone and its whole subtree are skipped).
+  `resolveMilestone` is now a thin wrapper over it: a simple goal answers exactly
+  as before (same fields, plus `targets`/`chain`/`steps`), so the tests that
+  assert `next`/`milestone`/`skill` — the single-`next` contract its own suite
+  pins — are untouched. `met` is true only when **every** target is satisfied: a
+  satisfied target no longer closes a composite goal.
+- **A step carries what the verifier will use**: `milestoneStep(graph, id,
+  satisfied)` → `{id, milestone, skill, description, requires, missing, verify}`,
+  with `verify` = `criteriaNames(satisfiedWhen)` filtered on `CRITERIA_KEYS` — the
+  same closed vocabulary of R1. `missing` is what the step lacks **now**, not what
+  it will lack when its turn comes: the chain does not simulate the world (no
+  speculative inventory), it lists what to do. The head
+  (`steps.find(s => s.missing.length === 0) ?? steps[0]`) is the `next`.
+- **The controller plans the whole chain, not just the step**: `planFromMilestone`
+  maps `result.steps` through `milestoneStep(entry)` (R1's `planStep` shape plus
+  the milestone id and the milestone's own criteria) and puts them on `plan.steps`;
+  `withPlanShape` is additive, so the producer wins. A plan for
+  `prepare_for_nether` on a fresh-ish bot therefore declares eight steps, the
+  first being the active one. The chain is **re-derived** after every milestone
+  that closes, so the plan shortens by itself as the world changes.
+- **What closes the goal is the engine, not a string comparison**: the old
+  `finished.milestone === CURRICULUM` became `nextMilestone(obs).status === 'met'`,
+  which for a simple goal is the same thing (the verified milestone just entered
+  `completedMilestones`) and for a composite one is the only correct rule.
+  `goal_met` now carries `targets`.
+- Tests: `tests/progression.test.mjs` (+5 — the expansion order and the step
+  fields, a satisfied prerequisite that shortens the chain, `met` only with every
+  target, the `error` paths of `milestoneChain`, the composite validation) and
+  `tests/controller-curriculum.test.mjs` (+1 — the real controller on the wire:
+  `CURRICULUM=prepare_for_nether` walks `diamonds → nether_portal →
+  enter_nether → nether_survival` in four actions, every plan declares the chain
+  that is still missing (`steps.length` = 4, 3, 2, 1), and `enter_nether` — a
+  satisfied **target** — does not close the goal; only the last milestone does).
+  `tools/capability-inventory.mjs` (R0) learned the array form, so the inventory
+  reports `goal_target_missing` only for a target that really is missing.
+  Full suite **1940/1940** (from 1934).
+- Honest limit: the composite goal chooses its **targets**, not a procedure. The
+  chain is the dependency closure of nodes declared in
+  `knowledge/progression.json`; a capability that is not a milestone still cannot
+  be composed, and the per-step order inside a milestone (what to mine first) is
+  still the harness's `/options` and Jev's choice.
 
 ---
 

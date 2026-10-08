@@ -65,7 +65,7 @@ Namespaced `R0`…`R7` to avoid colliding with the repo's own M1–M12 chat mile
 | **R2** Clarification gate | Wrap `humanCommandPlan`: `orderGaps(text, plan, obs, {memory})` → `ready` \| `needs_input`; ask one question, hold the order, resume on the same sender's answer. **Design decided 07/10/2026**: the pending question lives in the harness-side inbox (`chatInbox`), not in the controller, and an under-specified order never becomes a goal (so no running goal is suspended). `CHAT_CLARIFY` **default on**, kill-switch `off` | **implemented** |
 | **R3** Plan trace | One structured `plan_trace` line per decision (objective, subgoal, source, steps, action, refusals, replan reason). Never chain-of-thought | **implemented** — one line per plan *segment* in `runs/<run>/plan-trace.jsonl`, written by the controller |
 | **R4** Structured failure | Harness refusal → typed `{step, error, evidence, retryable}`; a step revises its own steps instead of only a global replan | **implemented** — the step is the unit: `retry` retries, `switch` drops the key and republishes `steps[].refused`, `replan` fails the step |
-| **R5** Composite goals | `prepare_for_nether` as a DAG over existing milestones, expanded deterministically | proposed |
+| **R5** Composite goals | `prepare_for_nether` as a DAG over existing milestones, expanded deterministically | **implemented** — a goal may name a **list** of milestones; `milestoneChain` returns the missing closure in dependency order and the plan carries it in `steps[]` |
 | **R6** Golden scenarios | Order + observation → expected plan/clarification/refusal, including the C17/C18 negative cases; freezes R1–R5 | proposed |
 | **R7** (conditional) contracts over a process boundary | Only if a second consumer appears; MCP explicitly deferred to avoid a second source of truth | deferred |
 
@@ -259,6 +259,65 @@ Properties, covered by `tests/step-failure.test.mjs` (11),
 - Honest limit: a step that needs a different *kind* of approach (not a sibling
   mode of the same intent) still ends in a replan.
 
+### Composite goals (R5)
+
+A curriculum goal could only be **one** milestone, so "get ready for the Nether"
+had to be expressed as one of its pieces. R5 lets a goal name a **list** of
+milestones and hands back the whole missing closure, in dependency order.
+
+```text
+  "prepare_for_nether": ["enter_nether", "nether_survival"]   <-- data, not code
+        |
+        v   survival/progression.mjs
+  milestoneChain(graph, {goal, observation, completed})
+     chain = wood -> crafting_table -> stone_tools -> iron_age
+             -> diamonds -> nether_portal -> enter_nether -> nether_survival
+             (topological, stable; a satisfied node and its subtree are skipped)
+     steps[] = { id, milestone, skill, description, requires, missing, verify }
+        |
+        v   controller.mjs / planFromMilestone
+  plan.steps = the whole missing chain   (plan.skill = chain[0])
+  the chain is re-derived after every milestone that closes  ->  it shortens itself
+  the goal closes when EVERY target is satisfied (not when one is)
+```
+
+Properties, covered by `tests/progression.test.mjs` (+5) and by a 4th test in
+`tests/controller-curriculum.test.mjs` that drives the **real controller** against a
+scripted world:
+
+- **A composite goal is data**: an array in `goals` (`knowledge/progression.json`),
+  no new milestone, no new engine. `validateProgression` checks every element and
+  rejects an empty list, so a typo fails at load, not at run time.
+- **The single-`next` contract survives**: `resolveMilestone` answers exactly as
+  before for a simple goal (the `next`/`milestone`/`skill` triple its own suite
+  pins) and now also carries `targets`/`chain`/`steps`. `prepare_for_nether` from
+  an empty inventory still says `wood` — the composite goal changes the goal, not
+  the first step.
+- **`met` means *all* the targets**: a milestone satisfied by the world (e.g.
+  `enter_nether` once the dimension is `nether`) does not close a composite goal.
+  On the wire: after `enter_portal` the third action succeeds and the run keeps
+  going — `GOAL MET after 3 actions` never appears — and the fourth action closes
+  `nether_survival`.
+- **The plan declares the chain and shortens it by itself**: with an early-game
+  inventory the four plans of the run carry `steps.length` = 4, 3, 2, 1, and
+  `steps[0].id` is always the active milestone. The chain is recomputed from the
+  observation at every replan, never copied forward.
+- **A step carries the criteria the verifier will use**: `verify` is
+  `criteriaNames(satisfiedWhen)` filtered on `CRITERIA_KEYS` (R1's closed
+  vocabulary); `nether_survival`, which has no `satisfiedWhen`, carries an empty
+  `verify` — it closes only through the verified skill.
+- **`missing` is "what is missing now"**: the chain does not simulate the world, so
+  a downstream step still lists the prerequisite that currently blocks it. No
+  speculative inventory is invented to make the preview prettier.
+- **`/options` is never bypassed**: the chain names skills and milestones, never
+  keys; the controller still decides on the harness's keys, and the composite test
+  asserts an action per stage offered by the scripted world.
+- **The inventory tool learned it too** (`tools/capability-inventory.mjs`, R0),
+  otherwise the R0 test would report a composite goal as a missing milestone.
+- Honest limit: the composite goal chooses its **targets**, not a procedure. A
+  capability that is not a milestone in `knowledge/progression.json` still cannot
+  be composed.
+
 ## Real capability surface (the R0 input)
 
 | Layer | Artifact | Count (07/10/2026, from the R0 inventory) |
@@ -268,7 +327,7 @@ Properties, covered by `tests/step-failure.test.mjs` (11),
 | Gameplay skills | `skills/gameplay/**/*.json` (`loadGameplaySkills`) | 41 in 6 domains |
 | Circuit blueprints | `circuits/*.json` (`loadCircuits`) | 8 (2 orphans) |
 | Milestones | `knowledge/progression.json` | 23 |
-| Goals | `knowledge/progression.json` | 8 |
+| Goals | `knowledge/progression.json` | 9 (one of them composite: `prepare_for_nether`) |
 | Criteria | `CRITERIA_KEYS` (`survival/verify.mjs:372`) | 28 |
 
 The inventory's first run has **zero errors** and one real finding: `auto_door` and
@@ -289,6 +348,13 @@ kill-switch that restores the old planner fallback. **R3 answered where a run's
 *motives* live**: in `runs/<run>/plan-trace.jsonl`, one line per plan segment (not
 per action), with `source` stamped on the plan when it is born and `endedBy` naming
 its closure (`human_order`, `replan:anti_loop:…`, `goal_met`, `signal:SIGTERM`, …).
+**R5 answered the multi-branch question without touching the single-`next`
+contract**: `resolveMilestone` keeps answering the same five calls a simple goal
+always answered (its own suite is untouched) and gained `targets`/`chain`/`steps`,
+while the new `milestoneChain` is the one that expands a composite goal. A goal can
+now name a list of milestones; what is still open is whether the *targets* should
+ever be proposed by a model instead of being authored in `knowledge/progression.json`
+(today they are data, and R5 deliberately kept them that way).
 
 New from R0: should `auto_door` and `delay_line` be wired into a milestone (a skill
 whose `success.circuitBuilt.id` names them), or are they deliberately unused

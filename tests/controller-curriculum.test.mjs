@@ -177,6 +177,72 @@ function startRedstoneHarness (initial = {}) {
   });
 }
 
+// Scripted world for the **composite** goal (R5): the bot already owns the
+// early game (logs, table, stone and iron tools), so `prepare_for_nether =
+// [enter_nether, nether_survival]` must resolve to the four missing milestones
+// `diamonds -> nether_portal -> enter_nether -> nether_survival`, one action
+// each. The last two are the point of the test: `enter_nether` is a *target*
+// satisfied by the world (the dimension changes) while `nether_survival` is
+// not — the goal must survive that and only close on the last one.
+function startCompositeHarness () {
+  return new Promise(resolve => {
+    const state = {
+      stage: 'diamonds',
+      inventory: { oak_log: 8, crafting_table: 1, stone_pickaxe: 1, iron_pickaxe: 1 },
+      health: 20,
+      food: 20,
+      dimension: 'overworld',
+      time: { ticks: 2000, night: false, phase: 'day' },
+      acts: [],
+    };
+    const optionsFor = () => {
+      switch (state.stage) {
+        case 'diamonds': return [{ key: 'mine_diamond_ore', description: 'mine a diamond' }];
+        case 'portal': return [{ key: 'mine_obsidian', description: 'mine obsidian for a portal' }];
+        case 'enter': return [{ key: 'enter_portal', description: 'walk into the portal' }];
+        case 'survive': return [{ key: 'dig_shelter', description: 'dig a shelter in the Nether' }];
+        default: return [{ key: 'wait', description: 'wait' }];
+      }
+    };
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (req.method === 'GET' && req.url === '/observe') {
+        res.end(JSON.stringify({
+          position: { x: 0, y: 64, z: 0 },
+          dimension: state.dimension,
+          inventory: { ...state.inventory },
+          health: state.health,
+          food: state.food,
+          dead: false,
+          time: { ...state.time },
+          entities: [],
+          chat: [],
+          drops: [],
+          containers: [],
+        }));
+      } else if (req.method === 'GET' && req.url === '/options') {
+        res.end(JSON.stringify({ options: optionsFor() }));
+      } else if (req.method === 'POST' && req.url === '/act') {
+        let body = '';
+        req.on('data', c => { body += c; });
+        req.on('end', () => {
+          let key = null;
+          try { key = JSON.parse(body || '{}').key; } catch { key = null; }
+          state.acts.push(key);
+          if (key === 'mine_diamond_ore' && state.stage === 'diamonds') { state.inventory.diamond = 3; state.stage = 'portal'; }
+          if (key === 'mine_obsidian' && state.stage === 'portal') { state.inventory.obsidian = 10; state.stage = 'enter'; }
+          if (key === 'enter_portal' && state.stage === 'enter') { state.dimension = 'nether'; state.stage = 'survive'; }
+          if (key === 'dig_shelter' && state.stage === 'survive') { state.stage = 'done'; }
+          res.end(JSON.stringify({ ok: true, ms: 1 }));
+        });
+      } else {
+        res.end('{}');
+      }
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, state }));
+  });
+}
+
 function runController (env) {
   return new Promise(resolve => {
     const child = spawn(process.execPath, ['controller.mjs'], { cwd: ROOT, env: { ...process.env, ...env } });
@@ -333,6 +399,62 @@ test('CURRICULUM=redstone_automation: the chain ends on a verified circuit, not 
     assert.equal(met.steps, 3);
     assert.deepEqual([...met.completedMilestones].sort(),
       ['redstone_automation', 'redstone_basics', 'redstone_ore']);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(hermes.dir, { recursive: true, force: true });
+  }
+});
+
+test('CURRICULUM=prepare_for_nether: a composite goal closes only on its last target, and every plan carries the chain (R5)', async () => {
+  const { server, port, state } = await startCompositeHarness();
+  const runId = `test-curriculum-composite-${process.pid}-${Date.now()}`;
+  const dir = join(ROOT, 'runs', runId);
+  const hermes = fakeHermesQueue(['mine_diamond_ore', 'mine_obsidian', 'enter_portal', 'dig_shelter']);
+  try {
+    const { code, stdout, stderr } = await runController({
+      HARNESS: `http://127.0.0.1:${port}`,
+      RUN_ID: runId,
+      CONTROLLER: 'hermes',
+      CURRICULUM: 'prepare_for_nether',
+      MAX_STEPS: '8',
+      TARGETS: '{}',
+      WAYPOINT: '',
+      SESSION: '',
+      AUTONOMY: 'off',
+      OPENROUTER_API_KEY: '',
+      TYPESAFE_API_KEY: '',
+      CHAT_ALLOWLIST: '',
+      PATH: `${hermes.path}:${process.env.PATH}`,
+    });
+    assert.equal(code, 0, `unexpected exit code ${code}; stdout:\n${stdout}\nstderr:\n${stderr}`);
+    assert.deepEqual(state.acts, ['mine_diamond_ore', 'mine_obsidian', 'enter_portal', 'dig_shelter'],
+      'the actions must walk the composite chain in dependency order');
+
+    const events = readFileSync(join(dir, 'controller.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const plans = events.filter(e => e.type === 'plan');
+    assert.deepEqual(plans.map(e => e.plan.milestone),
+      ['diamonds', 'nether_portal', 'enter_nether', 'nether_survival'],
+      'the chain must be re-derived after every milestone that closes');
+    // R5: il piano dichiara **tutta** la catena mancante, e si accorcia da sola.
+    assert.deepEqual(plans[0].plan.steps.map(s => s.id),
+      ['diamonds', 'nether_portal', 'enter_nether', 'nether_survival']);
+    assert.deepEqual(plans.map(e => e.plan.steps.length), [4, 3, 2, 1],
+      'every plan carries exactly the milestones still missing');
+    assert.equal(plans[0].plan.steps[0].id, plans[0].plan.milestone, 'the first step is the active one');
+    assert.ok(plans[0].plan.steps.find(s => s.id === 'enter_nether').verify.includes('dimension'),
+      'a step carries the criteria the verifier will use');
+    assert.ok(plans.every(e => e.plan.waypoint === null), 'no ambient waypoint in a curriculum plan');
+    assert.ok(!events.some(e => e.type === 'curriculum_fallback'), 'the planner must not be needed');
+
+    // La prova del goal composito: `enter_nether` cade al terzo passo (il mondo
+    // è cambiato), ma il goal **non** si chiude finche' non cade anche l'ultimo.
+    assert.doesNotMatch(stdout, /GOAL MET after 3 actions/, 'a satisfied target must not close a composite goal');
+    assert.match(stdout, /GOAL MET after 4 actions \(curriculum prepare_for_nether\)/);
+    const met = events.find(e => e.type === 'goal_met');
+    assert.deepEqual(met.targets, ['enter_nether', 'nether_survival'], 'the goal_met names both targets');
+    assert.deepEqual([...met.completedMilestones].sort(),
+      ['diamonds', 'enter_nether', 'nether_portal', 'nether_survival']);
   } finally {
     server.close();
     rmSync(dir, { recursive: true, force: true });

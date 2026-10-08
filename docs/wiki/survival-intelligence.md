@@ -34,7 +34,11 @@ actions → verification → next milestone.**
    nether_survival → … → enter_end → beat_the_dragon`; see [nether](nether.md)).
    `resolveMilestone` returns the first missing prerequisite; with
    `CURRICULUM=<milestone>` the controller drives the chain deterministically and
-   uses Hermes only as fallback.
+   uses Hermes only as fallback. A goal may also name a **list** of milestones (a
+   composite goal, R5 — `prepare_for_nether = [enter_nether, nether_survival]`):
+   `milestoneChain` expands the missing closure in dependency order and the plan
+   carries it in `steps[]`, so the goal closes only when every target is satisfied.
+   See [reasoning-roadmap](reasoning-roadmap.md).
 6. **Goal Contract** (`survival/goal-contract.mjs`, Slice A) wraps the shallow
    `plan` in `target`/`constraints`/`success`/`failure` and derives a status
    (`RUNNING`/`SUCCESS`/`FAILED`/`BLOCKED`) with the same verifier vocabulary;

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "comment": "Grafo di progressione. `satisfiedWhen` usa il vocabolario dei criteri del verifier; un milestone senza satisfiedWhen è soddisfatto solo se il controller ha già verificato la skill (completed set). Vedi docs/SURVIVAL-INTELLIGENCE.md.",
+  "comment": "Grafo di progressione. `satisfiedWhen` usa il vocabolario dei criteri del verifier; un milestone senza satisfiedWhen è soddisfatto solo se il controller ha già verificato la skill (completed set). Un goal vale per un milestone, o per una lista di milestone (goal composito, R5): la sua espansione è l'unione delle chiusure dei target in ordine di dipendenza. Vedi docs/SURVIVAL-INTELLIGENCE.md.",
   "goals": {
     "first_night": "first_night",
     "enter_nether": "enter_nether",
@@ -9,7 +9,8 @@
     "redstone": "redstone_automation",
     "bucket": "bucket",
     "water_travel": "water_travel",
-    "nether_cross_lava": "nether_cross_lava"
+    "nether_cross_lava": "nether_cross_lava",
+    "prepare_for_nether": ["enter_nether", "nether_survival"]
   },
   "milestones": {
     "wood": {

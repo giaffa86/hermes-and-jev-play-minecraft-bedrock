@@ -14,7 +14,10 @@
 // Modulo quasi puro: solo il loader legge il file JSON.
 
 import { readFileSync } from 'node:fs';
-import { evaluateCriteria, validateCriteria } from './verify.mjs';
+import { evaluateCriteria, validateCriteria, CRITERIA_KEYS } from './verify.mjs';
+import { criteriaNames } from '../plan-shape.mjs';
+
+const CRITERIA = new Set(CRITERIA_KEYS);
 
 export function validateProgression (graph) {
   const errors = [];
@@ -32,7 +35,13 @@ export function validateProgression (graph) {
     errors.push(...validateCriteria(node.satisfiedWhen, `milestone "${id}".satisfiedWhen`));
   }
   for (const [goal, target] of Object.entries(graph.goals || {})) {
-    if (!ids.includes(target)) errors.push(`goal "${goal}": unknown milestone "${target}"`);
+    // R5: un goal puo' valere per piu' milestone (goal composito) — la sua
+    // espansione e' l'unione delle chiusure dei target, in ordine di dipendenza.
+    const targets = Array.isArray(target) ? target : [target];
+    if (!targets.length) errors.push(`goal "${goal}": empty milestone list`);
+    for (const id of targets) {
+      if (!ids.includes(id)) errors.push(`goal "${goal}": unknown milestone "${id}"`);
+    }
   }
   // Rileva cicli.
   const state = new Map();
@@ -48,14 +57,25 @@ export function validateProgression (graph) {
 }
 
 export async function loadProgression (url) {
-  const graph = JSON.parse(readFileSync(url, 'utf8'));
+  let graph;
+  try {
+    graph = JSON.parse(readFileSync(url, 'utf8'));
+  } catch (error) {
+    throw new Error(`invalid progression graph: ${error.message}`);
+  }
   const errors = validateProgression(graph);
   if (errors.length) throw new Error(`invalid progression graph:\n${errors.join('\n')}`);
   return graph;
 }
 
-function goalId (graph, goal) {
-  return graph.goals?.[goal] || goal;
+// R5: i target di un goal. Un goal del grafo puo' essere un id solo (come
+// sempre) o una **lista** di id: un goal composito non aggiunge milestone, ne
+// unisce due rami gia' dichiarati.
+export function goalTargets (graph, goal) {
+  const declared = graph?.goals && Object.prototype.hasOwnProperty.call(graph.goals, goal)
+    ? graph.goals[goal]
+    : goal;
+  return (Array.isArray(declared) ? declared : [declared]).map(target => String(target));
 }
 
 // Stato di ogni milestone rispetto all'osservazione corrente.
@@ -75,44 +95,98 @@ function isMilestoneSatisfied (graph, id, observation, completed) {
   return false;
 }
 
-// Primo milestone non soddisfatto con tutti i prerequisiti soddisfatti.
+// R5: la catena dei milestone mancanti, in ordine di dipendenza.
+//
+// `resolveMilestone` risponde "qual e' il prossimo passo utile"; questo risponde
+// anche "e poi?": la chiusura dei target (dichiarata, non inventata) in un ordine
+// topologico stabile (prima i prerequisiti, nell'ordine di `requires`), senza i
+// milestone gia' soddisfatti. Il primo elemento e' quindi per costruzione un
+// milestone con tutti i prerequisiti soddisfatti, cioe' esattamente il `next`.
+//
 // Ritorna:
-//   { status: 'met', milestone }                obiettivo già raggiunto
-//   { status: 'next', milestone, skill, ... }   prossimo passo utile
-//   { status: 'error', reason }                 obiettivo/grafo non utilizzabile
-export function resolveMilestone (graph, { goal, observation = {}, completed = new Set() } = {}) {
-  const target = goalId(graph, goal);
-  if (!graph.milestones[target]) {
-    return { status: 'error', reason: `unknown milestone "${target}"`, milestone: null, skill: null };
+//   { status: 'met',   targets, chain: [], steps: [], next: null }
+//   { status: 'next',  targets, chain: [id...], steps: [...], next, missing }
+//   { status: 'error', reason, targets, chain: [], steps: [], next: null }
+export function milestoneChain (graph, { goal, observation = {}, completed = new Set() } = {}) {
+  const targets = goalTargets(graph, goal);
+  for (const target of targets) {
+    if (!graph.milestones?.[target]) {
+      return { status: 'error', reason: `unknown milestone "${target}"`, targets, chain: [], steps: [], next: null, missing: [] };
+    }
   }
   const satisfied = (id) => isMilestoneSatisfied(graph, id, observation, completed);
-  if (satisfied(target)) return { status: 'met', milestone: target, skill: null };
-
-  let resolved = null;
+  if (targets.every(satisfied)) {
+    return { status: 'met', targets, chain: [], steps: [], next: null, missing: [] };
+  }
+  const order = [];
+  const seen = new Set();
   const visiting = new Set();
+  let error = null;
   const visit = (id) => {
-    if (resolved) return;
-    if (satisfied(id)) return;
+    if (error || seen.has(id) || satisfied(id)) return;
     const node = graph.milestones[id];
-    if (!node) { resolved = { status: 'error', reason: `unknown requirement "${id}"`, milestone: null, skill: null }; return; }
-    if (visiting.has(id)) { resolved = { status: 'error', reason: `cycle through "${id}"`, milestone: null, skill: null }; return; }
+    if (!node) { error = `unknown requirement "${id}"`; return; }
+    if (visiting.has(id)) { error = `cycle through "${id}"`; return; }
     visiting.add(id);
     for (const requirement of node.requires || []) {
       visit(requirement);
-      if (resolved) return;
+      if (error) return;
     }
     visiting.delete(id);
-    if ((node.requires || []).every(satisfied)) {
-      resolved = {
-        status: 'next',
-        milestone: id,
-        skill: node.skill ?? null,
-        description: node.description ?? null,
-        missing: (node.requires || []).filter(requirement => !satisfied(requirement)),
-      };
-    }
+    if (!seen.has(id)) { seen.add(id); order.push(id); }
   };
-  visit(target);
-  if (resolved) return resolved;
-  return { status: 'error', reason: `no unsatisfied milestone reachable from "${target}"`, milestone: null, skill: null };
+  for (const target of targets) {
+    visit(target);
+    if (error) break;
+  }
+  if (error) return { status: 'error', reason: error, targets, chain: [], steps: [], next: null, missing: [] };
+  if (!order.length) return { status: 'met', targets, chain: [], steps: [], next: null, missing: [] };
+  const steps = order.map(id => milestoneStep(graph, id, satisfied));
+  const head = steps.find(step => step.missing.length === 0) ?? steps[0];
+  return {
+    status: 'next',
+    targets,
+    chain: order,
+    steps,
+    next: { status: 'next', milestone: head.id, skill: head.skill, description: head.description, missing: head.missing },
+    missing: head.missing,
+  };
+}
+
+// Uno step della catena: il milestone e la skill che lo chiude, i prerequisiti
+// che gli **mancano adesso** (non quelli che mancheranno al suo turno: la
+// catena non simula il mondo, elenca ciò che serve) e i criteri con cui il
+// verifier lo riconosce. `verify` e' filtrato sul vocabolario del verificatore
+// (`CRITERIA_KEYS`): da qui non entra un nome di criterio nuovo.
+function milestoneStep (graph, id, satisfied) {
+  const node = graph.milestones[id];
+  const requires = node.requires || [];
+  return {
+    id,
+    milestone: id,
+    skill: node.skill ?? null,
+    description: node.description ?? null,
+    requires: [...requires],
+    missing: requires.filter(requirement => !satisfied(requirement)),
+    verify: [...criteriaNames(node.satisfiedWhen)].filter(name => CRITERIA.has(name)).sort(),
+  };
+}
+
+// Primo milestone non soddisfatto con tutti i prerequisiti soddisfatti.
+// Ritorna:
+//   { status: 'met', milestone }                obiettivo (o composito) raggiunto
+//   { status: 'next', milestone, skill, ... }   prossimo passo utile
+//   { status: 'error', reason }                 obiettivo/grafo non utilizzabile
+// In piu', in entrambi i casi utili, `targets` (i milestone che il goal nomina:
+// uno, o piu' se il goal e' composito) e — su `next` — `chain`/`steps`, la
+// chiusura mancante in ordine di dipendenza (vedi `milestoneChain`).
+export function resolveMilestone (graph, { goal, observation = {}, completed = new Set() } = {}) {
+  const chain = milestoneChain(graph, { goal, observation, completed });
+  if (chain.status === 'met') {
+    return { status: 'met', milestone: chain.targets[0] ?? null, skill: null, targets: chain.targets, chain: [], steps: [] };
+  }
+  if (chain.status === 'error') {
+    return { status: 'error', reason: chain.reason, milestone: null, skill: null, targets: chain.targets, chain: [], steps: [] };
+  }
+  return { ...chain.next, targets: chain.targets, chain: chain.chain, steps: chain.steps };
 }

@@ -1,5 +1,61 @@
 # Log
 
+## [2026-10-07] feat | R5 implementata: un goal può chiamare più milestone, e il piano ne dichiara la catena mancante
+
+Un goal del curriculum non è più un solo milestone: `prepare_for_nether` nomina una
+**lista** (`enter_nether`, `nether_survival`) e il motore ne espande la chiusura in
+ordine di dipendenza. Suite a 1940/1940.
+
+- **Il goal composito è dato, non un motore nuovo**: `goals` in
+  `knowledge/progression.json` accetta un id o una lista; `goalTargets(graph, goal)`
+  normalizza le due forme e `validateProgression` controlla ogni elemento
+  (`goal "x": unknown milestone "y"`) e rifiuta la lista vuota, così un refuso
+  fallisce al caricamento e non a run time. Nessun milestone nuovo.
+- **`milestoneChain(graph, {goal, observation, completed})`** (`survival/progression.mjs`)
+  ritorna `{status, targets, chain, steps, next, missing}`: `chain` è la chiusura
+  mancante in ordine topologico **stabile** (prima i prerequisiti, nell'ordine di
+  `requires`; un milestone soddisfatto — e tutto il suo sottoalbero — è saltato) e
+  ogni `steps[]` è `{id, milestone, skill, description, requires, missing, verify}`,
+  con `verify` = `criteriaNames(satisfiedWhen)` filtrato su `CRITERIA_KEYS` (il
+  vocabolario chiuso di R1). `missing` è ciò che manca **adesso** al passo: la
+  catena non simula il mondo.
+- **`resolveMilestone` è ora un wrapper**: un goal semplice risponde esattamente
+  come prima (il triplo `next`/`milestone`/`skill` che la sua suite fissa, intatto)
+  e in più porta `targets`/`chain`/`steps`. La testa della catena è
+  `steps.find(s => s.missing.length === 0) ?? steps[0]`: il contratto single-`next`
+  non si rompe, si estende.
+- **`met` significa *tutti* i target**: un target soddisfatto dal mondo (es.
+  `enter_nether` quando la dimensione diventa `nether`) **non** chiude un goal
+  composito. In `controller.mjs` il test di chiusura `finished.milestone ===
+  CURRICULUM` è diventato `nextMilestone(obs).status === 'met'` (per un goal
+  semplice è la stessa cosa) e `goal_met` porta anche `targets`.
+- **Il piano dichiara la catena**: `planFromMilestone` mappa `result.steps` con
+  `milestoneStep(entry)` (la forma di `planStep` di R1 + l'id del milestone + i
+  criteri del milestone) su `plan.steps`; `withPlanShape` è additiva, quindi il
+  produttore vince. La catena si **ricalcola** a ogni replan e si accorcia da sola.
+- **Test**: `tests/progression.test.mjs` (+5: espansione e campi dello step,
+  prerequisito soddisfatto che accorcia la catena, `met` solo con tutti i target,
+  i rami d'errore di `milestoneChain`, la validazione composita) e
+  `tests/controller-curriculum.test.mjs` (+1 sul filo, col controller **vero**:
+  `CURRICULUM=prepare_for_nether` cammina quattro azioni, i piani portano
+  `steps.length` = 4/3/2/1, e `enter_nether` soddisfatto al terzo passo **non**
+  chiude il goal — `GOAL MET after 3 actions` non compare mai).
+  `tools/capability-inventory.mjs` ha imparato la forma ad array.
+- **Limite onesto**: il goal composito sceglie i **target**, non una procedura.
+  Una capacità che non è un milestone nel grafo non si può ancora comporre.
+- **Residuo**: nessun run vivo con `CURRICULUM=prepare_for_nether` (serve il
+  riavvio del container, lo stesso che aspettano R2–R4 e l'ore alert M11).
+
+## [2026-10-07] lint | R5: i goal compositi, e i documenti allineati
+
+Lint pulito dopo R5 (`npm run wiki:lint:strict`). Allineati: la sezione R5 della
+roadmap grezza (heading `(IMPLEMENTED)` + blocco degli interventi),
+`docs/wiki/reasoning-roadmap.md` (riga R5 → implementata, sezione «Composite goals
+(R5)» con il diagramma, il conteggio dei goal a 9 e la domanda aperta sul
+multi-ramo), `docs/wiki/survival-intelligence.md` (il punto 5 del layer),
+`docs/wiki/verification.md` (riga **47.68**), `AGENTS.md` (la voce `CURRICULUM`
+con il goal composito).
+
 ## [2026-10-07] feat | R4 implementata: un rifiuto è un fatto tipizzato sul passo, non una stringa nel log
 
 Il rifiuto di un'azione non è più un motivo per ripianificare tutto: è un fatto
