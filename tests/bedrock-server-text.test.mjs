@@ -83,6 +83,55 @@ test('serverText is a bounded window and observe() exposes it', () => {
   assert.deepEqual(adapter.observe().serverText.map(row => row.text).at(-1), 'messaggio 19');
 });
 
+test('the server\'s own refusal key becomes the verdict instead of a guess', async () => {
+  // Il vivo del 08/10/2026, ore 20:57: il primo letto di un tramonto ha
+  // risposto `tile.bed.noSleep` e il letto successivo ha accettato il bot ~4 s
+  // dopo — la frase del server diceva «non è ancora ora per me», mentre
+  // l'ipotesi in coda all'errore accusava letto, mostri e orologio insieme.
+  const cases = [
+    ['tile.bed.noSleep', 'sleep_not_allowed'],
+    ['tile.bed.notValid', 'sleep_bed_missing'],
+    ['tile.bed.occupied', 'sleep_bed_occupied'],
+    ['tile.bed.notSafe', 'sleep_unsafe'],
+    ['tile.bed.tooFarAway', 'sleep_too_far'],
+  ];
+  for (const [key, expected] of cases) {
+    const { adapter } = spawnedAdapter();
+    adapter._recordTime(18000);
+    stubBeds(adapter, [bed({ x: 0, y: 63, z: 2 }, 2.8, false)]);
+    adapter._queueAuthInput = async () => {
+      adapter._onChat({ type: 'json', needs_translation: true, message: JSON.stringify({ rawtext: [{ translate: key }] }) });
+    };
+    const result = await adapter._sleepInBed({ confirmMs: 10 });
+    assert.equal(result.ok, false);
+    assert.equal(result.error, expected, `${key} → ${expected}`);
+    assert.deepEqual(result.serverSaid, [key], 'la frase del server resta allegata');
+    assert.ok(result.hint && result.hint.length > 20, 'ogni verdetto porta il suo perche');
+  }
+});
+
+test('a server text that refuses nothing leaves sleep_rejected alive, and a pending night wins', async () => {
+  const irrelevant = spawnedAdapter();
+  irrelevant.adapter._recordTime(18000);
+  stubBeds(irrelevant.adapter, [bed({ x: 0, y: 63, z: 2 }, 2.8, false)]);
+  irrelevant.adapter._queueAuthInput = async () => {
+    irrelevant.adapter._onChat({ type: 'json', message: JSON.stringify({ rawtext: [{ translate: 'tile.bed.respawnSet' }] }) });
+  };
+  const plain = await irrelevant.adapter._sleepInBed({ confirmMs: 10 });
+  assert.equal(plain.error, 'sleep_rejected', 'nessuna chiave di rifiuto: nessun verdetto inventato');
+  assert.deepEqual(plain.serverSaid, ['tile.bed.respawnSet']);
+
+  const both = spawnedAdapter();
+  both.adapter._recordTime(18000);
+  stubBeds(both.adapter, [bed({ x: 0, y: 63, z: 2 }, 2.8, false)]);
+  both.adapter._queueAuthInput = async () => {
+    both.adapter._onChat({ type: 'json', message: JSON.stringify({ rawtext: [{ translate: 'tile.bed.noSleep' }] }) });
+    both.adapter._onChat({ type: 'translation', message: '%s more players need to sleep', parameters: [1] });
+  };
+  const pending = await both.adapter._sleepInBed({ confirmMs: 10 });
+  assert.equal(pending.error, 'sleep_pending_players', 'la notte che aspetta gli altri viene prima della chiave del letto');
+});
+
 test('_serverSaidSleepPending recognises the multiplayer sleep notice in several languages', () => {
   const { adapter } = spawnedAdapter();
   adapter._onChat({ type: 'raw', message: 'foobar unrelated' });

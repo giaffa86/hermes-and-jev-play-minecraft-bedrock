@@ -1765,11 +1765,18 @@ siamo solo io e lui» — and they were one diagnosis.
   (`serverText`, `observe().serverText`, `server_text` in the ledger) and never
   becomes an order; a refusal in a click-window carrying a multiplayer-sleep
   sentence is labelled **`sleep_pending_players`** with `serverSaid` (still
-  `ok: false`); `_sleepInBed` tries **every** nearby bed (free first, occupied
-  last, `SLEEP_MAX_BEDS` 8) inside `SLEEP_MAX_TOTAL_MS` (150 s) instead of the
-  nearest three; and «vai a dormire»/«sleep» is a deterministic `need: 'sleep'`
-  plan, because the planner had answered a sleep order with
-  «sto andando verso il letto a 129,180» — a bed that does not exist.
+  `ok: false`), and a window carrying one of the server's own bed keys becomes
+  the matching **typed** verdict (`tile.bed.noSleep` → `sleep_not_allowed`,
+  `tile.bed.notValid` → `sleep_bed_missing`, `tile.bed.occupied` →
+  `sleep_bed_occupied`, `tile.bed.notSafe` → `sleep_unsafe`, `tile.bed.tooFarAway`
+  → `sleep_too_far`), each with its own hint, while a text that refuses nothing
+  (`tile.bed.respawnSet`) leaves `sleep_rejected` as it was — the priority is
+  pending-players, then the key, then the old label; `_sleepInBed` tries **every**
+  nearby bed (free first, occupied last, `SLEEP_MAX_BEDS` 8) inside
+  `SLEEP_MAX_TOTAL_MS` (150 s) instead of the nearest three; and «vai a
+dormire»/«sleep» is a deterministic `need: 'sleep'` plan, because the planner
+  had answered a sleep order with «sto andando verso il letto a 129,180» — a bed
+  that does not exist.
 - **What the first live capture taught the channel**: the BDS does not send the
   prose with `parameters` the tests had modelled, it sends a **rawtext JSON** —
   `{"rawtext":[{"text":""},{"translate":"tile.bed.respawnSet"}]}` — and
@@ -1778,6 +1785,12 @@ siamo solo io e lui» — and they were one diagnosis.
   `{"rawtext":[…]}` (joins the `text` parts, fills the `translate`'s
   `%s`/`%N$s` from their `with`) and keeps the original payload in the ledger as
   `raw`.
+- **What the second dusk taught it**: at 20:57 the first bed answered
+  `tile.bed.noSleep` and the second accepted the bot ~4 s later (`sleep ok` in
+  3770 ms, night skipped) ⇒ the world clock we extrapolate opens the sleep
+  window **a few seconds before the server's own night**. The gate was left as it
+  is **on purpose**: the wasted attempt costs ~4 s, the drift is unmeasured, and
+  a guessed margin would hide the discrepancy instead of naming it.
 - **Environment change, same day**: `playersSleepingPercentage` was set to **50**
   on the household server (reversible with `gamerule playersSleepingPercentage
   100`), so with two players one sleeper is enough.
@@ -1788,7 +1801,9 @@ siamo solo io e lui» — and they were one diagnosis.
   player was online then (`players []`), so the live proof of a chase through a
   door needs the owner in game; (2) the `sleep_pending_players` label itself needs
   a live capture and cannot get one in the household, because with the gamerule at
-  **50** the multi-player refusal is no longer reproducible there; (3) the bot
+  **50** the multi-player refusal is no longer reproducible there — what *is*
+  covered live is the key itself (`tile.bed.noSleep`, captured), the other four
+  keys and the pending label being unit-covered only; (3) the bot
   staying **upright at the foot of the bed** is a client-side artifact of this
   headless client, which does not play the sleeping pose while the server registers
   it — the proof of sleep stays the player flag / level event / clock jump, never

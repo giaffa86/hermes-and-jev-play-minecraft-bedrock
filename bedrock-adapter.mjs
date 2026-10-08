@@ -101,6 +101,40 @@ const SLEEP_PENDING_PATTERNS = [
   /m[üu]ssen schlafen/i, /spieler[^.]{0,24}schlaf/i,
   /deben dormir/i, /jugadores?[^.]{0,24}dorm/i,
 ];
+// Le chiavi con cui il BDS dice *perché* ha rifiutato un letto: stesso metodo dei
+// pattern qui sopra, ma qui il vocabolario è chiuso e la frase è un fatto, non
+// un'ipotesi. Il 08/10/2026 il vivo ha mostrato `tile.bed.noSleep` a 12674 tick
+// (nostro `dusk`) e il letto successivo accettato ~4 s dopo: il server stava
+// dicendo «non è ancora ora per me», mentre l'ipotesi in coda all'errore accusava
+// in blocco letto, mostri e orologio. Una chiave sconosciuta non produce alcun
+// verdetto: resta `sleep_rejected`.
+const SLEEP_REFUSAL_KEYS = [
+  {
+    pattern: /tile\.bed\.noSleep/i,
+    error: 'sleep_not_allowed',
+    hint: 'the server refused the bed because its own clock is not night yet: the world clock we extrapolate opened the sleep window before the server did',
+  },
+  {
+    pattern: /tile\.bed\.notValid/i,
+    error: 'sleep_bed_missing',
+    hint: 'the server refused the bed because on its side the bed is missing or obstructed',
+  },
+  {
+    pattern: /tile\.bed\.occupied/i,
+    error: 'sleep_bed_occupied',
+    hint: 'the server refused the bed because another player is already sleeping in it',
+  },
+  {
+    pattern: /tile\.bed\.notSafe/i,
+    error: 'sleep_unsafe',
+    hint: 'the server refused the bed because a monster is nearby',
+  },
+  {
+    pattern: /tile\.bed\.tooFarAway/i,
+    error: 'sleep_too_far',
+    hint: 'the server refused the bed because the bot clicked from too far away',
+  },
+];
 // R4: quanti cambi redstone tenere in traccia per misurare un ritardo.
 const REDSTONE_TRACE_LIMIT = +(process.env.REDSTONE_TRACE_LIMIT || 32);
 // R6: intervallo minimo fra due azionamenti dello stesso input. Serve a non
@@ -15324,7 +15358,14 @@ export class BedrockAdapter {
     // non c'entra, e chiamarlo `sleep_rejected` mandava la diagnosi a caccia di
     // mostri e letti occupati che non esistevano (08/10/2026).
     const pending = serverSaid.filter(text => SLEEP_PENDING_PATTERNS.some(pattern => pattern.test(text)));
-    const error = lastError === 'sleep_rejected' && pending.length ? 'sleep_pending_players' : lastError;
+    const refusal = serverSaid
+      .map(text => SLEEP_REFUSAL_KEYS.find(entry => entry.pattern.test(text)))
+      .find(Boolean);
+    const error = lastError !== 'sleep_rejected'
+      ? lastError
+      : pending.length
+        ? 'sleep_pending_players'
+        : (refusal ? refusal.error : 'sleep_rejected');
     return {
       ok: false,
       error,
@@ -15333,7 +15374,9 @@ export class BedrockAdapter {
       ...(serverSaid.length ? { serverSaid } : {}),
       hint: error === 'sleep_pending_players'
         ? 'the server accepted the click but the night cannot skip: other players must sleep too (playersSleepingPercentage)'
-        : 'every nearby bed failed: unreachable, occupied, monsters nearby or the server says it is neither night nor a thunderstorm',
+        : (refusal && lastError === 'sleep_rejected'
+            ? refusal.hint
+            : 'every nearby bed failed: unreachable, occupied, monsters nearby or the server says it is neither night nor a thunderstorm'),
     };
   }
 
