@@ -94,6 +94,59 @@ test('_serverSaidSleepPending recognises the multiplayer sleep notice in several
   assert.equal(italian.adapter._serverSaidSleepPending().length, 1);
 });
 
+// Il 08/10/2026, alle 20:52, la prima cattura viva del canale M13 è stata
+// `{"rawtext":[{"text":""},{"translate":"tile.bed.respawnSet"}]}`: il BDS non
+// manda la prosa con `parameters` che i test sopra simulano, manda un rawtext
+// JSON con una chiave di traduzione. Conservarlo con gli escape è conservare
+// una scatola vuota, quindi `renderServerText` lo appiattisce.
+test('a server text sent as a rawtext JSON payload is flattened into a readable sentence', () => {
+  const rawtext = (parts) => ({ type: 'text', message: JSON.stringify({ rawtext: parts }) });
+  assert.equal(
+    renderServerText(rawtext([{ text: '' }, { translate: 'tile.bed.respawnSet' }])),
+    'tile.bed.respawnSet',
+    'la chiave resta la prova, ma senza escape e senza parentesi',
+  );
+  assert.equal(
+    renderServerText(rawtext([{ translate: '%1$s players need to sleep', with: ['2'] }])),
+    '2 players need to sleep',
+    'i `with` del rawtext riempiono i segnaposto come i `parameters` del pacchetto',
+  );
+  assert.equal(
+    renderServerText(rawtext([{ text: '§e' }, { text: 'you can sleep' }, { translate: ' at night' }])),
+    'you can sleep at night',
+    'le parti si uniscono, i codici di formattazione si tolgono',
+  );
+  assert.equal(
+    renderServerText(rawtext([{ translate: '%2$s and %1$s must sleep', with: ['A', 'B'] }])),
+    'B and A must sleep',
+    'la sostituzione posizionale vale anche dentro il rawtext',
+  );
+  assert.equal(renderServerText({ type: 'text', message: '{"rawtext":[' }), '{"rawtext":[', 'JSON rotto: il testo originale, niente eccezioni');
+  assert.equal(renderServerText({ type: 'text', message: '{non json}' }), '{non json}');
+
+  const { adapter, events } = spawnedAdapter();
+  adapter._onChat(rawtext([{ text: '' }, { translate: 'tile.bed.respawnSet' }]));
+  assert.equal(adapter.serverText.at(-1).text, 'tile.bed.respawnSet');
+  const logged = events.filter(entry => entry.type === 'server_text').at(-1);
+  assert.equal(logged.raw, '{"rawtext":[{"text":""},{"translate":"tile.bed.respawnSet"}]}', 'il payload grezzo resta nel ledger come evidenza');
+});
+
+test('a rawtext refusal still reaches sleep_pending_players', async () => {
+  const { adapter } = spawnedAdapter();
+  adapter._recordTime(18000);
+  stubBeds(adapter, [bed({ x: 0, y: 63, z: 2 }, 2.8, false)]);
+  adapter._queueAuthInput = async () => {
+    adapter._onChat({
+      type: 'text',
+      needs_translation: true,
+      message: JSON.stringify({ rawtext: [{ translate: '%1$s more players need to sleep', with: ['1'] }] }),
+    });
+  };
+  const result = await adapter._sleepInBed({ confirmMs: 10 });
+  assert.equal(result.error, 'sleep_pending_players', 'la forma rawtext non deve far ricadere nell accusa al letto');
+  assert.deepEqual(result.serverSaid, ['1 more players need to sleep']);
+});
+
 test('sleepInBed reports sleep_pending_players when the server asks for other players', async () => {
   const { adapter } = spawnedAdapter();
   adapter._recordTime(18000);

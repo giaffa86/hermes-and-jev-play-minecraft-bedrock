@@ -1760,7 +1760,7 @@ siamo solo io e lui» — and they were one diagnosis.
   discarding the only evidence of its own failure. `sleep_rejected` then guessed
   («bed occupied, monsters nearby, not night»), and the guess was wrong on all
   three counts.
-- **What is implemented** (offline, [row 47.78](verification.md), §M13 in
+- **What is implemented** (live since 08/10/2026, [row 47.78](verification.md) ✅, §M13 in
   [human command](human-command.md)): non-chat server text is kept
   (`serverText`, `observe().serverText`, `server_text` in the ledger) and never
   becomes an order; a refusal in a click-window carrying a multiplayer-sleep
@@ -1770,18 +1770,26 @@ siamo solo io e lui» — and they were one diagnosis.
   nearest three; and «vai a dormire»/«sleep» is a deterministic `need: 'sleep'`
   plan, because the planner had answered a sleep order with
   «sto andando verso il letto a 129,180» — a bed that does not exist.
+- **What the first live capture taught the channel**: the BDS does not send the
+  prose with `parameters` the tests had modelled, it sends a **rawtext JSON** —
+  `{"rawtext":[{"text":""},{"translate":"tile.bed.respawnSet"}]}` — and
+  `renderServerText` was keeping it escaped, which is the same as an empty box:
+  a sentence the bot cannot read has not been kept. It now flattens
+  `{"rawtext":[…]}` (joins the `text` parts, fills the `translate`'s
+  `%s`/`%N$s` from their `with`) and keeps the original payload in the ledger as
+  `raw`.
 - **Environment change, same day**: `playersSleepingPercentage` was set to **50**
   on the household server (reversible with `gamerule playersSleepingPercentage
   100`), so with two players one sleeper is enough.
-- **Still open**: (1) the fix is **not live** — VM 100 runs the previous image
-  (adapter md5 `ddfde88ee136b212e7d2ffb4080b6d1d` vs the repo's
-  `3a76324a7526547a6cec96d33450ddc7`, so it also lacks the fence-gate fix), so the
-  live round is a night skipped with **two players online** and the server's
-  sentence captured in `serverText`; (2) the bot staying **upright at the foot of
-  the bed** is a client-side artifact of this headless client, which does not play
-  the sleeping pose while the server registers it — the proof of sleep stays the
-  player flag / level event / clock jump, never the posture; (3) the **movement**
-  half of the same evening is untouched: 97 `phys_unstick` (the bot climbs the
-  village terraces and does not come down), 1276 `door_state` and a `follow_player`
-  failed after 28.8 s — the door fix (47.77) is the first thing the rebuild
-  carries, and the rest needs a live reproduction.
+- **Still open**: (1) the **follow** half of the same evening is untouched and
+  not verifiable alone: 97 `phys_unstick` (the bot climbs the village terraces and
+  does not come down), 1276 `door_state` and a `follow_player` failed after 28.8 s
+  — the door fix (47.77) and the sleep fix are live from 08/10/2026 20:52, but no
+  player was online then (`players []`), so the live proof of a chase through a
+  door needs the owner in game; (2) the `sleep_pending_players` label itself needs
+  a live capture and cannot get one in the household, because with the gamerule at
+  **50** the multi-player refusal is no longer reproducible there; (3) the bot
+  staying **upright at the foot of the bed** is a client-side artifact of this
+  headless client, which does not play the sleeping pose while the server registers
+  it — the proof of sleep stays the player flag / level event / clock jump, never
+  the posture.

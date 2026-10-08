@@ -1062,7 +1062,7 @@ decides from perception (`night && bedAvailable`), and `options()` already offer
 | A clarify reply | `replyIsOwnOrder` counts it: answering «dormi» to a held order replaces the held order instead of merging with it |
 | The beds | `_sleepInBed` tries **all** the census (free first, occupied last), `SLEEP_MAX_BEDS` (default 8) |
 | The clock | the whole action is bounded by `SLEEP_MAX_TOTAL_MS` (default 150000, inside the harness's 180 s action ceiling); each attempt gets what is left, never less than `SLEEP_MIN_ATTEMPT_MS` (2500); what does not fit is logged `budget_exhausted` rather than silently dropped |
-| The server's text | `renderServerText` fills the translation's `%s`/`%N$s` and strips the colour codes; `_noteServerText` keeps the last `SERVER_TEXT_MAX` (12) in `this.serverText` and logs each one as `server_text`; `observe().serverText` exposes them |
+| The server's text | `renderServerText` fills the translation's `%s`/`%N$s`, strips the colour codes **and flattens a rawtext JSON payload** (`{"rawtext":[…]}` joins its `text` parts and fills each `translate`'s `%s`/`%N$s` from its own `with`) — that rawtext form is the one the BDS actually sends, discovered live; `_noteServerText` keeps the last `SERVER_TEXT_MAX` (12) in `this.serverText`, logs each one as `server_text` and keeps the original payload as `raw` when the rendering changed it; `observe().serverText` exposes them |
 | The verdict | a `sleep_rejected` whose click window contains a multiplayer-sleep sentence becomes **`sleep_pending_players`** with `serverSaid` and a hint naming `playersSleepingPercentage` — the diagnosis stops hunting for monsters and occupied beds |
 | Still not an order | non-chat text never enters `chatInbox`: a server sentence cannot command the bot, it can only be read |
 
@@ -1072,24 +1072,40 @@ text arrived while the bot was trying to sleep, so `sleep_pending_players` is a
 The sleep itself stays proven by the flag/level event/clock jump, exactly as
 before.
 
-**Evidence.** `tests/bedrock-server-text.test.mjs` (8 cases: the translation is
+**Evidence.** `tests/bedrock-server-text.test.mjs` (10 cases: the translation is
 rendered, a server text is kept but never becomes an order, the window is
 bounded and visible in `observe()`, the multiplayer sentence is recognised in
-Italian and English, `sleep_pending_players` carries `serverSaid`, a silent
-server still gives `sleep_rejected` with no invented field, every bed is tried
-free-first, the budget stops the attempts and marks them `budget_exhausted`),
+Italian and English, a refusal in rawtext form still reaches
+`sleep_pending_players`, a rawtext payload is flattened into a readable sentence
+while broken JSON stays verbatim and the original payload survives in the ledger
+as `raw`, `sleep_pending_players` carries `serverSaid`, a silent server still
+gives `sleep_rejected` with no invented field, every bed is tried free-first, the
+budget stops the attempts and marks them `budget_exhausted`),
 `tests/controller-sleep-order.test.mjs` (the verb in five languages, and the
 **real controller** against a scripted harness: the order produces
 `need: 'sleep'`, `waypoint: null`, `ms: 0`, the catalogue's Italian sentence, and
 no chat line ever names an invented bed), `tests/bedrock-chat.test.mjs` (the
 non-chat contract: kept, not an order) and `tests/chat-i18n.test.mjs`
-(`fallback.sleep` exists and differs in all five languages). The environment note
+(`fallback.sleep` exists and differs in all five languages). **The live round of
+the same evening** (both sides rebuilt from `9180be5`) closed the loop: the
+autonomous `need: 'sleep'` goal slept in **386 ms** on the first bed
+`(93,74,174)` and the night skipped (tick 12306 → 195), the earlier attempt of the
+same run tried **two** beds, and the first captured server text was the rawtext
+`{"rawtext":[{"text":""},{"translate":"tile.bed.respawnSet"}]}` — the BDS
+acknowledging the respawn point, which is exactly what corrected the rendering.
+**Residual**: the `sleep_pending_players` label has no live capture (with the
+gamerule at 50 the multi-player refusal is no longer reproducible in the
+household), and the follow half of the same evening needs the owner in game.
+The environment note
 of the same day: `playersSleepingPercentage` was set to **50** on the household
 server (reversible with the same command), because with two players a single
 sleeper is then enough.
 
-*Numbering*: M13 is the sleep order plus the M13 server-text channel; the live
-proof at the next dusk is still pending (see [open questions](open-questions.md)).
+*Numbering*: M13 is the sleep order plus the M13 server-text channel. The live
+proof arrived the same evening at 20:52 — a night skipped by one autonomous
+sleeper and the first server text kept — and what is still open (the follow
+round, a label with no live capture) is in
+[open questions](open-questions.md).
 
 ## An order arriving mid-goal suspends the running goal
 

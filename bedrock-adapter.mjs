@@ -492,11 +492,53 @@ function stripFormatting (text) {
 // `parameters` = sostituzioni: senza riempire i `%s` la frase resta un segnaposto
 // inutile («%s more players need to sleep»), che è esattamente il testo che spiega
 // perché la notte non salta. Esportata perché i test la provino senza un server.
+//
+// Il 08/10/2026 alle 20:52 la prima cattura viva ha mostrato che il BDS usa
+// *due* forme: quella con `parameters` e quella — più frequente — in cui
+// `message` è un **rawtext JSON** con chiavi di traduzione, arrivato nel ledger
+// come `{"rawtext":[{"text":""},{"translate":"tile.bed.respawnSet"}]}`.
+// Lasciarlo così significa conservare escape invece di una frase: il testo del
+// server perde la sua unica qualità, essere leggibile. `flattenServerRawText`
+// appiattisce `{"rawtext":[…]}` in testo (unendo le parti `text` e riempiendo i
+// `%s` dei `translate` con il loro `with`); se non è JSON, torna invariato.
+function rawTextChunks (value, out = []) {
+  if (value == null) return out;
+  if (typeof value === 'string') { out.push(value); return out; }
+  if (Array.isArray(value)) { for (const item of value) rawTextChunks(item, out); return out; }
+  if (typeof value !== 'object') { out.push(String(value)); return out; }
+  if (Array.isArray(value.rawtext)) return rawTextChunks(value.rawtext, out);
+  const withValues = Array.isArray(value.with)
+    ? value.with.map(item => (item && typeof item === 'object' ? (item.text ?? item.translate ?? '') : item))
+    : [];
+  if (typeof value.translate === 'string') {
+    let next = 0;
+    out.push(value.translate.replace(/%\d+\$s|%s/g, (match) => {
+      const positional = /^%(\d+)\$s$/.exec(match);
+      const replacement = withValues[positional ? Number(positional[1]) - 1 : next++];
+      return replacement == null ? match : String(replacement);
+    }));
+    return out;
+  }
+  if (typeof value.text === 'string') out.push(value.text);
+  return out;
+}
+
+function flattenServerRawText (text) {
+  if (typeof text !== 'string' || !text.trim().startsWith('{')) return text;
+  let data;
+  try { data = JSON.parse(text); } catch { return text; }
+  if (!data || typeof data !== 'object') return text;
+  const flat = rawTextChunks(data, []).join('').trim();
+  return flat || text;
+}
+
+// L'esportazione serve ai test; `flattenServerRawText` è privata di proposito:
+// l'unico modo di vedere una frase del server è questa funzione.
 export function renderServerText (packet) {
   const raw = packet?.message;
   if (typeof raw !== 'string' || !raw.trim()) return null;
   const params = Array.isArray(packet?.parameters) ? packet.parameters : [];
-  let text = raw;
+  let text = flattenServerRawText(raw);
   if (params.length) {
     let next = 0;
     text = text.replace(/%\d+\$s|%s/g, (match) => {
@@ -12379,7 +12421,14 @@ export class BedrockAdapter {
     };
     this.serverText.push(entry);
     if (this.serverText.length > SERVER_TEXT_MAX) this.serverText.shift();
-    this.log('server_text', { ...entry, translation: packet?.needs_translation === true ? packet?.message ?? null : null });
+    // Il payload originale resta nel ledger quando la resa lo cambia: il rawtext
+    // JSON è la prova grezza, `text` è la frase che un umano può leggere.
+    const raw = typeof packet?.message === 'string' ? packet.message.slice(0, SERVER_TEXT_LENGTH) : null;
+    this.log('server_text', {
+      ...entry,
+      ...(raw && raw !== entry.text ? { raw } : {}),
+      translation: packet?.needs_translation === true ? packet?.message ?? null : null,
+    });
   }
 
   // Gli ultimi testi non-chat del server che dicono che il sonno è accettato ma la
