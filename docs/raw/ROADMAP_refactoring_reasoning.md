@@ -896,12 +896,19 @@ confuse, so every claim above is meant to be read against this table:
 | **implemented** | the code exists and a caller can use it | the modules and their tests in this repository |
 | **tested** | `node --test tests/*.test.mjs` exercises it offline | the suite, green on the machine that wrote it |
 | **wired** | a live entry point reaches it: a route, a chat path, a hook, a CI job | the wiring is read, or the job ran |
-| **deployed** | the running process serves that code | after the container restart below |
+| **deployed** | the running process serves that code | the container rebuilt from the pushed commit (08/10/2026), hashes and live check below |
 | **consumed** | something other than its own tests uses it in anger | nothing on this roadmap is here yet |
 
 R0–R6 are implemented, tested and wired. R7 is implemented, tested and wired
-(the CI job included, once it has run). The last two states are honestly not
-true yet, and this is the whole cost:
+(the CI job included, and it has now run green). **Deployed is true for the
+harness side**: on 08/10/2026 `hermes-jev-bedrock` was rebuilt from the pushed
+commit and the process it runs serves that code. **Consumed is still false for
+everything on this roadmap**, and the controller side of R0–R6 is not deployed
+either: the live chat engine still runs an earlier release snapshot
+(`chat-truth-ce8dea7`), so the clarification gate, the plan trace, the typed step
+failures and the composite goals are not in the running planner loop. That is a
+separate release deploy, not a defect of the code. The limits worth writing down
+are these:
 
 1. **`GET /capabilities` has no offline end-to-end test — and should not get one.**
    The harness opens its HTTP server only after the bot has connected, so no offline
@@ -931,20 +938,28 @@ true yet, and this is the whole cost:
 
    The trigger to write that adapter is a **second consumer**, not a date.
 
-3. **The third limit is a deploy state, not a defect.** The code is in the image,
-   but the process running in `hermes-jev-bedrock:/app` predates it. After the
-   container restart the entire live check is:
+3. **The deploy state is not a defect, and on 08/10/2026 it was resolved for the
+   harness.** The container was rebuilt from the pushed commit (`a2f68d5`) and the
+   five modules that matter in `hermes-jev-bedrock:/app` hash identically to the
+   local ones (`bedrock-adapter.mjs`, `bedrock-harness.mjs`, `controller.mjs`,
+   `capability-contract.mjs`, `chat-lang/it.mjs`). The live check, run against the
+   rebuilt container, was exactly this:
 
    ```
    GET /capabilities  ->  200
-                       ->  the expected keys (CAPABILITY_CONTRACT_KEYS)
+                       ->  the 13 expected keys (CAPABILITY_CONTRACT_KEYS)
+                       ->  valid: true, contractVersion 1, the two known
+                           orphan_circuit warnings
                        ->  counts identical to `npm run capabilities:check`
-                           on the same commit
+                           on the same commit: 23 intents, 62 option keys,
+                           8 patterns, 41 skills, 8 circuits, 23 milestones,
+                           9 goals, 28 criteria
+                       ->  the same contentHash (a7405c55...) as the local build
    ```
 
-   Nothing more. A mismatch means the restart did not pick up the commit, not that
-   the contract is wrong. The same restart is what brings the M11 ore alert (the bot
-   saying in chat that it saw an ore) live.
+   Nothing more was needed. A mismatch would have meant that the restart did not
+   pick up the commit, not that the contract was wrong. The same rebuild is what
+   brought the M11 ore alert (the bot saying in chat that it saw an ore) live.
 
 ## 11. Sources
 
