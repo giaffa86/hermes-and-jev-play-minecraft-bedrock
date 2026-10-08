@@ -122,6 +122,15 @@ human chat message
   (`item_not_in_inventory`, `no_matching_drop`) instead of mining it or
   wandering off.
 
+- **M13 — sleep is a need, not a journey, and the server's own words are evidence** ✅
+  an in-game «vai a dormire» / «sleep» is planned **deterministically** as
+  `need: 'sleep'` (no Hermes call, no invented destination: on 08/10/2026 a sleep
+  order came back as «sto andando verso il letto a 129,180», a bed that does not
+  exist) and the adapter keeps the **non-chat** messages the BDS sends
+  (`serverText`, `observe().serverText`), so a refusal the server explains itself
+  — «N more players need to sleep» — is reported as `sleep_pending_players`
+  instead of the generic `sleep_rejected`.
+
 ## Live evidence (2026-10-03, BDS 1.26.52 via CT 108, VM 100 container)
 
 Chain observed end to end with `SESSION=1`, `CHAT_ALLOWLIST=<bot account>`:
@@ -1010,6 +1019,77 @@ cost of a long answer.
 *Numbering*: M12 is the second slice the owner asked for on 2026-10-07. It is the
 piece of M7 that the deployed configuration had switched off: with a key the
 engine *rephrases*, with «ragiona» it *answers*.
+
+## Sleep is a need, and the server's own words are evidence (M13)
+
+Asked on 2026-10-08 while the bot stood at the foot of a bed, wide awake, with
+the owner's chat messages as the only diagnosis: *«manda a dormire il bot, non
+capisco perchè non lo fa autonomamente»*, *«il bot dice is sleeping ma non è vero
+rimane in piedi ai piedi del letto»*, *«e poi dice others two players need to
+sleep in bed ma siamo solo io e lui»*, *«in ogni caso non mi sta seguendo
+nonostante i ripetuti comandi»*. Three separate defects were hiding behind one
+symptom.
+
+**1. The server, not the bot, was refusing the night.** `_sleepInBed` clicked a
+free bed, the adapter saw `occupiedBefore/After: false`, `levelEvent: "none"`,
+an unchanged `player_bed_position` and an unchanged position, and answered
+`sleep_rejected` — the beds were fine. The BDS console (CT 108, the live `screen
+minecraft` session) said `list` → **2 players** and `gamerule
+playersSleepingPercentage` → **100**: with two players awake both must sleep, so
+the bot alone could never skip the night. The line the owner read in game
+(«others two players need to sleep») *was* that requirement — and the adapter
+threw it away, because `_onChat` accepted only `chat`/`whisper`/`json_whisper`
+and returned early on everything else.
+
+**2. The bot tried three beds out of ten.** `_sleepInBed` already ranked free
+beds before occupied ones, then cut the list with `.slice(0, maxBeds)` where
+`maxBeds = 3`; in the village the three nearest were one refused and two
+unreachable, and the ground-floor beds of the neighbouring houses were never
+attempted.
+
+**3. The planner invented a bed.** A sleep order went to Hermes, which answered
+`waypoint {x:129,z:180}` while the only free bed was at `(116,73,195)` — the bot
+said «sto andando verso il letto a 129,180», a promise about a block that does not
+exist. Sleeping is not a journey: it is a **survival need** the governor already
+decides from perception (`night && bedAvailable`), and `options()` already offers
+`sleep` only when the harness has a bed it can use.
+
+| Rule | Constant / behaviour |
+|---|---|
+| The order | `isSleepOrder` (`controller-decisions.mjs`): dormi, dormire, dormiamo, dormirò, dormita/dormito/dormite, nanna, sleep, go to bed, go to sleep, bedtime, schlafen, dormir, duerme, duermete |
+| The plan | `need: 'sleep'` + `waypoint: null` + `follow: null`, `source: 'deterministic'`, `ms: 0`, logged as `plan {deterministic: 'sleep'}`; answered in the sender's language by `fallback.sleep` |
+| Why deterministic | the need is closed by the harness (`isNeedResolved` → `idle-goals`), so a daytime sleep order is a **no-op with an explanation**, never a walk to a made-up coordinate |
+| A clarify reply | `replyIsOwnOrder` counts it: answering «dormi» to a held order replaces the held order instead of merging with it |
+| The beds | `_sleepInBed` tries **all** the census (free first, occupied last), `SLEEP_MAX_BEDS` (default 8) |
+| The clock | the whole action is bounded by `SLEEP_MAX_TOTAL_MS` (default 150000, inside the harness's 180 s action ceiling); each attempt gets what is left, never less than `SLEEP_MIN_ATTEMPT_MS` (2500); what does not fit is logged `budget_exhausted` rather than silently dropped |
+| The server's text | `renderServerText` fills the translation's `%s`/`%N$s` and strips the colour codes; `_noteServerText` keeps the last `SERVER_TEXT_MAX` (12) in `this.serverText` and logs each one as `server_text`; `observe().serverText` exposes them |
+| The verdict | a `sleep_rejected` whose click window contains a multiplayer-sleep sentence becomes **`sleep_pending_players`** with `serverSaid` and a hint naming `playersSleepingPercentage` — the diagnosis stops hunting for monsters and occupied beds |
+| Still not an order | non-chat text never enters `chatInbox`: a server sentence cannot command the bot, it can only be read |
+
+**What is deliberately not claimed.** The click-window capture only proves a
+text arrived while the bot was trying to sleep, so `sleep_pending_players` is a
+*label on a refusal*, never a success: the action still answers `ok: false`.
+The sleep itself stays proven by the flag/level event/clock jump, exactly as
+before.
+
+**Evidence.** `tests/bedrock-server-text.test.mjs` (8 cases: the translation is
+rendered, a server text is kept but never becomes an order, the window is
+bounded and visible in `observe()`, the multiplayer sentence is recognised in
+Italian and English, `sleep_pending_players` carries `serverSaid`, a silent
+server still gives `sleep_rejected` with no invented field, every bed is tried
+free-first, the budget stops the attempts and marks them `budget_exhausted`),
+`tests/controller-sleep-order.test.mjs` (the verb in five languages, and the
+**real controller** against a scripted harness: the order produces
+`need: 'sleep'`, `waypoint: null`, `ms: 0`, the catalogue's Italian sentence, and
+no chat line ever names an invented bed), `tests/bedrock-chat.test.mjs` (the
+non-chat contract: kept, not an order) and `tests/chat-i18n.test.mjs`
+(`fallback.sleep` exists and differs in all five languages). The environment note
+of the same day: `playersSleepingPercentage` was set to **50** on the household
+server (reversible with the same command), because with two players a single
+sleeper is then enough.
+
+*Numbering*: M13 is the sleep order plus the M13 server-text channel; the live
+proof at the next dusk is still pending (see [open questions](open-questions.md)).
 
 ## An order arriving mid-goal suspends the running goal
 

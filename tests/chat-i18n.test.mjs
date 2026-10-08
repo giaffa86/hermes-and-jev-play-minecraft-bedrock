@@ -53,7 +53,7 @@ test('the placeholders of a message are the same in every language', () => {
 });
 
 test('the messages are actually translated, not copied from English', () => {
-  for (const key of ['smalltalk', 'greet', 'no_armor', 'fallback.stop', 'fallback.equip', 'unrouted']) {
+  for (const key of ['smalltalk', 'greet', 'no_armor', 'fallback.stop', 'fallback.equip', 'fallback.sleep', 'unrouted']) {
     const values = LANGS.map(lang => t(lang, key));
     assert.equal(new Set(values).size, LANGS.length, `"${key}" ripetuto tra le lingue`);
   }

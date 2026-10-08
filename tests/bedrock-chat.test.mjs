@@ -66,12 +66,16 @@ test('la chat di un altro giocatore entra nell inbox con mittente, xuid e tipo',
   assert.equal(adapter.chatInbox[1].type, 'whisper');
 });
 
-test('tipi di testo non-chat (raw/system) sono ignorati', () => {
+test('tipi di testo non-chat (raw/system) non sono ordini, ma si conservano per la diagnosi', () => {
   const { adapter, events } = chatAdapter();
   adapter._onChat({ type: 'raw', source_name: REAL_GAMERTAG, message: 'benvenuto nel server' });
   adapter._onChat({ type: 'system', source_name: null, message: 'server restart' });
-  assert.deepEqual(adapter.chatInbox, []);
-  assert.deepEqual(types(events), []);
+  assert.deepEqual(adapter.chatInbox, [], 'un testo di sistema non è un comando di un umano');
+  // M13 (08/10/2026): il server spiega lì i suoi rifiuti («N giocatori devono
+  // dormire», gamerule, «non puoi dormire adesso»): scartarli rendeva il sonno
+  // un falso allarme. Non entrano nell'inbox, ma restano leggibili.
+  assert.deepEqual(types(events), ['server_text', 'server_text']);
+  assert.deepEqual(adapter.serverText.map(row => row.text), ['benvenuto nel server', 'server restart']);
 });
 
 test('un messaggio identico ma vecchio non è un eco (finestra scaduta)', () => {

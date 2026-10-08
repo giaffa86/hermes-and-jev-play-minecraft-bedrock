@@ -64,6 +64,7 @@ export default Object.freeze({
   'fallback.stop': "je reste ici et j'attends le prochain ordre",
   'fallback.follow': 'je suis {from} et j\'exécute son dernier ordre : "{message}"',
   'fallback.equip': "je mets l'armure que j'ai dans mon inventaire (casque, plastron, jambières, bottes)",
+  'fallback.sleep': "je vais au lit et je dors jusqu'au matin",
   'fallback.drop': 'je jette {word} de mon inventaire',
   'fallback.collect': 'je ramasse {word} par terre',
   'fallback.farm': 'je récolte {word} du champ, je replante et je range la récolte',

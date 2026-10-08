@@ -76,6 +76,31 @@ const MAX_SIM_STEPS = 8;        // tick di fisica massimi per singolo invio
 const PLAYER_HALF_WIDTH = 0.3;
 const PLAYER_HEIGHT = 1.8;
 const PATH_MAX_NODES = 5000;    // tetti di ricerca A*
+// M13 (08/10/2026): il server parla anche fuori dalla chat (`raw`, `system`,
+// `translation`). Il motivo di un rifiuto — «altri N giocatori devono dormire» —
+// viaggia lì: buttarlo via lasciava `sleep_rejected` senza spiegazione (ore di
+// diagnosi il 08/10/2026 alla ricerca di mostri e letti occupati che non c'erano).
+// Si conservano gli ultimi testi non-chat per la diagnosi; il canale degli
+// *ordini* resta la chat, e quei testi non entrano mai nell'inbox.
+const SERVER_TEXT_MAX = +(process.env.SERVER_TEXT_MAX || 12);
+const SERVER_TEXT_LENGTH = 160;
+// Quanti letti prova `_sleepInBed` e quanto tempo complessivo può spendere: il
+// tetto per tentativo esisteva già, quello complessivo no, quindi "tutti i letti"
+// poteva diventare un'azione più lunga del timeout dell'harness.
+const SLEEP_MAX_BEDS = +(process.env.SLEEP_MAX_BEDS || 8);
+const SLEEP_MAX_TOTAL_MS = +(process.env.SLEEP_MAX_TOTAL_MS || 150000);
+const SLEEP_MIN_ATTEMPT_MS = +(process.env.SLEEP_MIN_ATTEMPT_MS || 2500);
+// Le parole con cui il server dice che il sonno è *accettato* ma la notte non
+// può saltare (requisito multiplayer `playersSleepingPercentage`). Il BDS è
+// localizzato: si cercano più lingue, e in ogni caso il testo grezzo resta nel
+// registro. Un falso positivo cambia solo l'etichetta dell'esito, mai l'azione.
+const SLEEP_PENDING_PATTERNS = [
+  /players? need to sleep/i, /need to sleep/i, /must sleep/i, /more players/i,
+  /devono dormire/i, /deve dormire/i, /giocator\w*[^.]{0,24}dorm/i,
+  /doivent dormir/i, /joueurs?[^.]{0,24}dorm/i,
+  /m[üu]ssen schlafen/i, /spieler[^.]{0,24}schlaf/i,
+  /deben dormir/i, /jugadores?[^.]{0,24}dorm/i,
+];
 // R4: quanti cambi redstone tenere in traccia per misurare un ritardo.
 const REDSTONE_TRACE_LIMIT = +(process.env.REDSTONE_TRACE_LIMIT || 32);
 // R6: intervallo minimo fra due azionamenti dello stesso input. Serve a non
@@ -348,8 +373,9 @@ const ORE_SCAN_MOVE_TOLERANCE = 8;   // ...e comunque non riusare una lista di 8
 // comunicami se vedi dei diamanti durante il cammino». Il testo non si compone
 // qui: il renderer lo inietta chi possiede il catalogo (`oreAlertText`, 5 lingue),
 // così l'adapter resta senza i18n e il messaggio resta traducibile.
-const ORE_ALERT_SETTING = String(process.env.ORE_ALERT ?? 'diamond').trim().toLowerCase();
-const ORE_ALERT_OFF = ORE_ALERT_SETTING === '' || /^(off|no|none|0|false)$/.test(ORE_ALERT_SETTING);
+// L'interruttore `off`/vuoto vive dentro `oreAlertCores`, che è anche quello che i
+// test possono chiamare con un valore esplicito: qui non serve una seconda copia
+// della stessa regola (era dichiarata e mai letta).
 // Il nome può arrivare come `diamond`, `diamond_ore` o `deepslate_diamond_ore`:
 // si confronta il nucleo (`oreCore`), così una voce copre tutte le varianti.
 const ORE_ALERT_CORES = oreAlertCores();
@@ -459,6 +485,28 @@ const SURFACE_AIR_ALERT = +(process.env.SURFACE_AIR_ALERT || 150);
 function stripFormatting (text) {
   if (text == null) return null;
   return String(text).replace(/\u00a7./g, '').replace(/\u00a7/g, '').trim();
+}
+
+// M13: rende leggibile un pacchetto `text` che non è chat (raw/system/translation).
+// Il BDS manda `needs_translation` con `message` = stringa di formato e
+// `parameters` = sostituzioni: senza riempire i `%s` la frase resta un segnaposto
+// inutile («%s more players need to sleep»), che è esattamente il testo che spiega
+// perché la notte non salta. Esportata perché i test la provino senza un server.
+export function renderServerText (packet) {
+  const raw = packet?.message;
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const params = Array.isArray(packet?.parameters) ? packet.parameters : [];
+  let text = raw;
+  if (params.length) {
+    let next = 0;
+    text = text.replace(/%\d+\$s|%s/g, (match) => {
+      const positional = /^%(\d+)\$s$/.exec(match);
+      const value = params[positional ? Number(positional[1]) - 1 : next++];
+      return value == null ? match : String(value);
+    });
+  }
+  const clean = stripFormatting(text);
+  return clean || null;
 }
 
 const STORAGE_CONTAINER_SLOT = {
@@ -616,6 +664,7 @@ export class BedrockAdapter {
     this._playerLastSeen = new Map(); // gamertag minuscolo -> { position, at } (ultima posizione nota)
     this.busy = false;
     this.recent = [];
+    this.serverText = [];           // M13: ultimi testi non-chat del server (diagnosi)
     this.connectError = null;
     this.tick = 0n;
     this.movementAuthority = null;
@@ -4539,6 +4588,7 @@ export class BedrockAdapter {
       spawned: this.spawned,
       time: this._timeInfo(),
       bed: bed ? { position: bed.position, distance: bed.distance } : null,
+      serverText: this.serverText.slice(-SERVER_TEXT_MAX),
       kit: this._tripKitView(),
       sleeping: this.sleeping,
       dead: this.dead,
@@ -12280,7 +12330,9 @@ export class BedrockAdapter {
     const type = packet?.type;
     const message = packet?.message;
     if (!message || typeof message !== 'string') return;
-    if (type !== 'chat' && type !== 'whisper' && type !== 'json_whisper') return;
+    // M13: tutto ciò che non è chat non è un ordine e non entra nell'inbox, ma
+    // non è nemmeno rumore: il server spiega lì i suoi rifiuti (sonno, gamerule).
+    if (type !== 'chat' && type !== 'whisper' && type !== 'json_whisper') return this._noteServerText(packet);
     const from = stripFormatting(packet.source_name) || null;
     // Eco dei propri messaggi: il server li rimanda indietro con il gamertag
     // vero, non con il nome di login. Lasciarli entrare in `chatInbox` fa
@@ -12310,6 +12362,33 @@ export class BedrockAdapter {
     this.chatInbox.push(entry);
     if (this.chatInbox.length > 32) this.chatInbox.shift();
     this.log('chat', { from, chatType: type, xuid: entry.xuid, message: message.slice(0, 160) });
+  }
+
+  // M13 — il server parla anche fuori dalla chat. Un pacchetto `raw`/`system`/
+  // `translation` non è un ordine (nessun mittente fidato, nessun trigger) ma è
+  // spesso l'**unica spiegazione** di un rifiuto: «N giocatori devono dormire». Si
+  // conserva reso (i `%s` sostituiti dai `parameters`) e si registra una volta,
+  // con il testo grezzo, così la diagnosi non deve indovinare.
+  _noteServerText (packet) {
+    const rendered = renderServerText(packet);
+    if (!rendered) return;
+    const entry = {
+      at: Date.now(),
+      type: typeof packet?.type === 'string' ? packet.type : null,
+      text: rendered.slice(0, SERVER_TEXT_LENGTH),
+    };
+    this.serverText.push(entry);
+    if (this.serverText.length > SERVER_TEXT_MAX) this.serverText.shift();
+    this.log('server_text', { ...entry, translation: packet?.needs_translation === true ? packet?.message ?? null : null });
+  }
+
+  // Gli ultimi testi non-chat del server che dicono che il sonno è accettato ma la
+  // notte non salta. Serve a `_trySleepInBed`: senza questa riga l'esito era
+  // `sleep_rejected`, che accusa il letto invece della gamerule.
+  _serverSaidSleepPending ({ since = 0 } = {}) {
+    return this.serverText
+      .filter(row => row.at >= since && SLEEP_PENDING_PATTERNS.some(pattern => pattern.test(row.text)))
+      .map(row => row.text);
   }
 
   // R2 — la domanda in attesa. Il bot ha chiesto qualcosa a un umano e la
@@ -15149,7 +15228,7 @@ export class BedrockAdapter {
   // Si avvicina al letto e ci clicca sopra finché il server non conferma il
   // sonno (flag resting nei metadata). Fallisce se non è né notte né temporale,
   // o se ci sono mostri.
-  async _sleepInBed ({ approachTimeoutMs = 30000, retryTimeoutMs = 18000, confirmMs = 3000, maxBeds = 3 } = {}) {
+  async _sleepInBed ({ approachTimeoutMs = 30000, retryTimeoutMs = 18000, confirmMs = 3000, maxBeds = SLEEP_MAX_BEDS, maxTotalMs = SLEEP_MAX_TOTAL_MS } = {}) {
     if (this.sleeping) return { ok: true, alreadySleeping: true };
     // Nel Nether e nell'End un letto esplode: non è un'azione vietata per
     // prudenza, è un'esplosione garantita. Il rifiuto è tipizzato e immediato.
@@ -15157,33 +15236,55 @@ export class BedrockAdapter {
     if (!this._isSleepTime()) return { ok: false, error: 'not_night' };
     const beds = this._findBeds();
     // Prima i letti liberi, poi quelli occupati come ultima risorsa: un villager
-    // può essersi alzato nel frattempo e un click costa poco.
+    // può essersi alzato nel frattempo e un click costa poco. Si provano **tutti**
+    // i letti del censimento (fino a `maxBeds`), non solo i primi tre: l'08/10/2026
+    // i tre più vicini erano uno rifiutato e due irraggiungibili, mentre i letti a
+    // piano terra delle case vicine non venivano mai tentati.
     const candidates = [
       ...beds.filter(candidate => !candidate.occupied),
       ...beds.filter(candidate => candidate.occupied),
     ].slice(0, maxBeds);
     if (!candidates.length) return { ok: false, error: 'no_bed' };
+    const deadline = Date.now() + maxTotalMs;
     const tried = [];
     let lastError = 'bed_unreachable';
     let lastDistance = null;
+    let serverSaid = [];
     for (let i = 0; i < candidates.length; i++) {
       const bed = candidates[i];
+      const remaining = deadline - Date.now();
+      // Il tetto e' complessivo: l'azione deve restare dentro il timeout
+      // dell'harness, ma finche' c'e' budget si prova il letto successivo invece
+      // di fermarsi. Un tentativo troppo corto non e' un tentativo: si annota.
+      if (i > 0 && remaining < SLEEP_MIN_ATTEMPT_MS) {
+        tried.push({ bed: bed.position, ok: false, error: 'budget_exhausted', distance: null });
+        break;
+      }
       const attempt = await this._trySleepInBed(bed, {
-        approachTimeoutMs: i === 0 ? approachTimeoutMs : retryTimeoutMs,
+        approachTimeoutMs: Math.max(SLEEP_MIN_ATTEMPT_MS, Math.min(i === 0 ? approachTimeoutMs : retryTimeoutMs, remaining)),
         confirmMs,
       });
       tried.push({ bed: bed.position, ok: !!attempt.ok, error: attempt.error || null, distance: attempt.distance ?? null });
       if (attempt.ok) return { ...attempt, tried };
+      if (attempt.serverSaid?.length) serverSaid = [...new Set([...serverSaid, ...attempt.serverSaid])];
       lastError = attempt.error || lastError;
       lastDistance = attempt.distance ?? lastDistance;
       if (lastError === 'not_night') break;
     }
+    // Il server ha detto con le sue parole che aspetta altri giocatori: il letto
+    // non c'entra, e chiamarlo `sleep_rejected` mandava la diagnosi a caccia di
+    // mostri e letti occupati che non esistevano (08/10/2026).
+    const pending = serverSaid.filter(text => SLEEP_PENDING_PATTERNS.some(pattern => pattern.test(text)));
+    const error = lastError === 'sleep_rejected' && pending.length ? 'sleep_pending_players' : lastError;
     return {
       ok: false,
-      error: lastError,
+      error,
       distance: lastDistance,
       tried,
-      hint: 'every nearby bed failed: unreachable, occupied, monsters nearby or the server says it is neither night nor a thunderstorm',
+      ...(serverSaid.length ? { serverSaid } : {}),
+      hint: error === 'sleep_pending_players'
+        ? 'the server accepted the click but the night cannot skip: other players must sleep too (playersSleepingPercentage)'
+        : 'every nearby bed failed: unreachable, occupied, monsters nearby or the server says it is neither night nor a thunderstorm',
     };
   }
 
@@ -15217,6 +15318,9 @@ export class BedrockAdapter {
     const bedPositionBefore = this._playerBedPosition
       ? this._playerBedPosition.x + ',' + this._playerBedPosition.y + ',' + this._playerBedPosition.z : null;
     const look = this._lookAt({ x: bedCenter.x, y: bed.position.y + 0.5, z: bedCenter.z });
+    // M13: da qui in poi il server può rispondere a parole. Si guarda la finestra
+    // esatta del click, non tutto lo storico.
+    const clickWindowStart = Date.now();
     await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch });
     await delay(120);
     await this._queueAuthInput({ yaw: look.yaw, pitch: look.pitch, transaction: this._blockUseTransaction(bed.position) });
@@ -15232,6 +15336,11 @@ export class BedrockAdapter {
     const slept = this._sleepConfirmed(beforeTicks) || this.sleeping;
     if (this.sleeping) return { ok: true, slept: slept ? 'night_skipped' : 'resting_flag', bed: bed.position };
     this._sendSleepAction('stop_sleeping', bed.position);
+    // M13: le parole del server in questa finestra. Con `playersSleepingPercentage`
+    // a 100 il BDS risponde «altri N giocatori devono dormire» e nessuno dei tre
+    // segnali di conferma arriva: senza questo testo l'esito sembra un letto
+    // rifiutato.
+    const serverSaid = this.serverText.filter(row => row.at >= clickWindowStart).map(row => row.text);
     // Diagnostica: quali segnali sono arrivati dopo la richiesta di sonno.
     this.log('sleep_probe', {
       bed: bed.position,
@@ -15245,12 +15354,14 @@ export class BedrockAdapter {
       bedPositionNow: this._playerBedPosition
         ? this._playerBedPosition.x + ',' + this._playerBedPosition.y + ',' + this._playerBedPosition.z : null,
       positionNow: this.position ? { x: +this.position.x.toFixed(2), y: +this.position.y.toFixed(2), z: +this.position.z.toFixed(2) } : null,
+      serverSaid,
     });
     return {
       ok: false,
       error: 'sleep_rejected',
       bed: bed.position,
       distance: +distance.toFixed(2),
+      ...(serverSaid.length ? { serverSaid } : {}),
       hint: 'bed occupied, monsters nearby or the server says it is neither night nor a thunderstorm',
     };
   }

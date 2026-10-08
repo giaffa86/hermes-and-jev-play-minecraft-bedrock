@@ -31,7 +31,7 @@ import {emergencyGoalFor, DEFAULT_EMERGENCY_COOLDOWN_MS} from './emergency-goals
 import {
   buildCriteria, buildDecisionInstructions, collectFulfilled, detectRepeatedAction, dropCountFromText, dropFulfilled, escortFulfilled, filterOptions,
   farmFulfilled, farmOrderFromText, farmOutcome, farmSnapshot, farmStep,
-  inventoryMatchingToken, isCollectOrder, isDropOrder, isEquipOrder, isEscortOrder, isStopOrder, matchesItemToken, orderItem, tokenInventoryTotal,
+  inventoryMatchingToken, isCollectOrder, isDropOrder, isEquipOrder, isEscortOrder, isSleepOrder, isStopOrder, matchesItemToken, orderItem, tokenInventoryTotal,
   withStickyEscort, withStickyFollow,
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_FARM_MAX_HARVES, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
@@ -1105,6 +1105,23 @@ async function humanCommandPlan (obs, entry) {
     log('plan', {plan, ms: 0, source: 'human', deterministic: 'equip'});
     return plan;
   }
+  // Il sonno è un ordine di bisogno, non di movimento: dirlo al planner significava
+  // fargli inventare un letto (08/10/2026: `waypoint {x:129,z:180}`, inesistente) e
+  // farlo litigare col governor, che il sonno lo decide sulla percezione vera. Qui
+  // si imposta solo il bisogno: chi cammina e quale letto lo sa già l'harness.
+  if (isSleepOrder(entry.message)) {
+    const plan = {
+      objective: t(CHAT_LANG, 'fallback.sleep'),
+      targets: {},
+      waypoint: null,
+      follow: null,
+      need: 'sleep',
+      notes: `human:${entry.from} sleep`,
+      source: 'deterministic',
+    };
+    log('plan', {plan, ms: 0, source: 'human', deterministic: 'sleep'});
+    return plan;
+  }
   const started = Date.now();
   const out = await runHermes(prompt);
   // "fermati" non deve mai diventare un inseguimento: il fallback
@@ -1224,6 +1241,7 @@ function replyIsOwnOrder (message, obs) {
     || isDropOrder(message, obs)
     || isCollectOrder(message, obs)
     || isEquipOrder(message)
+    || isSleepOrder(message)
     || !!farmOrderFromText(message);
 }
 

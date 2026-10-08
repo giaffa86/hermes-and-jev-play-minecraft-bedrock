@@ -163,6 +163,18 @@ export function isEquipOrder (message) {
   return /\b(mettiti|mettiamoci|indossa|indossare|wear|put on)\b/.test(text) && EQUIP_NOUN.test(text);
 }
 
+// Un ordine di sonno («vai a dormire», «dormi», «dormiamo», «sleep») è un ordine di
+// *bisogno*, e va riconosciuto qui perché nessuno degli altri traduttori lo sa
+// esprimere: il fallback del planner è «segui chi ti ha scritto» e l'08/10/2026
+// Hermes ha inventato un letto inesistente (`waypoint {x:129,z:180}` mentre
+// l'unico letto libero era a (116,73,195)). Il bisogno `sleep` lo risolve poi il
+// governor sulla percezione vera (`night && bedAvailable`), e di giorno è già
+// risolto: nessuna coordinata inventata e nessuna scusa.
+const SLEEP_VERB = /\b(dormi|dormire|dormiamo|dormir[òo]|dormit[aeo]|nanna|sleep|go to bed|go to sleep|bedtime|bed time|schlafen|dormir|duerme|duermete)\b/i;
+export function isSleepOrder (message) {
+  return SLEEP_VERB.test(String(message || ''));
+}
+
 // Ordini di inventario via chat (M9). "getta <oggetto>" butta via
 // dall'inventario, "cattura <oggetto>" raccoglie da terra un drop. Sono ordini
 // *deterministici* come l'equipaggiamento: senza di essi il planner tradurrebbe

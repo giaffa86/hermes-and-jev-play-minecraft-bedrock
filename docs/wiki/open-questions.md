@@ -1736,3 +1736,52 @@ pinned by a test that fails without its edit ([verification](verification.md)
   that must be opened from the side is covered but the one under the feet is not;
   (4) the nearby obstacles of the same run — a `trader_llama` in the bot's cell and the
   repeated `mount_trader_llama → vehicle_unreachable` — are untouched.
+
+## The night the server refused, and the words we threw away (2026-10-08)
+
+The owner reported three things in a row — «manda a dormire il bot, non capisco
+perchè non lo fa autonomamente», «il bot dice is sleeping ma non è vero rimane in
+piedi ai piedi del letto», «e poi dice others two players need to sleep in bed ma
+siamo solo io e lui» — and they were one diagnosis.
+
+- **What the live run shows** (`runs/house-20261008-1`): the adapter clicked the
+  **free** bed `(116,73,195)` at **2.28 blocks** and answered `sleep_rejected`
+  with `occupiedBefore/After: false`, `levelEvent: "none"`, `player_bed_position`
+  `115,76,197` unchanged and the bot **not moved**. Nothing about the bed refused.
+- **What the server says**: the BDS console (CT 108, the live `screen minecraft`
+  session) answers `list` → **2/10 players** (the owner's gamertag and the bot's —
+  no phantom player) and `gamerule playersSleepingPercentage` → **100**: with two
+  players awake the night skips only if **both** sleep, so the bot alone could
+  never close it. The sentence the owner read in game («others two players need
+  to sleep») *was* that rule.
+- **Why the bot could not repeat it**: `_onChat` accepted only
+  `chat`/`whisper`/`json_whisper` and `return`ed on every other `text` type,
+  including the BDS translation that carried the explanation: the adapter was
+  discarding the only evidence of its own failure. `sleep_rejected` then guessed
+  («bed occupied, monsters nearby, not night»), and the guess was wrong on all
+  three counts.
+- **What is implemented** (offline, [row 47.78](verification.md), §M13 in
+  [human command](human-command.md)): non-chat server text is kept
+  (`serverText`, `observe().serverText`, `server_text` in the ledger) and never
+  becomes an order; a refusal in a click-window carrying a multiplayer-sleep
+  sentence is labelled **`sleep_pending_players`** with `serverSaid` (still
+  `ok: false`); `_sleepInBed` tries **every** nearby bed (free first, occupied
+  last, `SLEEP_MAX_BEDS` 8) inside `SLEEP_MAX_TOTAL_MS` (150 s) instead of the
+  nearest three; and «vai a dormire»/«sleep» is a deterministic `need: 'sleep'`
+  plan, because the planner had answered a sleep order with
+  «sto andando verso il letto a 129,180» — a bed that does not exist.
+- **Environment change, same day**: `playersSleepingPercentage` was set to **50**
+  on the household server (reversible with `gamerule playersSleepingPercentage
+  100`), so with two players one sleeper is enough.
+- **Still open**: (1) the fix is **not live** — VM 100 runs the previous image
+  (adapter md5 `ddfde88ee136b212e7d2ffb4080b6d1d` vs the repo's
+  `3a76324a7526547a6cec96d33450ddc7`, so it also lacks the fence-gate fix), so the
+  live round is a night skipped with **two players online** and the server's
+  sentence captured in `serverText`; (2) the bot staying **upright at the foot of
+  the bed** is a client-side artifact of this headless client, which does not play
+  the sleeping pose while the server registers it — the proof of sleep stays the
+  player flag / level event / clock jump, never the posture; (3) the **movement**
+  half of the same evening is untouched: 97 `phys_unstick` (the bot climbs the
+  village terraces and does not come down), 1276 `door_state` and a `follow_player`
+  failed after 28.8 s — the door fix (47.77) is the first thing the rebuild
+  carries, and the rest needs a live reproduction.
