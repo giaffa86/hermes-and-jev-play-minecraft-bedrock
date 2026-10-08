@@ -1601,12 +1601,16 @@ pinned by a test that fails without its edit ([verification](verification.md)
   and ran a composite `water_travel` goal live. The swap is a release deploy, not a
   container rebuild, and it interrupts the live chat engine for a few seconds —
   which is why it stays the owner's decision rather than an autonomous one.
-- **R8 is half live (08/10/2026)**: the bot container was rebuilt from the R8 commit
-  (`741ee69`), so the new criterion, the aboard odometer and `observe().riding` are
-  served by the running process; the **controller-side** gate (`skill_blocked`,
-  `goal_blocked`, the verifier's `blocked` in the real loop) still needs the next
-  controller release, because the chat engine runs `chat-truth-e7b08e5` (row 47.74
-  of [verification](verification.md)).
+- **R8 is live on both sides (08/10/2026)**: the bot container was rebuilt from the R8
+  commit (`741ee69`) and the controller was swapped to the `chat-truth-170fed0` release
+  built from the same pushed commit, so the criterion, the aboard odometer,
+  `observe().riding`, `skill_blocked`/`goal_blocked` and the verifier's `blocked` are
+  all in the running planner loop. The gate was exercised live, not just deployed: the
+  same `CURRICULUM=water_travel` goal that once closed `GOAL MET` without a boat now
+  prints `SKILL BLOCKED boat_travel` once and ends
+  `GOAL g1 FAILED (skill_preconditions_unmet:boat_travel)` with
+  `completedMilestones: []`, then returns to `IDLE` with chat orders accepted (row
+  47.74 of [verification](verification.md)).
 
 ## One decision provider, and no fallback (2026-10-08)
 
