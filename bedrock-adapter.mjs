@@ -1178,6 +1178,9 @@ export class BedrockAdapter {
             feetAfter: +this._feet.y.toFixed(2),
             drift,
             onGround: this._onGround,
+            clientTick: Number(this.tick),
+            serverTick: packet.tick != null ? Number(packet.tick) : null,
+            tickLag: packet.tick != null ? Number(this.tick) - Number(packet.tick) : null,
           });
         }
         this._syncPositionFromFeet();
@@ -10736,9 +10739,17 @@ export class BedrockAdapter {
       return;
     }
     const tick = this._advanceTick();
+    // L'intento di cammino si fotografa **prima** della simulazione: `_driveMotion`
+    // consuma il tick (fisica + `_updateMotionState`) e, quando il percorso finisce
+    // dentro quel tick, spegne `motion.active`. Leggendo lo stato dopo la
+    // simulazione il server riceveva `move {0,0}` — nessuna richiesta di muoversi —
+    // mentre i piedi locali avanzavano e `correct_player_move_prediction` riportava
+    // il bot indietro: misurato l'08/10/2026 su 9448 righe `auth_input`, **zero**
+    // con moto attivo (e zero con `move.z` non nullo).
+    const intent = this._motionIntent();
     this._driveMotion(tick);
     const use = this._motion?.active ? this._motion.useRequest : null;
-    let yaw = this._motion?.active ? this._motion.yaw : this._lastYaw;
+    let yaw = intent ? intent.yaw : this._lastYaw;
     if (this.riding && this._ridingForward) yaw = this._ridingYaw;
     let pitch = this._lastPitch;
     let transaction = null;
@@ -10769,11 +10780,28 @@ export class BedrockAdapter {
       }
     }
     try {
-      this._sendAuthInput({ yaw, pitch, tick, transaction });
+      this._sendAuthInput({ yaw, pitch, tick, transaction, intent });
     } catch (error) {
       this.log('auth_input_error', { message: error.message });
     }
     this._survivalTick();
+  }
+
+  // Fotografia dell'intento di cammino del tick: quello che il server deve
+  // applicare in *questo* tick (direzione, salto, collisione), non quello che
+  // resta dopo che la simulazione locale l'ha consumato. `null` quando il bot non
+  // sta camminando o guida un veicolo (lì il moto lo applica il server).
+  _motionIntent () {
+    const motion = this._motion;
+    if (!motion?.active || this.riding) return null;
+    return {
+      yaw: motion.yaw,
+      forward: !!motion.forward,
+      jumpHeldTicks: motion.jumpHeldTicks ?? 0,
+      jumpStart: !!motion.jumpStart,
+      collided: !!this._collidedHorizontally,
+      onGround: !!this._onGround,
+    };
   }
 
   _blockUseTransaction (pos) {
@@ -10808,7 +10836,8 @@ export class BedrockAdapter {
 
   _sendAuthInput ({ yaw = 0, pitch = 0, moveVector = null, blockAction = null,
     transaction = null, itemStackRequest = null, tick = null, useItem = false,
-    itemInteract = false, interactionModel = 'touch', interactRotation = null } = {}) {
+    itemInteract = false, interactionModel = 'touch', interactRotation = null,
+    intent = null } = {}) {
     if (!this.client) return;
     this.tick = tick != null ? tick : this._advanceTick();
     const position = { ...this.position };
@@ -10831,14 +10860,28 @@ export class BedrockAdapter {
         move = { x: 0, z: 1 };
         inputData.push('up');
       }
-    } else if (!moveVector && motion?.active) {
-      if (motion.forward) { move = { x: 0, z: 1 }; inputData.push('up'); }
-      if (motion.jumpHeldTicks > 0) {
-        inputData.push('jumping', 'want_up');
-        if (motion.jumpStart) { inputData.push('start_jumping'); motion.jumpStart = false; }
+    } else if (!moveVector) {
+      // Il moto dichiarato è quello **simulato in questo tick**: `intent` è la
+      // fotografia presa prima di `_driveMotion` e resta valida anche quando la
+      // simulazione l'ha appena concluso (altrimenti il server non saprebbe mai
+      // che il bot ha camminato). Senza `intent` (input accodato fuori dal tick,
+      // sonde) si legge lo stato corrente, come prima.
+      const driving = intent ?? (motion?.active
+        ? { forward: !!motion.forward, jumpHeldTicks: motion.jumpHeldTicks ?? 0, jumpStart: !!motion.jumpStart,
+          collided: !!this._collidedHorizontally, onGround: !!this._onGround }
+        : null);
+      if (driving) {
+        if (driving.forward) { move = { x: 0, z: 1 }; inputData.push('up'); }
+        if (driving.jumpHeldTicks > 0) {
+          inputData.push('jumping', 'want_up');
+          if (driving.jumpStart) {
+            inputData.push('start_jumping');
+            if (motion) motion.jumpStart = false;
+          }
+        }
+        if (driving.collided) inputData.push('horizontal_collision');
+        if (driving.onGround) inputData.push('vertical_collision');
       }
-      if (this._collidedHorizontally) inputData.push('horizontal_collision');
-      if (this._onGround) inputData.push('vertical_collision');
     }
     if (this._freeJump?.heldTicks > 0) {
       inputData.push('jumping', 'want_up');
@@ -10867,6 +10910,21 @@ export class BedrockAdapter {
     // dichiara di tenere premuto l'uso; il server da lì applica il blocco.
     if (useItem) inputData.push('start_using_item');
     const yawRad = yaw * Math.PI / 180, pitchRad = pitch * Math.PI / 180;
+    // Diagnostica del movimento (MOVE_DEBUG): il tick dichiarato, l'intento e la
+    // posizione locale che il server deve convalidare. Serve a distinguere «il
+    // server corregge» da «il client non chiede di muoversi».
+    if (process.env.MOVE_DEBUG) {
+      this.log('auth_input', {
+        tick: Number(this.tick),
+        tickLag: this._tickAnchor ? Number(this.tick) - Number(this._tickAnchor.tick) : null,
+        move: { x: +move.x.toFixed(3), z: +move.z.toFixed(3) },
+        flags: inputData.filter(f => f === 'up' || f === 'jumping' || f === 'start_jumping' || f === 'sneaking' || f === 'want_up' || f === 'horizontal_collision'),
+        feet: { x: +this._feet.x.toFixed(3), y: +this._feet.y.toFixed(3), z: +this._feet.z.toFixed(3) },
+        onGround: this._onGround,
+        motion: motion?.active ? { index: motion.index, len: motion.path?.length ?? null, forward: motion.forward, jumpHeldTicks: motion.jumpHeldTicks ?? 0 } : null,
+        declared: !!intent,
+      });
+    }
     this.client.write('player_auth_input', {
       pitch,
       yaw,

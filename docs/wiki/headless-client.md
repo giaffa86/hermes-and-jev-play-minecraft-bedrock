@@ -127,7 +127,14 @@ The adapter instead:
    a rug is not a wall. The head cell stays strict, and slabs/stairs/beds (0.5–0.56)
    stay solid on purpose — they need a real step-up the model does not simulate;
 2. sends a `player_auth_input` each tick with the simulated position, `move_vector`
-   and intent flags, staying inside the server's rewind window (40 ticks);
+   and intent flags, staying inside the server's rewind window (40 ticks). The
+   intent declared is the one **simulated in that tick**, not the residue the
+   simulation left behind: `_authTick` takes a snapshot (`_motionIntent`) *before*
+   driving the physics, because a walk whose local simulation finishes inside the
+   same tick used to declare nothing (`move_vector {x:0,z:0}`, no `up`) and the
+   server then never moved the bot — 9448 `auth_input` rows with no movement while
+   the local feet advanced, every one answered by a correction (live 09/10/2026,
+   row 47.83 of [verification](verification.md));
 3. **plans with A\*** over the loaded world (support, ±1 steps, falls up to
    4 blocks) toward the nearest walkable node to the target — and **arrival is
    measured on the cell the path actually reaches**, among the complete

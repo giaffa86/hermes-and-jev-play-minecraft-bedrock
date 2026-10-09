@@ -368,3 +368,36 @@ test('precise work arrival refuses a neighboring standable cell when the request
   await assert.rejects(adapter._moveTo({ x: 2.5, y: 64, z: 0.5 }, 0.08, 1000,
     { preciseArrival: true, verticalTolerance: 0, arrivalVerticalTolerance: 0.15 }), /target_not_found/);
 });
+
+test('il tick che conclude il cammino lo dichiara comunque al server', () => {
+  // Live 08/10/2026: 9448 righe `auth_input` nella run diamond-20261009-4, **zero**
+  // con moto attivo e zero con `move.z` diverso da 0 — il client simulava i passi
+  // (`_driveMotion` li applica) e poi leggeva `_motion.active` **dopo** che
+  // `_updateMotionState` l'aveva chiuso, quindi dichiarava `move {0,0}` e il server
+  // riportava il bot indietro a ogni `correct_player_move_prediction`.
+  const world = fakeWorld(); world.fillFloor(0, 3, 0, 3);
+  const adapter = physicsAdapter(world);
+  place(adapter, 0.5, GROUND_Y + 1, 0.5);
+  adapter._maybeRememberDiscoveries = () => {};
+  adapter.tick = 0;
+  adapter._lastSimTick = 0;
+  adapter._tickAnchor = null;
+  const written = [];
+  adapter.client = { write: (name, payload) => written.push({ name, payload }) };
+  adapter._authTickInterval = true;
+  // Moto già dentro la distanza d'arresto: `_updateMotionState` lo chiude nello
+  // stesso tick in cui `_driveMotion` lo esegue.
+  adapter._motion = {
+    ...motion(),
+    path: [{ x: 0, y: GROUND_Y + 1, z: 0 }], index: 0,
+    target: { x: 0.5, y: GROUND_Y + 1, z: 0.5 }, stopDistance: 2, deadline: Date.now() + 5000,
+    arrivalVerticalTolerance: 3, bestTargetDist: Infinity, lastProgressAt: Date.now(),
+    stuckTries: 0, useRequest: null, jumpHeldTicks: 0, jumpStart: false,
+  };
+  adapter._authTick();
+  const auth = written.find(w => w.name === 'player_auth_input');
+  assert.ok(auth, 'player_auth_input inviato');
+  assert.equal(adapter._motion.active, false, 'il moto si è chiuso in questo tick');
+  assert.deepEqual(auth.payload.move_vector, { x: 0, z: 1 }, 'il tick dichiara il cammino simulato');
+  assert.ok(auth.payload.input_data.includes('up'), 'il flag di avanzamento è dichiarato');
+});
