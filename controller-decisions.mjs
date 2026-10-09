@@ -449,17 +449,29 @@ export function detectRepeatedAction (history = [], key, { threshold = DEFAULT_A
   return { repeated: count >= threshold, count };
 }
 
-// What to pass to the model this step. Never returns an empty set and never
-// hides a key that is the only remaining option: the harness owns validity.
+// What to pass to the model this step. Never hides a key the harness offered
+// unless a mission forbid says so (M15, hard exclusion), and never returns an
+// empty set except when a forbid leaves nothing at all: the harness owns
+// validity, the mission owns the mandate.
 export function filterOptions (options, history = [], {
   max = DEFAULT_MAX_OPTIONS,
   threshold = DEFAULT_ANTI_LOOP_THRESHOLD,
   targets = {},
   preferredIntents = [],
   excludeKeys = [],
+  forbidKeys = [],
 } = {}) {
   const excluded = [];
-  let kept = [...options];
+  // M15: le chiavi vietate dalla missione escono **prima** di tutto e non
+  // rientrano nemmeno dal ripiego: un divieto non e' una preferenza e non deve
+  // poter essere resuscitato dal `fallback_restored`.
+  const forbidden = new Set(forbidKeys);
+  const offered = options.filter(option => {
+    if (!forbidden.has(option.key)) return true;
+    excluded.push({ key: option.key, reason: 'mission_forbidden' });
+    return false;
+  });
+  let kept = [...offered];
   // Explicit exclusions: last failed action, anti-loop cooldowns.
   const explicit = new Map(excludeKeys.map(e => [e.key, e.reason || 'excluded']));
   for (const option of kept) {
@@ -487,9 +499,17 @@ export function filterOptions (options, history = [], {
   }
   const { options: capped, dropped } = capOptions(kept, { max, targets, preferredIntents });
   if (!capped.length) {
-    // Never hand an empty set to the model: the harness said these keys are valid.
-    const nonWait = options.filter(o => o.key !== 'wait');
-    const restored = nonWait.length ? nonWait : options;
+    // Never hand an empty set to the model: the harness said these keys are
+    // valid. Il ripiego resta dentro il mandato: le chiavi vietate non
+    // rientrano.
+    const nonWait = offered.filter(o => o.key !== 'wait');
+    const restored = nonWait.length ? nonWait : offered;
+    if (!restored.length) {
+      // Ogni azione valida e' vietata dalla missione: non e' una scelta del
+      // modello. Il controller tratta il vuoto come un passo cieco (conto,
+      // tetto, esito tipizzato), non lo passa al decider.
+      return { options: [], excluded, dropped: [], note: 'all_forbidden', fallback: { reason: 'mission_forbidden_left_empty_set' } };
+    }
     return { options: restored, excluded, dropped: [], note: 'fallback_restored', fallback: { reason: 'filters_left_empty_set' } };
   }
   return { options: capped, excluded, dropped, note, fallback: null };

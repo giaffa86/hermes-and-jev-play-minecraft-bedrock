@@ -142,6 +142,54 @@ test('filterOptions honors explicit exclusions and falls back instead of returni
   assert.equal(only.fallback.reason, 'filters_left_empty_set');
 });
 
+// M15: il divieto di missione (MISSION_FORBID). Una regola nel testo del goal
+// non e' un meccanismo; un'esclusione del passo vale un passo solo.
+test('filterOptions toglie le chiavi vietate dalla missione', () => {
+  const options = [opt('mount_donkey'), opt('mount_horse'), opt('goto_waypoint')];
+  const filtered = filterOptions(options, [], { forbidKeys: ['mount_donkey', 'mount_horse'] });
+  assert.deepEqual(filtered.options.map(o => o.key), ['goto_waypoint']);
+  assert.deepEqual(filtered.excluded, [
+    { key: 'mount_donkey', reason: 'mission_forbidden' },
+    { key: 'mount_horse', reason: 'mission_forbidden' },
+  ]);
+  // Senza divieti le opzioni restano quelle di prima, nello stesso ordine.
+  const plain = filterOptions(options, []);
+  const none = filterOptions(options, [], { forbidKeys: [] });
+  assert.deepEqual(none.options.map(o => o.key), plain.options.map(o => o.key));
+  assert.deepEqual(none.excluded, plain.excluded);
+});
+
+test('il ripiego non resuscita una chiave vietata (e il divieto resta al passo dopo)', () => {
+  // Una chiave non vietata esclusa dal passo torna dal ripiego: e' il contratto
+  // di `filterOptions`. Una vietata no.
+  const mixed = filterOptions([opt('mount_donkey'), opt('goto_waypoint')], [], {
+    excludeKeys: [{ key: 'goto_waypoint', reason: 'failed' }], forbidKeys: ['mount_donkey'],
+  });
+  assert.deepEqual(mixed.options.map(o => o.key), ['goto_waypoint']);
+  assert.equal(mixed.fallback.reason, 'filters_left_empty_set');
+  // Passo nuovo: le esclusioni del passo precedente spariscono (R4), il divieto
+  // no — e' un mandato della missione, non una scelta del momento.
+  const options = [opt('mount_donkey'), opt('goto_waypoint'), opt('mine_dirt')];
+  const step1 = filterOptions(options, [], { excludeKeys: [{ key: 'mount_donkey', reason: 'step_refused' }], forbidKeys: ['mount_donkey'] });
+  assert.deepEqual(step1.options.map(o => o.key), ['goto_waypoint', 'mine_dirt']);
+  const step2 = filterOptions(options, [{ key: 'mount_donkey', stagnant: true }], { forbidKeys: ['mount_donkey'] });
+  assert.deepEqual(step2.options.map(o => o.key), ['goto_waypoint', 'mine_dirt']);
+  assert.equal(step2.excluded.some(e => e.key === 'mount_donkey' && e.reason === 'mission_forbidden'), true);
+});
+
+test('un divieto che lascia zero azioni lecite non si aggira col ripiego', () => {
+  const filtered = filterOptions([opt('mount_donkey'), opt('mount_horse')], [], { forbidKeys: ['mount_donkey', 'mount_horse'] });
+  // Il decider non riceve mai l'insieme vuoto: il controller lo tratta come un
+  // passo cieco, contato e tipizzato (`mission_forbidden_only`).
+  assert.deepEqual(filtered.options, []);
+  assert.equal(filtered.note, 'all_forbidden');
+  assert.equal(filtered.fallback.reason, 'mission_forbidden_left_empty_set');
+  // `wait` non e' un divieto: se il harness offre solo quello piu' le chiavi
+  // vietate, resta l'attesa e non il vuoto.
+  const withWait = filterOptions([opt('mount_donkey'), opt('wait')], [], { forbidKeys: ['mount_donkey'] });
+  assert.deepEqual(withWait.options.map(o => o.key), ['wait']);
+});
+
 test('filterOptions caps relevance and reports what was dropped', () => {
   const options = [opt('mine_stone'), opt('mine_dirt'), opt('craft_stick'), opt('flee'), opt('goto_waypoint')];
   const filtered = filterOptions(options, [], { max: 3 });

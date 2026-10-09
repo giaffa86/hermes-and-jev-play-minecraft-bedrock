@@ -50,6 +50,7 @@ import {createPlanTrace} from './plan-trace.mjs';
 import {
   parseMissionRequirements, requirementTakeKeys, isProducingKey, producedGrowth,
   depositedStacks, missionRequirementsMet, missionRequirementsState, renderRequirements, addCounts,
+  parseForbiddenKeys,
 } from './mission-requires.mjs';
 // R4: il rifiuto tipizzato del passo. `siblingKeys` prende il vocabolario degli
 // intenti dal modulo dichiarato (R0) per trovare le chiavi alternative che
@@ -128,6 +129,13 @@ const MUST_MINE = parseMissionRequirements(process.env.MUST_MINE);
 const MUST_DEPOSIT = parseMissionRequirements(process.env.MUST_DEPOSIT);
 const MISSION_REQUIREMENTS = {mustMine: MUST_MINE, mustDeposit: MUST_DEPOSIT};
 const MISSION_REQUIREMENTS_ON = Object.keys(MUST_MINE).length > 0 || Object.keys(MUST_DEPOSIT).length > 0;
+// M15: le chiavi che la missione vieta al decider per **tutta** la durata del
+// run (`MISSION_FORBID=mount_donkey,mount_horse,throw_egg`). Non e' un divieto
+// del mondo — la validita' resta del harness — ma un mandato: il modello non
+// deve poterle scegliere, nemmeno al passo dopo il rifiuto che le aveva
+// escluse per un passo solo. Vuoto = comportamento di prima.
+const MISSION_FORBID = parseForbiddenKeys(process.env.MISSION_FORBID);
+const MISSION_FORBID_MAX_STEPS = +(process.env.MISSION_FORBID_MAX_STEPS || 6);
 // Diagnostica/anti-loop (0 disabilita il tetto; soglia in azioni consecutive).
 const MAX_OPTIONS = process.env.MAX_OPTIONS == null ? DEFAULT_MAX_OPTIONS : +(process.env.MAX_OPTIONS);
 const ANTI_LOOP_THRESHOLD = +(process.env.ANTI_LOOP_THRESHOLD || DEFAULT_ANTI_LOOP_THRESHOLD);
@@ -720,7 +728,9 @@ async function toldUnavailable (entry, {message, prefixes, err, log}) {
 
 // Un luogo risolto per nome: `null` se non c'è (allora non si scrive e non si
 // naviga), `{ambiguous: true}` se ce n'è più d'uno (si chiede).
-async function toldResolve (obs, entry, {message, prefixes, intent, log}) {
+// `_obs` per firma uniforme con gli altri `told*`: questa risoluzione legge il
+// registro dei luoghi, non l'osservazione.
+async function toldResolve (_obs, entry, {message, prefixes, intent, log}) {
   const name = intent.name ?? intent.container ?? '';
   const out = await api('GET', `/memory/places?name=${encodeURIComponent(name)}&limit=10`);
   if (out?.error) return {error: out.error};
@@ -1884,6 +1894,9 @@ let obs = await api('GET', '/observe');
 // cosa il goal e' vincolato prima ancora della prima decisione.
 if (MISSION_REQUIREMENTS_ON) log('mission_requirements', {mustMine: MUST_MINE, mustDeposit: MUST_DEPOSIT,
   state: renderRequirements(missionRequirementsState(requirementProgress, MISSION_REQUIREMENTS))});
+// M15: il divieto si annuncia subito, prima della prima decisione: senza questa
+// riga un `take_diamond` che non compare piu' nelle opzioni sembra un caso.
+if (MISSION_FORBID.length) log('mission_forbidden', {keys: MISSION_FORBID, maxSteps: MISSION_FORBID_MAX_STEPS});
 
 // ---- Goal Contract (opzionale, Slice A) -----------------------------------------------------
 // Con GOAL_CONTRACT (JSON), MAX_DEATHS o PRESERVE_ITEMS il controller valuta un
@@ -1999,6 +2012,7 @@ let lostEscortSteps = 0;        // passi consecutivi con la scorta aperta ma sen
 let lostNoticeSent = false;     // l'avviso in chat e' uno per episodio, non uno per cooldown
 let lostHoldSteps = 0;          // passi di attesa a tracce perse (nessuna azione, nessun modello)
 let blindSteps = 0;             // passi consecutivi con harness cieco (sessione Bedrock caduta)
+let forbiddenSteps = 0;         // passi consecutivi in cui il divieto di missione lascia zero azioni lecite
 // Harness cieco: la sessione Bedrock e' caduta e non esiste nessuna azione
 // reale. Si resiste (la riconnessione e' in corso) per un numero limitato di
 // passi, poi il run si ferma con `harness_blind`: un run fermo e leggibile vale
@@ -2343,6 +2357,10 @@ for (let step = 1; step <= maxSteps; step++) {
   // La chiave esce dalle opzioni offerte al decider (il harness la conosce
   // ancora: la validita' resta sua), cosi' il furto non e' una scelta.
   for (const key of requirementTakeKeys(MUST_MINE)) excludeKeys.push({key, reason: 'must_mine'});
+  // M15: le chiavi vietate dalla missione non passano da `excludeKeys`: quel
+  // canale e' un'esclusione del momento, e il ripiego di `filterOptions`
+  // ripristina cio' che ha escluso. Il divieto ha il suo canale (`forbidKeys`),
+  // che il ripiego rispetta, e vale per tutta la missione.
   // R4: la chiave che **questo passo** ha visto rifiutare con un approccio
   // bloccato. Resta fuori dalle opzioni finche' il passo e' aperto, cosi' la
   // decisione sceglie l'alternativa invece di ripetere la stessa azione.
@@ -2351,13 +2369,35 @@ for (let step = 1; step <= maxSteps; step++) {
     if (until > step) excludeKeys.push({key, reason: `anti_loop_until_${until}`});
     else cooldowns.delete(key);
   }
-  const filtered = filterOptions(options, history, {max: MAX_OPTIONS, threshold: ANTI_LOOP_THRESHOLD, targets: plan.targets, preferredIntents, excludeKeys});
+  const filtered = filterOptions(options, history, {max: MAX_OPTIONS, threshold: ANTI_LOOP_THRESHOLD, targets: plan.targets, preferredIntents, excludeKeys, forbidKeys: MISSION_FORBID});
   log('options', {
     step, offered: options.map(o => o.key), passed: filtered.options.map(o => o.key),
     excluded: filtered.excluded, droppedByCap: filtered.dropped.map(o => o.key),
     note: filtered.note ?? null, fallback: filtered.fallback ?? null,
     skill: active.skill?.id ?? null, skillSource: active.source, preferredIntents,
+    ...(MISSION_FORBID.length ? {forbidden: MISSION_FORBID} : {}),
   });
+  // M15: se il divieto di missione lascia il decider senza nessuna azione lecita
+  // non e' una scelta del modello e non e' un `wait`: e' lo stesso stato cieco
+  // del harness senza opzioni, con un motivo diverso. Si resiste un numero
+  // limitato di passi, poi il run si chiude con `mission_forbidden_only`: un
+  // budget speso su un passo senza azioni lecite e' peggio di un blocco
+  // dichiarato (stesso spirito di R8).
+  if (filtered.options.length === 0) {
+    forbiddenSteps += 1;
+    log('options_all_forbidden', {step, consecutive: forbiddenSteps, max: MISSION_FORBID_MAX_STEPS,
+      forbidden: MISSION_FORBID, offered: options.map(o => o.key)});
+    if (forbiddenSteps > MISSION_FORBID_MAX_STEPS) {
+      runExitCode = 2;
+      failureReason = 'mission_forbidden_only';
+      console.log(`MISSION FORBIDDEN after ${step - 1} actions: nessuna azione lecita (${MISSION_FORBID.join(',')})`);
+      log('mission_forbidden_stop', {steps: step - 1, totalCost, consecutive: forbiddenSteps, forbidden: MISSION_FORBID});
+      break;
+    }
+    await delay(HARNESS_BLIND_WAIT_MS);
+    continue;
+  }
+  forbiddenSteps = 0;
   // Dopo una morte l'obiettivo immediato è recuperare loot ed EXP al sito.
   // In emergenza il governor vince su tutto: l'obiettivo mostrato al modello
   // diventa la necessità survival corrente (drop e progressi restano nel plan).

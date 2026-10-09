@@ -13,7 +13,7 @@ import {dirname, join} from 'node:path';
 import {
   parseMissionRequirements, requirementTakeKeys, isProducingKey, producedGrowth,
   depositedStacks, missionRequirementsState, missionRequirementsMet, renderRequirements, addCounts,
-  PRODUCING_KEY_PREFIXES,
+  PRODUCING_KEY_PREFIXES, parseForbiddenKeys,
 } from '../mission-requires.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -107,4 +107,30 @@ test('il controller annoda il requisito: opzioni, credito e chiusura', () => {
   // Senza questa condizione il goal chiude sull'inventario (il furto).
   assert.match(source, /const mission = orderFloor \? true : missionRequirementsMet\(requirementProgress, MISSION_REQUIREMENTS\);/);
   assert.match(source, /return targets && at && mission;/);
+});
+
+// M15 — le chiavi vietate dalla missione: la regola scritta nel goal non e' un
+// meccanismo. Il 09/10/2026 il decider ha speso sei `mount_donkey`/`mount_horse`
+// (`vehicle_unreachable`) prima di toccare il primo baule.
+test('le chiavi vietate dalla missione si leggono, si deduplicano e si validano', () => {
+  assert.deepEqual(parseForbiddenKeys('mount_donkey,mount_horse,throw_egg'), ['mount_donkey', 'mount_horse', 'throw_egg']);
+  assert.deepEqual(parseForbiddenKeys(' mount_donkey , mount_donkey ,throw_egg '), ['mount_donkey', 'throw_egg']);
+  for (const value of [undefined, null, '', '   ', 'off', 'none']) assert.deepEqual(parseForbiddenKeys(value), []);
+  // Un token malformato non si ignora in silenzio: sarebbe un divieto che non
+  // vieta niente.
+  assert.throws(() => parseForbiddenKeys('mount_donkey,mount horse'), /mission_forbid_invalid/);
+  assert.throws(() => parseForbiddenKeys('Mount_Donkey'), /mission_forbid_invalid/);
+});
+
+test('il controller annoda il divieto: opzioni, annuncio e passo senza azioni lecite', () => {
+  const source = readFileSync(join(ROOT, 'controller.mjs'), 'utf8');
+  assert.match(source, /const MISSION_FORBID = parseForbiddenKeys\(process\.env\.MISSION_FORBID\);/);
+  // Senza il canale `forbidKeys` il divieto sarebbe solo un'esclusione del passo
+  // e il ripiego di `filterOptions` lo riporterebbe in tavola.
+  assert.match(source, /forbidKeys: MISSION_FORBID\}/);
+  assert.match(source, /log\('mission_forbidden', \{keys: MISSION_FORBID, maxSteps: MISSION_FORBID_MAX_STEPS\}\)/);
+  // Il vuoto non arriva mai al decider.
+  assert.match(source, /if \(filtered\.options\.length === 0\) \{/);
+  assert.match(source, /failureReason = 'mission_forbidden_only';/);
+  assert.match(source, /log\('options_all_forbidden', \{step, consecutive: forbiddenSteps/);
 });

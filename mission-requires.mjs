@@ -68,6 +68,38 @@ export function requirementTakeKeys (requirements = {}) {
   return Object.keys(requirements).map(item => `take_${item}`);
 }
 
+// M15 — le chiavi che la missione **vieta** al decider.
+//
+// Una regola scritta nel testo del goal («never ride animals») non e' un
+// meccanismo: il 09/10/2026 il decider ha bruciato sei `mount_donkey` /
+// `mount_horse` (`vehicle_unreachable`, 15-45 s l'uno) prima di toccare il
+// primo baule della spedizione diamanti. L'esclusione R4 del passo rifiutato
+// non basta: vive **un passo solo**, e al passo successivo la chiave torna
+// offerta.
+//
+// `MISSION_FORBID=mount_donkey,mount_horse,throw_egg` toglie quelle chiavi
+// dalle opzioni offerte al modello per **tutta la missione**, anche dopo un
+// `step_switch`, e compone con `MUST_MINE` e con le esclusioni esistenti. Il
+// harness resta l'unico proprietario della validita' — conosce ancora la
+// chiave — qui si decide solo cosa proporre al decider. Vuoto (o `off`/`none`)
+// e' il comportamento di prima, invariato.
+export function parseForbiddenKeys (value) {
+  const out = [];
+  if (value == null) return out;
+  const text = String(value).trim();
+  if (!text || text === 'off' || text === 'none') return out;
+  const seen = new Set();
+  for (const token of text.split(',')) {
+    const key = token.trim();
+    if (!key) continue;
+    if (!/^[a-z_][a-z0-9_]*$/.test(key)) throw new Error(`mission_forbid_invalid:${key}`);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
+}
+
 // Questa azione poteva produrre l'oggetto? Solo le chiavi che scavano o
 // raccolgono: un `take_diamond` riuscito **non** e' un diamante minato.
 export function isProducingKey (key) {
