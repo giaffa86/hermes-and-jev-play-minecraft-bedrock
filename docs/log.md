@@ -1,6 +1,27 @@
 # Log
 
-## [2026-10-10] fix | Il salto e' un impulso, il ballo sul posto non e' progresso, e una porta non e' un trampolino (M18)
+## [2026-10-09] fix | Lo scudo nell'offhand: lo specchio impara dal `place`, e la finestra stantia si rinnova una volta (M19)
+
+Lo scudo restava in zaino con `shield_place_failed_50` su entrambi gli slot
+dell'offhand anche dopo il riavvio del BDS, mentre lo stesso `place` a mano
+passava al primo colpo. Le sonde `/debug/isr` sul harness hanno mostrato che la
+destinazione non era il problema: `place` cursore -> `offhand/1` stack 0 con
+l'offhand **vuoto** risponde `ok` (uovo deposto e poi recuperato con un `drop`
+brute-force sulla stack id 2), risponde **55** con la finestra d'inventario che
+il server teneva da prima (`windowId 2`, la stessa dei `shield_place_failed`), e
+`take`/`swap` con una stack id sbagliata rispondono **49**: il numero di stato
+dice *quale* meta' della richiesta il server ha rifiutato, non solo "no".
+Due difetti veri sono emersi: `_applyStackResponse` non aveva **alcun** ramo per
+il contenitore `offhand` (la risposta di un `place` riuscito spariva, lo specchio
+restava `null` e il passo di scambio di M16 usava la stack id 0), e
+`_ensureInventoryOpen` si fida di qualunque finestra dichiarata `inventory`,
+anche di una che il server tiene da una sessione precedente. Ora lo specchio si
+aggiorna dalla risposta (item, conteggio e stack id) e un `place` rifiutato con
+50/55 chiude la finestra, ne apre una fresca e ritenta **una volta sola** la
+stessa forma, lasciando nel ledger `shield_window_refresh`. Suite 2048 -> 2050
+pass / 0 fail.
+
+## [2026-10-09] fix | Il salto e' un impulso, il ballo sul posto non e' progresso, e una porta non e' un trampolino (M18)
 
 La spedizione diamanti si era fermata di nuovo in superficie: 84 azioni, 20 fallimenti, di cui
 15 `movement timeout`/`stuck`, e il bot non ha mai lasciato y>=71 ne' raggiunto la cima della
@@ -68,15 +89,15 @@ voci qui sopra sono datate 10/10, ma host Proxmox, VM 100 e i due container dico
 tutti **09/10/2026**: quel giorno in piu' sta nella data dei RUN_ID, non
 nell'orologio.
 
-## [2026-10-10] fix | Il credito di missione leggeva un `obs` che non esisteva: il primo `collect_drop` riuscito ha ucciso il tentativo 15
+## [2026-10-09] fix | Il credito di missione leggeva un `obs` che non esisteva: il primo `collect_drop` riuscito ha ucciso il tentativo 15
 
 Il tentativo 15 (`diamond-20261010-2`) e' morto a meta' spedizione con `GOAL g1 ERROR: obs is not defined` → `GOAL g1 FAILED (controller_error: obs is not defined) after ? actions`, subito dopo `#7 equip_armor` e il `collect_drop` successivo. Causa: `creditMissionResult` (M14) e' una freccia **a livello di modulo** e chiudeva con `producedGrowth(obs?.inventory ?? {}, after ?? {}, MUST_MINE)`, dove `obs` e' una `let` **dentro `runGoal`**: un `ReferenceError` che l'optional chaining non copre (protegge da `null`/`undefined`, non da un identificatore mai dichiarato). Era muto da 22 run perche' la riga si raggiunge solo se un'azione e' **riuscita** e **produce** (`mine_*`/`dig_*`/`collect_drop`/`harvest_*`): il primo `collect_drop` ok ha armato la trappola. Fix: l'osservazione **prima** dell'azione viaggia come parametro (`creditMissionResult(step, key, result, obs)`, e il loop la rinfresca in testa a ogni giro, quindi e' davvero lo stato di partenza), `MISSION_REQUIREMENTS_ON` la passa. Test: il caso M14 sulle forme del sorgente ora pretende firma e chiamata a quattro argomenti, e un caso nuovo aggiunge una regola strutturale — nessun `const <nome> = …obs…` a livello di modulo puo' nominare `obs` senza riceverlo — suite **2036 → 2037 pass / 0 fail**. Riga **47.86** in [verification](wiki/verification.md) e un bullet nei gotcha di `AGENTS.md`.
 
-## [2026-10-10] bug | `craft_torch` non ha mai funzionato: status 35, tracciato ma non curato
+## [2026-10-09] bug | `craft_torch` non ha mai funzionato: status 35, tracciato ma non curato
 
 Su richiesta dell'utente il difetto e' ora **tracciato** invece di essere solo un sintomo ricorrente. Storico dei ledger su VM 100: `craft_torch` **22 tentativi / 0 successi**, `craft_boat` **23 / 0**, `craft_charcoal` **20 / 0**, mentre lo stesso codice crafta `iron_pickaxe` 3 volte, `diamond_pickaxe` 2, piu' `shield`, `bucket`, `spruce_planks` e i tre attrezzi di legno/pietra: il difetto e' di alcune ricette, non del crafting. Evidenza viva dalla run `diamond-20261010-2`: tre rifiuti (`events.jsonl` t=1791555317699, 1791555331978, 1791555411709) con ricetta **1897** (`name:minecraft:charcoal`, 1x2), griglia corretta (`slot 30 charcoal` + `slot 28 stick`), ogni `craft_grid_place` con `echoed: true` e **status 35** anche dopo il `_resyncByReconnect` che `_craftItem` fa gia' per `craft_failed`. Cadono tre teorie: la cella non e' mal tracciata (il server la echeggia e il detail porta i nomi veri, non il `name: 0` del 06/10), il layout non e' sbagliato (e' lo stesso 1x2 verticale della ricetta dello stecco che funziona) e non e' uno stack id stantio. Restano tre ipotesi da provare in una finestra libera (**H1** id di ricetta della griglia sbagliata: quello del banco invece di quello dell'inventario; **H2** il ciclo multi-candidato sceglie prima la variante `name:charcoal` 1897 e il rifiuto avvelena il tentativo gemello su 1896 `tag:coals`; **H3** il `results_deprecated` con `count` 4 non e' quello che BDS si aspetta), con l'esperimento discriminante gia' scritto: craftare uno **stecco** (stessa forma, stessi slot) e una torcia dal **carbone** tenendo la `item_stack_response` completa. La spedizione non ne dipende: le torce si prendono dai bauli del villaggio (`take_torch` ok in 45,7 s e 0,3 s nella stessa run). Dettaglio in [crafting](wiki/crafting.md) e voce `craft-torch-status-35` in [open questions](wiki/open-questions.md).
 
-## [2026-10-10] fix | Lo scudo nell'offhand occupato si scambia, e la finestra che non si apre e' una sessione bloccata (M16)
+## [2026-10-09] fix | Lo scudo nell'offhand occupato si scambia, e la finestra che non si apre e' una sessione bloccata (M16)
 
 La spedizione diamanti (`diamond-20261010-1`) si e' fermata su due difetti dello stesso strato: `equip_shield` rispondeva **8 volte `shield_place_failed_50`** su *entrambi* gli slot dell'offhand con lo scudo in zaino, e dopo quel rifiuto **nessuna finestra si e' piu' aperta** — non un baule, non l'inventario porta-scudo, non dopo un reconnect del client, non dopo un riavvio del processo harness — mentre il server continuava a rimandare `inventory_content` ogni ~700 ms; da li' in poi `equip_shield` e `equip_weapon` costavano ognuno i loro 3 s di `container_open_timeout`. Lo status **50 e' `FailedToValidateDstSlot`**: un `place` verso una destinazione che contiene gia' un item diverso viene rifiutato e `swap` e' l'azione che BDS si aspetta, quindi `_equipShield` prova ora `place offhand/1`, il solo ripiego `place offhand/0` e poi lo **scambio cursore↔offhand/1** con la `stack_id` dell'offhand (nuova, la cattura `_onMobEquipment`), restituendo il cursore dopo lo scambio perche' lo scambio e' simmetrico. Il secondo pezzo e' la diagnosi: `_waitForContainerOpen` conta i timeout consecutivi (azzerati da `_noteContainerOpened` alla prima apertura riuscita) e oltre `CONTAINER_OPEN_LOCK_FAILURES` (3) rifiuta con l'errore tipizzato **`container_ui_locked`** e una sola riga `container_locked_suspected`, invece di far sembrare sbagliato ogni singolo contenitore; il rimedio resta il riavvio del server Bedrock a giocatori zero. Suite **2032 → 2036 pass / 0 fail**. Dettaglio in [verification](wiki/verification.md) riga 47.85. **Live dopo il rebuild** (10/10/2026, `RUN_ID=diamond-20261010-2`, `/app/bedrock-adapter.mjs` md5 `ad5f78118372e419abdf0655cee3be3c`, immagine sostituita conservata come `hermes-jev-bedrock-rollback-20261010-offhand`): il cuneo era del **server** — riavviato il BDS a giocatori zero (`systemctl restart minecraft-bedrock` dal broker, exitCode 0) il baule `(90,73,160)` che rispondeva `stack_request_timeout` si e' riaperto (`read_container ok 33068 ms`, 8 contenitori, il baule bersaglio con `iron_ingot 720`, `gold_ingot 150`, `diamond_hoe 1`, `dispenser 3` e nessun diamante) e `equip_shield` ha risposto `{ok, equipped: shield, confirmedBy: stack_response}` al **primo** `place`, senza alcun `shield_place_failed`: lo status 50 del tentativo precedente era la sessione incuneata, non un offhand occupato. Scambio e rilevamento del blocco restano provati solo dai test (nessuna occorrenza viva).
 

@@ -6475,6 +6475,22 @@ export class BedrockAdapter {
           });
           continue;
         }
+        if (cid === 'offhand') {
+          // Lo specchio dell'offhand si aggiorna solo da qui (e dal
+          // `mob_equipment`): senza questo ramo la risposta di un `place`
+          // riuscito spariva, `_offhandItem()` restava `null` e il passo di
+          // scambio di M16 usava una stack id falsa (live 09/10/2026: due
+          // scudi in zaino e `equip_shield` che rispondeva `already: true`
+          // mentre l'offhand era vuoto).
+          if (slot.count === 0) this.offhand = null;
+          else this.offhand = {
+            name: this.offhand?.name ?? null,
+            count: slot.count,
+            network_id: this.offhand?.network_id ?? networkId ?? null,
+            stack_id: slot.item_stack_id ?? null,
+          };
+          continue;
+        }
         let index = null;
         if (cid === 'hotbar') index = slot.slot;
         else if (cid === 'inventory') index = slot.slot + 9;
@@ -15333,21 +15349,41 @@ export class BedrockAdapter {
       { mode: 'place', slot: OFFHAND_FALLBACK_SLOT },
       { mode: 'swap', slot: OFFHAND_SLOT },
     ];
-    for (const { mode, slot } of steps) {
-      place = await this._sendStackRequest([mode === 'swap'
-        ? {
-          type_id: 'swap', legacy_type_id: 2,
-          source: this._slotInfo('cursor', 0, cursorStack),
-          destination: this._slotInfo('offhand', slot, dstStackId),
-        }
-        : {
-          type_id: 'place', legacy_type_id: 1, count: 1,
-          source: this._slotInfo('cursor', 0, cursorStack),
-          destination: this._slotInfo('offhand', slot, 0),
-        }]).catch(() => null);
+    const sendStep = async ({ mode, slot }) => this._sendStackRequest([mode === 'swap'
+      ? {
+        type_id: 'swap', legacy_type_id: 2,
+        source: this._slotInfo('cursor', 0, cursorStack),
+        destination: this._slotInfo('offhand', slot, dstStackId),
+      }
+      : {
+        type_id: 'place', legacy_type_id: 1, count: 1,
+        source: this._slotInfo('cursor', 0, cursorStack),
+        destination: this._slotInfo('offhand', slot, 0),
+      }]).catch(() => null);
+    let refreshed = false;
+    for (const step of steps) {
+      const { mode, slot } = step;
+      place = await sendStep(step);
       const status = place?.status ?? 'timeout';
       attempts.push({ mode, slot, status });
       if (place && (String(status) === 'ok' || status === 0)) break;
+      // Live 09/10/2026: con la finestra d'inventario **stantia** che il server
+      // teneva da prima (windowId 2) ogni `place` verso l'offhand rispondeva
+      // 50/55 e lo scudo restava in zaino; con una finestra fresca (windowId 3)
+      // lo stesso `place` passava al primo colpo. Il rimedio e' chiudere la
+      // finestra, riaprirla e ritentare **una volta sola** la forma appena
+      // rifiutata: un rifiuto per forma non si trasforma in un ciclo.
+      if (!refreshed && (Number(status) === 50 || Number(status) === 55)) {
+        refreshed = true;
+        const stale = this._openContainer ? this._openContainer.id : null;
+        await this._closeContainer().catch(() => {});
+        try { await this._ensureInventoryOpen(); } catch (error) { this.log('shield_window_refresh_failed', { message: error.message }); }
+        this.log('shield_window_refresh', { stale, fresh: this._openContainer ? this._openContainer.id : null, mode, slot, status });
+        const retry = await sendStep(step);
+        const retryStatus = retry?.status ?? 'timeout';
+        attempts.push({ mode, slot, status: retryStatus, retry: true });
+        if (retry && (String(retryStatus) === 'ok' || retryStatus === 0)) { place = retry; break; }
+      }
       // Un place rifiutato non cambia nulla lato server: il cursore è ancora
       // carico con la stessa stack id, quindi il passo successivo la riusa (un
       // solo ripiego per forma, non un ciclo).
@@ -15375,7 +15411,7 @@ export class BedrockAdapter {
       await this._returnCursorToInventory().catch(() => {});
     }
     this._cursor = null;
-    this.offhand = { name: 'shield', count: 1, network_id: null };
+    this.offhand = { name: 'shield', count: 1, network_id: null, stack_id: this.offhand?.stack_id ?? null };
     this._refreshInventory();
     const confirmed = await this._waitOffhandConfirm(timeoutMs);
     this.log('shield_equip', { status: place.status, confirmedBy: confirmed ? 'mob_equipment' : 'stack_response' });

@@ -226,29 +226,37 @@ test('_equipShield fails fast and typed without a shield, on a failed take and o
 });
 
 test('_equipShield falls back to the legacy offhand slot only after a rejected place', async () => {
-  const adapter = spawnedAdapter({ placeStatuses: [50, 'ok'] });
+  // Il primo rifiuto fa rinnovare la finestra e ritentare **la stessa forma**;
+  // il ripiego sullo slot 0 arriva solo se anche il ritentativo e' rifiutato.
+  const adapter = spawnedAdapter({ placeStatuses: [50, 50, 'ok'] });
   adapter.inventorySlots = [{ network_id: 42, name: 'shield', count: 1, stack_id: 3 }];
   adapter._refreshInventory();
 
   const result = await adapter._equipShield(10);
   assert.equal(result.ok, true, 'il primo tentativo è lo slot 1, il ripiego lo slot 0');
   const places = adapter.stackRequests.filter((a) => a[0]?.type_id === 'place');
-  assert.equal(places.length, 2, 'un place rifiutato e un ripiego, non un ciclo');
-  assert.deepEqual(places.map(p => p[0].destination.slot), [1, 0]);
+  assert.equal(places.length, 3, 'un place rifiutato, il suo ritentativo e un ripiego, non un ciclo');
+  assert.deepEqual(places.map(p => p[0].destination.slot), [1, 1, 0]);
   assert.equal(adapter.stackRequests.filter((a) => a[0]?.type_id === 'take').length, 1, 'un solo take: il cursore resta carico');
   assert.equal(adapter.offhand?.name, 'shield');
 });
 
 test('_equipShield reports both offhand attempts when neither slot is accepted', async () => {
-  const adapter = spawnedAdapter({ placeStatuses: [50, 50, 50] });
+  const adapter = spawnedAdapter({ placeStatuses: [50, 50, 50, 50] });
   adapter.inventorySlots = [{ network_id: 42, name: 'shield', count: 1, stack_id: 3 }];
   adapter._refreshInventory();
 
   const result = await adapter._equipShield(10);
   assert.equal(result.ok, false);
   assert.equal(result.error, 'shield_place_failed_50');
-  assert.deepEqual(result.attempts,
-    [{ mode: 'place', slot: 1, status: 50 }, { mode: 'place', slot: 0, status: 50 }, { mode: 'swap', slot: 1, status: 50 }]);
+  // Il rinnovo della finestra e' **una volta sola**: ritenta la prima forma e
+  // poi lascia scorrere i ripieghi (niente cicli).
+  assert.deepEqual(result.attempts, [
+    { mode: 'place', slot: 1, status: 50 },
+    { mode: 'place', slot: 1, status: 50, retry: true },
+    { mode: 'place', slot: 0, status: 50 },
+    { mode: 'swap', slot: 1, status: 50 },
+  ]);
   assert.equal(adapter.offhand, null, 'nessuno stato inventato');
 });
 
@@ -257,7 +265,7 @@ test('_equipShield swaps the cursor with an offhand that already holds something
   // su **entrambi** gli slot dell'offhand, cioè `FailedToValidateDstSlot` con
   // il cursore carico: quando la destinazione è occupata il server si aspetta
   // uno `swap`, non un `place`.
-  const adapter = spawnedAdapter({ placeStatuses: [50, 50, 'ok'] });
+  const adapter = spawnedAdapter({ placeStatuses: [50, 50, 50, 'ok'] });
   adapter.inventorySlots = [{ network_id: 42, name: 'shield', count: 1, stack_id: 3 }];
   adapter._refreshInventory();
   adapter.offhand = { name: 'torch', count: 1, network_id: 68, stack_id: 99 };
@@ -267,8 +275,8 @@ test('_equipShield swaps the cursor with an offhand that already holds something
   assert.equal(result.ok, true, 'un offhand occupato non condanna lo scudo: si scambia');
   assert.equal(result.equipped, 'shield');
   const moves = adapter.stackRequests.filter(a => (a[0]?.type_id ?? 'take') !== 'take');
-  assert.deepEqual(moves.map(a => a[0].type_id), ['place', 'place', 'swap']);
-  const swap = moves[2][0];
+  assert.deepEqual(moves.map(a => a[0].type_id), ['place', 'place', 'place', 'swap']);
+  const swap = moves[3][0];
   assert.equal(swap.source.slot_type.container_id, 'cursor');
   assert.equal(swap.destination.slot_type.container_id, 'offhand');
   assert.equal(swap.destination.slot, 1, 'lo swap si prova sullo slot valido, non sul ripiego');
@@ -397,4 +405,41 @@ test('executeAction routes equip_shield, raise_shield and lower_shield', async (
   const lowered = await adapter.executeAction('lower_shield');
   assert.equal(lowered.ok, true);
   assert.equal(adapter.shieldUp, false);
+});
+
+test('un place rifiutato con 50 rinnova la finestra e ritenta una volta', async () => {
+  const adapter = spawnedAdapter({ placeStatuses: [50, 'ok'] });
+  adapter.inventorySlots = [{ network_id: 42, name: 'shield', count: 1, stack_id: 3 }];
+  adapter._refreshInventory();
+  const logs = [];
+  adapter.log = (type, data) => logs.push([type, data]);
+  let opens = 0;
+  adapter._ensureInventoryOpen = async () => { opens++; adapter._openContainer = { id: opens + 2, type: 'inventory' }; };
+  let closes = 0;
+  adapter._closeContainer = async () => { closes++; adapter._openContainer = null; };
+
+  const result = await adapter._equipShield(10);
+
+  assert.equal(result.ok, true, 'il place passa dopo il rinnovo della finestra');
+  assert.equal(opens, 2, 'una finestra per il take e una fresca per il ritentativo');
+  assert.equal(closes, 1, 'la finestra stantia viene chiusa prima di riaprirla');
+  const refresh = logs.find(([type]) => type === 'shield_window_refresh');
+  assert.ok(refresh, 'il rinnovo si nomina nel ledger');
+  assert.equal(refresh[1].stale, 3, 'la finestra stantia era la n. 3');
+  assert.equal(refresh[1].fresh, 4, "la finestra fresca e' la n. 4");
+  const places = adapter.stackRequests.filter(a => a[0]?.type_id === 'place');
+  assert.equal(places.length, 2, 'il place rifiutato e il suo ritentativo');
+  assert.deepEqual(places.map(p => p[0].destination.slot), [1, 1], 'la stessa forma, non un ripiego');
+});
+
+test("lo specchio dell'offhand impara dalla risposta dello stack request", () => {
+  const adapter = spawnedAdapter();
+  const apply = BedrockAdapter.prototype._applyStackResponse;
+
+  apply.call(adapter, { containers: [{ slot_type: { container_id: 'offhand' }, slots: [{ slot: 1, count: 1, item_stack_id: 77 }] }] });
+  assert.equal(adapter.offhand?.stack_id, 77, "la stack id dell'offhand arriva dalla risposta");
+  assert.equal(adapter.offhand?.count, 1, 'e con essa il conteggio');
+
+  apply.call(adapter, { containers: [{ slot_type: { container_id: 'offhand' }, slots: [{ slot: 1, count: 0, item_stack_id: 0 }] }] });
+  assert.equal(adapter.offhand, null, 'un offhand svuotato non resta nello specchio');
 });
