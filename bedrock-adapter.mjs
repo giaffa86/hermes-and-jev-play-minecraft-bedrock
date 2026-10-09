@@ -359,13 +359,33 @@ const ESCORT_WAIT_MS = +(process.env.ESCORT_WAIT_MS || 60000);
 const ESCORT_LOST_MS = +(process.env.ESCORT_LOST_MS || 20000);
 const ESCORT_TIMEOUT_MS = +(process.env.ESCORT_TIMEOUT_MS || 150000);
 const ESCORT_ARRIVE_DISTANCE = +(process.env.ESCORT_ARRIVE_DISTANCE || 2);
-export { TRIP_KIT_REQUIREMENTS, ESCORT_MAX_GAP, ESCORT_RESUME_GAP, ESCORT_WAIT_MS, ESCORT_LOST_MS, ESCORT_TIMEOUT_MS, ESCORT_ARRIVE_DISTANCE };
+export { TRIP_KIT_REQUIREMENTS, ESCORT_MAX_GAP, ESCORT_RESUME_GAP, ESCORT_WAIT_MS, ESCORT_LOST_MS, ESCORT_TIMEOUT_MS, ESCORT_ARRIVE_DISTANCE, isUseItemName };
 // TTL del «non si è aperto adesso»: un contenitore che non si apre costa fino a ~18 s
 // di tentativi (live 04/10/2026: la cassa ricordata a (93,72,160) non esiste più — in
 // quel punto il mondo ha il baule un blocco più in alto — e `take_egg` finiva in
 // `container_open_timeout`). Fallito, esce dalle opzioni per un po' invece di essere
 // riproposto a ogni passo; resta in memoria e torna offribile da solo.
 const STORAGE_OPEN_FAILURE_MS = 10 * 60 * 1000;
+
+// Oggetti il cui click su un blocco è *usa l'oggetto*, non «apri/interagisci»:
+// con uno di questi in mano il contenitore non si apre mai e il click non
+// produce nessun errore — solo il silenzio di `container_open_timeout`.
+// Live 08-09/10/2026, spedizione diamanti: quaranta aperture fallite su quaranta
+// con `held: "egg"` e due letture riuscite su due appena la mano ha tenuto
+// qualcos'altro (il bot raccoglie le uova deposte nel villaggio, quindi la pila
+// in mano non si svuota da sola).
+const USE_ITEM_NAMES = new Set([
+  'egg', 'snowball', 'ender_pearl', 'experience_bottle',
+  'splash_potion', 'lingering_potion', 'potion',
+  'bow', 'crossbow', 'trident', 'fishing_rod', 'spyglass', 'goat_horn',
+  'flint_and_steel', 'fire_charge', 'wind_charge', 'bucket',
+]);
+const USE_ITEM_SUFFIXES = ['_bucket', '_boat', '_raft', '_minecart', '_spawn_egg', '_charge'];
+const isUseItemName = name => {
+  if (!name) return false;
+  if (USE_ITEM_NAMES.has(name)) return true;
+  return USE_ITEM_SUFFIXES.some(suffix => name.endsWith(suffix));
+};
 const DISCOVERY_RESCAN_MS = 15000;   // ri-scansione scoperte nella stessa chunk (mondo appena caricato)
 // Ricognizione di strutture/ambienti (spec esplorazione M5/M6): una passata
 // sull'area caricata non è gratis, quindi si ripete al massimo ogni minuto.
@@ -8279,19 +8299,31 @@ export class BedrockAdapter {
         this.log('container_unknown_block', { ...detail, error: known.error, refreshed: known.refreshed ?? null });
       }
       const unknown = known.ok ? null : { block: known.error, refreshed: known.refreshed ?? null };
-      // Mano vuota: il client vanilla può interagire a mani nude, ma in questo
-      // harness l'unico interact riuscito live era *con un oggetto in mano* e il
-      // server risponde con un resync d'inventario quando `held_item` è vuoto
-      // (variante `item_in_hand` della sonda entità). Dal secondo tentativo la
-      // mano si riempie: così il log dice se è quello il rifiuto, invece di
-      // ripetere tre volte la stessa transazione.
-      if (attempt > 1 && !this.inventorySlots?.[this.selectedHotbar]?.network_id) {
-        const slots = this.inventorySlots ?? [];
-        const slot = slots.findIndex((s, i) => i < 9 && s?.network_id);
+      // La mano sbagliata è la prima causa di `container_open_timeout`:
+      // - mano *vuota*: il client vanilla interagirebbe a mani nude, ma in questo
+      //   harness l'unico interact riuscito live era *con un oggetto in mano* e il
+      //   server risponde con un resync d'inventario quando `held_item` è vuoto
+      //   (variante `item_in_hand` della sonda entità). Dal secondo tentativo la
+      //   mano si riempie: così il log dice se è quello il rifiuto, invece di
+      //   ripetere tre volte la stessa transazione.
+      // - mano con un oggetto *usabile*: il click diventa «usa l'oggetto» e il
+      //   contenitore non si apre mai. Live 08-09/10/2026: quaranta
+      //   `container_open_timeout` su quaranta tentativi con `held: "egg"` e due
+      //   letture riuscite su due appena la mano ha tenuto altro. Qui la mano si
+      //   cambia *subito*, al primo tentativo.
+      const slots = this.inventorySlots ?? [];
+      const hand = slots[this.selectedHotbar];
+      const heldBefore = this._slotItemName(hand) ?? null;
+      const useItem = hand?.network_id ? isUseItemName(heldBefore) : false;
+      if (useItem || (attempt > 1 && !hand?.network_id)) {
+        // Prima uno slot con un oggetto *non* usabile, poi — se non c'è — uno
+        // slot libero: la mano vuota è il ripiego, non la scelta.
+        const usable = slots.findIndex((s, i) => i < 9 && s?.network_id && !isUseItemName(this._slotItemName(s)));
+        const slot = usable >= 0 ? usable : slots.findIndex((s, i) => i < 9 && !s?.network_id);
         try {
           if (slot >= 0 && this._selectHotbarSlot(slot)) {
             detail.held = this._slotItemName(slots[slot]) ?? null;
-            this.log('container_hand_selected', { slot, item: detail.held });
+            this.log('container_hand_selected', { slot, item: detail.held, why: useItem ? `use_item:${heldBefore}` : 'hand_empty' });
           }
         } catch (error) { this.log('container_hand_failed', { error: error.message }); }
       }
