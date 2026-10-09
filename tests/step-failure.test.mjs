@@ -57,6 +57,9 @@ test('il vocabolario reale del harness cade nei tipi dichiarati', () => {
     // allo stesso modo (live 08/10/2026: bauli non aperti per 70 minuti).
     ['block_unknown', 'blocked', false],
     ['block_mismatch', 'blocked', false],
+    // Live 08/10/2026, tentativo 16: il bot chiuso dentro il vano di una porta.
+    // Il cammino non e' rotto, e' l'approccio che non passa: un'altra chiave puo'.
+    ['stuck_in_doorway', 'blocked', false],
     // Regola del harness che dice no: il piano deve cambiare.
     ['fell_tree_refused', 'refused', false],
     // Manca qualcosa al passo: il piano deve aggiungere il passo che lo procura.

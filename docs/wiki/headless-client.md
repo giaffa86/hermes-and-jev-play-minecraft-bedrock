@@ -163,7 +163,13 @@ The adapter instead:
    grace, and when the grace expires the move ends with
    `door_blocked {position, waitedMs, from}` instead of a bare `stuck` — a closed
    door that stops a walk has to be readable in the ledger, and until then three
-   anonymous `stuck` rows were all it said;
+   anonymous `stuck` rows were all it said. Two corollaries since 10/10 (row
+   47.89): `close_door` **never closes the door occupying the bot's own cell**
+   (`_doorInOwnCell`), and a walk that stalls while the bot stands in a doorway
+   ends with the typed **`stuck_in_doorway`** (plus a `doorway_stuck` row)
+   instead of holding `forward` and jumping against the ceiling; the same walk
+   also cannot press a jump that a *previous* grid step left armed, because
+   `jumpHeldTicks` is now a countdown consumed every simulated tick;
 5. accepts server corrections beyond `0.75` blocks (`MAX_CORRECTION_DRIFT`) and
    realigns the tick anchor.
 

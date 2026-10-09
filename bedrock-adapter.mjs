@@ -11082,6 +11082,27 @@ export class BedrockAdapter {
     return `${Math.floor(position.x)},${Math.floor(position.y)},${Math.floor(position.z)}`;
   }
 
+  // La porta che sta *addosso* al bot (metà inferiore o superiore): con un
+  // `candidate` dice se è proprio quella cella. Serve a due cose: non richiudere
+  // mai una porta sulla cella che il bot occupa — il server non gli lascia più
+  // fare un passo e il vano diventa una gabbia (live 08/10/2026, tentativo 16: il
+  // bot si chiuse dentro la porta di casa e i 40 minuti seguenti finirono in
+  // `movement timeout`) — e non tenere `forward`+`jumping` dentro un vano porta,
+  // dove la fisica locale perdona la cella occupata e il server no.
+  _doorInOwnCell (candidate = null) {
+    const feet = this._feet;
+    if (!feet || !this.world) return null;
+    const cx = Math.floor(feet.x), cz = Math.floor(feet.z), cy = Math.floor(feet.y + 1e-3);
+    if (candidate && (Math.floor(candidate.x) !== cx || Math.floor(candidate.z) !== cz ||
+      (candidate.y !== cy && candidate.y !== cy + 1))) return null;
+    for (let dy = 0; dy <= 1; dy++) {
+      const cell = { x: cx, y: cy + dy, z: cz };
+      const block = this.world.blockAt(cell);
+      if (this._isDoorBlock(block)) return { position: cell, parts: this._doorParts(cell, block), open: this._isOpenAt(cell) };
+    }
+    return null;
+  }
+
   // Equipaggiamento rimandato dal server per il bot: serve il selected_slot
   // (hotbar) e, per l'offhand, la conferma autorevole di cosa c'è nello slot
   // della mano secondaria (vedi _equipShield).
@@ -11520,7 +11541,7 @@ export class BedrockAdapter {
       this._collidedHorizontally = true;
       this._moveDiag(nx, feet.y, nz, ax, az);
       // Gradino di un blocco: prepara un salto se lo spazio sopra è libero.
-      if (this._onGround && !this._collides(nx, feet.y + 1, nz, { ignoreSelf: true }) && motion?.active && motion.jumpHeldTicks <= 0) {
+      if (this._onGround && !this._collides(nx, feet.y + 1, nz, { ignoreSelf: true }) && motion?.active && motion.jumpHeldTicks <= 0 && !this._doorInOwnCell()) {
         motion.jumpQueued = true;
         motion.jumpHeldTicks = 6;
         motion.jumpStart = true;
@@ -11561,6 +11582,11 @@ export class BedrockAdapter {
     this._airTick();
     const motion = this._motion;
     if (this._freeJump?.heldTicks > 0) this._freeJump.heldTicks--;
+    // `jumpHeldTicks` è un impulso, non uno stato: senza il decremento il bot
+    // teneva `want_up`/`jumping` per tutta la camminata (live 08/10/2026,
+    // tentativo 16: `jumpHeldTicks: 6` costante per 40 s sotto il tetto di casa,
+    // `horizontal_collision` a ogni tick, 0,6 blocchi netti in 45 s).
+    if (motion?.jumpHeldTicks > 0) motion.jumpHeldTicks--;
     const freeJump = !!this._freeJump?.queued;
     if ((motion?.active && motion.jumpQueued || freeJump) && this._onGround) {
       // La gravità viene applicata nello stesso tick: compensa l'impulso così
@@ -11775,6 +11801,19 @@ export class BedrockAdapter {
       if (waitingDoor) {
         motion.lastProgressAt = Date.now();
       } else if (motion.stuckTries < 1) {
+        // Dentro il vano di una porta il salto non tira fuori il bot: la fisica
+        // locale perdona la cella che occupa, il server no. Invece di tenere
+        // `forward`+`jumping` per tutto il budget si chiude con un verdetto
+        // tipizzato, così il controller ripianifica invece di aspettare 45 s
+        // (live 08/10/2026, tentativo 16: quaranta minuti dentro la casa della scala).
+        const ownDoor = this._doorInOwnCell();
+        if (ownDoor) {
+          this.log('doorway_stuck', {
+            door: ownDoor.parts[0], open: ownDoor.open, stuckTries: motion.stuckTries,
+            from: feet ? { x: +feet.x.toFixed(2), y: +feet.y.toFixed(2), z: +feet.z.toFixed(2) } : null,
+          });
+          return this._finishMotion('stuck_in_doorway');
+        }
         motion.stuckTries++;
         motion.jumpQueued = true;
         motion.jumpHeldTicks = 6;
@@ -11800,7 +11839,7 @@ export class BedrockAdapter {
       return this._doorBlockedVerdict(motion, feet);
     }
     // Salto preparatorio per i gradini in salita.
-    if (this._onGround && waypoint.y > feet.y + 0.5 && wpHoriz < 2.4 && motion.jumpHeldTicks <= 0) {
+    if (this._onGround && waypoint.y > feet.y + 0.5 && wpHoriz < 2.4 && motion.jumpHeldTicks <= 0 && !this._doorInOwnCell()) {
       motion.jumpQueued = true;
       motion.jumpHeldTicks = 6;
       motion.jumpStart = true;
@@ -12217,6 +12256,7 @@ export class BedrockAdapter {
     const stop = Math.max(preciseArrival ? 0.025 : 0.35, stopDistance);
     let attempts = 0;
     let lastFeet = null;
+    let bestTargetDistance = Infinity;
     while (Date.now() < deadline) {
       // I tick del client guidano `_updateMotionState`: senza client connesso il
       // movimento non puo' avanzare ne' scadere, quindi si esce subito (il close
@@ -12314,10 +12354,20 @@ export class BedrockAdapter {
       // spostato il bot) sono lo stesso verdetto visto da due lati: tre di fila
       // chiudono la corsa invece di consumare tutto il budget. Live 07/10/2026:
       // 75 s per 1,5 blocchi netti con il verdetto per-waypoint sempre zittito.
-      if (outcome === 'no_progress' || moved < 0.3) {
+      // Un tratto che *avanza verso il bersaglio* azzera il contatore; uno che si
+      // limita a spostare il bot (anche di più di 0,3 blocchi, in tondo o contro un
+      // muro) no: senza il termine sul bersaglio un'oscillazione che rigirava su se
+      // stessa azzerava `attempts` a ogni giro e bruciava i 45 s in `movement
+      // timeout` (live 08/10/2026, tentativo 16: 0,6 blocchi netti in 45 s,
+      // `progressed: false`, nessun verdetto interno).
+      const targetDistance = Math.hypot(feet.x - target.x, feet.z - target.z);
+      const improved = targetDistance < bestTargetDistance - 0.25;
+      if (improved) bestTargetDistance = targetDistance;
+      if (outcome === 'no_progress' || moved < 0.3 || !improved) {
         attempts++;
         if (attempts >= 3) {
-          const stalled = new Error(outcome === 'no_progress' || outcome === 'stuck' ? 'stuck' : 'path_failed');
+          const stalled = new Error(outcome === 'no_progress' || outcome === 'stuck' ? 'stuck'
+            : (outcome === 'stuck_in_doorway' ? 'stuck_in_doorway' : 'path_failed'));
           stalled.details = { target: { ...target }, from: motionStart, position: { ...this._feet },
             pathNodes: path.length, reachedWaypoints, outcome, stalled: true };
           throw stalled;
@@ -14157,6 +14207,9 @@ export class BedrockAdapter {
       const parts = key.split(',').map(Number);
       if (parts.length !== 3) continue;
       const [x, y, z] = parts;
+      // Una porta non si richiude *sulla* cella che il bot occupa: da lì non riesce
+      // più a muoversi (live 08/10/2026, tentativo 16). Si sceglie un'altra porta.
+      if (this._doorInOwnCell({ x, y, z })) continue;
       const dist = Math.hypot(this._feet.x - (x + 0.5), this._feet.z - (z + 0.5));
       if (dist <= 8) candidates.push({ x, y, z, distance: dist });
     }

@@ -688,3 +688,44 @@ test('una porta che non si apre nomina il motivo dello `stuck`', () => {
   assert.equal(finished, 'stuck');
   assert.equal(adapter._motion.jumpQueued, undefined, 'l\'attesa della porta non fa saltare il bot');
 });
+
+// Live 08/10/2026, tentativo 16: il bot si è chiuso dentro la porta di casa e per
+// quaranta minuti ha tenuto `forward`+`jumping` senza fare un passo. Il vano porta
+// addosso al bot si dichiara con un verdetto tipizzato, non con un altro salto.
+test('un vano porta addosso al bot chiude il tratto con un verdetto tipizzato', () => {
+  const world = flatWorld({ minX: 0, maxX: 3, minZ: 0, maxZ: 3 });
+  world.set(0, 71, 0, { name: 'wooden_door', boundingBox: 'block', getProperties: () => ({ upper_block_bit: false, open_bit: true }) });
+  world.set(0, 72, 0, { name: 'wooden_door', boundingBox: 'block', getProperties: () => ({ upper_block_bit: true, open_bit: true }) });
+  const adapter = reachAdapter(world, { feet: { x: 0.5, y: 71, z: 0.5 } });
+  const logs = [];
+  adapter.log = (type, data) => logs.push({ type, data });
+  let finished = null;
+  adapter._finishMotion = reason => { finished = reason; };
+  adapter._motion = {
+    active: true, yaw: 90, index: 0,
+    path: [{ x: 1, y: 71, z: 0 }, { x: 2, y: 71, z: 0 }],
+    target: { x: 2.5, y: 71, z: 0.5 }, stopDistance: 0.4, deadline: Date.now() + 10000,
+    bestTargetDist: 2, bestWaypointDist: 1,
+    lastTargetProgressAt: Date.now(), lastIndexProgressAt: Date.now(), lastProgressAt: Date.now() - 3000,
+    stuckTries: 0, useRequest: null,
+  };
+  adapter._updateMotionState();
+  const stuck = logs.find(row => row.type === 'doorway_stuck');
+  assert.ok(stuck, `il vano è nominato: ${logs.map(row => row.type).join(', ')}`);
+  assert.deepEqual(stuck.data.door, { x: 0, y: 71, z: 0 });
+  assert.equal(stuck.data.open, true);
+  assert.equal(finished, 'stuck_in_doorway', 'il verdetto ha un nome suo');
+  assert.equal(adapter._motion.jumpQueued, undefined, 'dentro il vano non si salta');
+});
+
+// Live 08/10/2026, tentativo 16: `close_door` ha richiuso la porta sulla cella
+// che il bot occupava e da lì non è più riuscito a muoversi.
+test('una porta non si richiude sulla cella che il bot occupa', () => {
+  const world = flatWorld({ minX: 0, maxX: 4, minZ: 0, maxZ: 0 });
+  world.set(0, 71, 0, { name: 'wooden_door', boundingBox: 'block', getProperties: () => ({ upper_block_bit: false, open_bit: true }) });
+  world.set(0, 72, 0, { name: 'wooden_door', boundingBox: 'block', getProperties: () => ({ upper_block_bit: true, open_bit: true }) });
+  const adapter = reachAdapter(world, { feet: { x: 0.5, y: 71, z: 0.5 } });
+  adapter._openDoors = new Set(['0,71,0', '3,71,0']);
+  const target = adapter._closeDoorTarget();
+  assert.deepEqual([target.x, target.y, target.z], [3, 71, 0], 'si sceglie l\'altra porta');
+});

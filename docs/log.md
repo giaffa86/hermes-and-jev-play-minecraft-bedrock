@@ -1,5 +1,38 @@
 # Log
 
+## [2026-10-10] fix | Il salto e' un impulso, il ballo sul posto non e' progresso, e una porta non e' un trampolino (M18)
+
+La spedizione diamanti si era fermata di nuovo in superficie: 84 azioni, 20 fallimenti, di cui
+15 `movement timeout`/`stuck`, e il bot non ha mai lasciato y>=71 ne' raggiunto la cima della
+scala `(114,62,195)` che i suoi stessi piani nominavano. Il planner era sano (le sonde
+`/debug/path` trovavano 3-9 nodi per uscire di casa e i cammini a mano tornavano `ok` in 3-13 s):
+il muro era il motore del cammino (riga 47.89).
+
+- **`jumpHeldTicks` non tornava mai a zero**: il contatore era consumato solo da `_freeJump.heldTicks`
+  (il salto libero), non dal salto del cammino, e siccome sia il salto preparatorio (`:11842`) sia
+  quello di risalita di `_moveHorizontal` (`:11544`) sono protetti da `jumpHeldTicks <= 0`, dopo il
+  primo salto il bot non poteva piu' salire un gradino per tutto il resto della camminata. Il ledger
+  lo diceva: `jumpHeldTicks: 6` costante per 45 s sotto un soffitto, `flags` con `jumping`/`want_up`
+  a ogni tick.
+- **Un ballo sul posto azzerava il contatore degli stalli**: il ciclo di `_moveTo` azzerava
+  `attempts` su qualunque spostamento >= 0.3 blocchi, quindi un'oscillazione che non avvicinava al
+  bersaglio rimandava lo stallo all'infinito e bruciava i 45 s di budget, chiudendo come
+  `movement timeout` con `progressed: false` e senza alcun verdetto interno (0,6 blocchi netti in
+  45 s, 137-156 posizioni distinte dei piedi, 243-435 `auth_input`).
+- **Una porta puo' stare nella cella del bot**: `close_door` (azione #53 della run) ha chiuso la
+  `wooden_door` aperta a `(114,76,194)` **addosso** al bot, che ha finito la run in quella cella
+  (`phys_probe`: `feetCell: wooden_door`). La fisica locale perdona la cella occupata, il server no:
+  premere avanti non esce e il salto sbatte sul soffitto. Ora `_doorInOwnCell` (`:11092`) fa
+  saltare quella porta a `_closeDoorTarget`, sopprime il salto nel vano e chiude la camminata con
+  il verdetto tipizzato **`stuck_in_doorway`** (`:11815`, piu' una riga `doorway_stuck`);
+  `step-failure.mjs` lo classifica `blocked` (switch) invece di `unknown` (terminale).
+
+Quattro test nuovi (`tests/bedrock-movement.test.mjs`, `tests/bedrock-reachability.test.mjs` x2,
+`tests/bedrock-storage-walk.test.mjs`) e una riga in `tests/step-failure.test.mjs`: suite
+**2044 -> 2048 pass / 0 fail**. La fix e' solo offline finche' l'immagine del harness non viene
+ricostruita; restano noti il raggio d'arrivo di 2 blocchi di `goto_waypoint` e la discesa verticale
+mai provata viva.
+
 ## [2026-10-09] fix | L'armatura dice quanta ne resta, e una prova puo' parlare col bot senza un umano
 
 Due residui dichiarati all'utente erano di natura diversa: uno e' un dato che non

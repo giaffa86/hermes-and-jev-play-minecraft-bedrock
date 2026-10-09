@@ -401,3 +401,22 @@ test('il tick che conclude il cammino lo dichiara comunque al server', () => {
   assert.deepEqual(auth.payload.move_vector, { x: 0, z: 1 }, 'il tick dichiara il cammino simulato');
   assert.ok(auth.payload.input_data.includes('up'), 'il flag di avanzamento è dichiarato');
 });
+
+// Live 08/10/2026, tentativo 16: `jumpHeldTicks: 6` è rimasto costante per tutta
+// una camminata di quaranta minuti sotto il tetto di casa (`want_up`/`jumping` a
+// ogni tick, `horizontal_collision`, 0,6 blocchi netti in 45 s). Il contatore era
+// un impulso mai decrementato, cioè uno stato: il salto non si spegneva mai.
+test('il salto è un impulso: `jumpHeldTicks` scende a zero da solo', () => {
+  const world = fakeWorld();
+  world.fillFloor(0, 1, 0, 0);
+  const adapter = physicsAdapter(world);
+  place(adapter, 0.5, GROUND_Y + 1, 0.5);
+  adapter._motion = {
+    ...motion({ jumpQueued: true, jumpHeldTicks: 6, jumpStart: true }),
+    path: [{ x: 1, y: GROUND_Y + 1, z: 0 }], index: 0,
+    target: { x: 1.5, y: GROUND_Y + 1, z: 0.5 }, stopDistance: 0.4, deadline: Date.now() + 60000,
+    arrivalVerticalTolerance: 3, bestTargetDist: Infinity, lastProgressAt: Date.now(), stuckTries: 0, useRequest: null,
+  };
+  for (let i = 0; i < 6; i++) adapter._physicsStep();
+  assert.equal(adapter._motion.jumpHeldTicks, 0, 'dopo sei tick il salto non è più armato');
+});

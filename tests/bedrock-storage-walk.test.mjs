@@ -204,3 +204,29 @@ test('opening a chest walks up to two blocks and reports every attempt', async (
   assert.deepEqual(walks[0].target, { x: 2.5, y: 64, z: 0.5 });
   assert.ok(events.some(event => event.type === 'container_open_failed'), 'il fallimento finale si registra con i tentativi');
 });
+
+// Live 08/10/2026, tentativo 16: il tratto si spostava di mezzo blocco in tondo
+// senza avvicinarsi al bersaglio, quindi `attempts` tornava a zero a ogni giro e
+// il bot rigirava su se stesso fino a consumare i 45 s del budget in `movement
+// timeout` (`progressed: false`, nessun verdetto interno).
+test('un tratto che sposta il bot senza avvicinarlo non azzera il contatore', async () => {
+  const a = adapter();
+  a._startNode = () => ({ x: 0, y: 64, z: 0 });
+  a._findGoalNodes = () => [{ x: 10, y: 64, z: 0 }];
+  a._findPath = () => [{ x: 0, y: 64, z: 0 }, { x: 10, y: 64, z: 0 }];
+  let motions = 0;
+  a._startMotion = async () => {
+    motions++;
+    a._feet = { x: 0, y: 64, z: motions % 2 ? 0.5 : 0 };
+    return 'stuck';
+  };
+  await assert.rejects(
+    a._moveTo({ x: 10.5, y: 64, z: 0.5 }, 1, 75000),
+    error => {
+      assert.equal(error.message, 'stuck', 'il verdetto arriva prima del budget, non come `movement timeout`');
+      assert.equal(error.details.outcome, 'stuck');
+      return true;
+    },
+  );
+  assert.ok(motions <= 5, `pochi tratti di fila, non un budget intero (${motions})`);
+});

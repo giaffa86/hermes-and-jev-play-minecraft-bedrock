@@ -65,7 +65,7 @@ const RULES = Object.freeze([
   { kind: 'moved', test: /(^|_)(gone|left|not_found)$/ },
   {
     kind: 'blocked',
-    test: /(^|_)unreachable$|^no reachable |^no_(safe_cell|place_spot|gap_to_bridge|lava_ahead|position|placeable_block|diggable)|^not_diggable_|^protected_|^unsafe_|^block_still_present$|^position_required$|^mine_target_missing$|^block_(unknown|mismatch)$/,
+    test: /(^|_)unreachable$|^no reachable |^no_(safe_cell|place_spot|gap_to_bridge|lava_ahead|position|placeable_block|diggable)|^not_diggable_|^protected_|^unsafe_|^block_still_present$|^position_required$|^mine_target_missing$|^block_(unknown|mismatch)$|^stuck_in_doorway$/,
   },
   {
     kind: 'prerequisite',
