@@ -2896,7 +2896,7 @@ export class BedrockAdapter {
     this._applyStackResponse(place, { networkId: slot.network_id });
     this._cursor = null;
     this.armor.helmet = slot.name;
-    this._armorWindow[0] = { name: slot.name, network_id: slot.network_id ?? null, count: 1, stack_id: slot.stack_id ?? null };
+    this._armorWindow[0] = this._armorWindowItem(slot) ?? { name: slot.name, network_id: slot.network_id ?? null, count: 1, stack_id: slot.stack_id ?? null, metadata: 0, extra: null };
     this._refreshInventory();
     this.log('pumpkin_equipped', { item: slot.name, status: place.status });
     return { ok: true, already: false, item: slot.name };
@@ -4651,6 +4651,7 @@ export class BedrockAdapter {
   observe () {
     const heldSlot = this.inventorySlots[this.selectedHotbar];
     const heldInfo = heldSlot?.network_id ? this.world.registry?.items[heldSlot.network_id] : null;
+    const armorSlots = this._armorSlots();
     const bed = this._findBed();
     // La vista dei fluidi serve due volte (stato + discesa): calcolarla una volta
     // sola evita di ripetere le letture delle celle.
@@ -4670,7 +4671,15 @@ export class BedrockAdapter {
       standingOn: this.standingOn,
       inventory: this.inventory,
       held: this._slotItemName(heldSlot),
-      armor: { ...this.armor, points: this._armorPoints() },
+      // `slots`/`unresolved` sono additivi: dicono cosa c'è addosso anche quando
+      // il nome non si sa (pezzo indossato prima della palette), e quanto è
+      // consumato. `points` resta la somma dei pezzi nominabili.
+      armor: {
+        ...this.armor,
+        points: this._armorPoints(),
+        slots: armorSlots,
+        unresolved: armorSlots.filter(piece => piece && !piece.name).length,
+      },
       travel: this._travelReadiness(),
       placement: this._lastPlacement ?? null,
       headroom: this._headroom(),
@@ -13901,16 +13910,32 @@ export class BedrockAdapter {
   _applyArmorWindowSlot (slot, item) {
     const index = Number(slot);
     if (!Number.isInteger(index) || index < 0 || index > 3) return false;
-    this._armorWindow[index] = item && item.count
-      ? { name: item.name ?? null, network_id: item.network_id ?? null, count: item.count, stack_id: item.stack_id ?? null }
-      : null;
+    this._armorWindow[index] = this._armorWindowItem(item);
     this._refreshArmorMirror();
+    const wear = this._armorSlots()[index];
     this.log('armor_slot', {
       slot: index,
       item: this._armorWindow[index] ? `${this._slotItemName(this._armorWindow[index]) ?? this._armorWindow[index].network_id}:${this._armorWindow[index].count}` : null,
+      damage: wear?.damage ?? null,
+      max: wear?.max ?? null,
       worn: this._wornArmor().join(' ') || null,
     });
     return true;
+  }
+
+  // Lo slot grezzo dell'armatura con tutto ciò che serve a nominarlo *e* a
+  // misurarlo: `metadata`/`extra` portano l'NBT Damage che `_itemDamage()` legge,
+  // e scartarli era il motivo per cui la durabilità dell'armatura non esisteva.
+  _armorWindowItem (item) {
+    if (!item || !item.count) return null;
+    return {
+      name: item.name ?? null,
+      network_id: item.network_id ?? null,
+      count: item.count,
+      stack_id: item.stack_id ?? null,
+      metadata: item.metadata ?? 0,
+      extra: item.extra ?? null,
+    };
   }
 
   // I nomi si ricavano dagli slot grezzi ogni volta: la finestra può arrivare
@@ -13923,6 +13948,35 @@ export class BedrockAdapter {
       this.armor[pieces[i]] = item ? this._slotItemName(item) : null;
     }
     return { ...this.armor };
+  }
+
+  // Cosa indossa, pezzo per pezzo, con la durabilità che il server conosce. Un
+  // pezzo che la palette non sa ancora nominare resta un pezzo addosso (`name:
+  // null`, ma `network_id` c'è): contare i nomi lo faceva leggere come pelle
+  // nuda, ed è la stessa cecità che teneva `wear_armor` impossibile. La
+  // durabilità arriva dall'NBT Damage e dal `maxDurability` del registro (che è
+  // per *nome*, quindi affidabile: gli id inclusi no, vedi la nota in testa al
+  // file) — `remaining`/`low` restano null quando il massimo è ignoto.
+  _armorSlots () {
+    const order = ['helmet', 'chestplate', 'leggings', 'boots'];
+    return order.map((piece, i) => {
+      const slot = this._armorWindow?.[i];
+      if (!slot || (!slot.network_id && !slot.name)) return null;
+      const info = this.world?.registry?.items?.[slot.network_id] ?? null;
+      const max = Number.isFinite(info?.maxDurability) && info.maxDurability > 0 ? info.maxDurability : null;
+      const damage = this._itemDamage(slot);
+      const remaining = max != null ? Math.max(0, max - damage) : null;
+      return {
+        piece,
+        name: this._slotItemName(slot),
+        network_id: slot.network_id ?? null,
+        count: slot.count ?? 1,
+        damage,
+        max,
+        remaining,
+        low: remaining != null ? remaining / max <= 0.1 : null,
+      };
+    });
   }
 
   // I pezzi d'armatura addosso, nella forma che serve alla neutralità dei piglin
@@ -14058,7 +14112,7 @@ export class BedrockAdapter {
       this._cursor = null;
       this.armor[['helmet', 'chestplate', 'leggings', 'boots'][piece.armorSlot]] = piece.name;
       if (piece.armorSlot >= 0 && piece.armorSlot <= 3) {
-        this._armorWindow[piece.armorSlot] = { name: piece.name, network_id: piece.network_id ?? null, count: 1, stack_id: piece.stack_id ?? null };
+        this._armorWindow[piece.armorSlot] = this._armorWindowItem(piece) ?? { name: piece.name, network_id: piece.network_id ?? null, count: 1, stack_id: piece.stack_id ?? null, metadata: 0, extra: null };
       }
       equipped.push({ item: piece.name, slot: piece.armorSlot });
       this.log('armor_equip', { item: piece.name, slot: piece.armorSlot, status: place.status });

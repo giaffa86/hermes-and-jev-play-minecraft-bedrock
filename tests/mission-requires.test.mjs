@@ -103,10 +103,28 @@ test('il controller annoda il requisito: opzioni, credito e chiusura', () => {
   // Senza questa esclusione il modello puo' ancora prendere l'oggetto dal baule.
   assert.match(source, /requirementTakeKeys\(MUST_MINE\)\) excludeKeys\.push\(\{key, reason: 'must_mine'\}\)/);
   // Senza il credito il contatore resta a zero e il goal non chiude mai.
-  assert.match(source, /if \(MISSION_REQUIREMENTS_ON\) await creditMissionResult\(step, key, result\);/);
+  assert.match(source, /if \(MISSION_REQUIREMENTS_ON\) await creditMissionResult\(step, key, result, obs\);/);
   // Senza questa condizione il goal chiude sull'inventario (il furto).
   assert.match(source, /const mission = orderFloor \? true : missionRequirementsMet\(requirementProgress, MISSION_REQUIREMENTS\);/);
   assert.match(source, /return targets && at && mission;/);
+});
+
+// M16-bis: il credito confronta l'inventario **prima** e **dopo** l'azione, e il
+// "prima" puo' arrivare solo dal chiamante. Il 10/10/2026 l'aiuto leggeva un
+// `obs` di modulo che non esisteva: la riga era muta per 22 run perche' nessuna
+// azione che produce era mai riuscita, poi il primo `collect_drop` ok ha ucciso
+// il run (`controller_error: obs is not defined`, attempt 15).
+test('il credito di missione legge l\u2019osservazione che riceve, non un obs di modulo', () => {
+  const source = readFileSync(join(ROOT, 'controller.mjs'), 'utf8');
+  assert.match(source, /const creditMissionResult = async \(step, key, result, obs\) => \{/);
+  assert.match(source, /if \(MISSION_REQUIREMENTS_ON\) await creditMissionResult\(step, key, result, obs\);/);
+  // La riga che e' caduta: la crescita si misura sull'osservazione ricevuta.
+  assert.match(source, /const growth = producedGrowth\(obs\?\.inventory \?\? \{\}, after \?\? \{\}, MUST_MINE\);/);
+  // Nessun aiuto di modulo puo' nominare `obs` senza averlo in firma: e' l'unico
+  // `obs` a livello di modulo del file, e non deve esistere.
+  const moduleLevel = source.match(/^const [A-Za-z_$][\w$]* = [^\n]*obs[^\n]*$/gm) ?? [];
+  assert.deepEqual(moduleLevel.filter(line => /\bobs\b/.test(line.split('=>')[0]) === false && /\bobs\b/.test(line)), [],
+    `un aiuto di modulo nomina \`obs\` senza riceverlo: ${moduleLevel.join(' | ')}`);
 });
 
 // M15 — le chiavi vietate dalla missione: la regola scritta nel goal non e' un

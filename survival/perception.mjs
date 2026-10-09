@@ -171,6 +171,16 @@ function bestTool (inventory, pattern) {
   return names[0] ?? null;
 }
 
+// I pezzi d'armatura davvero addosso. Preferisce gli slot grezzi del server
+// (`observe().armor.slots`, uno per pezzo, `null` se lo slot è vuoto) perché lì
+// un pezzo c'è anche quando il nome non si sa; il vecchio conteggio per nome
+// resta per l'harness Java, che non espone `slots`.
+function wornArmorPieces (armor) {
+  if (!armor || typeof armor !== 'object') return [];
+  if (Array.isArray(armor.slots)) return armor.slots.filter(Boolean);
+  return ['helmet', 'chestplate', 'leggings', 'boots'].map(slot => armor[slot]).filter(Boolean);
+}
+
 export function perceive (observation = {}) {
   const inventory = observation.inventory || {};
   const time = observation.time || null;
@@ -213,12 +223,14 @@ export function perceive (observation = {}) {
     // Pezzi *indossati* (non posseduti): `wear_armor` verifica che l'armatura sia
     // addosso, quindi un ordine "equipaggiati" non puo' chiudersi solo perche'
     // l'elmo e' in inventario. `armor` e' opzionale (harness Java): vuoto = assente.
+    // Il conteggio parte dagli **slot** quando il client custom li espone
+    // (`observe().armor.slots`, finestra 'armor' del server): un pezzo indossato
+    // che il registro non sa ancora nominare è comunque addosso, mentre contando
+    // i nomi valeva zero.
     wornArmor: observation.armor && typeof observation.armor === 'object'
       ? ['helmet', 'chestplate', 'leggings', 'boots'].map(slot => observation.armor[slot]).filter(Boolean)
       : [],
-    wornArmorCount: observation.armor && typeof observation.armor === 'object'
-      ? ['helmet', 'chestplate', 'leggings', 'boots'].filter(slot => observation.armor[slot]).length
-      : 0,
+    wornArmorCount: wornArmorPieces(observation.armor).length,
     bedAvailable: !!bed,
     bedDistance: bed?.distance ?? null,
     lootNearby: Array.isArray(observation.drops) && observation.drops.length > 0,

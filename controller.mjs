@@ -1837,7 +1837,12 @@ const goalMet = (obs, plan, skillStatus, orderTargets = null) => {
 // blocco non dice il drop: `mine_deepslate_diamond_ore` da' un diamante come
 // `mine_diamond_ore`, e `mine_iron_ore` da' ferro grezzo). Un `take_*` non
 // produce niente: il furto non fa progredire il requisito.
-const creditMissionResult = async (step, key, result) => {
+// `obs` e' l'osservazione **prima** dell'azione (il chiamante la rinfresca a
+// ogni giro): e' l'unica base possibile del confronto, quindi arriva come
+// parametro. Il 10/10/2026 questa riga leggeva un `obs` di modulo che non
+// esisteva: il primo `collect_drop` riuscito ha ucciso il run con
+// `controller_error: obs is not defined` (attempt 15, GOAL g1).
+const creditMissionResult = async (step, key, result, obs) => {
   if (!result?.ok) return;
   const rows = depositedStacks(result).filter(row => MUST_DEPOSIT[row.item]);
   if (rows.length) {
@@ -2758,7 +2763,7 @@ for (let step = 1; step <= maxSteps; step++) {
   lastKey = key;
   lastResult = result;
   log('result', {step, key, ok: !!result.ok, error: result.error ?? null, ms: result.ms ?? null, missionId: goal.missionId ?? null});
-  if (MISSION_REQUIREMENTS_ON) await creditMissionResult(step, key, result);
+  if (MISSION_REQUIREMENTS_ON) await creditMissionResult(step, key, result, obs);
   // R4: un rifiuto non e' un errore generico. Si classifica, si marca **il
   // passo** che l'ha subito e si decide cosa farne: ritentare la stessa chiave,
   // cambiare approccio (la chiave rifiutata esce dalle opzioni, le alternative
