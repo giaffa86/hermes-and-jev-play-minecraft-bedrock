@@ -88,6 +88,51 @@ in `item_stack_response`. Two consequences, both fixed on 06/10/2026 after
 The layout itself was never the bug: the stick recipe is a 1×2 in the same slots
 30/28 and crafted fine 40 ms before the failure.
 
+### Still open: `craft_torch` has never succeeded (status 35)
+
+Ten days later the mitigation above is **not enough**, and the ledger history says
+so plainly: across every run on VM 100 `craft_torch` was attempted **22 times and
+never succeeded**, `craft_boat` **23 / 0** and `craft_charcoal` **20 / 0**, while
+the same code crafts `iron_pickaxe` (3 ok), `diamond_pickaxe` (2 ok), `shield`,
+`bucket`, `spruce_planks` and the three wooden/stone tools:
+the defect is specific to some recipes, not to crafting.
+
+Live evidence from `diamond-20261010-2` (three refusals, `events.jsonl`):
+
+| t | recipe | width×height | grid as placed | status |
+| --- | --- | --- | --- | --- |
+| 1791555317699 | `1897` `name:minecraft:charcoal` | 1×2 | `slot 30 charcoal` + `slot 28 stick` | **35** |
+| 1791555331978 | `1897` | 1×2 | `slot 30 charcoal` + `slot 28 stick` | **35** |
+| 1791555411709 | `1897` | 1×2 | `slot 30 charcoal` + `slot 28 stick` | **35** |
+
+What this rules out, one theory at a time:
+
+- **Not a mis-tracked cell.** Every `craft_grid_place` of the run carries
+  `echoed: true` — the server echoes the placement — and the detail now prints
+  the real names, not the `name: 0` of the 06/10 round.
+- **Not the layout.** Charcoal sits in slot 30 (top-left of the 2×2) and the stick
+  in slot 28 (below it): exactly the 1×2 vertical of the stick recipe that works.
+- **Not a stale stack id.** `craft_failed` is already in the `syncable` set of
+  `_craftItem`, so each refusal was followed by `_resyncByReconnect` and a fresh
+  attempt — the three rows above span those attempts and the controller's own
+  `REPLAN step_failed:craft_failed` retry.
+
+Hypotheses still untested (each needs a free harness window): **H1** the
+`craft_recipe` action must carry the recipe id the server unlocked *for the grid
+in use*, and the adapter sends the id read from `crafting_data` (possibly the
+table variant); **H2** the multi-candidate loop picks the wrong variant first
+(`name:charcoal` 1897 before `tag:coals` 1896) and the refusal leaves the grid in
+a state that poisons the sibling attempt — note the third `craft_grid_place` of
+each attempt re-uses slot 30 with **coal**; **H3** the `results_deprecated`
+descriptor count (torch yields 4) does not match what BDS expects for that
+recipe. The discriminating experiment is cheap: craft a `stick` (same 1×2 shape,
+same slots) and a torch from **coal** in a quiet window, and keep the full
+`item_stack_response` for the failing request instead of only the status.
+
+Until then the expedition does not need the recipe: torches are **taken from a
+chest** (`take_torch` ok in 45.7 s and 0.3 s in the same run, the harvest chests
+hold `soul_torch 58` and `torch 19`), which is what the mission allows.
+
 ## Food is not crafting
 
 Eggs are **not** food in Bedrock: they are an ingredient (cake, pumpkin pie), so
