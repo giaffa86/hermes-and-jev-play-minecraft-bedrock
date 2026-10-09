@@ -2341,6 +2341,9 @@ for (let step = 1; step <= maxSteps; step++) {
     log('harness_blind', {step, consecutive: blindSteps, max: HARNESS_BLIND_MAX_STEPS, reason: optionsReply.blind ?? 'empty_options'});
     if (blindSteps > HARNESS_BLIND_MAX_STEPS) {
       runExitCode = 2;
+      // La causa deve restare scritta: senza questa riga il run si chiude con
+      // `failureReason: null` e il contratto riferisce l'uscita sbagliata.
+      failureReason = `harness_blind:${optionsReply.blind ?? 'empty_options'}`;
       console.log(`HARNESS BLIND after ${step - 1} actions: nessuna azione valida (${optionsReply.blind ?? 'empty_options'})`);
       log('harness_blind_stop', {steps: step - 1, totalCost, consecutive: blindSteps, reason: optionsReply.blind ?? 'empty_options'});
       break;
@@ -2860,14 +2863,19 @@ for (let step = 1; step <= maxSteps; step++) {
 if (!goalReached && goalContract && lastContractStatus === 'running') {
   const finalObs = await api('GET', '/observe').catch(() => null);
   if (finalObs) {
-    const final = evaluateGoalContract(finalObs, MAX_STEPS);
+    // I passi veri, non `MAX_STEPS`: il blocco gira anche quando il loop esce
+    // per un motivo che non e' il budget (oggi: `harness_blind_stop`, cioe' la
+    // sessione Bedrock caduta). Passando il tetto, un run fermato dopo 50 passi
+    // si e' letto come «step budget exhausted (400/400)» — il 09/10/2026 la
+    // causa vera del run diamond-20261010-6 e' sparita dal ledger.
+    const final = evaluateGoalContract(finalObs, stepsUsed);
     if (final.status === 'success') {
-      console.log(`GOAL CONTRACT MET after ${MAX_STEPS} actions`, JSON.stringify(final.evidence));
-      log('goal_contract_met', {steps: MAX_STEPS, totalCost, goal: goalContract.goal ?? null, evidence: final.evidence});
+      console.log(`GOAL CONTRACT MET after ${stepsUsed} actions`, JSON.stringify(final.evidence));
+      log('goal_contract_met', {steps: stepsUsed, totalCost, goal: goalContract.goal ?? null, evidence: final.evidence});
       goalReached = true;
     } else if (final.status === 'failed' || final.status === 'blocked' || final.status === 'exhausted') {
       runExitCode = 2;
-      log('goal_contract_stop', {steps: MAX_STEPS, totalCost, status: final.status, reasons: final.reasons, evidence: final.evidence});
+      log('goal_contract_stop', {steps: stepsUsed, totalCost, status: final.status, reasons: final.reasons, evidence: final.evidence});
     }
   }
 }

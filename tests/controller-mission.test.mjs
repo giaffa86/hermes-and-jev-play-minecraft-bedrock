@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { rmSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -138,6 +138,63 @@ test('a fatal controller error closes the mission instead of leaking it', async 
     assert.equal(finish.payload.success, false);
     assert.equal(finish.payload.state, 'failed');
     assert.match(String(finish.payload.failureReason), /controller_error/, 'failureReason names the controller error');
+  } finally {
+    harness.server.close();
+    rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });
+  }
+});
+
+test('a blind harness is named as such, and the contract reports the steps really used', async () => {
+  // Harness cieco: la sessione Bedrock e' caduta, quindi `/options` risponde
+  // `connected: false` per sempre. Il run si ferma con `harness_blind` — ma il
+  // 09/10/2026 il blocco di chiusura valutava il contratto con `MAX_STEPS` come
+  // passi usati, e un run fermato al passo 4 si leggeva «step budget exhausted
+  // (8/8)»: la causa vera spariva dal ledger.
+  const observation = { position: { x: 0, y: 64, z: 0 }, inventory: { dirt: 2 }, health: 20, dead: false, time: { ticks: 1000, night: false }, entities: [], chat: [], dropped: [], containers: [] };
+  const calls = [];
+  const harness = await new Promise(resolve => {
+    const s = createServer((req, res) => {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        const path = req.url.split('?')[0];
+        let payload = {};
+        try { payload = body ? JSON.parse(body) : {}; } catch { /* ignore */ }
+        calls.push({ method: req.method, path, payload });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        if (req.method === 'GET' && path === '/observe') res.end(JSON.stringify(observation));
+        else if (req.method === 'GET' && path === '/options') res.end(JSON.stringify({ connected: false, options: [] }));
+        else if (path === '/mission') res.end(JSON.stringify({ ok: true, mission: { id: 'mission_test', type: payload.type, intent: payload.intent, rawPrompt: payload.rawPrompt } }));
+        else if (path === '/mission/finish') res.end(JSON.stringify({ ok: true, mission: { id: payload.missionId, ...payload } }));
+        else res.end('{}');
+      });
+    });
+    s.listen(0, '127.0.0.1', () => resolve({ server: s, port: s.address().port }));
+  });
+  const runId = `test-mission-blind-${process.pid}-${Date.now()}`;
+  try {
+    const { code, stdout } = await runController({
+      ...baseEnv(runId, harness.port),
+      MAX_STEPS: '8',
+      HARNESS_BLIND_MAX_STEPS: '3',
+      HARNESS_BLIND_WAIT_MS: '10',
+      GOAL_CONTRACT: JSON.stringify({ goal: 'blind', success: { inventoryGte: { diamond: 99 } } }),
+    });
+    assert.notEqual(code, 0, 'a blind harness exits non-zero');
+    assert.match(stdout, /HARNESS BLIND after 3 actions/, 'the stop names the blind harness');
+    assert.doesNotMatch(stdout, /step budget exhausted/, 'a blind stop is not a spent budget');
+    const ledger = readFileSync(join(ROOT, 'runs', runId, 'controller.jsonl'), 'utf8')
+      .trim().split('\n').map(line => JSON.parse(line));
+    const blindStop = ledger.find(row => row.type === 'harness_blind_stop');
+    assert.ok(blindStop, 'the blind stop is in the ledger');
+    assert.equal(blindStop.steps, 3, 'harness_blind_stop carries the actions really done');
+    assert.equal(ledger.filter(row => row.type === 'goal_contract_stop').length, 0, 'no contract stop is invented');
+    const runEnd = ledger.find(row => row.type === 'run_end');
+    assert.ok(runEnd, 'the run end is in the ledger');
+    assert.equal(runEnd.steps, 4, 'run_end carries the steps really used, not MAX_STEPS');
+    const finish = calls.find(c => c.method === 'POST' && c.path === '/mission/finish');
+    assert.ok(finish, 'the mission is closed');
+    assert.match(String(finish.payload.failureReason), /harness_blind/, 'failureReason names the blind harness');
   } finally {
     harness.server.close();
     rmSync(join(ROOT, 'runs', runId), { recursive: true, force: true });

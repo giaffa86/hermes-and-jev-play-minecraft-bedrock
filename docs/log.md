@@ -1,5 +1,28 @@
 # Log
 
+## [2026-10-09] fix | Un harness cieco e' una fermata con un nome, non un budget speso (M20)
+
+Il tentativo 19 (`diamond-20261010-6`) si e' chiuso con
+`GOAL CONTRACT EXHAUSTED step budget exhausted (400/400)` dopo 50 azioni, ma il
+budget non c'entrava: durante il riavvio del BDS che ho eseguito per sciogliere
+il cuneo dei contenitori il bot e' rimasto disconnesso, `/options` ha risposto
+`connected: false` per sette poll consecutivi e il ramo `harness_blind` ha
+chiuso il loop con exit code 2. Due cose rendevano il referto falso: la fermata
+non scriveva **nessun** `failureReason`, e il blocco di chiusura valutava il
+contratto con `evaluateGoalContract(finalObs, MAX_STEPS)` — il tetto al posto dei
+passi veri — quindi `stepsUsed >= maxSteps` risultava vero e la causa reale (la
+sessione Bedrock caduta) spariva dal ledger. Ora la fermata scrive
+`failureReason = 'harness_blind:…'` e la coda passa i passi davvero usati: il
+`run_end`, il `goal_contract_stop` e il `mission/finish` raccontano la stessa
+storia. Lezione operativa: la pazienza del ramo cieco e' **orologio travestito**
+(ogni poll costa `HARNESS_BLIND_WAIT_MS` *e* un passo di budget) e un riavvio del
+BDS dura ~75 s, piu' dei 6 x 5 s di default: un runner di missione che puo'
+riavviare il server deve alzare `HARNESS_BLIND_MAX_STEPS` (la missione diamanti
+usa `40`, ~200 s). Test: un caso in `tests/controller-mission.test.mjs` (harness
+scriptato che risponde `connected: false` per sempre) che pretende la fermata
+nominata, i passi veri nel ledger e nessun `goal_contract_stop` inventato; suite
+`node --test tests/*.test.mjs` 2050 -> **2051 pass / 0 fail**.
+
 ## [2026-10-09] fix | Lo scudo nell'offhand: lo specchio impara dal `place`, e la finestra stantia si rinnova una volta (M19)
 
 Lo scudo restava in zaino con `shield_place_failed_50` su entrambi gli slot
