@@ -12593,7 +12593,13 @@ export class BedrockAdapter {
     // M13: tutto ciò che non è chat non è un ordine e non entra nell'inbox, ma
     // non è nemmeno rumore: il server spiega lì i suoi rifiuti (sonno, gamerule).
     if (type !== 'chat' && type !== 'whisper' && type !== 'json_whisper') return this._noteServerText(packet);
-    const from = stripFormatting(packet.source_name) || null;
+    const rawFrom = stripFormatting(packet.source_name) || null;
+    // Un messaggio simulato (`simulateChat`, rotta `POST /debug/chat`) serve a
+    // provare il canale senza un giocatore in gioco, e **non può impersonare un
+    // umano**: il mittente è sempre `sim:<nome>` e la riga resta marcata. Chi
+    // risponde lo decide l'allowlist del controller, come per chiunque altro.
+    const simulated = packet.simulated === true;
+    const from = simulated && rawFrom && !rawFrom.startsWith('sim:') ? `sim:${rawFrom}` : rawFrom;
     // Eco dei propri messaggi: il server li rimanda indietro con il gamertag
     // vero, non con il nome di login. Lasciarli entrare in `chatInbox` fa
     // credere al controller che un umano fidato abbia parlato (e il bot può
@@ -12608,7 +12614,7 @@ export class BedrockAdapter {
       return;
     }
     if (this.isSelfName(from)) return;
-    const entry = { from, message, type, xuid: packet.xuid != null ? String(packet.xuid) : null, at: Date.now() };
+    const entry = { from, message, type, xuid: packet.xuid != null ? String(packet.xuid) : null, at: Date.now(), ...(simulated ? { simulated: true } : {}) };
     // R2: se a questo mittente è stata appena fatta una domanda, il suo primo
     // messaggio successivo è la *risposta* a quella domanda — non un ordine
     // nuovo. L'inbox lo dice (una volta sola) e il controller rilancia l'ordine
@@ -12621,7 +12627,25 @@ export class BedrockAdapter {
     }
     this.chatInbox.push(entry);
     if (this.chatInbox.length > 32) this.chatInbox.shift();
-    this.log('chat', { from, chatType: type, xuid: entry.xuid, message: message.slice(0, 160) });
+    this.log(simulated ? 'chat_simulated' : 'chat', { from, chatType: type, xuid: entry.xuid, message: message.slice(0, 160) });
+  }
+
+  // Un messaggio che nessun giocatore ha scritto: la via per provare il canale
+  // chat (una domanda come `che armatura hai?`, un ordine) senza un umano in
+  // gioco. Passa dallo **stesso** `_onChat`, quindi valgono le stesse regole
+  // (eco, chiarimenti, inbox, log) e nessuno può scavalcarle; il mittente resta
+  // `sim:<nome>` e l'entry porta `simulated: true`, così nel ledger non si
+  // confonde con una persona. L'esito dice se il messaggio è *entrato in inbox*:
+  // un messaggio scartato (eco, nome del bot) non finge di essere passato.
+  simulateChat ({ from, message, type = 'chat' } = {}) {
+    if (!from || typeof from !== 'string' || !message || typeof message !== 'string') {
+      return { ok: false, error: 'chat_simulate_requires_sender_and_message' };
+    }
+    const name = from.startsWith('sim:') ? from : `sim:${from}`;
+    this._onChat({ type, message, source_name: name, simulated: true });
+    const entry = this.chatInbox.at(-1) ?? null;
+    const accepted = !!entry && entry.message === message && entry.from === name;
+    return { ok: true, simulated: true, from: name, accepted, entry: accepted ? entry : null };
   }
 
   // M13 — il server parla anche fuori dalla chat. Un pacchetto `raw`/`system`/

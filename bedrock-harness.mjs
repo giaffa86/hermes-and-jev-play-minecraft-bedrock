@@ -5,6 +5,10 @@
 //   POST /act {key} -> esegue un'azione
 //   POST /plan {objective, waypoint, targets} -> registra il piano corrente
 //   POST /say {message, type?} -> il bot scrive in chat (pacchetto `text`)
+//   POST /debug/chat {from,message,type?} -> (BEDROCK_DEBUG) inietta un messaggio
+//        come se l'avesse scritto un giocatore, ma il mittente e' `sim:<from>` e la
+//        riga resta marcata `simulated`: serve a provare domande e ordini senza un
+//        umano in gioco, e non puo' impersonare nessuno
 // R2 — chiarificazione (CHAT_CLARIFY=off la spegne nel controller):
 //   POST /chat/ask {from,xuid,orderId,originalText,question,field,reason} -> il bot ha
 //        chiesto una cosa a un umano: il suo prossimo messaggio e' la risposta, non un
@@ -476,6 +480,20 @@ server = createServer(async (req, res) => {
       const block = adapter.world.blockAt({ x, y, z });
       if (!block) response = [200, { ok: false, error: 'block_not_loaded' }];
       else response = [200, await adapter._mineTarget({ cell: { x, y, z }, block, raw: block.name === 'unknown' })];
+    }
+    else if (process.env.BEDROCK_DEBUG && req.method === 'POST' && req.url === '/debug/chat') {
+      // Inietta un messaggio di chat finto per provare il canale (domande come
+      // `che armatura hai?`, ordini) senza nessuno in gioco. Il mittente diventa
+      // `sim:<from>`: il controller risponde solo se la sua allowlist lo nomina.
+      // Una rotta di prova non deve poter abbattere il bot: un corpo malformato è
+      // un 400, non un'eccezione che sopravvive alla richiesta.
+      let payload = null;
+      try { payload = body ? JSON.parse(body) : {}; }
+      catch { payload = null; }
+      const out = payload && typeof payload === 'object'
+        ? adapter.simulateChat(payload)
+        : { ok: false, error: 'chat_simulate_bad_body' };
+      response = out.ok ? [200, out] : [400, out];
     }
     else if (process.env.BEDROCK_DEBUG && req.method === 'GET' && req.url === '/debug/inventory') {
       response = [200, {

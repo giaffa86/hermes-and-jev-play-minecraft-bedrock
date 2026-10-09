@@ -811,8 +811,13 @@ test('_armorPoints sums vanilla points per piece', () => {
 
 test('observe exposes the worn armor pieces and points', () => {
   const adapter = spawnedAdapter();
-  adapter.armor = { helmet: 'diamond_helmet', chestplate: null, leggings: null, boots: null };
-  assert.deepEqual(adapter.observe().armor, { helmet: 'diamond_helmet', chestplate: null, leggings: null, boots: null, points: 3 });
+  // La fonte è la finestra 'armor' del server: si passa da lì, non da `armor` a mano.
+  adapter._applyArmorWindowSlot(0, { network_id: 210, name: 'diamond_helmet', count: 1, stack_id: 1 });
+  const armor = adapter.observe().armor;
+  assert.deepEqual({ ...armor, slots: undefined }, { helmet: 'diamond_helmet', chestplate: null, leggings: null, boots: null, points: 3, unresolved: 0, slots: undefined });
+  assert.equal(armor.slots[0].name, 'diamond_helmet');
+  assert.deepEqual(armor.slots.slice(1), [null, null, null]);
+  assert.equal(armor.slots[0].max, null, 'senza registro il massimo è ignoto, non zero');
 });
 
 test('_equipArmor records the worn piece after a successful place', async () => {

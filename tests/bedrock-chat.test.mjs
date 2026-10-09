@@ -126,3 +126,47 @@ test('sendChat applica il rate limit e ricorda solo i messaggi inviati', () => {
   assert.equal(sent.length, 1, 'il pacchetto rate-limited non esce');
   assert.deepEqual(adapter._sentChat.map(e => e.text), ['uno']);
 });
+
+// Prove del canale chat senza un umano in gioco (`POST /debug/chat`). La regola
+// che conta: un messaggio simulato **non può impersonare un umano**. Il mittente
+// diventa `sim:<nome>`, l'entry porta `simulated: true` e il log è
+// `chat_simulated`, così il ledger non confonde una prova con una persona.
+test('un messaggio simulato entra nell inbox come sim:<nome>, marcato', () => {
+  const { adapter, events } = chatAdapter();
+  const out = adapter.simulateChat({ from: 'Probe', message: 'che armatura hai?' });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.from, 'sim:Probe');
+  assert.equal(out.accepted, true);
+  assert.equal(adapter.chatInbox.length, 1);
+  assert.deepEqual(adapter.chatInbox[0], { from: 'sim:Probe', message: 'che armatura hai?', type: 'chat', xuid: null, at: adapter.chatInbox[0].at, simulated: true });
+  assert.equal(types(events).includes('chat_simulated'), true);
+  assert.equal(types(events).includes('chat'), false, 'non si spaccia per un messaggio vero');
+  assert.equal(out.entry.from, 'sim:Probe');
+});
+
+test('la rotta di prova rifiuta un messaggio senza mittente o senza testo', () => {
+  const { adapter } = chatAdapter();
+  assert.deepEqual(adapter.simulateChat({ from: '', message: 'x' }), { ok: false, error: 'chat_simulate_requires_sender_and_message' });
+  assert.deepEqual(adapter.simulateChat({ from: 'Probe', message: '   ' }).ok, true, 'uno spazio è testo: il filtro è del controller');
+  assert.deepEqual(adapter.simulateChat({}), { ok: false, error: 'chat_simulate_requires_sender_and_message' });
+  assert.equal(adapter.simulateChat({ from: 'Probe', message: undefined }).ok, false);
+});
+
+test('un mittente simulato non può usare un prefisso umano (il prefisso sim: è forzato una volta sola)', () => {
+  const { adapter } = chatAdapter();
+  assert.equal(adapter.simulateChat({ from: 'sim:Probe', message: 'ciao' }).from, 'sim:Probe');
+  adapter._onChat({ type: 'chat', source_name: 'SomePlayer', message: 'ciao', simulated: true });
+  assert.equal(adapter.chatInbox.at(-1).from, 'sim:SomePlayer', 'la marcatura basta a cambiare il mittente');
+  assert.equal(adapter.chatInbox.at(-1).simulated, true);
+});
+
+test('un messaggio simulato che è la voce del bot non entra nell inbox', () => {
+  const { adapter, events } = chatAdapter();
+  adapter.sendChat('sono io');
+  const out = adapter.simulateChat({ from: 'Probe', message: 'sono io' });
+  assert.equal(out.ok, true);
+  assert.equal(out.accepted, false, 'l eco è scartata anche per una prova');
+  assert.deepEqual(adapter.chatInbox, []);
+  assert.ok(types(events).includes('chat_echo'));
+});
