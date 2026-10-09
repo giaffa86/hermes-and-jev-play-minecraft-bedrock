@@ -405,7 +405,16 @@ an equip order — short, imperative, unmistakable — fell through to the stati
   answers `indosso: iron_helmet, iron_boots (9 punti armatura)`,
   `non indosso armatura`, or `non lo so: non ho letto la mia armatura` when the
   fact is missing. The intent sits right after `q_health` so its phrases win over
-  `q_inventory`'s; the closed option list is now `a0..a7` with `q_none` last.
+  `q_inventory`'s; the closed option list is now `a0..a7` with `q_none` last. The
+  fact is richer than the names: `observe().armor` also exposes `slots` (per piece
+  `{damage, max, remaining, low}`, row 47.87) and `unresolved`, so a piece worn but
+  not resolvable by the palette shows up as *worn and unnamed* instead of passing
+  for bare skin — `armorAnswer` itself still writes its sentence and its `points`
+  from the resolved names, so such a piece is counted by `wornArmorCount` and not
+  by the sentence. A live probe of this answer needs no human in game:
+  `POST /debug/chat` ([headless client](headless-client.md) §4.7) speaks through
+  the real `_onChat` with a `sim:<name>` sender, and the controller answers it only
+  if `CHAT_ALLOWLIST` names that sender.
 - **A question that names an item is answered about that item**: `inventoryAnswer`
   reads the message (`matchItemWord`, `ITEM_WORDS`, `normalizeForMatching`) and
   answers the count of that one item (`hai una spada?` → `sì: wooden_sword`,

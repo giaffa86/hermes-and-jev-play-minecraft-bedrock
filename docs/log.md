@@ -1,5 +1,40 @@
 # Log
 
+## [2026-10-09] fix | L'armatura dice quanta ne resta, e una prova puo' parlare col bot senza un umano
+
+Due residui dichiarati all'utente erano di natura diversa: uno e' un dato che non
+leggevamo, l'altro un canale che non esisteva.
+
+- **La durabilita' dell'armatura** (riga 47.87): la finestra `armor` porta l'NBT
+  `Damage`, ma il nostro specchio salvava solo `{name, network_id, count,
+  stack_id}`, quindi un elmo consumato e uno nuovo erano la stessa riga. Ora
+  `_armorWindowItem` conserva `metadata`/`extra`, `_armorSlots()` restituisce per
+  pezzo `{damage, max, remaining, low}` e un massimo ignoto resta `null` invece di
+  diventare uno zero falso. `max` viene dal registro **per nome**, che e'
+  affidabile (solo gli id hardcoded non lo sono).
+- **Un pezzo che la palette non sa nominare** non e' pelle nuda: `observe().armor`
+  espone `slots` e `unresolved` (campi additivi, la forma vecchia non cambia) e
+  `wornArmorCount` conta i pezzi dagli slot quando ci sono — prima contava i nomi,
+  quindi un pezzo indossato ma non risolto valeva zero e `wear_armor` restava
+  offerto su un bot vestito.
+- **Una prova puo' parlare col bot** (riga 47.88): `POST /debug/chat` (solo con
+  `BEDROCK_DEBUG`) inietta un messaggio nel canale chat vero, ma il mittente
+  diventa `sim:<nome>` e la riga si logga `chat_simulated`, mai `chat`: passa
+  dallo **stesso** `_onChat` (eco, chiarimenti, inbox, allowlist) e **non puo'
+  impersonare una persona**. `accepted` dice se il messaggio e' entrato in inbox;
+  un corpo malformato e' un 400, non un'eccezione che sopravvive alla richiesta.
+- Test: `tests/bedrock-armor-window.test.mjs` 8 casi e `tests/bedrock-chat.test.mjs`
+  13 (insieme 21/21), suite completa **2043 → 2044 pass / 0 fail**.
+- **Residuo**: la cattura viva di `q_armor` non c'e' ancora, e non e' pigrizia:
+  servono il deploy di questa release e una finestra libera, perche' in quel
+  momento un'altra sessione stava guidando il bot in produzione (release
+  `chat-truth-e0a059a`) e con una run attiva non si ricostruisce l'harness.
+
+Nota di data: i ledger di questa giornata si chiamano `diamond-20261010-*` e le
+voci qui sopra sono datate 10/10, ma host Proxmox, VM 100 e i due container dicono
+tutti **09/10/2026**: quel giorno in piu' sta nella data dei RUN_ID, non
+nell'orologio.
+
 ## [2026-10-10] fix | Il credito di missione leggeva un `obs` che non esisteva: il primo `collect_drop` riuscito ha ucciso il tentativo 15
 
 Il tentativo 15 (`diamond-20261010-2`) e' morto a meta' spedizione con `GOAL g1 ERROR: obs is not defined` → `GOAL g1 FAILED (controller_error: obs is not defined) after ? actions`, subito dopo `#7 equip_armor` e il `collect_drop` successivo. Causa: `creditMissionResult` (M14) e' una freccia **a livello di modulo** e chiudeva con `producedGrowth(obs?.inventory ?? {}, after ?? {}, MUST_MINE)`, dove `obs` e' una `let` **dentro `runGoal`**: un `ReferenceError` che l'optional chaining non copre (protegge da `null`/`undefined`, non da un identificatore mai dichiarato). Era muto da 22 run perche' la riga si raggiunge solo se un'azione e' **riuscita** e **produce** (`mine_*`/`dig_*`/`collect_drop`/`harvest_*`): il primo `collect_drop` ok ha armato la trappola. Fix: l'osservazione **prima** dell'azione viaggia come parametro (`creditMissionResult(step, key, result, obs)`, e il loop la rinfresca in testa a ogni giro, quindi e' davvero lo stato di partenza), `MISSION_REQUIREMENTS_ON` la passa. Test: il caso M14 sulle forme del sorgente ora pretende firma e chiamata a quattro argomenti, e un caso nuovo aggiunge una regola strutturale — nessun `const <nome> = …obs…` a livello di modulo puo' nominare `obs` senza riceverlo — suite **2036 → 2037 pass / 0 fail**. Riga **47.86** in [verification](wiki/verification.md) e un bullet nei gotcha di `AGENTS.md`.

@@ -362,6 +362,24 @@ the same report: `no_deep_water`, `water_covered` (a lid over the surface),
 not a step), `water_not_reached` (with `attempts`). Every refusal lists the
 columns it considered.
 
+### 4.7 A probe that can speak: `POST /debug/chat`
+
+Gated by `BEDROCK_DEBUG=1`. Body
+`{ "from": "Probe", "message": "che armatura hai?", "type": "chat" }`. A question
+or an order could only ever be tested with a human in game, and the harness is
+shared, so a probe cannot borrow the real chat: the message is pushed through the
+**same** `_onChat` a packet uses (echo suppression, a pending clarification, the
+inbox cap of 32, the ledger row), but two things are deliberately different. The
+sender is rewritten to `sim:<from>` — a prefix no gamertag can carry — and the
+entry carries `simulated: true`, so the row is logged as `chat_simulated` and
+never as `chat`: **a probe cannot impersonate a player**, and the controller
+still answers only if its `CHAT_ALLOWLIST` names that sender. The answer is
+`{ ok, simulated, from, accepted, entry }`, where `accepted` is true only when
+the last inbox entry is this message from this sender — a message the adapter
+drops (an echo of the bot's own words, its own name) reports `accepted: false`
+instead of a silent success. A malformed body is a `400`: a probe route must not
+be able to take the bot down.
+
 ---
 
 ## 5. The bounded-action loop

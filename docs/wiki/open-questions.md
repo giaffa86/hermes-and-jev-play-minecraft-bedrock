@@ -1842,12 +1842,24 @@ armatura*; the owner doubted it («sicuro non ha armatura???») and was right.
   would leave it `null` forever). After the rebuild (`md5
   55b92d2c7ac9d98d95fe3d635e9ff010`), `observe().armor` reads `iron_helmet`,
   `iron_chestplate`, `iron_leggings`, `iron_boots`, `points: 15`.
+- **Closed since 09/10/2026**: the **durability** is tracked (the raw slots keep
+  `metadata`/`extra`, `_armorSlots()` exposes `{damage, max, remaining, low}` per
+  piece and `observe().armor` adds `slots`/`unresolved`, so a worn piece the
+  palette cannot name is not read as bare skin — row 47.87); and the channel that
+  can capture `q_armor` **live** exists: `POST /debug/chat` speaks through the
+  real `_onChat` with a `sim:<name>` sender that cannot impersonate a player
+  (row 47.88, [headless client](headless-client.md) §4.7).
 - **Still open**: (1) **the ids are only trustworthy through the live palette** —
   `minecraft-data` ships no 1.26.52 data (`ERR bedrock_1.26.52 Cannot read
   properties of null (reading 'items')`) and its 1.26.51 maps 346..349 to
   `stone_axe/diamond_sword/diamond_shovel/diamond_pickaxe`, so a test that trusted
-  the bundled palette would name the four pieces **wrongly**; (2) **durability is
-  not tracked** (the raw slots carry `{name, network_id, count, stack_id}` only),
-  so a helmet about to break reads the same as a new one; (3) `q_armor` (§M6.3 in
-  [human command](human-command.md)) now reads a fact instead of a guess, but that
-  *answer* has no live human capture yet.
+  the bundled palette would name the four pieces **wrongly**. The nuance that
+  makes the durability work anyway: the **properties** (as `maxDurability`) come
+  from the bundled data indexed **by name**, and the name is the server's, so only
+  a hardcoded **id** is unreliable; (2) the live capture of a `q_armor` **answer**
+  is still missing: it needs this release deployed and the harness was busy — on
+  09/10/2026 a controller of another session was driving the bot
+  (`chat-truth-e0a059a`, the diamond run), and production is not rebuilt while a
+  run is active; (3) `armorAnswer` still names only the pieces the palette
+  resolved and computes its `points` from those names, so a worn-but-unnamed
+  piece is counted by `wornArmorCount` and not by the sentence.
