@@ -47,6 +47,10 @@ import {narrateGoal, DEFAULT_NARRATE_COOLDOWN_MS} from './chat-narration.mjs';
 import {runDir} from './run-paths.mjs';
 import {withPlanShape, planStep} from './plan-shape.mjs';
 import {createPlanTrace} from './plan-trace.mjs';
+import {
+  parseMissionRequirements, requirementTakeKeys, isProducingKey, producedGrowth,
+  depositedStacks, missionRequirementsMet, missionRequirementsState, renderRequirements, addCounts,
+} from './mission-requires.mjs';
 // R4: il rifiuto tipizzato del passo. `siblingKeys` prende il vocabolario degli
 // intenti dal modulo dichiarato (R0) per trovare le chiavi alternative che
 // `/options` ha davvero offerto.
@@ -115,6 +119,15 @@ const LOST_HOLD_MAX_STEPS = +(process.env.LOST_HOLD_MAX_STEPS || 120);
 const CONTROLLER = process.env.CONTROLLER || 'jev';
 const JEV_MODEL = process.env.JEV_MODEL || (process.env.TYPESAFE_API_KEY ? 'jev-latest' : 'typesafe/jev-1.13');
 const REPLAN_EVERY = +(process.env.REPLAN_EVERY || 8);
+// M14: requisiti di missione («prodotto in questo run», non «trovato in uno
+// scrigno»). `MUST_MINE=diamond:2` toglie `take_diamond` dalle opzioni e
+// impedisce al goal di chiudere finche' non sono minati; `MUST_DEPOSIT`
+// richiede anche che siano usciti verso un contenitore. Vuoti = comportamento
+// di prima (l'inventario basta), per non cambiare le altre missioni.
+const MUST_MINE = parseMissionRequirements(process.env.MUST_MINE);
+const MUST_DEPOSIT = parseMissionRequirements(process.env.MUST_DEPOSIT);
+const MISSION_REQUIREMENTS = {mustMine: MUST_MINE, mustDeposit: MUST_DEPOSIT};
+const MISSION_REQUIREMENTS_ON = Object.keys(MUST_MINE).length > 0 || Object.keys(MUST_DEPOSIT).length > 0;
 // Diagnostica/anti-loop (0 disabilita il tetto; soglia in azioni consecutive).
 const MAX_OPTIONS = process.env.MAX_OPTIONS == null ? DEFAULT_MAX_OPTIONS : +(process.env.MAX_OPTIONS);
 const ANTI_LOOP_THRESHOLD = +(process.env.ANTI_LOOP_THRESHOLD || DEFAULT_ANTI_LOOP_THRESHOLD);
@@ -310,6 +323,10 @@ const log = (type, data) => appendFileSync(`${RUN_DIR}/controller.jsonl`, JSON.s
 // `ReferenceError: stepsUsed is not defined`, quindi una run uccisa non
 // lasciava ne' `run_end` ne' la traccia (trovato dai golden R6, scenario G4).
 const runProgress = {steps: 0, cost: 0};
+// M14: quanto il run ha **prodotto** e **depositato**, per oggetto. Vive fuori
+// dal goal perche' le preemption umane non devono azzerarlo: un requisito di
+// missione e' del run, non di un segmento.
+const requirementProgress = {mined: {}, deposited: {}};
 const planTrace = createPlanTrace({dir: RUN_DIR});
 const api = async (method, path, body) => {
   const r = await fetch(HARNESS + path, {method, body: body ? JSON.stringify(body) : undefined, headers: {'Content-Type': 'application/json', Connection: 'close'}});
@@ -1786,6 +1803,11 @@ const goalMet = (obs, plan, skillStatus, orderTargets = null) => {
   const orderFloor = orderTargets && Object.keys(orderTargets).length ? orderTargets : null;
   const targetMap = plan.targets && Object.keys(plan.targets).length ? plan.targets : (orderFloor ?? TARGETS);
   const targets = Object.entries(targetMap).every(([item, n]) => (obs.inventory[item] || 0) >= n);
+  // M14: l'inventario non prova un minaggio — un diamante preso da uno scrigno
+  // sta li' esattamente come uno scavato. Con un requisito configurato il goal
+  // chiude solo quando l'oggetto e' stato prodotto (e depositato) **in questo
+  // run**. Vale per il goal d'ambiente: un ordine umano non c'entra.
+  const mission = orderFloor ? true : missionRequirementsMet(requirementProgress, MISSION_REQUIREMENTS);
   const w = plan.waypoint || WAYPOINT;
   const at = !w || Math.hypot(w.x - obs.position.x, w.z - obs.position.z) <= 2;
   if (plan.skill && skillRun?.id === plan.skill) {
@@ -1794,9 +1816,32 @@ const goalMet = (obs, plan, skillStatus, orderTargets = null) => {
     // il progression engine. Una skill sconosciuta (skillRun null) ricade sui
     // target, così un refuso del planner non blocca il goal.
     if (CURRICULUM) return false;
-    return targets && at && skillStatus?.status === 'success';
+    return targets && at && mission && skillStatus?.status === 'success';
   }
-  return targets && at;
+  return targets && at && mission;
+};
+
+// M14: il credito del requisito. Due letture, entrambe dal **risultato** e non
+// dalla chiave: un deposito riuscito nomina cosa e' uscito, e un'azione che
+// scava/raccoglie si misura sulla **crescita dell'inventario** (il nome del
+// blocco non dice il drop: `mine_deepslate_diamond_ore` da' un diamante come
+// `mine_diamond_ore`, e `mine_iron_ore` da' ferro grezzo). Un `take_*` non
+// produce niente: il furto non fa progredire il requisito.
+const creditMissionResult = async (step, key, result) => {
+  if (!result?.ok) return;
+  const rows = depositedStacks(result).filter(row => MUST_DEPOSIT[row.item]);
+  if (rows.length) {
+    for (const row of rows) requirementProgress.deposited = addCounts(requirementProgress.deposited, {[row.item]: row.count});
+    log('mission_deposit', {step, key, items: rows,
+      state: renderRequirements(missionRequirementsState(requirementProgress, MISSION_REQUIREMENTS))});
+  }
+  if (!isProducingKey(key)) return;
+  const after = (await api('GET', '/observe').catch(() => null))?.inventory ?? null;
+  const growth = producedGrowth(obs?.inventory ?? {}, after ?? {}, MUST_MINE);
+  if (!Object.keys(growth).length) return;
+  requirementProgress.mined = addCounts(requirementProgress.mined, growth);
+  log('mission_mined', {step, key, growth,
+    state: renderRequirements(missionRequirementsState(requirementProgress, MISSION_REQUIREMENTS))});
 };
 
 // Un piano "aperto" (nessun criterio terminale: né target, né waypoint, né
@@ -1835,6 +1880,10 @@ function goalAlreadySatisfied (goal, obs) {
 async function runGoal (goal) {
 skillRun = null;
 let obs = await api('GET', '/observe');
+// M14: il requisito di missione si annuncia subito, cosi' il ledger dice da
+// cosa il goal e' vincolato prima ancora della prima decisione.
+if (MISSION_REQUIREMENTS_ON) log('mission_requirements', {mustMine: MUST_MINE, mustDeposit: MUST_DEPOSIT,
+  state: renderRequirements(missionRequirementsState(requirementProgress, MISSION_REQUIREMENTS))});
 
 // ---- Goal Contract (opzionale, Slice A) -----------------------------------------------------
 // Con GOAL_CONTRACT (JSON), MAX_DEATHS o PRESERVE_ITEMS il controller valuta un
@@ -2290,6 +2339,10 @@ for (let step = 1; step <= maxSteps; step++) {
   // della skill — camminarci a piedi era il falso «fatto» dell'08/10 — e resta
   // fuori dalle opzioni finche' il prerequisito manca. La preparazione no.
   if (segmentBlocked) for (const key of BLOCKED_SKILL_KEYS) excludeKeys.push({key, reason: 'skill_preconditions_unmet'});
+  // M14: un oggetto che la missione deve minare non si prende da uno scrigno.
+  // La chiave esce dalle opzioni offerte al decider (il harness la conosce
+  // ancora: la validita' resta sua), cosi' il furto non e' una scelta.
+  for (const key of requirementTakeKeys(MUST_MINE)) excludeKeys.push({key, reason: 'must_mine'});
   // R4: la chiave che **questo passo** ha visto rifiutare con un approccio
   // bloccato. Resta fuori dalle opzioni finche' il passo e' aperto, cosi' la
   // decisione sceglie l'alternativa invece di ripetere la stessa azione.
@@ -2665,6 +2718,7 @@ for (let step = 1; step <= maxSteps; step++) {
   lastKey = key;
   lastResult = result;
   log('result', {step, key, ok: !!result.ok, error: result.error ?? null, ms: result.ms ?? null, missionId: goal.missionId ?? null});
+  if (MISSION_REQUIREMENTS_ON) await creditMissionResult(step, key, result);
   // R4: un rifiuto non e' un errore generico. Si classifica, si marca **il
   // passo** che l'ha subito e si decide cosa farne: ritentare la stessa chiave,
   // cambiare approccio (la chiave rifiutata esce dalle opzioni, le alternative
