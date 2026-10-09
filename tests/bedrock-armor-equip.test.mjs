@@ -251,6 +251,8 @@ test('a refused shield place names the window that was open at the place', async
   assert.equal(result.error, 'shield_place_failed_50');
   assert.deepEqual(result.openContainer, { id: 2, type: 'inventory' });
   const failed = logs.filter(l => l.type === 'shield_place_failed');
-  assert.deepEqual(failed.map(l => [l.destination, l.openContainer]),
+  assert.deepEqual(failed.filter(l => l.mode === 'place').map(l => [l.destination, l.openContainer]),
     [['offhand/1', { id: 2, type: 'inventory' }], ['offhand/0', { id: 2, type: 'inventory' }]]);
+  assert.deepEqual(failed.filter(l => l.mode === 'swap').map(l => l.destination), ['offhand/1'],
+    'rifiutati entrambi i place, il terzo tentativo e lo swap');
 });

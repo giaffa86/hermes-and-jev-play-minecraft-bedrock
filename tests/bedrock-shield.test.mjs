@@ -213,13 +213,14 @@ test('_equipShield fails fast and typed without a shield, on a failed take and o
   assert.equal(takeResult.ok, false);
   assert.match(takeResult.error, /^shield_take_failed_/);
 
-  const failingPlace = spawnedAdapter({ placeStatuses: ['error', 'error'] });
+  const failingPlace = spawnedAdapter({ placeStatuses: ['error', 'error', 'error'] });
   failingPlace.inventorySlots = [{ network_id: 42, name: 'shield', count: 1, stack_id: 3 }];
   failingPlace._refreshInventory();
   const placeResult = await failingPlace._equipShield(10);
   assert.equal(placeResult.ok, false);
   assert.match(placeResult.error, /^shield_place_failed_/);
-  assert.deepEqual(placeResult.attempts.map(a => a.slot), [1, 0], 'lo slot 1 e poi il solo ripiego');
+  assert.deepEqual(placeResult.attempts.map(a => [a.mode, a.slot]),
+    [['place', 1], ['place', 0], ['swap', 1]], 'lo slot 1, il solo ripiego, poi lo swap');
   assert.equal(failingPlace.returnedCursor, true, 'the cursor item is given back');
   assert.equal(failingPlace.offhand, null, 'no offhand state claimed');
 });
@@ -239,15 +240,40 @@ test('_equipShield falls back to the legacy offhand slot only after a rejected p
 });
 
 test('_equipShield reports both offhand attempts when neither slot is accepted', async () => {
-  const adapter = spawnedAdapter({ placeStatuses: [50, 50] });
+  const adapter = spawnedAdapter({ placeStatuses: [50, 50, 50] });
   adapter.inventorySlots = [{ network_id: 42, name: 'shield', count: 1, stack_id: 3 }];
   adapter._refreshInventory();
 
   const result = await adapter._equipShield(10);
   assert.equal(result.ok, false);
   assert.equal(result.error, 'shield_place_failed_50');
-  assert.deepEqual(result.attempts, [{ slot: 1, status: 50 }, { slot: 0, status: 50 }]);
+  assert.deepEqual(result.attempts,
+    [{ mode: 'place', slot: 1, status: 50 }, { mode: 'place', slot: 0, status: 50 }, { mode: 'swap', slot: 1, status: 50 }]);
   assert.equal(adapter.offhand, null, 'nessuno stato inventato');
+});
+
+test('_equipShield swaps the cursor with an offhand that already holds something else', async () => {
+  // Live 09-10/10/2026: lo scudo restava in zaino con `shield_place_failed_50`
+  // su **entrambi** gli slot dell'offhand, cioè `FailedToValidateDstSlot` con
+  // il cursore carico: quando la destinazione è occupata il server si aspetta
+  // uno `swap`, non un `place`.
+  const adapter = spawnedAdapter({ placeStatuses: [50, 50, 'ok'] });
+  adapter.inventorySlots = [{ network_id: 42, name: 'shield', count: 1, stack_id: 3 }];
+  adapter._refreshInventory();
+  adapter.offhand = { name: 'torch', count: 1, network_id: 68, stack_id: 99 };
+
+  const result = await adapter._equipShield(10);
+
+  assert.equal(result.ok, true, 'un offhand occupato non condanna lo scudo: si scambia');
+  assert.equal(result.equipped, 'shield');
+  const moves = adapter.stackRequests.filter(a => (a[0]?.type_id ?? 'take') !== 'take');
+  assert.deepEqual(moves.map(a => a[0].type_id), ['place', 'place', 'swap']);
+  const swap = moves[2][0];
+  assert.equal(swap.source.slot_type.container_id, 'cursor');
+  assert.equal(swap.destination.slot_type.container_id, 'offhand');
+  assert.equal(swap.destination.slot, 1, 'lo swap si prova sullo slot valido, non sul ripiego');
+  assert.equal(swap.destination.stack_id, 99, "lo swap dichiara cosa c'è nell'offhand: la sua stack id");
+  assert.equal(adapter.offhand?.name, 'shield');
 });
 
 test('_equipShield recovers a dirty cursor: a 50 take, give the cursor back, retry once', async () => {

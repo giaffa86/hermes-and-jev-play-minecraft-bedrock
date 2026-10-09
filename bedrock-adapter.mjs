@@ -375,6 +375,19 @@ export { TRIP_KIT_REQUIREMENTS, ESCORT_MAX_GAP, ESCORT_RESUME_GAP, ESCORT_WAIT_M
 // riproposto a ogni passo; resta in memoria e torna offribile da solo.
 const STORAGE_OPEN_FAILURE_MS = 10 * 60 * 1000;
 
+// Quando non si apre piu' **nessuna** finestra, il colpevole non e' il singolo
+// baule: il server ha smesso di rispondere alle aperture per quel giocatore.
+// Live 09-10/10/2026 (run `diamond-20261010-1`): dopo un `place` rifiutato con
+// status 50 (`FailedToValidateDstSlot`) l'inventario rimandava
+// `inventory_content` ogni ~700 ms ma nessuna finestra si apriva piu' — non il
+// baule, non l'inventario porta-scudo, non dopo un reconnect del client, non
+// dopo un riavvio del processo harness: da li' in poi ogni `take_*`/`equip_*`
+// costava i suoi 3 s di timeout e la spedizione non usciva piu' dalla base.
+// Contate le aperture fallite di fila (azzerate dalla prima che riesce) la
+// sessione si dichiara **bloccata** con un errore tipizzato invece di bruciare
+// il budget di ogni contenitore: il rimedio e' riavviare il server Bedrock.
+const CONTAINER_OPEN_LOCK_FAILURES = +(process.env.CONTAINER_OPEN_LOCK_FAILURES || 3);
+
 // Oggetti il cui click su un blocco è *usa l'oggetto*, non «apri/interagisci»:
 // con uno di questi in mano il contenitore non si apre mai e il click non
 // produce nessun errore — solo il silenzio di `container_open_timeout`.
@@ -984,6 +997,7 @@ export class BedrockAdapter {
           if (!this.tradeOpenedAt) this.tradeOpenedAt = Date.now();
         }
         this.log('container_open', { windowId: packet.window_id, windowType: packet.window_type });
+        this._noteContainerOpened();
         for (const waiter of this._containerWaiters.splice(0)) {
           if (waiter.predicate(packet)) waiter.resolve(packet);
           else this._containerWaiters.push(waiter);
@@ -6474,11 +6488,31 @@ export class BedrockAdapter {
     this._refreshInventory();
   }
 
+  // Una finestra si e' aperta: la serie di aperture fallite e' finita (il
+  // contatore serve solo a riconoscere la sessione bloccata, non a contare).
+  _noteContainerOpened () {
+    this._containerOpenFailures = 0;
+    this._containerOpenFailureSince = null;
+  }
+
   _waitForContainerOpen (predicate, timeoutMs = 3000) {
     const pending = new Promise((resolve, reject) => {
       const waiter = { predicate, resolve: packet => { clearTimeout(timer); resolve(packet); } };
       const timer = setTimeout(() => {
         this._containerWaiters = this._containerWaiters.filter(w => w !== waiter);
+        this._containerOpenFailures = (this._containerOpenFailures ?? 0) + 1;
+        if (this._containerOpenFailureSince == null) this._containerOpenFailureSince = Date.now();
+        if (this._containerOpenFailures >= CONTAINER_OPEN_LOCK_FAILURES) {
+          const locked = new Error('container_ui_locked');
+          locked.details = {
+            failures: this._containerOpenFailures,
+            since: this._containerOpenFailureSince,
+            hint: 'nessuna finestra si apre piu\' per questo giocatore: riavviare il server Bedrock',
+          };
+          this.log('container_locked_suspected', locked.details);
+          reject(locked);
+          return;
+        }
         reject(new Error('container_open_timeout'));
       }, timeoutMs);
       this._containerWaiters.push(waiter);
@@ -11046,7 +11080,9 @@ export class BedrockAdapter {
     this.selectedHotbar = packet.selected_slot;
     if (packet.window_id !== 'offhand') return;
     const name = packet.item?.name || (packet.item?.network_id != null ? this.world.registry?.items[packet.item.network_id]?.name : null);
-    this.offhand = packet.item?.count ? { name: name || null, count: packet.item.count, network_id: packet.item.network_id ?? null } : null;
+    this.offhand = packet.item?.count
+      ? { name: name || null, count: packet.item.count, network_id: packet.item.network_id ?? null, stack_id: packet.item.stack_id ?? null }
+      : null;
     this._offhandConfirmedAt = Date.now();
   }
 
@@ -15152,23 +15188,45 @@ export class BedrockAdapter {
     const openAtPlace = this._openContainer ? { id: this._openContainer.id, type: this._openContainer.type } : null;
     const attempts = [];
     let place = null;
-    for (const slot of [OFFHAND_SLOT, OFFHAND_FALLBACK_SLOT]) {
-      place = await this._sendStackRequest([{
-        type_id: 'place', legacy_type_id: 1, count: 1,
-        source: this._slotInfo('cursor', 0, cursorStack),
-        destination: this._slotInfo('offhand', slot, 0),
-      }]).catch(() => null);
+    // Tre passi, in quest'ordine: `place` sullo slot 1 (OFFHAND_SLOT, la forma
+    // che il server accetta con l'offhand vuoto), un solo ripiego `place` sullo
+    // slot 0, e — se **anche** quello e' rifiutato con 50
+    // (`FailedToValidateDstSlot`: lo slot di destinazione non e' vuoto, cioe'
+    // nell'offhand c'e' gia' un item diverso) — lo `swap` fra cursore e offhand,
+    // che e' l'azione che BDS si aspetta quando il cursore e la destinazione
+    // sono entrambi occupati (vedi `_swapSlots`). Live 09-10/10/2026 lo scudo
+    // restava in zaino dopo 8 `shield_place_failed` 50 su entrambi gli slot.
+    const dstStackId = this.offhand?.stack_id ?? 0;
+    const steps = [
+      { mode: 'place', slot: OFFHAND_SLOT },
+      { mode: 'place', slot: OFFHAND_FALLBACK_SLOT },
+      { mode: 'swap', slot: OFFHAND_SLOT },
+    ];
+    for (const { mode, slot } of steps) {
+      place = await this._sendStackRequest([mode === 'swap'
+        ? {
+          type_id: 'swap', legacy_type_id: 2,
+          source: this._slotInfo('cursor', 0, cursorStack),
+          destination: this._slotInfo('offhand', slot, dstStackId),
+        }
+        : {
+          type_id: 'place', legacy_type_id: 1, count: 1,
+          source: this._slotInfo('cursor', 0, cursorStack),
+          destination: this._slotInfo('offhand', slot, 0),
+        }]).catch(() => null);
       const status = place?.status ?? 'timeout';
-      attempts.push({ slot, status });
+      attempts.push({ mode, slot, status });
       if (place && (String(status) === 'ok' || status === 0)) break;
       // Un place rifiutato non cambia nulla lato server: il cursore è ancora
-      // carico con la stessa stack id, quindi il ripiego la riusa (un solo
-      // ripiego, non un ciclo).
+      // carico con la stessa stack id, quindi il passo successivo la riusa (un
+      // solo ripiego per forma, non un ciclo).
       this.log('shield_place_failed', {
         status,
+        mode,
         destination: `offhand/${slot}`,
         cursor_stack_id: this._cursor?.stack_id ?? null,
         cursorStack,
+        offhand: this.offhand?.name ?? null,
         openContainer: openAtPlace,
       });
     }
@@ -15177,7 +15235,14 @@ export class BedrockAdapter {
       const last = attempts[attempts.length - 1] ?? { status: 'timeout' };
       return { ok: false, error: `shield_place_failed_${last.status}`, attempts, openContainer: openAtPlace };
     }
+    const viaSwap = attempts[attempts.length - 1]?.mode === 'swap';
     this._applyStackResponse(place);
+    if (viaSwap) {
+      // Lo `swap` e' simmetrico: l'item che stava nell'offhand e' finito sul
+      // cursore e va rimesso in inventario, altrimenti il cursore resta sporco
+      // (e un cursore sporco fa fallire i `take` successivi con status 50).
+      await this._returnCursorToInventory().catch(() => {});
+    }
     this._cursor = null;
     this.offhand = { name: 'shield', count: 1, network_id: null };
     this._refreshInventory();

@@ -16,7 +16,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { isUseItemName } from '../bedrock-adapter.mjs';
+import { BedrockAdapter, isUseItemName } from '../bedrock-adapter.mjs';
 
 const source = readFileSync(new URL('../bedrock-adapter.mjs', import.meta.url), 'utf8');
 
@@ -50,4 +50,50 @@ test('la mano si cambia prima del click, e subito se tiene un oggetto usabile', 
   assert.match(body, /if \(useItem \|\| \(attempt > 1 && !hand\?\.network_id\)\)/, 'un oggetto usabile si cambia al primo tentativo (la mano vuota resta il ripiego dal secondo)');
   assert.match(body, /usable >= 0 \? usable : slots\.findIndex/, 'prima uno slot con un oggetto non usabile, poi uno slot libero');
   assert.ok(source.includes('container_hand_selected'), 'il cambio di mano deve restare dichiarato nel log');
+});
+
+// Live 09-10/10/2026 (`diamond-20261010-1`): dopo un `place` rifiutato con
+// status 50 l'inventario rimandava `inventory_content` ogni ~700 ms ma nessuna
+// finestra si apriva più — non il baule, non l'inventario, non dopo un
+// reconnect, non dopo un riavvio del processo harness. Ogni tentativo costava i
+// suoi 3 s e la missione non usciva più dalla base. Il contatore delle aperture
+// fallite di fila nomina la sessione bloccata invece di far sembrare sbagliato
+// ogni singolo contenitore.
+test('tre finestre che non si aprono nominano la sessione bloccata, non il baule', async () => {
+  const logs = [];
+  const adapter = new BedrockAdapter({ logger: { log () {} }, onLog: entry => logs.push(entry) });
+  adapter._containerWaiters = [];
+
+  await assert.rejects(() => adapter._waitForContainerOpen(() => true, 5), /container_open_timeout/);
+  await assert.rejects(() => adapter._waitForContainerOpen(() => true, 5), /container_open_timeout/);
+  await assert.rejects(() => adapter._waitForContainerOpen(() => true, 5), (error) => {
+    assert.equal(error.message, 'container_ui_locked');
+    assert.equal(error.details.failures, 3);
+    assert.match(error.details.hint, /riavviare il server Bedrock/);
+    return true;
+  });
+
+  const locked = logs.filter(l => l.type === 'container_locked_suspected');
+  assert.equal(locked.length, 1, 'una sola riga: la diagnosi non si ripete a ogni tentativo');
+  assert.equal(locked[0].failures, 3);
+});
+
+test('una finestra che si apre azzera la serie dei fallimenti', async () => {
+  const logs = [];
+  const adapter = new BedrockAdapter({ logger: { log () {} }, onLog: entry => logs.push(entry) });
+  adapter._containerWaiters = [];
+
+  await assert.rejects(() => adapter._waitForContainerOpen(() => true, 5), /container_open_timeout/);
+  await assert.rejects(() => adapter._waitForContainerOpen(() => true, 5), /container_open_timeout/);
+  adapter._noteContainerOpened();
+  assert.equal(adapter._containerOpenFailures, 0);
+  assert.equal(adapter._containerOpenFailureSince, null, 'anche l\'istante del primo fallimento si dimentica');
+  await assert.rejects(() => adapter._waitForContainerOpen(() => true, 5), /container_open_timeout/);
+  assert.equal(logs.filter(l => l.type === 'container_locked_suspected').length, 0, 'due fallimenti non sono un blocco');
+});
+
+test('la soglia del blocco è dichiarata una volta sola e il gestore la azzera', () => {
+  assert.match(source, /const CONTAINER_OPEN_LOCK_FAILURES = \+\(process\.env\.CONTAINER_OPEN_LOCK_FAILURES \|\| 3\)/);
+  assert.match(source, /this\.log\('container_open'[^\n]*\n\s*this\._noteContainerOpened\(\);/,
+    'l\'apertura riuscita azzera la serie: il gestore di container_open');
 });
