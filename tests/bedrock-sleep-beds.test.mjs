@@ -85,7 +85,10 @@ test('sleepInBed falls back to the next bed when the free one cannot be reached'
   assert.equal(result.ok, true);
   assert.equal(result.slept, 'night_skipped');
   assert.deepEqual(result.bed, { x: 0, y: 63, z: 2 }, 'ripiega sul letto occupato ma vicino');
-  assert.equal(moves, 1, 'ha tentato l\'avvicinamento solo per il letto libero e lontano');
+  // 08/10/2026: un letto non si dichiara irraggiungibile dopo **una** cella di
+  // appoggio fallita. Il conteggio resta esatto: le celle del solo letto libero.
+  const freeSpots = adapter._bedStandSpots({ position: { x: 0, y: 63, z: 20 } }).length;
+  assert.equal(moves, Math.min(4, freeSpots), 'ha tentato l\'avvicinamento solo per il letto libero e lontano, una cella per volta');
   assert.equal(result.tried.length, 2, 'tiene traccia del candidato fallito e di quello riuscito');
   assert.equal(result.tried[0].error, 'bed_unreachable');
   assert.equal(result.tried[0].distance > 3.2, true, 'la distanza fallita è riportata');

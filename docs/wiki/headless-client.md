@@ -151,7 +151,12 @@ The adapter instead:
    the player outside, often diagonally, and the yaw-only search walked into it.
    A door the **world already reports open** (`_isOpenAt`, read from the block's
    own `open_bit`) is registered as open instead of clicked, because a click on an
-   open door toggles it shut on the bot;
+   open door toggles it shut on the bot. Since 08/10 the **wait for that click is
+   not a stall**: the waypoint stall defers while the click is inside its 3 s
+   grace, and when the grace expires the move ends with
+   `door_blocked {position, waitedMs, from}` instead of a bare `stuck` — a closed
+   door that stops a walk has to be readable in the ledger, and until then three
+   anonymous `stuck` rows were all it said;
 5. accepts server corrections beyond `0.75` blocks (`MAX_CORRECTION_DRIFT`) and
    realigns the tick anchor.
 

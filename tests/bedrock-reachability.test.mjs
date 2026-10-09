@@ -657,3 +657,34 @@ test('il click non richiude una porta che il mondo dice già aperta', () => {
   assert.deepEqual(sent[1].transaction, { click: { x: 1, y: 71, z: 0 } }, 'una porta chiusa si clicca');
   assert.equal(adapter._doorWatchers.size, 2, 'si osserva il cambio di entrambe le metà');
 });
+
+// Live 08/10/2026 (`diamond-20261009-3`): tre `stuck` davanti a una porta chiusa,
+// e nessuna riga che dicesse perché. L'attesa del click è voluta: lo stallo non
+// deve dichiararla per primo, e quando scade l'arresto ha un nome.
+test('una porta che non si apre nomina il motivo dello `stuck`', () => {
+  const world = flatWorld({ minX: 0, maxX: 3, minZ: 0, maxZ: 3 });
+  world.set(1, 71, 1, { name: 'wooden_door', boundingBox: 'block', getProperties: () => ({ upper_block_bit: false, open_bit: false }) });
+  world.set(1, 72, 1, { name: 'wooden_door', boundingBox: 'block', getProperties: () => ({ upper_block_bit: true, open_bit: false }) });
+  const adapter = reachAdapter(world, { feet: { x: 0.5, y: 71, z: 0.5 } });
+  const logs = [];
+  adapter.log = (type, data) => logs.push({ type, data });
+  let finished = null;
+  adapter._finishMotion = reason => { finished = reason; };
+  adapter._motion = {
+    active: true, yaw: 0, index: 0,
+    path: [{ x: 1, y: 71, z: 1 }, { x: 2, y: 71, z: 1 }],
+    target: { x: 2.5, y: 71, z: 1.5 }, stopDistance: 0.8, deadline: Date.now() + 10000,
+    bestTargetDist: Infinity, bestWaypointDist: 1,
+    lastTargetProgressAt: Date.now(), lastIndexProgressAt: Date.now(), lastProgressAt: Date.now() - 3000,
+    stuckTries: 0,
+    useRequest: { pos: { x: 1, y: 71, z: 1 }, key: '1,71,1', sent: true, at: Date.now() - 4000 },
+  };
+  adapter._updateMotionState();
+  const blocked = logs.find(row => row.type === 'door_blocked');
+  assert.ok(blocked, 'la porta chiusa è nominata nel ledger');
+  assert.deepEqual(blocked.data.position, { x: 1, y: 71, z: 1 });
+  assert.equal(blocked.data.waitedMs >= 4000, true, 'il tempo di attesa è riportato');
+  assert.deepEqual(blocked.data.from, { x: 0.5, y: 71, z: 0.5 }, 'la posizione del bot è riportata');
+  assert.equal(finished, 'stuck');
+  assert.equal(adapter._motion.jumpQueued, undefined, 'l\'attesa della porta non fa saltare il bot');
+});

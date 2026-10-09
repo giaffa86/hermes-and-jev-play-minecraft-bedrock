@@ -96,3 +96,75 @@ test('a bedroom approach uses the doorway instead of a nearby cell outside its w
   assert.ok(path.some(p => p.x === 1 && p.z === 0), 'the route enters through the wooden door');
   assert.equal(adapter._bedVisible(insideBed, { ...spot, y: spot.y + 1.62 }), true);
 });
+
+// Live 08/10/2026 (`diamond-20261009-3`, `bed_unreachable` rows): the only cell
+// ever tried was the closest one, and when its walk stalled the whole bed was
+// declared unreachable while another side of the same bed was walkable.
+test('a standing cell whose walk stalls does not condemn the bed', async () => {
+  const adapter = room();
+  assert.ok(adapter._bedStandSpots(bed).length >= 2, 'the room offers more than one standing cell');
+  const walks = [];
+  adapter._moveTo = async target => {
+    walks.push({ x: target.x, y: target.y, z: target.z });
+    if (walks.length === 1) {
+      const error = new Error('stuck');
+      error.details = { from: { x: 0.5, y: 63, z: 0.5 }, stalled: true };
+      throw error;
+    }
+    adapter._feet = { ...target };
+    adapter.position = { ...target, y: target.y + 1.62 };
+  };
+  let clicks = 0;
+  adapter._queueAuthInput = async input => { if (input.transaction) { clicks++; adapter.sleeping = true; } };
+  const logs = [];
+  adapter.log = (type, data) => logs.push({ type, data });
+  const result = await adapter._trySleepInBed(bed, { confirmMs: 10 });
+  assert.equal(result.ok, true);
+  assert.equal(clicks, 1);
+  assert.ok(walks.length >= 2, 'the second standing cell is walked');
+  assert.notDeepEqual(walks[0], walks[1]);
+  const failed = logs.filter(row => row.type === 'bed_approach_failed');
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].data.message, 'stuck');
+  assert.equal(failed[0].data.spotIndex, 0);
+  assert.ok(failed[0].data.spots >= 2, 'the log names how many cells were available');
+  assert.deepEqual(failed[0].data.from, { x: 0.5, y: 63, z: 0.5 });
+});
+
+test('a bed whose every standing cell fails reports the cells it tried', async () => {
+  const adapter = room();
+  let calls = 0;
+  adapter._moveTo = async () => {
+    calls++;
+    const error = new Error('stuck');
+    error.details = { from: { x: 0.5, y: 63, z: 0.5 }, stalled: true };
+    throw error;
+  };
+  adapter._queueAuthInput = async () => assert.fail('every standing cell failed: the bed must not be clicked');
+  const result = await adapter._trySleepInBed(bed, { confirmMs: 10 });
+  assert.equal(calls, Math.min(4, adapter._bedStandSpots(bed).length));
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'bed_click_obstructed');
+  assert.equal(result.approaches.length, calls);
+  assert.equal(result.approaches[0].error, 'stuck');
+});
+
+// A bed occupies two cells: standing room that exists only beside the head half
+// must be offered too, otherwise the foot half decides for the whole bed.
+test('the standing ring follows both halves of a two-cell bed', () => {
+  const adapter = new BedrockAdapter({ logger: { log () {} } });
+  adapter.position = { x: 5.5, y: 64.62, z: 0.5 };
+  adapter._feet = { x: 5.5, y: 63, z: 0.5 };
+  adapter._recordTime(18000);
+  adapter.world.blockAt = ({ x, y, z }) => {
+    if (y === 63 && z === 0 && (x === 2 || x === 3)) return { name: 'red_bed', boundingBox: 'empty', shapes: [[0, 0, 0, 1, 0.5625, 1]] };
+    if (y === 62) return { name: 'stone', boundingBox: 'block' };
+    return { name: 'air', boundingBox: 'empty' };
+  };
+  const foot = { position: { x: 2, y: 63, z: 0 } };
+  assert.deepEqual(adapter._bedHalfAway(foot), { x: 3, z: 0 });
+  assert.equal(adapter._bedHalfAway({ position: { x: 5, y: 63, z: 5 } }), null);
+  const spots = adapter._bedStandSpots(foot);
+  assert.ok(spots.some(s => s.x > 3.5), 'a cell beside the head half is offered');
+  assert.ok(spots.every(s => s.y === 63));
+});

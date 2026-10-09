@@ -90,6 +90,14 @@ const SERVER_TEXT_LENGTH = 160;
 const SLEEP_MAX_BEDS = +(process.env.SLEEP_MAX_BEDS || 8);
 const SLEEP_MAX_TOTAL_MS = +(process.env.SLEEP_MAX_TOTAL_MS || 150000);
 const SLEEP_MIN_ATTEMPT_MS = +(process.env.SLEEP_MIN_ATTEMPT_MS || 2500);
+// Quante *posizioni* di appoggio si provano per lo stesso letto e quanto vale un
+// ripiego. Il primo cammino ha il budget pieno del tentativo; i successivi sono
+// brevi, perché un appoggio che si incastra lo fa in pochi secondi (una porta che
+// non si apre) e il budget totale resta quello di `_sleepInBed`. L'08/10/2026 il
+// letto "irraggiungibile" aveva una seconda cella buona dall'altro lato: non
+// veniva mai tentata, perché si camminava solo verso il cammino più corto.
+const SLEEP_SPOT_MAX = +(process.env.SLEEP_SPOT_MAX || 4);
+const SLEEP_SPOT_RETRY_MS = +(process.env.SLEEP_SPOT_RETRY_MS || 8000);
 // Le parole con cui il server dice che il sonno è *accettato* ma la notte non
 // può saltare (requisito multiplayer `playersSleepingPercentage`). Il BDS è
 // localizzato: si cercano più lingue, e in ogni caso il testo grezzo resta nel
@@ -11654,7 +11662,16 @@ export class BedrockAdapter {
       motion.bestWaypointDist = wpHoriz;
       motion.lastProgressAt = Date.now();
     } else if (Date.now() - motion.lastProgressAt > 2500) {
-      if (motion.stuckTries < 1) {
+      // Fermarsi davanti a una porta chiusa è **voluto**: il click è partito e il
+      // server ha 3 s per aprirla. Questa attesa non è uno stallo e, se scade,
+      // l'arresto ha un nome (`door_blocked`); senza la guardia lo stall da 2,5 s
+      // dichiarava `stuck` (o faceva saltare) e la diagnosi non arrivava mai
+      // (live 08/10/2026: tre `stuck` davanti a una porta chiusa, zero righe utili).
+      const waitingDoor = motion.useRequest && !this._openDoors.has(motion.useRequest.key);
+      if (waitingDoor && Date.now() - motion.useRequest.at > 3000) return this._doorBlockedVerdict(motion, feet);
+      if (waitingDoor) {
+        motion.lastProgressAt = Date.now();
+      } else if (motion.stuckTries < 1) {
         motion.stuckTries++;
         motion.jumpQueued = true;
         motion.jumpHeldTicks = 6;
@@ -11677,7 +11694,7 @@ export class BedrockAdapter {
       motion.useRequest = null;
     }
     if (motion.useRequest && Date.now() - motion.useRequest.at > 3000 && !this._openDoors.has(motion.useRequest.key)) {
-      return this._finishMotion('stuck');
+      return this._doorBlockedVerdict(motion, feet);
     }
     // Salto preparatorio per i gradini in salita.
     if (this._onGround && waypoint.y > feet.y + 0.5 && wpHoriz < 2.4 && motion.jumpHeldTicks <= 0) {
@@ -11685,6 +11702,18 @@ export class BedrockAdapter {
       motion.jumpHeldTicks = 6;
       motion.jumpStart = true;
     }
+  }
+
+  // Una porta che non si apre dopo il click è la ragione vera di uno `stuck` che
+  // altrimenti resta muto: l'08/10/2026 il letto "irraggiungibile" era un vano
+  // porta chiuso e nessuna riga del ledger lo nominava (solo `stuck`).
+  _doorBlockedVerdict (motion, feet) {
+    this.log('door_blocked', {
+      position: { ...motion.useRequest.pos },
+      waitedMs: Date.now() - motion.useRequest.at,
+      from: feet ? { x: +feet.x.toFixed(2), y: +feet.y.toFixed(2), z: +feet.z.toFixed(2) } : null,
+    });
+    return this._finishMotion('stuck');
   }
 
   _doorAhead () {
@@ -15496,20 +15525,34 @@ export class BedrockAdapter {
     const bedCenter = { x: bed.position.x + 0.5, y: bed.position.y, z: bed.position.z + 0.5 };
     let distance = this._pointDistance(bedCenter);
     const horizontal = () => (this._feet ? Math.hypot(this._feet.x - bedCenter.x, this._feet.z - bedCenter.z) : Infinity);
-    const stand = this._bedStandSpot(bed);
     // Distance alone accepts a bed behind a wall. Approach a loaded, walkable
     // cell with a clear click path and arrive at that cell's actual elevation.
     if (distance > reach || horizontal() < 0.9 || !this._bedVisible(bed)) {
-      if (!stand) return { ok: false, error: 'bed_access_unavailable', bed: bed.position, distance: +distance.toFixed(2) };
-      try {
-        await this._moveTo(stand, 0.08, approachTimeoutMs, { preciseArrival: true, verticalTolerance: 0.15, arrivalVerticalTolerance: 0.15 });
-      } catch (error) {
-        this.log('bed_approach_failed', { message: error.message, bed: bed.position, distance: +this._pointDistance(bedCenter).toFixed(2) });
+      // Tutte le posizioni di appoggio, non solo quella del cammino più corto: un
+      // solo appoggio che si incastra (porta chiusa, cella occupata) faceva
+      // dichiarare il letto irraggiungibile mentre un'altra cella era buona.
+      const spots = this._bedStandSpots(bed).slice(0, SLEEP_SPOT_MAX);
+      if (!spots.length) return { ok: false, error: 'bed_access_unavailable', bed: bed.position, distance: +distance.toFixed(2) };
+      const approaches = [];
+      for (let i = 0; i < spots.length; i++) {
+        const spot = spots[i];
+        const budget = i === 0 ? approachTimeoutMs : Math.min(SLEEP_SPOT_RETRY_MS, approachTimeoutMs);
+        try {
+          await this._moveTo(spot, 0.08, budget, { preciseArrival: true, verticalTolerance: 0.15, arrivalVerticalTolerance: 0.15 });
+        } catch (error) {
+          approaches.push({ spot, error: error.message });
+          this.log('bed_approach_failed', { message: error.message, bed: bed.position, distance: +this._pointDistance(bedCenter).toFixed(2),
+            spot, spotIndex: i, spots: spots.length, ...(error.details?.from ? { from: error.details.from } : {}) });
+          continue;
+        }
+        distance = this._pointDistance(bedCenter);
+        if (distance <= reach && this._bedVisible(bed)) break;
+        approaches.push({ spot, error: distance > reach ? 'bed_unreachable' : 'bed_click_obstructed', distance: +distance.toFixed(2) });
       }
       distance = this._pointDistance(bedCenter);
+      if (distance > reach) return { ok: false, error: 'bed_unreachable', bed: bed.position, distance: +distance.toFixed(2), ...(approaches.length ? { approaches } : {}) };
+      if (!this._bedVisible(bed)) return { ok: false, error: 'bed_click_obstructed', bed: bed.position, distance: +distance.toFixed(2), ...(approaches.length ? { approaches } : {}) };
     }
-    if (distance > reach) return { ok: false, error: 'bed_unreachable', bed: bed.position, distance: +distance.toFixed(2) };
-    if (!this._bedVisible(bed)) return { ok: false, error: 'bed_click_obstructed', bed: bed.position, distance: +distance.toFixed(2) };
     const beforeTicks = this._timeInfo()?.ticks ?? null;
     const occupiedBefore = this._bedOccupiedAt(bed.position);
     const levelEventBefore = this._sleepLevelEventAt;
@@ -15595,26 +15638,60 @@ export class BedrockAdapter {
   // Punto di sosta per cliccare il letto: FUORI dal footprint, nella direzione da
   // cui il bot arriva (fallback ai quattro assi), con la cella dei piedi libera e
   // un piano d'appoggio sotto.
-  _bedStandSpot (bed) {
-    if (!bed?.position || !this._feet) return null;
+  // Tutte le posizioni di appoggio di un letto, dalla più corta da camminare.
+  // Il letto occupa **due** celle: il giro guarda le celle attorno a entrambe le
+  // metà (assi e diagonali), perché il lato verso il bot può essere chiuso mentre
+  // l'altra metà ha una cella libera con linea di click. Ogni candidata deve
+  // passare tre prove: cella calpestabile e libera sopra, letto visibile da lì,
+  // cammino completo fino a quella cella.
+  _bedStandSpots (bed) {
+    if (!bed?.position || !this._feet) return [];
     const center = { x: bed.position.x + 0.5, y: bed.position.y, z: bed.position.z + 0.5 };
     const dx = this._feet.x - center.x, dz = this._feet.z - center.z;
     const len = Math.hypot(dx, dz);
-    const dirs = [];
-    if (len > 0.3) dirs.push([dx / len, dz / len]);
-    dirs.push([0, 1], [0, -1], [1, 0], [-1, 0]);
+    const halves = [{ x: bed.position.x, z: bed.position.z }];
+    const head = this._bedHalfAway(bed);
+    if (head) halves.push(head);
+    const seen = new Set();
+    const candidates = [];
+    const push = (x, z) => {
+      const key = `${x},${z}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      candidates.push({ x: x + 0.5, y: bed.position.y, z: z + 0.5 });
+    };
+    if (len > 0.3) push(Math.floor(center.x + (dx / len) * 1.9), Math.floor(center.z + (dz / len) * 1.9));
+    for (const half of halves) {
+      for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) push(half.x + ox, half.z + oz);
+    }
     const spots = [];
-    for (const radius of [1.9, 1]) for (const [ux, uz] of dirs) {
-      const spot = { x: Math.floor(center.x + ux * radius) + 0.5, y: center.y, z: Math.floor(center.z + uz * radius) + 0.5 };
+    for (const spot of candidates) {
       if (!this._bedStandSpotFree(spot) || !this._bedVisible(bed, { x: spot.x, y: spot.y + EYE_HEIGHT, z: spot.z })) continue;
       const goal = { x: Math.floor(spot.x), y: spot.y, z: Math.floor(spot.z) };
       const path = this._findPath(this._startNode(), goal, { maxNodes: 512 });
       const end = path?.at(-1);
       if (!end || !['x', 'y', 'z'].every(axis => end[axis] === goal[axis])) continue;
-      spots.push({ spot, length: path.length });
+      spots.push({ ...spot, length: path.length });
     }
     spots.sort((a, b) => a.length - b.length);
-    return spots[0]?.spot ?? null;
+    return spots;
+  }
+
+  // L'altra metà del letto, se il mondo la conosce: si cerca il blocco letto
+  // accanto, senza fidarsi della convenzione del campo `direction`.
+  _bedHalfAway (bed) {
+    if (!bed?.position) return null;
+    for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const x = bed.position.x + ox, z = bed.position.z + oz;
+      const block = this.world.blockAt({ x, y: bed.position.y, z });
+      if (typeof block?.name === 'string' && block.name.endsWith('_bed')) return { x, z };
+    }
+    return null;
+  }
+
+  _bedStandSpot (bed) {
+    const spot = this._bedStandSpots(bed)[0];
+    return spot ? { x: spot.x, y: spot.y, z: spot.z } : null;
   }
 
   _bedVisible (bed, eye = this.position) {
