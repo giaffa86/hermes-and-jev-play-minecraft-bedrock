@@ -1063,7 +1063,7 @@ decides from perception (`night && bedAvailable`), and `options()` already offer
 | The beds | `_sleepInBed` tries **all** the census (free first, occupied last), `SLEEP_MAX_BEDS` (default 8) |
 | The clock | the whole action is bounded by `SLEEP_MAX_TOTAL_MS` (default 150000, inside the harness's 180 s action ceiling); each attempt gets what is left, never less than `SLEEP_MIN_ATTEMPT_MS` (2500); what does not fit is logged `budget_exhausted` rather than silently dropped |
 | The server's text | `renderServerText` fills the translation's `%s`/`%N$s`, strips the colour codes **and flattens a rawtext JSON payload** (`{"rawtext":[…]}` joins its `text` parts and fills each `translate`'s `%s`/`%N$s` from its own `with`) — that rawtext form is the one the BDS actually sends, discovered live; `_noteServerText` keeps the last `SERVER_TEXT_MAX` (12) in `this.serverText`, logs each one as `server_text` and keeps the original payload as `raw` when the rendering changed it; `observe().serverText` exposes them |
-| The verdict | a `sleep_rejected` whose click window contains a multiplayer-sleep sentence becomes **`sleep_pending_players`** with `serverSaid` and a hint naming `playersSleepingPercentage`; a window carrying one of the server's own bed keys becomes the matching typed verdict (`tile.bed.noSleep` → `sleep_not_allowed`, `tile.bed.notValid` → `sleep_bed_missing`, `tile.bed.occupied` → `sleep_bed_occupied`, `tile.bed.notSafe` → `sleep_unsafe`, `tile.bed.tooFarAway` → `sleep_too_far`), each with its own hint; a text that refuses nothing (e.g. `tile.bed.respawnSet`) changes nothing, so the diagnosis stops hunting for monsters and occupied beds without inventing a culprit |
+| The verdict | a `sleep_rejected` whose click window contains a multiplayer-sleep sentence becomes **`sleep_pending_players`** with `serverSaid` and a hint naming `playersSleepingPercentage`; a window carrying one of the server's own bed keys becomes the matching typed verdict (`tile.bed.noSleep` → `sleep_not_allowed`, `tile.bed.notValid` → `sleep_bed_missing`, `tile.bed.occupied` → `sleep_bed_occupied`, `tile.bed.notSafe` → `sleep_unsafe`, `tile.bed.tooFarAway` → `sleep_too_far`), each with its own hint; a text that refuses nothing (e.g. `tile.bed.respawnSet`) changes nothing, and each `tried[]` row carries its own `verdict` when that attempt's window named the reason — so a refusal followed by a **successful** bed (the normal case: the first bed says `tile.bed.noSleep`, the second works ~4 s later) keeps its name in the ledger instead of closing as a plain `ok`. The diagnosis stops hunting for monsters and occupied beds without inventing a culprit |
 | Still not an order | non-chat text never enters `chatInbox`: a server sentence cannot command the bot, it can only be read |
 
 **What is deliberately not claimed.** The click-window capture only proves a
@@ -1072,7 +1072,7 @@ text arrived while the bot was trying to sleep, so `sleep_pending_players` is a
 The sleep itself stays proven by the flag/level event/clock jump, exactly as
 before.
 
-**Evidence.** `tests/bedrock-server-text.test.mjs` (12 cases: the translation is
+**Evidence.** `tests/bedrock-server-text.test.mjs` (13 cases: the translation is
 rendered, a server text is kept but never becomes an order, the window is
 bounded and visible in `observe()`, the multiplayer sentence is recognised in
 Italian and English, a refusal in rawtext form still reaches
@@ -1080,7 +1080,8 @@ Italian and English, a refusal in rawtext form still reaches
 while broken JSON stays verbatim and the original payload survives in the ledger
 as `raw`, each key of the server's own refusal vocabulary becomes its typed
 verdict and an unrelated text leaves `sleep_rejected` untouched, the pending night
-wins over the bed key, `sleep_pending_players` carries `serverSaid`, a silent
+wins over the bed key, a refused bed keeps its verdict when the **next** bed
+succeeds, `sleep_pending_players` carries `serverSaid`, a silent
 server still
 gives `sleep_rejected` with no invented field, every bed is tried free-first, the
 budget stops the attempts and marks them `budget_exhausted`),
@@ -1103,6 +1104,11 @@ night** — a fact the ledger now names, where the old hint accused bed, monster
 and clock together. **Deliberately not done**: no guessed margin on the night
 gate (the wasted attempt costs ~4 s and the drift is unmeasured); the honest
 answer to «the gate is early» is a verdict you can read.
+**Live, a whole night unattended (08/10 23:43 → 09/10 08:48)**: after the fix went
+live **57 sleep actions, 57 `ok`, 0 failures** — the bot slept through every game
+night on its own, one action every ~10.5 min (the night is skipped, so the cycle
+is the daytime), and the recurring `tried` row was always the same shape:
+`(93,74,174)` refused at **1.5 blocks**, `(93,74,172)` accepted ~3.6 s later.
 **Residual**: the `sleep_pending_players` label has no live capture (with the
 gamerule at 50 the multi-player refusal is no longer reproducible in the
 household), and the follow half of the same evening needs the owner in game.

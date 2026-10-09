@@ -132,6 +132,33 @@ test('a server text that refuses nothing leaves sleep_rejected alive, and a pend
   assert.equal(pending.error, 'sleep_pending_players', 'la notte che aspetta gli altri viene prima della chiave del letto');
 });
 
+test('a bed the server refuses keeps its verdict even when the next bed works', async () => {
+  // La mappa finale dei verdetti parla solo se **tutti** i letti falliscono, ma
+  // il caso normale è un rifiuto seguito da un letto buono (~4 s dopo, a ogni
+  // tramonto fra l'08 e il 09/10/2026): senza questo campo la ragione del rifiuto
+  // spariva dal ledger, perché l'azione chiude `ok`.
+  const { adapter } = spawnedAdapter();
+  adapter._recordTime(18000);
+  stubBeds(adapter, [bed({ x: 0, y: 63, z: 1 }, 2.2, false), bed({ x: 0, y: 63, z: 2 }, 2.8, false)]);
+  let transactions = 0;
+  adapter._queueAuthInput = async (input) => {
+    if (!input?.transaction) return;
+    transactions += 1;
+    if (transactions === 1) {
+      adapter._onChat({ type: 'json', message: JSON.stringify({ rawtext: [{ translate: 'tile.bed.noSleep' }] }) });
+    } else {
+      adapter.sleeping = true;
+    }
+  };
+  const result = await adapter._sleepInBed({ confirmMs: 10 });
+  assert.equal(result.ok, true, 'il secondo letto va bene');
+  assert.equal(result.tried.length, 2);
+  assert.equal(result.tried[0].ok, false);
+  assert.equal(result.tried[0].verdict, 'sleep_not_allowed', 'il rifiuto del primo letto resta scritto con il suo nome');
+  assert.equal(result.tried[1].ok, true);
+  assert.equal(result.tried[1].verdict, undefined, 'un letto che va bene non porta verdetti');
+});
+
 test('_serverSaidSleepPending recognises the multiplayer sleep notice in several languages', () => {
   const { adapter } = spawnedAdapter();
   adapter._onChat({ type: 'raw', message: 'foobar unrelated' });

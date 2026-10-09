@@ -15347,7 +15347,23 @@ export class BedrockAdapter {
         approachTimeoutMs: Math.max(SLEEP_MIN_ATTEMPT_MS, Math.min(i === 0 ? approachTimeoutMs : retryTimeoutMs, remaining)),
         confirmMs,
       });
-      tried.push({ bed: bed.position, ok: !!attempt.ok, error: attempt.error || null, distance: attempt.distance ?? null });
+      // Il verdetto della singola riga: la mappa finale parla solo quando **tutti**
+      // i letti falliscono, ma il caso normale è il primo letto rifiutato dal server
+      // e il secondo accettato ~4 s dopo (ogni tramonto fra l'08 e il 09/10/2026),
+      // e lì la ragione del rifiuto spariva dal ledger. La chiave del server la
+      // nomina: la notte che aspetta altri giocatori resta un fatto della notte,
+      // non di un letto, quindi non entra qui.
+      const said = attempt.serverSaid || [];
+      const verdict = attempt.ok || said.some(text => SLEEP_PENDING_PATTERNS.some(pattern => pattern.test(text)))
+        ? null
+        : (SLEEP_REFUSAL_KEYS.find(entry => said.some(text => entry.pattern.test(text)))?.error ?? null);
+      tried.push({
+        bed: bed.position,
+        ok: !!attempt.ok,
+        error: attempt.error || null,
+        distance: attempt.distance ?? null,
+        ...(verdict ? { verdict } : {}),
+      });
       if (attempt.ok) return { ...attempt, tried };
       if (attempt.serverSaid?.length) serverSaid = [...new Set([...serverSaid, ...attempt.serverSaid])];
       lastError = attempt.error || lastError;
