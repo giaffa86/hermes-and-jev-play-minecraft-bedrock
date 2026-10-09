@@ -399,7 +399,9 @@ an equip order — short, imperative, unmistakable — fell through to the stati
 
 - **`q_armor` (the seventh intent)**: `armorAnswer(obs)` reads `observe()`'s
   `armor` (`{helmet, chestplate, leggings, boots, points}`, filled by
-  `bedrock-adapter.mjs` from the equipment slots — **worn**, not carried) and
+  `bedrock-adapter.mjs` from the server's own `armor` window — `WindowID` 120,
+  **worn**, not carried; row 47.79: until 09/10/2026 that window was thrown away,
+  so every piece worn before a reconnect answered `null`) and
   answers `indosso: iron_helmet, iron_boots (9 punti armatura)`,
   `non indosso armatura`, or `non lo so: non ho letto la mia armatura` when the
   fact is missing. The intent sits right after `q_health` so its phrases win over

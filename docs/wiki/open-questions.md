@@ -1808,3 +1808,45 @@ dormire»/«sleep» is a deterministic `need: 'sleep'` plan, because the planner
   headless client, which does not play the sleeping pose while the server registers
   it — the proof of sleep stays the player flag / level event / clock jump, never
   the posture.
+
+## The armor the server sent, and the window we threw away (2026-10-09)
+
+The owner asked «come è equipaggiato al momento?» and the bot answered *nessuna
+armatura*; the owner doubted it («sicuro non ha armatura???») and was right.
+
+- **What the ledger had all along** (`runs/house-20261008-1`): **30
+  `inventory_slot` events with `window_id: "armor"`**, slots 0-3 filled
+  (`346:1:690`, `347:1:691`, `348:1:692`, `349:1:693`) and slot 4 (offhand) empty,
+  re-sent by the server at **every** join — `t=1791495433281-286` (after a
+  `client_close`, **before** `start_game`), `t=1791495790336-341`, and again at
+  `t=1791528797970-798` on 09/10 ~09:13. The bot was wearing four pieces while its
+  36-slot inventory held none: worn armor does not live in the inventory.
+- **Why it was invisible**: `_onMobEquipment` reads only
+  `packet.selected_slot` (the hand) and the offhand
+  (`if (packet.window_id !== 'offhand') return;`), never `this.armor`;
+  `_playerSlotIndex` has no branch for the `armor` window, so those slots were
+  logged and dropped; and the comment at `bedrock-adapter.mjs:13719` («the armor
+  is already tracked by `mob_equipment`, here we just read it») was **false**.
+  `this.armor` held our own equips only, so **every reconnect zeroed it** while
+  the server kept the pieces — an answer built from an empty mirror, which is
+  worse than a wrong count because it is confident.
+- **The protocol it was ignoring**: `WindowID` `120: "armor"` (with
+  `119: "offhand"`) in the bundled `minecraft-data` map, `ContainerSlotType`
+  containing `6: "armor"`, and `packet_inventory_slot` =
+  `window_id, slot, container, storage_item, item`.
+- **Fixed and live** ([row 47.79](verification.md)): `this._armorWindow` keeps the
+  four raw slots, `_applyArmorWindowSlot`/`_refreshArmorMirror` fill the mirror,
+  and the names are resolved against the palette **after** it arrives (the window
+  lands before `start_game`/`item_registry`, so freezing a name at the packet
+  would leave it `null` forever). After the rebuild (`md5
+  55b92d2c7ac9d98d95fe3d635e9ff010`), `observe().armor` reads `iron_helmet`,
+  `iron_chestplate`, `iron_leggings`, `iron_boots`, `points: 15`.
+- **Still open**: (1) **the ids are only trustworthy through the live palette** —
+  `minecraft-data` ships no 1.26.52 data (`ERR bedrock_1.26.52 Cannot read
+  properties of null (reading 'items')`) and its 1.26.51 maps 346..349 to
+  `stone_axe/diamond_sword/diamond_shovel/diamond_pickaxe`, so a test that trusted
+  the bundled palette would name the four pieces **wrongly**; (2) **durability is
+  not tracked** (the raw slots carry `{name, network_id, count, stack_id}` only),
+  so a helmet about to break reads the same as a new one; (3) `q_armor` (§M6.3 in
+  [human command](human-command.md)) now reads a fact instead of a guess, but that
+  *answer* has no live human capture yet.

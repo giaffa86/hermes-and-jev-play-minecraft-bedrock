@@ -724,6 +724,11 @@ export class BedrockAdapter {
       try { this.home = JSON.parse(process.env.HOME_WAYPOINT); } catch { /* ignora JSON malformato */ }
     }
     this.armor = { helmet: null, chestplate: null, leggings: null, boots: null }; // pezzi indossati
+    // Slot grezzi della finestra 'armor' (WindowID 120) come li manda il server:
+    // la rispedisce a ogni ingresso e a ogni cambio di pezzo. Si tengono grezzi
+    // perché i nomi degli oggetti dipendono dalla palette, che arriva dopo
+    // (`start_game`/`item_registry`): la risoluzione sta in `_refreshArmorMirror()`.
+    this._armorWindow = [null, null, null, null];
     this.chatInbox = [];             // messaggi chat recenti { from, message, type, xuid, at }
     // R2: la domanda in attesa di risposta, per mittente. Vive **qui** e non nel
     // controller perché è il ciclo di vita della chat («a chi ho appena chiesto
@@ -1079,6 +1084,8 @@ export class BedrockAdapter {
       client.on('item_registry', packet => {
         this.world.registry.handleStartGame({ ...client.startGameData, itemstates: packet.itemstates });
         this._refreshInventory();
+        // La finestra 'armor' arriva *prima* della palette: i nomi si risolvono ora.
+        this._refreshArmorMirror();
       });
       client.on('subchunk', packet => {
         this.world.subchunk(packet);
@@ -1163,6 +1170,12 @@ export class BedrockAdapter {
       this.client.on('inventory_content', (packet) => {
         const containerId = packet.container?.container_id;
         this._invResyncCount++;
+        // Contenuto completo della finestra 'armor' (se il server la manda tutta
+        // insieme invece che slot per slot).
+        if ((packet.window_id === 'armor' || containerId === 'armor') && Array.isArray(packet.input)) {
+          packet.input.forEach((item, slot) => this._applyArmorWindowSlot(slot, item));
+          this.log('armor_content', { window_id: packet.window_id, container: containerId ?? null, worn: this._wornArmor().join(' ') || null });
+        }
         if (packet.window_id === 'inventory' || packet.window_id === 0 || packet.inventory_id === 0) {
           this.log('inventory_content', {
             window_id: packet.window_id,
@@ -1226,6 +1239,12 @@ export class BedrockAdapter {
           window_id: packet.window_id, container: containerId ?? null, slot: packet.slot,
           item: packet.item ? `${packet.item.name || this.world.registry?.items[packet.item.network_id]?.name || packet.item.network_id}:${packet.item.count}:${packet.item.stack_id ?? 'none'}` : null,
         });
+        // La finestra 'armor' non è la finestra del giocatore: `_playerSlotIndex`
+        // la scarterebbe, quindi va letta prima (e prima di ogni prefisso).
+        if (packet.window_id === 'armor' || containerId === 'armor') {
+          this._applyArmorWindowSlot(packet.slot, packet.item);
+          return;
+        }
         if (this._trackFurnaceSlot(containerId, packet.item)) return; // non è uno slot del giocatore
         if (this._trackTradeSlot(containerId, packet.slot, packet.item)) return; // slot della finestra di trading
         const index = this._playerSlotIndex(containerId, packet.window_id, packet.slot);
@@ -2832,6 +2851,7 @@ export class BedrockAdapter {
     this._applyStackResponse(place, { networkId: slot.network_id });
     this._cursor = null;
     this.armor.helmet = slot.name;
+    this._armorWindow[0] = { name: slot.name, network_id: slot.network_id ?? null, count: 1, stack_id: slot.stack_id ?? null };
     this._refreshInventory();
     this.log('pumpkin_equipped', { item: slot.name, status: place.status });
     return { ok: true, already: false, item: slot.name };
@@ -13715,8 +13735,43 @@ export class BedrockAdapter {
 
   // ---- armatura e porte (difesa) -------------------------------------------------------
 
+  // La verità sull'armatura indossata è la **finestra `armor` del server**
+  // (WindowID 120, slot 0..3 = elmo, pettorale, gambali, stivali), che il server
+  // rispedisce a ogni ingresso e a ogni cambio di pezzo. Il commento precedente
+  // diceva che l'armatura «è già tracciata da `mob_equipment`»: falso, perché
+  // `_onMobEquipment` legge solo la mano selezionata e l'offhand, e `_playerSlotIndex`
+  // non conosce la finestra 'armor'. Senza questa via un pezzo indossato prima di
+  // una riconnessione spariva da `observe().armor` (live 09/10/2026: slot 0..3
+  // pieni a ogni ingresso e `armor` tutto null).
+  _applyArmorWindowSlot (slot, item) {
+    const index = Number(slot);
+    if (!Number.isInteger(index) || index < 0 || index > 3) return false;
+    this._armorWindow[index] = item && item.count
+      ? { name: item.name ?? null, network_id: item.network_id ?? null, count: item.count, stack_id: item.stack_id ?? null }
+      : null;
+    this._refreshArmorMirror();
+    this.log('armor_slot', {
+      slot: index,
+      item: this._armorWindow[index] ? `${this._slotItemName(this._armorWindow[index]) ?? this._armorWindow[index].network_id}:${this._armorWindow[index].count}` : null,
+      worn: this._wornArmor().join(' ') || null,
+    });
+    return true;
+  }
+
+  // I nomi si ricavano dagli slot grezzi ogni volta: la finestra può arrivare
+  // prima della palette (che arriva con `start_game`/`item_registry`), quindi non
+  // si congela nulla al momento del pacchetto.
+  _refreshArmorMirror () {
+    const pieces = ['helmet', 'chestplate', 'leggings', 'boots'];
+    for (let i = 0; i < pieces.length; i++) {
+      const item = this._armorWindow[i];
+      this.armor[pieces[i]] = item ? this._slotItemName(item) : null;
+    }
+    return { ...this.armor };
+  }
+
   // I pezzi d'armatura addosso, nella forma che serve alla neutralità dei piglin
-  // (N4): l'armatura è già tracciata da `mob_equipment`, qui si legge e basta.
+  // (N4): si legge il riflesso della finestra 'armor' del server.
   _wornArmor () {
     return Object.values(this.armor ?? {}).filter(Boolean);
   }
@@ -13847,6 +13902,9 @@ export class BedrockAdapter {
       this._applyStackResponse(place, { networkId: piece.network_id });
       this._cursor = null;
       this.armor[['helmet', 'chestplate', 'leggings', 'boots'][piece.armorSlot]] = piece.name;
+      if (piece.armorSlot >= 0 && piece.armorSlot <= 3) {
+        this._armorWindow[piece.armorSlot] = { name: piece.name, network_id: piece.network_id ?? null, count: 1, stack_id: piece.stack_id ?? null };
+      }
       equipped.push({ item: piece.name, slot: piece.armorSlot });
       this.log('armor_equip', { item: piece.name, slot: piece.armorSlot, status: place.status });
     }
