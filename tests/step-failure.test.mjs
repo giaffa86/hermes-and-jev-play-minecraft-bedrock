@@ -60,6 +60,28 @@ test('il vocabolario reale del harness cade nei tipi dichiarati', () => {
     // Live 08/10/2026, tentativo 16: il bot chiuso dentro il vano di una porta.
     // Il cammino non e' rotto, e' l'approccio che non passa: un'altra chiave puo'.
     ['stuck_in_doorway', 'blocked', false],
+    // M23 — 11/10/2026, tentativo 23: il cammino che non trova una rotta e' un
+    // approccio non disponibile, non un errore fuori vocabolario.
+    ['path_failed', 'blocked', false],
+    // M23 — il motore di movimento dice `movement timeout` **con uno spazio**,
+    // non `<qualcosa>_timeout`: e' il harness che tocca il proprio budget di
+    // movimento, e il secondo tentativo spesso arriva (vivo 04/10/2026: 75 s
+    // falliti, poi 546 ms).
+    ['movement timeout', 'timeout', true],
+    // M23 — il blocco locale del motore di movimento (`stuck`, tre giri senza
+    // progresso): si ritenta una volta, poi il passo fallisce e il piano cambia.
+    ['stuck', 'transient', true],
+    // M23 — la finestra stantia (M19), il client caduto, il cursore che non si
+    // svuota e il deposito che non si legge indietro (M22): guasti locali che il
+    // secondo tentativo della stessa chiave risolve. Live 11/10/2026, tentativo
+    // 23: `container_read_failed` e `connection_lost` chiudevano il passo.
+    ['container_read_failed', 'transient', true],
+    ['connection_lost', 'transient', true],
+    ['take_return_failed', 'transient', true],
+    ['deposit_unverified', 'transient', true],
+    // M23 — live 11/10/2026: il drop non c'e' piu' quando il bot arriva: e' il
+    // bersaglio sparito tra la decisione e l'azione, non un guasto.
+    ['item_not_collected', 'moved', true],
     // Regola del harness che dice no: il piano deve cambiare.
     ['fell_tree_refused', 'refused', false],
     // Manca qualcosa al passo: il piano deve aggiungere il passo che lo procura.
@@ -163,6 +185,30 @@ test('un rifiuto terminale fallisce il passo e il piano', () => {
     const disposition = failureDisposition(record, { attempts: 1 });
     assert.equal(disposition.action, 'replan', error);
     assert.equal(disposition.reason, reason, error);
+  }
+});
+
+// M23: le stringhe del movimento e dei contenitori non sono piu' terminali.
+// Il tentativo 23 (`diamond-20261011-4`) ha speso sette replan in ventisei
+// azioni per fallimenti che un secondo tentativo della stessa chiave risolve.
+test('le stringhe del movimento e dei contenitori ritentano il passo, non lo buttano', () => {
+  for (const [error, action, reason] of [
+    ['movement timeout', 'retry', 'timeout_retry'],
+    ['stuck', 'retry', 'transient_retry'],
+    ['container_read_failed', 'retry', 'transient_retry'],
+    ['connection_lost', 'retry', 'transient_retry'],
+    ['deposit_unverified', 'retry', 'transient_retry'],
+    ['item_not_collected', 'retry', 'moved_retry'],
+    ['path_failed', 'switch', 'blocked_alternative'],
+  ]) {
+    const record = failureRecord({ step: 3, stepId: 's', key: 'goto_waypoint', error, attempts: 1 });
+    const first = failureDisposition(record, { attempts: 1 });
+    assert.equal(first.action, action, `${error} -> ${first.action}`);
+    assert.equal(first.reason, reason, `${error} -> ${first.reason}`);
+    // Il secondo giro non e' un altro tentativo: il passo e' finito.
+    const second = failureDisposition(record, { attempts: MAX_STEP_ATTEMPTS });
+    assert.equal(second.action, 'replan', `${error} esaurito`);
+    assert.equal(second.reason, `${record.kind}_exhausted`, error);
   }
 });
 

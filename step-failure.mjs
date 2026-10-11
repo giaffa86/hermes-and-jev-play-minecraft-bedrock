@@ -15,6 +15,17 @@
 // La classificazione non e' un giudizio sul mondo: e' una lettura dei rifiuti
 // che l'harness sa gia' produrre. Un errore fuori vocabolario e' `unknown` e
 // terminale — mai indovinato come ritentabile.
+//
+// M23 (11/10/2026): il vocabolario era cieco sulle stringhe che il *movimento*
+// e i *contenitori* producono davvero. Nel tentativo 23 (`diamond-20261011-4`)
+// sette fallimenti su ventisei azioni — `movement timeout` ×2,
+// `container_read_failed`, `connection_lost`, `item_not_collected` ×2 —
+// cadevano tutti in `unknown` e quindi in `*_terminal`: ognuno buttava via il
+// passo e forzava un replan (sette replan in ventisei azioni), mentre il
+// secondo tentativo della stessa chiave e' spesso quello che riesce (vivo
+// 04/10/2026: un `take_*` da memoria e' finito `movement timeout` dopo 75 s e il
+// tentativo successivo e' arrivato in 546 ms). Le famiglie nuove sono le stesse
+// di prima — nessun tipo inventato: `timeout`, `transient`, `moved`, `blocked`.
 
 export const STEP_FAILURE_VERSION = 1;
 
@@ -59,13 +70,21 @@ const HINTS = Object.freeze({
 // (un umano che si e' allontanato mentre il bot lo cercava).
 const RULES = Object.freeze([
   { kind: 'busy', test: /^busy$/ },
-  { kind: 'timeout', test: /(^|_)timeout$/ },
+  // `(^|_| )timeout$`: la famiglia dell'harness e' `<qualcosa>_timeout`, ma il
+  // motore di movimento dice `movement timeout` con uno spazio (M23).
+  { kind: 'timeout', test: /(^|_| )timeout$/ },
   { kind: 'refused', test: /(^|_)refused$/ },
-  { kind: 'transient', test: /^(not_connected|world_not_loaded|not_ready|not_spawned|harness_blind|action_in_progress|orientation_not_confirmed|mount_not_confirmed|gap_unknown)$/ },
-  { kind: 'moved', test: /(^|_)(gone|left|not_found)$/ },
+  // `container_read_failed` / `connection_lost` / `take_return_failed` /
+  // `deposit_unverified`: la finestra stantia (M19), il client caduto, il
+  // cursore che non si svuota (M22) e il deposito che non si legge indietro
+  // sono guasti locali che il secondo tentativo della stessa chiave risolve.
+  // `stuck` e' il verdetto del motore di movimento su un blocco locale: si
+  // ritenta una volta, poi il passo fallisce e il piano cambia.
+  { kind: 'transient', test: /^(not_connected|world_not_loaded|not_ready|not_spawned|harness_blind|action_in_progress|orientation_not_confirmed|mount_not_confirmed|gap_unknown|stuck|container_read_failed|connection_lost|take_return_failed|deposit_unverified)$/ },
+  { kind: 'moved', test: /(^|_)(gone|left|not_found)$|^item_not_collected$/ },
   {
     kind: 'blocked',
-    test: /(^|_)unreachable$|^no reachable |^no_(safe_cell|place_spot|gap_to_bridge|lava_ahead|position|placeable_block|diggable)|^not_diggable_|^protected_|^unsafe_|^block_still_present$|^position_required$|^mine_target_missing$|^block_(unknown|mismatch)$|^stuck_in_doorway$/,
+    test: /(^|_)unreachable$|^no reachable |^no_(safe_cell|place_spot|gap_to_bridge|lava_ahead|position|placeable_block|diggable)|^not_diggable_|^protected_|^unsafe_|^block_still_present$|^position_required$|^mine_target_missing$|^block_(unknown|mismatch)$|^stuck_in_doorway$|^path_failed$/,
   },
   {
     kind: 'prerequisite',

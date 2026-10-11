@@ -1,5 +1,26 @@
 # Log
 
+## [2026-10-11] fix | Il vocabolario dei rifiuti era cieco sul movimento e sui contenitori (M23)
+
+Il tentativo 23 (`diamond-20261011-4`, `CONTROLLER=jev`, 26 azioni) ha chiuso con 19 ok e 7
+fallimenti: sei di quei sette portavano `kind: unknown, retryable: false` — `movement timeout` ×2,
+`container_read_failed`, `connection_lost`, `item_not_collected` ×2 — perche' `step-failure.mjs`
+conosceva solo le famiglie `<qualcosa>_timeout` e `<bersaglio>_gone`. Un `unknown` e' terminale per
+progetto, quindi ogni fallimento buttava via il passo e forzava un replan: sette replan in ventisei
+azioni. Il testo del ledger e' la prova del difetto: *not in the vocabulary: terminal until the plan
+says otherwise*.
+
+La fix non aggiunge nessun tipo: `timeout` accetta anche `movement timeout` (uno spazio, non un
+underscore), `transient` accoglie `stuck`, `container_read_failed`, `connection_lost`,
+`take_return_failed` e `deposit_unverified`, `moved` accoglie `item_not_collected` (il drop che non
+c'e' piu' e' un bersaglio sparito) e `blocked` accoglie `path_failed` (nessuna rotta: serve un altro
+approccio). Non e' ottimismo: vivo 04/10/2026 un `take_*` da memoria e' finito `movement timeout`
+dopo 75 s e il tentativo successivo e' arrivato in 546 ms.
+
+`node --test tests/step-failure.test.mjs` 12 pass / 0 fail; suite completa 2059 → **2060 pass / 0
+fail**; `npm run wiki:lint:strict` e `npm run capabilities:check` verdi. Rilasciata come
+`chat-truth-m23` per il tentativo 24.
+
 ## [2026-10-11] fix | Un deposito che chiede piu' di quanto la destinazione contenga lascia il resto sul cursore (M22)
 
 La run 21 (`diamond-20261011-1`) si e' fermata su `take_failed_50`: quattro `item_stack_response`
