@@ -8591,12 +8591,39 @@ export class BedrockAdapter {
       // fallito lascia il cursore sporco: qui si svuota o si fallisce tipizzato,
       // invece di incolpare il contenitore con un `take_failed_50` opaco.
       if (this._cursor?.count > 0 && !(await this._returnCursorToInventory())) throw new Error('cursor_busy');
-      const take = await this._sendStackRequest([{
+      let take = await this._sendStackRequest([{
         type_id: 'take', legacy_type_id: 0, count,
         source: this._slotInfo(slotType, slotIndex, slot.stack_id || 0),
         destination: this._slotInfo('cursor', 0, 0),
       }]);
-      if (String(take.status) !== 'ok' && take.status !== 0) throw new Error(`take_failed_${take.status}`);
+      if (String(take.status) !== 'ok' && take.status !== 0) {
+        // 49/50 sono la firma di uno stato *nostro* stantio (cursore sporco, finestra
+        // vecchia), non del contenitore: prima l'evidenza, poi un solo tentativo con
+        // una finestra nuova. Il take spiegato dal cursore si risolve già sopra; qui
+        // resta il caso in cui lo specchio non sapeva del cursore sporco.
+        this.log('take_refused', {
+          item: itemName, block: entry.type, position: entry.position, slot: slotIndex,
+          stack_id: slot.stack_id ?? null, count, status: take.status, cursor: this._cursor, attempt: 1,
+        });
+        await this._closeContainer().catch(() => {});
+        await this._ensureStorageOpen(entry, remembered ? { walkTimeoutMs: STORAGE_TAKE_WALK_MS } : {});
+        const freshSlots = this._openContainerSlots || [];
+        const freshIndex = freshSlots.findIndex(s => this._slotItemName(s) === itemName && (s.count || 0) > 0);
+        if (freshIndex >= 0) {
+          take = await this._sendStackRequest([{
+            type_id: 'take', legacy_type_id: 0, count,
+            source: this._slotInfo(slotType, freshIndex, freshSlots[freshIndex].stack_id || 0),
+            destination: this._slotInfo('cursor', 0, 0),
+          }]);
+          this.log('take_refused_retry', {
+            item: itemName, position: entry.position, status: take.status,
+            ok: String(take.status) === 'ok' || take.status === 0,
+          });
+        }
+        if (String(take.status) !== 'ok' && take.status !== 0) {
+          throw new Error(`take_failed_${take.status}`);
+        }
+      }
       this._applyStackResponse(take, { networkId: slot.network_id });
       const returned = await this._returnCursorToInventory();
       if (!returned) throw new Error('take_return_failed');
@@ -8759,12 +8786,23 @@ export class BedrockAdapter {
       const beforeStored = this._slotsItemCount(slots, itemName);
       const slotType = this._storageContainerSlotType(target.type);
       const stackSize = this._itemStackSize(this.inventorySlots[index].network_id);
-      // Destinazione: uno slot già occupato dallo stesso item (se c'è spazio) oppure il primo vuoto.
-      let destSlot = slots.findIndex(s => this._slotItemName(s) === itemName && (s.count || 0) < stackSize);
-      if (destSlot < 0) destSlot = slots.findIndex(s => !s?.network_id);
+      // Destinazione: prima uno slot vuoto (capienza intera), poi uno slot già
+      // occupato dallo stesso item (capienza = spazio residuo). Il `count` è
+      // limitato dalla capienza *della destinazione*: chiedere più di quanto ci
+      // stia fa accettare al server solo la parte che entra e lasciare il resto
+      // sul cursore — live 11/10/2026: 62 cobblestone richiesti verso uno slot con
+      // 4 di spazio, 4 depositati, 58 rimasti sul cursore lato server (e da lì
+      // ogni `take` successivo rifiutato 50, `FailedToValidateDstSlot`).
+      let destSlot = slots.findIndex(s => !s?.network_id);
+      let capacity = stackSize;
+      if (destSlot < 0) {
+        destSlot = slots.findIndex(s => this._slotItemName(s) === itemName && (s.count || 0) < stackSize);
+        if (destSlot >= 0) capacity = Math.max(0, stackSize - (slots[destSlot].count || 0));
+      }
       if (destSlot < 0) throw new Error('container_full');
       const source = this.inventorySlots[index];
-      const count = Math.min(source.count || 0, stackSize, maxCount ?? Infinity);
+      const count = Math.min(source.count || 0, capacity, maxCount ?? Infinity);
+      if (count <= 0) throw new Error('container_full');
       const info = this._invSlotAsSource(index);
       const take = await this._sendStackRequest([{
         type_id: 'take', legacy_type_id: 0, count,
@@ -8782,7 +8820,20 @@ export class BedrockAdapter {
       }]);
       if (String(place.status) !== 'ok' && place.status !== 0) throw new Error(`place_failed_${place.status}`);
       this._applyStackResponse(place, { networkId: source.network_id });
-      this._cursor = null;
+      // Il `place` può accettare meno del richiesto (destinazione riempita nel
+      // frattempo, o comunque piena): il resto resta sul cursore e la risposta del
+      // server è l'unica autorità. Azzerare lo specchio a mano cancellava la
+      // traccia di quel resto — live 11/10/2026: 58 cobblestone su 62 spariti dal
+      // deposito e quattro `take` di fila rifiutati con status 50, perché per il
+      // server il cursore era ancora pieno mentre l'adapter lo credeva vuoto.
+      const cursorLeft = this._cursor?.count ?? 0;
+      const cursorSettled = cursorLeft > 0 ? await this._returnCursorToInventory().catch(() => false) : true;
+      if (cursorLeft > 0 && !cursorSettled) {
+        this.log('cursor_stranded', {
+          item: itemName, position: target.position, count: cursorLeft, requested: count,
+          stack_id: this._cursor?.stack_id ?? null,
+        });
+      }
       // Postcondizione sul mondo, non sulla previsione (M4): lo status `ok` delle
       // due richieste non basta. Live 06/10 il deposito fu dichiarato su un
       // contenuto previsto, con lo specchio gonfiato dai pickup e il baule mai
@@ -8806,6 +8857,7 @@ export class BedrockAdapter {
           expected: { held: beforeHeld - count, stored: beforeStored + count },
           takeStatus: take.status, placeStatus: place.status, playerReported,
           placeSlots: this._responseContainerSlotCounts(place),
+          cursorLeft, cursorSettled,
         });
         return {
           ok: false, error: 'deposit_unverified', item: itemName, count, into: target.type, position: target.position,

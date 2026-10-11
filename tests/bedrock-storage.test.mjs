@@ -383,6 +383,145 @@ test('a stale mirror is resynced before the deposit is declared missing', async 
   assert.equal(result.count, 4);
 });
 
+// Live 11/10/2026: `dump_inventory` chiese di depositare 62 cobblestone in uno
+// slot che ne conteneva 60 (4 di spazio). Il server accetti i 4 che entravano e
+// lascio i 58 sul cursore; lo specchio del cursore veniva poi azzerato a mano e
+// ogni `take` successivo fu rifiutato con status 50 (`FailedToValidateDstSlot`).
+test('a deposit never asks for more than the destination slot can hold', async () => {
+  const adapter = storageAdapter();
+  const entry = seedContainer(adapter, { contents: {} });
+  adapter.inventorySlots[10] = { network_id: 458, name: 'iron_ingot', count: 62, stack_id: 9 };
+  adapter.inventory = { iron_ingot: 62 };
+  const serverSlots = Array.from({ length: 27 }, (_, i) => ({ network_id: 3, name: 'dirt', count: 64, stack_id: 100 + i }));
+  serverSlots[5] = { network_id: 458, name: 'iron_ingot', count: 60, stack_id: 50 };
+  adapter._ensureStorageOpen = async () => {
+    adapter._openContainer = { id: 1, type: 'container' };
+    adapter._openContainerBlock = { name: 'chest', position: entry.position };
+    adapter._openContainerSlots = serverSlots.map(s => ({ ...s }));
+  };
+  const asked = [];
+  adapter._sendStackRequest = async actions => {
+    const a = actions[0];
+    asked.push(`${a.type_id}:${a.count}@${a.destination.slot_type.container_id}:${a.destination.slot}`);
+    if (a.type_id === 'place') {
+      const accepted = Math.min(a.count, 64 - 60);
+      serverSlots[a.destination.slot].count += accepted;
+      return {
+        status: 'ok',
+        containers: [
+          { slot_type: { container_id: 'container' }, slots: [{ slot: a.destination.slot, count: serverSlots[a.destination.slot].count, item_stack_id: 50 }] },
+          ...(accepted < a.count ? [{ slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: a.count - accepted, item_stack_id: 70 }] }] : []),
+        ],
+      };
+    }
+    return {
+      status: 'ok',
+      containers: [
+        { slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: a.count, item_stack_id: 70 }] },
+        { slot_type: { container_id: 'hotbar_and_inventory' }, slots: [{ slot: a.source.slot, count: 62 - a.count, item_stack_id: 9 }] },
+      ],
+    };
+  };
+  adapter._returnCursorToInventory = async () => { adapter._cursor = null; return true; };
+  const result = await adapter._depositItem('iron_ingot');
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.count, 4, 'solo i 4 che entrano nello slot di destinazione');
+  assert.equal(asked[0], 'take:4@cursor:0');
+  assert.equal(asked[1], 'place:4@container:5');
+  assert.equal(serverSlots[5].count, 64);
+  assert.equal(adapter._cursor, null, 'nessun resto lasciato sul cursore');
+});
+
+// Lo specchio del cursore e' l'unica memoria del resto rimasto sul cursore: se
+// il `place` accetta meno del richiesto, azzerarlo a mano trasforma il resto in
+// un oggetto fantasma che blocca ogni take successivo.
+test('a place the server only partially accepts leaves the rest on the cursor, and says so', async () => {
+  const logs = [];
+  const adapter = storageAdapter();
+  adapter.log = (event, payload) => logs.push({ event, ...payload });
+  const entry = seedContainer(adapter, { contents: {} });
+  adapter.inventorySlots[10] = { network_id: 458, name: 'iron_ingot', count: 62, stack_id: 9 };
+  adapter.inventory = { iron_ingot: 62 };
+  const serverSlots = new Array(27);
+  adapter._ensureStorageOpen = async () => {
+    adapter._openContainer = { id: 1, type: 'container' };
+    adapter._openContainerBlock = { name: 'chest', position: entry.position };
+    adapter._openContainerSlots = serverSlots.map(s => (s ? { ...s } : s));
+  };
+  adapter._sendStackRequest = async actions => {
+    const a = actions[0];
+    if (a.type_id === 'place') {
+      serverSlots[a.destination.slot] = { network_id: 458, name: 'iron_ingot', count: 4, stack_id: 71 };
+      return {
+        status: 'ok',
+        containers: [
+          { slot_type: { container_id: 'container' }, slots: [{ slot: a.destination.slot, count: 4, item_stack_id: 71 }] },
+          { slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 58, item_stack_id: 70 }] },
+        ],
+      };
+    }
+    return {
+      status: 'ok',
+      containers: [
+        { slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 62, item_stack_id: 70 }] },
+        { slot_type: { container_id: 'hotbar_and_inventory' }, slots: [{ slot: a.source.slot, count: 0, item_stack_id: 0 }] },
+      ],
+    };
+  };
+  adapter._returnCursorToInventory = async () => false; // il resto non torna in zaino
+  const result = await adapter._depositItem('iron_ingot');
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'deposit_unverified');
+  assert.equal(adapter._cursor?.count, 58, 'il resto sul cursore non viene cancellato dallo specchio');
+  assert.ok(logs.some(l => l.event === 'cursor_stranded' && l.count === 58), `log: ${logs.map(l => l.event).join(', ')}`);
+  assert.ok(logs.some(l => l.event === 'container_deposit_unverified' && l.cursorLeft === 58 && l.cursorSettled === false), 'il verdetto nomina il resto');
+});
+
+// Lo specchio dice `null` ma il server tiene ancora il cursore: il rifiuto va
+// spiegato (slot, stack, status, specchio) e si ritenta una volta con una
+// finestra nuova invece di incolpare il baule.
+test('a take refused 50 states the evidence and retries once with a fresh window', async () => {
+  const logs = [];
+  const adapter = storageAdapter();
+  adapter.log = (event, payload) => logs.push({ event, ...payload });
+  const entry = seedContainer(adapter);
+  let opens = 0;
+  adapter._ensureStorageOpen = async () => {
+    opens += 1;
+    adapter._openContainer = { id: 1, type: 'container' };
+    adapter._openContainerBlock = { name: 'chest', position: entry.position };
+    adapter._openContainerSlots = [{ network_id: 458, name: 'iron_ingot', count: 3, stack_id: opens === 1 ? 5 : 77 }];
+  };
+  let tries = 0;
+  adapter._sendStackRequest = async actions => {
+    tries += 1;
+    if (tries === 1) return { status: 50, containers: [] };
+    return {
+      status: 'ok',
+      containers: [
+        { slot_type: { container_id: 'cursor' }, slots: [{ slot: 0, count: 3, item_stack_id: 70 }] },
+        { slot_type: { container_id: 'container' }, slots: [{ slot: 0, count: 0, item_stack_id: 0 }] },
+      ],
+    };
+  };
+  adapter._cursor = null;
+  adapter._returnCursorToInventory = async () => {
+    adapter.inventorySlots[20] = { network_id: 458, name: 'iron_ingot', count: 3, stack_id: 80 };
+    adapter._cursor = null;
+    return true;
+  };
+  const result = await adapter._takeFromContainer('iron_ingot');
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(opens, 2, 'il retry riapre la finestra');
+  const refused = logs.find(l => l.event === 'take_refused');
+  assert.ok(refused, `log: ${logs.map(l => l.event).join(', ')}`);
+  assert.equal(refused.status, 50);
+  assert.equal(refused.slot, 0);
+  assert.equal(refused.stack_id, 5, 'la stack id che il server ha rifiutato');
+  assert.equal(refused.cursor, null, 'lo specchio non sapeva del cursore sporco');
+  assert.ok(logs.some(l => l.event === 'take_refused_retry' && l.ok === true), 'il retry riuscito e dichiarato');
+});
+
 test('deposit_<item> without a container or item fails cleanly', async () => {
   const adapter = storageAdapter();
   assert.deepEqual(await adapter._depositItem('iron_ingot'), { ok: false, error: 'container_not_found' });

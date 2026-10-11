@@ -1,5 +1,34 @@
 # Log
 
+## [2026-10-11] fix | Un deposito che chiede piu' di quanto la destinazione contenga lascia il resto sul cursore (M22)
+
+La run 21 (`diamond-20261011-1`) si e' fermata su `take_failed_50`: quattro `item_stack_response`
+con `status: 50` e ogni prelievo successivo rifiutato dalla *stessa* posizione, mentre il
+ledger lo raccontava come un baule rotto. La causa non era il baule. `dump_inventory` aveva
+chiesto al server di spostare **62 cobblestone** in uno slot che ne teneva gia' 60 (4 di
+spazio): il server ha accettato i 4 che entravano e ha tenuto i **58 restanti sul proprio
+cursore**, mentre `_depositStackInto` azzerava lo specchio con `this._cursor = null`. Da li'
+in poi ogni `take` — la cui destinazione *e'* il cursore — e' stato rifiutato con **50**
+(`FailedToValidateDstSlot`), quattro volte di fila.
+
+Tre regole nuove in `bedrock-adapter.mjs`: la destinazione si sceglie per **capienza** (prima
+uno slot vuoto, poi uno slot parziale con `stackSize - count`) e il `count` e' limitato da
+quella capienza, cosi' un `place` parziale non e' piu' possibile per costruzione; lo specchio
+del cursore segue la **risposta** del server (`cursorLeft` letto da `_applyStackResponse`) e il
+resto viene rimandato in inventario (`_returnCursorToInventory()`, `cursor_stranded` quando non
+riesce); un `take` rifiutato 49/50 non e' «colpa del contenitore» ma una dichiarazione sul
+**nostro** stato, quindi logga `take_refused` (slot, stack id, status, cursore) e ritenta **una
+volta** dopo aver chiuso e riaperto la finestra — la chiusura riporta in inventario il cursore
+del server.
+
+Test: tre casi nuovi in `tests/bedrock-storage.test.mjs` («a deposit never asks for more than
+the destination slot can hold», «a place the server only partially accepts leaves the rest on
+the cursor, and says so», «a take refused 50 states the evidence and retries once with a fresh
+window»), suite completa 2056 -> **2059 pass / 0 fail**. Adapter deployato sul harness di VM 100
+(md5 `4001991ef15f811adefc9e8babaaf6ae`, uguale in locale, sull'host e vivo in
+`/app/bedrock-adapter.mjs`), run 21 chiusa e contenitori di nuovo apribili dopo il riavvio del
+BDS e la ricreazione del harness: `read_container` ok con 5 contenitori letti in 109,7 s.
+
 ## [2026-10-11] fix | La griglia 2x2 si scriveva sottosopra: il rifiuto 35 e' un'informazione (M21)
 
 `craft_torch` aveva 48 tentativi live e zero successi su tutti i ledger di VM 100,
