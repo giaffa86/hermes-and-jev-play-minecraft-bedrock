@@ -1,5 +1,29 @@
 # Log
 
+## [2026-10-11] fix | Il tetto delle opzioni non nasconde piu' al decider quello che il piano chiede (M24)
+
+Il tentativo 24 (`diamond-20261011-5`, `MAX_OPTIONS=18`) non ha mai lasciato scegliere le chiavi
+che la missione gli ordinava: in **dodici righe `options` i `take_*` e `read_container` sono passati
+zero volte**, mentre `mine_dirt`, `mine_cobblestone` e `mine_oak_log` passavano undici volte su
+dodici. Il piano diceva di leggere il doppio baule e il decider non poteva: la chiave non era tra le
+opzioni offerte.
+
+La scala di rilevanza metteva il lavoro sui contenitori nel **tier di default (8)**, sotto il mining
+generico (7), e l'unico boost "di piano" veniva dagli intenti della **skill attiva** — che questa
+missione vieta per costruzione, quindi vuoto. Con un tetto, i posti finivano tutti su `mine_*`,
+`dig_*` e `place_*`. Il tetto di default e' **12** (`DEFAULT_MAX_OPTIONS`), quindi la trappola era il
+percorso di default e non la configurazione della missione.
+
+M24: le chiavi che il piano nomina nel suo testo (`planKeyHints`, nomi esatti, solo tra quelle
+offerte) vanno in tier 3 e non possono uscire dalla cappa; `take_*`, `read_container` e `deposit_*`
+salgono al tier 5 con i craft; e quando la cappa scarta una chiave del piano il controller scrive
+`plan_keys_dropped` — il guasto diventa rumoroso invece che muto (il campo `droppedByCap` c'era gia',
+nessuno lo leggeva).
+
+`node --test tests/controller-decisions.test.mjs` 27 pass / 0 fail; suite completa 2060 → **2062
+pass / 0 fail**; `npm run wiki:lint:strict` e `npm run capabilities:check` verdi. Rilasciata come
+`chat-truth-m24` (solo controller, nessun rebuild dell'adapter).
+
 ## [2026-10-11] fix | Il vocabolario dei rifiuti era cieco sul movimento e sui contenitori (M23)
 
 Il tentativo 23 (`diamond-20261011-4`, `CONTROLLER=jev`, 26 azioni) ha chiuso con 19 ok e 7

@@ -32,6 +32,7 @@ import {
   buildCriteria, buildDecisionInstructions, collectFulfilled, detectRepeatedAction, dropCountFromText, dropFulfilled, escortFulfilled, filterOptions,
   farmFulfilled, farmOrderFromText, farmOutcome, farmSnapshot, farmStep,
   inventoryMatchingToken, isCollectOrder, isDropOrder, isEquipOrder, isEscortOrder, isSleepOrder, isStopOrder, matchesItemToken, orderItem, tokenInventoryTotal,
+  planKeyHints,
   withStickyEscort, withStickyFollow,
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_FARM_MAX_HARVES, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
@@ -2352,6 +2353,14 @@ for (let step = 1; step <= maxSteps; step++) {
     continue;
   }
   blindSteps = 0;
+  // M24: le chiavi che il piano nomina nel suo testo. Il planner scrive in
+  // chiaro cio' che vuole ("call survey_village", "take_torch", "read_container
+  // the double chest at (90,73,160)") e quelle chiavi non devono poter uscire dal
+  // tetto delle opzioni: la cappa sceglie per rilevanza, non e' un modo per
+  // nascondere al decider quello che il piano gli chiede. Vivo 11/10/2026,
+  // tentativo 24: con 18 posti il decider non ha mai visto `take_*` ne'
+  // `read_container` (0 su 12 passi) mentre `mine_dirt` era offerto 11 su 12.
+  const planKeys = planKeyHints(plan, options.map(o => o.key));
   // Cosa proporre a Jev: esclusioni esplicite (fallimento, cooldown anti-loop),
   // tetto di rilevanza e boost degli intenti della skill attiva. Il harness
   // resta l'unico proprietario della validità.
@@ -2377,12 +2386,20 @@ for (let step = 1; step <= maxSteps; step++) {
     if (until > step) excludeKeys.push({key, reason: `anti_loop_until_${until}`});
     else cooldowns.delete(key);
   }
-  const filtered = filterOptions(options, history, {max: MAX_OPTIONS, threshold: ANTI_LOOP_THRESHOLD, targets: plan.targets, preferredIntents, excludeKeys, forbidKeys: MISSION_FORBID});
+  const filtered = filterOptions(options, history, {max: MAX_OPTIONS, threshold: ANTI_LOOP_THRESHOLD, targets: plan.targets, preferredIntents, planKeys, excludeKeys, forbidKeys: MISSION_FORBID});
+  // M24: se il tetto scarta una chiave che il piano nomina, deve dirlo. Senza
+  // questa riga il guasto e' muto: il piano resta li' a chiedere una presa dal
+  // baule e il decider non la vede tra le opzioni.
+  const planKeysDropped = filtered.dropped.filter(o => planKeys.includes(o.key)).map(o => o.key);
+  if (planKeysDropped.length) {
+    log('plan_keys_dropped', {step, keys: planKeysDropped, cap: MAX_OPTIONS});
+  }
   log('options', {
     step, offered: options.map(o => o.key), passed: filtered.options.map(o => o.key),
     excluded: filtered.excluded, droppedByCap: filtered.dropped.map(o => o.key),
     note: filtered.note ?? null, fallback: filtered.fallback ?? null,
     skill: active.skill?.id ?? null, skillSource: active.source, preferredIntents,
+    ...(planKeys.length ? {planKeys, planKeysDropped} : {}),
     ...(MISSION_FORBID.length ? {forbidden: MISSION_FORBID} : {}),
   });
   // M15: se il divieto di missione lascia il decider senza nessuna azione lecita

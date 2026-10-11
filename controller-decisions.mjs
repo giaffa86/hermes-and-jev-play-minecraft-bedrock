@@ -25,9 +25,10 @@ export function parseDistance (description) {
 
 // Lower = more relevant when the option set has to be capped.
 // 0 survival | 1 drop pickup | 1.5 boarding the human's mount | 2 following the
-// human | 3 skill intent | 4 target hit | 4.5 valuable ore (opportunity) |
-// 5 progression crafts/places | 6 travel and digging | 7 generic mining |
-// 10 wait.
+// human | 3 skill intent, or a key the plan names | 4 target hit | 4.5 valuable
+// ore (opportunity) | 5 progression: crafts, places, smelts and container work
+// (`take_*`, `read_container`, `deposit_*`) | 6 travel and digging | 7 generic
+// mining | 10 wait.
 //
 // The 1.5 tier is the boat: while the human is under way, following on foot
 // cannot work, so boarding their spare seat outranks the follow order itself,
@@ -39,7 +40,15 @@ export function parseDistance (description) {
 // gold vein is worth taking even when the plan aims elsewhere, because the
 // window is short (ORE_INTEREST_RANGE) while a craft can be done later. It stays
 // below the plan target: the goal decides, the option only does not starve it.
-export function optionPriority (option, { targets = {}, preferredIntents = [] } = {}) {
+//
+// M24 — the 3 tier now also holds the keys the plan names (see `planKeyHints`)
+// and the container work moved from the default tier to 5. Live 11/10/2026,
+// attempt 24: with a cap of 18 the decider never saw `take_*` or
+// `read_container` (0 of 12 steps) while `mine_dirt`/`mine_cobblestone` were
+// offered 11 of 12 — the keys a plan asks for sat *below* generic mining, so the
+// read of the chest that the plan ordered was not choosable. The default cap is
+// 12 (`DEFAULT_MAX_OPTIONS`), so the trap was the default, not a config.
+export function optionPriority (option, { targets = {}, preferredIntents = [], planKeys = [] } = {}) {
   const key = option?.key || '';
   if (SURVIVAL_KEYS.has(key) || key.startsWith('attack_')) return 0;
   if (key === 'collect_drop') return 1;
@@ -47,6 +56,8 @@ export function optionPriority (option, { targets = {}, preferredIntents = [] } 
   if (key === 'follow_player') return 2; // ordine umano "seguimi"
   if (key === 'construction_step' || key === 'construction_supply') return 3;
   if (preferredIntents.length && keyMatchesIntents(key, preferredIntents)) return 3;
+  // M24: una chiave che il piano nomina non puo' uscire dal tetto.
+  if (planKeys.length && planKeys.includes(key)) return 3;
   for (const target of Object.keys(targets)) {
     const normalized = target.replace(/_/g, '');
     if (target === 'honey_bottle' && key === 'harvest_honey') return 4;
@@ -57,6 +68,10 @@ export function optionPriority (option, { targets = {}, preferredIntents = [] } 
   }
   if (key.startsWith('mine_') && oreValue(key.slice('mine_'.length)) >= ORE_OPTION_PRIORITY_MIN_VALUE) return 4.5;
   if (key.startsWith('craft_') || key.startsWith('place_') || key.startsWith('smelt_')) return 5;
+  // M24: prendere da un contenitore e' progressione come craftare (e' il
+  // prerequisito che un piano scrive in chiaro). Prima stava nel tier di
+  // default 8, cioe' sotto `mine_dirt`, e il tetto la tagliava.
+  if (key === 'read_container' || key.startsWith('take_') || key.startsWith('deposit_')) return 5;
   if (key === 'goto_waypoint' || key.startsWith('dig_')) return 6;
   if (key.startsWith('mine_')) return 7;
   if (key === 'wait') return 10;
@@ -77,6 +92,25 @@ export function rankOptions (options, context = {}) {
       return a.index - b.index;
     })
     .map(({ option }) => option);
+}
+
+// Which options a plan names in its own text. The planner writes the actions it
+// wants in plain words ("call survey_village", "take_torch ≥8", "read_container
+// the double chest at (90,73,160)"), and those keys must not be able to fall out
+// of the option cap: the cap picks by relevance, it is not a way to hide from the
+// decider what the plan asks for. Only keys the harness actually offers count — a
+// name that does not exist cannot become an action — and the match is exact (a
+// prose «mine diamond ore» does not produce `mine_diamond_ore`).
+export function planKeyHints (plan = {}, keys = []) {
+  const text = [plan?.objective, plan?.subgoal, plan?.notes].filter(Boolean).join(' ');
+  if (!text) return [];
+  const hints = [];
+  for (const key of keys) {
+    if (typeof key !== 'string' || !key || hints.includes(key)) continue;
+    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`(^|[^a-z0-9_])${escaped}([^a-z0-9_]|$)`, 'i').test(text)) hints.push(key);
+  }
+  return hints;
 }
 
 // Keep at most `max` options (0 or negative disables the cap), selecting the
@@ -458,6 +492,7 @@ export function filterOptions (options, history = [], {
   threshold = DEFAULT_ANTI_LOOP_THRESHOLD,
   targets = {},
   preferredIntents = [],
+  planKeys = [],
   excludeKeys = [],
   forbidKeys = [],
 } = {}) {
@@ -497,7 +532,7 @@ export function filterOptions (options, history = [], {
   } else if (stagnant.length) {
     note = 'all_stagnant';
   }
-  const { options: capped, dropped } = capOptions(kept, { max, targets, preferredIntents });
+  const { options: capped, dropped } = capOptions(kept, { max, targets, preferredIntents, planKeys });
   if (!capped.length) {
     // Never hand an empty set to the model: the harness said these keys are
     // valid. Il ripiego resta dentro il mandato: le chiavi vietate non

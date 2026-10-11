@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildCriteria, buildDecisionInstructions, capOptions, detectRepeatedAction, filterOptions, isEquipOrder, isStopOrder,
-  optionPriority, parseDistance, progressFingerprint, rankOptions, summarizePlan, waitOnlyReason,
+  optionPriority, parseDistance, planKeyHints, progressFingerprint, rankOptions, summarizePlan, waitOnlyReason,
   withStickyFollow, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
 } from '../controller-decisions.mjs';
 
@@ -70,6 +70,49 @@ test('capOptions keeps the most relevant options and preserves their original or
   const targeted = capOptions(options, { max: 2, targets: { dirt: 4 } });
   assert.deepEqual(targeted.options.map(o => o.key), ['mine_dirt', 'flee']);
   assert.deepEqual(targeted.dropped.map(o => o.key), ['mine_stone', 'craft_stick', 'goto_waypoint']);
+});
+
+// M24 — la cappa non deve nascondere al decider quello che il piano gli chiede.
+// Vivo 11/10/2026, tentativo 24: con 18 posti `take_*` e `read_container` non
+// sono mai arrivati al decider (0 su 12 passi), mentre `mine_dirt` arrivava 11
+// volte su 12, perche' il lavoro sui contenitori stava nel tier di default, sotto
+// il mining generico. Il tetto di default e' 12.
+test('planKeyHints legge le chiavi che il piano nomina, e solo quelle offerte', () => {
+  const plan = {
+    objective: 'Execute survey_village exactly once, then take_torch from the double chest',
+    subgoal: 'read_container the double chest at (90,73,160)',
+    notes: 'Never use prep_cave_trip or dig_down; mine_diamond_ore is not needed yet.',
+  };
+  const offered = ['survey_village', 'take_torch', 'read_container', 'mine_diamond_ore', 'dig_down', 'mine_dirt'];
+  assert.deepEqual(planKeyHints(plan, offered), ['survey_village', 'take_torch', 'read_container', 'mine_diamond_ore', 'dig_down']);
+  // Un nome che il harness non offre non diventa un'azione, e senza testo non
+  // c'e' nessun suggerimento.
+  assert.deepEqual(planKeyHints(plan, ['no_such_key']), []);
+  assert.deepEqual(planKeyHints({ objective: 'walk north' }, offered), []);
+  assert.deepEqual(planKeyHints(null, offered), []);
+  // Il confronto e' sui nomi interi: «mine diamond ore» in prosa non produce
+  // `mine_diamond_ore`.
+  assert.deepEqual(planKeyHints({notes: 'mine diamond ore by hand'}, ['mine_diamond_ore']), []);
+});
+
+test('le chiavi del piano sopravvivono al tetto, e il mining non le scavalca', () => {
+  const options = [
+    opt('mine_dirt'), opt('mine_grass_block'), opt('mine_cobblestone'), opt('mine_stone'),
+    opt('dig_down'), opt('dig_up'), opt('place_torch'), opt('smelt_potato'),
+    opt('take_torch'), opt('take_iron_ingot'), opt('read_container'), opt('wait'),
+  ];
+  const capped = filterOptions(options, [], {max: 4, planKeys: ['take_torch', 'read_container']});
+  const passed = capped.options.map(o => o.key);
+  assert.ok(passed.includes('take_torch'), passed.join(','));
+  assert.ok(passed.includes('read_container'), passed.join(','));
+  // Il lavoro sui contenitori, anche senza piano, resta sopra il mining
+  // generico: prendere da un baule e' progressione, non un ripiego.
+  assert.ok(optionPriority(opt('take_torch')) < optionPriority(opt('mine_dirt')));
+  assert.ok(optionPriority(opt('read_container')) < optionPriority(opt('mine_dirt')));
+  assert.ok(optionPriority(opt('deposit_diamond')) < optionPriority(opt('mine_cobblestone')));
+  const noPlan = filterOptions(options, [], {max: 4});
+  assert.equal(noPlan.options.length, 4);
+  assert.ok(!noPlan.options.map(o => o.key).includes('mine_dirt'));
 });
 
 test('capOptions does nothing when under the cap or when disabled', () => {
