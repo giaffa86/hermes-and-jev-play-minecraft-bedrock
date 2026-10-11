@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildCriteria, buildDecisionInstructions, capOptions, detectRepeatedAction, filterOptions, isEquipOrder, isStopOrder,
-  optionPriority, parseDistance, planKeyHints, progressFingerprint, rankOptions, summarizePlan, waitOnlyReason,
+  optionPriority, parseDistance, planKeyHints, progressFingerprint, rankOptions, slimObservation, summarizePlan, waitOnlyReason,
   withStickyFollow, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_MAX_OPTIONS,
 } from '../controller-decisions.mjs';
 
@@ -357,4 +357,56 @@ test('isEquipOrder recognizes equip orders and only those', () => {
   }
   assert.equal(isEquipOrder(null), false);
   assert.equal(isEquipOrder(undefined), false);
+});
+
+// M25 — la richiesta al decider e' fatta di stato e di scelta; quando il provider
+// la rifiuta per dimensione, il primo taglio e' il modello del mondo (il peso
+// vero: `village`, `memory`, `storage`, `nearby`), il secondo lascia solo corpo,
+// pericoli e ordine. Il livello 0 non deve cambiare niente.
+test('slimObservation toglie il modello del mondo senza toccare il corpo, e a livello 0 non tocca nulla', () => {
+  const observation = {
+    position: { x: 1, y: 64, z: 2 },
+    dimension: 'overworld',
+    health: 20,
+    food: 18,
+    dead: false,
+    inventory: { iron_pickaxe: 1 },
+    armor: { chestplate: 'copper_chestplate' },
+    plan: { objective: 'scendere' },
+    entities: [{ type: 'zombie' }, { type: 'cow' }, { type: 'creeper' }, { type: 'sheep' }, { type: 'skeleton' }],
+    drops: [{ item: 'dirt' }, { item: 'cobblestone' }, { item: 'coal' }],
+    recent: [{ key: 'a' }, { key: 'b' }, { key: 'c' }],
+    village: { checked: true, houses: [1, 2, 3] },
+    memory: { known: [1, 2, 3] },
+    storage: { survey: [1, 2, 3] },
+    nearby: [1, 2, 3],
+    traders: [1],
+    serverText: ['x'],
+    chatPending: [],
+  };
+
+  assert.equal(slimObservation(observation, 0), observation, 'il percorso normale non si tocca');
+  assert.equal(slimObservation(null, 1), null);
+
+  const one = slimObservation(observation, 1);
+  for (const gone of ['village', 'memory', 'storage', 'nearby', 'traders', 'serverText', 'chatPending']) {
+    assert.ok(!(gone in one), `${gone} e' un modello del mondo: sparisce al primo taglio`);
+  }
+  for (const kept of ['position', 'dimension', 'health', 'food', 'dead', 'inventory', 'armor', 'plan', 'entities']) {
+    assert.deepEqual(one[kept], observation[kept], `${kept} e' il corpo della decisione: resta`);
+  }
+  assert.equal(one.recent.length, 2, 'la storia recente si accorcia, non sparisce');
+
+  // Secondo gradino: solo corpo, pericoli e ordine, con le liste corte.
+  const two = slimObservation(observation, 2);
+  assert.deepEqual(two.entities.map(e => e.type), ['zombie', 'cow', 'creeper', 'sheep']);
+  assert.equal(two.drops.length, 2);
+  assert.equal(two.recent.length, 2);
+  assert.deepEqual(two.inventory, { iron_pickaxe: 1 });
+  assert.equal(two.health, 20);
+  assert.ok('armor' in two, 'l armatura resta: e il corpo');
+
+  // Un campo assente non diventa una chiave `undefined` nel JSON.
+  const sparse = slimObservation({ position: { x: 0, y: 0, z: 0 }, memory: undefined }, 1);
+  assert.deepEqual(Object.keys(sparse), ['position']);
 });

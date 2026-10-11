@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  TRANSIENT_STATUS, systemOneDecide, systemOneDecideWithRetry, systemOneRetryDelay, systemOneRetryPolicy,
+  TRANSIENT_STATUS, isBudgetOverflow, systemOneDecide, systemOneDecideWithRetry, systemOneRetryDelay, systemOneRetryPolicy,
 } from '../system-one.mjs';
 
 const URL = 'http://system-one.test/v1/systemone';
@@ -203,4 +203,37 @@ test('l\'attesa è esponenziale, tagliata, con jitter pieno', () => {
   assert.equal(systemOneRetryDelay(policy, 3, () => 0), 300);
   assert.equal(systemOneRetryDelay(policy, 0, () => 0.5), 225);
   assert.ok(TRANSIENT_STATUS.has(529) && TRANSIENT_STATUS.has(504) && !TRANSIENT_STATUS.has(401));
+});
+
+// M25 — `400 max_tokens_exceeded` è un guasto *della richiesta* (troppo grande),
+// non del provider: il trasporto lo lascia definitivo come ogni altro 400, e
+// chi chiama lo riconosce con `isBudgetOverflow` per rifare la decisione su una
+// lista più corta. Il riconoscimento è stretto: un 400 che non nomina un budget
+// non deve passare per «riprova più piccolo».
+test('un 400 che nomina un budget di token è riconoscibile, gli altri 400 no', async () => {
+  const overflow = stubFetch(() => fail(400, { error_type: 'max_tokens_exceeded' }));
+  await assert.rejects(
+    () => decide(overflow.fetchImpl, { policy: { baseMs: 10 }, ...fakeClock() }),
+    error => {
+      assert.equal(isBudgetOverflow(error), true, 'il tetto dei token è un guasto della richiesta');
+      assert.equal(error.status, 400);
+      assert.equal(overflow.calls.length, 1, 'il trasporto non lo ritenta da solo: il taglio lo fa il controller');
+      return true;
+    },
+  );
+
+  // Nessun budget nominato: resta definitivo e non riconosciuto.
+  const plain = stubFetch(() => fail(400, { error_type: 'api_usage_error', message: 'Unknown model: jev' }));
+  await assert.rejects(() => decide(plain.fetchImpl, { policy: { baseMs: 10 }, ...fakeClock() }), error => isBudgetOverflow(error) === false);
+
+  // Un 5xx resta transitorio, e non deve passare per un tetto di token.
+  const service = stubFetch(() => fail(503, { message: 'max_tokens_exceeded' }));
+  await assert.rejects(() => decide(service.fetchImpl, { policy: { retries: 0, baseMs: 10 }, ...fakeClock() }), error => {
+    assert.equal(isBudgetOverflow(error), false, 'un 503 non è un tetto di token');
+    return true;
+  });
+
+  assert.equal(isBudgetOverflow(null), false);
+  assert.equal(isBudgetOverflow(new Error('max_tokens_exceeded')), false, 'senza codice http non è un verdetto del provider');
+  assert.equal(isBudgetOverflow({ code: 'no_key', status: 400, message: 'max_tokens_exceeded' }), false);
 });

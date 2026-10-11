@@ -1,5 +1,46 @@
 # Log
 
+## [2026-10-11] fix | Una decisione che non entra nel budget si rifà più piccola, non muore (M25)
+
+Il tentativo 25 (`diamond-20261011-6`, `MAX_OPTIONS=0`) è morto così:
+
+```text
+GOAL g1 ERROR: System One HTTP 400: {"detail":{"error_type":"max_tokens_exceeded"}}
+GOAL g1 FAILED (controller_error: System One HTTP 400: {"detail":{"error_type":"max_tokens_exceeded"}})
+```
+
+dopo dieci passi. Il tentativo 26 (`diamond-20261011-7`, `MAX_OPTIONS=12`, cioè **con** il tetto) è
+morto allo stesso modo dopo quattordici: la prova che il peso non erano le opzioni. Misurata viva,
+l'osservazione del harness è **82,7 KB** — `village` 18,9 KB, `memory` 16,4, `recent` 9,9, `storage`
+8,6, `nearby` 5,5 — mentre dodici descrizioni di opzioni sono ~0,6 KB. Non era il provider rotto: era
+**la richiesta troppo grande**. Il trasporto (`isTransient`) tiene ogni 4xx terminale — solo
+408/429/5xx si ritentano — quindi il 400 uccideva la run; e ritentare lo stesso payload non avrebbe
+cambiato niente, perché l'unica leva è **chiedere meno**.
+
+M25: `isBudgetOverflow` riconosce il caso (400/413/422 che **nominano un budget**: `max_tokens`,
+`context_length`, «prompt is too long»…) e il controller sale una scala di due gradini, uno per
+tentativo: il primo dimezza la lista delle opzioni riapplicando **le stesse** esclusioni del passo
+(M15 divieti, M14 item da minare, R4 rifiuti, anti-loop, M24 chiavi del piano); il secondo pota
+l'osservazione con `slimObservation` — via i modelli del mondo che il piano porta già dentro e che
+un'azione può rileggere (`village`, `memory`, `storage`, `nearby`, …), `recent` a 2 — e poi scende
+alla whitelist di corpo, pericoli e ordine. Il livello 0 è l'identità, quindi il percorso normale non
+cambia di un byte; la scala è limitata da `DECISION_BUDGET_RETRIES` e il taglio **non è permanente**
+(il passo dopo riparte pieno). Ogni gradino scrive `decision_budget_retry {from, cap, to, stateBytes,
+slim}`, e la riga `decision` porta `stateBytes`/`slim`: una decisione degradata si vede, non si deduce.
+
+Due casi nuovi in `tests/controller-budget-retry.test.mjs` — il primo lancia il controller vero
+contro un endpoint decisionale scriptato che rifiuta due volte: le tre richieste scendono
+(12 → 6 → 4 opzioni e lo stato perde il villaggio) e la run agisce; il secondo prova che un provider
+che rifiuta *sempre* per dimensione resta un errore, con il numero di tagli limitato. Un caso nuovo in
+`tests/controller-decisions.test.mjs` fissa `slimObservation` (livello 0 identità, primo taglio senza
+il mondo, secondo taglio solo corpo). `SYSTEM_ONE_URL` è l'override che ha reso il test possibile (e
+che serve a puntare le decisioni a un endpoint locale).
+
+`tests/system-one-retry.test.mjs` 12 pass / 0 fail; `tests/controller-decisions.test.mjs` 28 pass /
+0 fail; `tests/controller-budget-retry.test.mjs` 2 pass / 0 fail; suite completa 2065+ pass / 0 fail;
+`npm run wiki:lint:strict` e `npm run capabilities:check` verdi. Rilasciata come `chat-truth-m25`.
+
+
 ## [2026-10-11] fix | Il tetto delle opzioni non nasconde piu' al decider quello che il piano chiede (M24)
 
 Il tentativo 24 (`diamond-20261011-5`, `MAX_OPTIONS=18`) non ha mai lasciato scegliere le chiavi

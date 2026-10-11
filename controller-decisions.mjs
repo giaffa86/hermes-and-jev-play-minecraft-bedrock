@@ -583,3 +583,59 @@ export function buildDecisionInstructions (plan = {}) {
     'Choose wait only when it is the only option offered or when nothing else can help.',
   ].join(' ');
 }
+
+// M25 — quando il provider rifiuta la decisione perche' la richiesta e' troppo
+// grande, si toglie prima quello che serve meno. Misurata viva l'11/10/2026, una
+// osservazione del harness e' ~83 KB, e i pesi non stanno nella scelta:
+//
+//   village 18.9 KB · memory 16.4 · recent 9.9 · storage 8.6 · nearby 5.5
+//
+// Cio' che una decisione *deve* sapere e' il corpo (posizione, salute, cibo,
+// inventario, armatura), i pericoli (entita', drop, lava) e l'ordine (plan): il
+// resto e' il modello del mondo, che il piano porta gia' dentro e che il harness
+// puo' sempre rileggere con un'azione. Il taglio e' quindi una lista di esclusioni
+// esplicite, non una potatura per dimensione: si sa *cosa* sparisce e si dice
+// nel ledger.
+export const DECISION_STATE_DROP = Object.freeze([
+  'village', 'memory', 'storage', 'nearby', 'traders', 'farmAnimals', 'construction',
+  'companions', 'bucket', 'nether', 'circuits', 'sculk', 'redstone', 'fluids',
+  'structureSurvey', 'structures', 'lava', 'bees', 'fishing', 'travel', 'farm', 'trade',
+  'oreAlert', 'serverText', 'chatPending',
+]);
+
+// Cio' che resta quando anche la prima potatura non basta: il corpo e l'ordine.
+export const DECISION_STATE_KEEP = Object.freeze([
+  'position', 'dimension', 'biome', 'standingOn', 'health', 'food', 'dead', 'sleeping',
+  'time', 'status', 'connected', 'spawned', 'self', 'deaths', 'world', 'experience',
+  'inventory', 'armor', 'equipment', 'held', 'kit', 'survival', 'entities', 'drops',
+  'chat', 'plan', 'recent',
+]);
+
+/**
+ * L'osservazione che il decider vede, potato per livello (M25).
+ *
+ * - 0: intatta (identica a prima: il percorso normale non cambia di una virgola);
+ * - 1: senza i modelli del mondo che il piano o un'azione possono rimpiazzare;
+ * - 2: solo corpo, pericoli e ordine (whitelist), con le liste corte.
+ *
+ * Non e' un riassunto: e' la stessa osservazione piu' corta. Un campo tagliato
+ * resta assente (non `undefined`) cosi' il JSON non porta chiavi morte.
+ */
+export function slimObservation (observation, level = 0) {
+  if (!observation || typeof observation !== 'object' || level < 1) return observation;
+  const keep = level >= 2 ? new Set(DECISION_STATE_KEEP) : null;
+  const out = {};
+  for (const [key, value] of Object.entries(observation)) {
+    if (keep ? !keep.has(key) : DECISION_STATE_DROP.includes(key)) continue;
+    if (value === undefined) continue;
+    out[key] = value;
+  }
+  const cap = (list, n) => (Array.isArray(list) ? list.slice(0, n) : list);
+  if (Array.isArray(out.recent)) out.recent = out.recent.slice(-2);
+  if (level >= 2) {
+    out.entities = cap(out.entities, 4);
+    out.drops = cap(out.drops, 2);
+    out.chat = cap(out.chat, 1);
+  }
+  return out;
+}

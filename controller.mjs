@@ -33,6 +33,7 @@ import {
   farmFulfilled, farmOrderFromText, farmOutcome, farmSnapshot, farmStep,
   inventoryMatchingToken, isCollectOrder, isDropOrder, isEquipOrder, isEscortOrder, isSleepOrder, isStopOrder, matchesItemToken, orderItem, tokenInventoryTotal,
   planKeyHints,
+  slimObservation,
   withStickyEscort, withStickyFollow,
   progressFingerprint, waitOnlyReason, DEFAULT_ANTI_LOOP_THRESHOLD, DEFAULT_FARM_MAX_HARVES, DEFAULT_MAX_OPTIONS,
 } from './controller-decisions.mjs';
@@ -58,7 +59,7 @@ import {
 // `/options` ha davvero offerto.
 import {failureRecord, failureDisposition, activeStepId, siblingKeys, reviseSteps, refusalEvidence, MAX_STEP_ATTEMPTS} from './step-failure.mjs';
 import {optionIntents} from './survival/intents.mjs';
-import {systemOneDecideWithRetry} from './system-one.mjs';
+import {systemOneDecideWithRetry, isBudgetOverflow} from './system-one.mjs';
 import {
   evaluateCriteria, evaluateSurvival, loadSurvivalRules, loadGameplaySkills, loadProgression,
   resolveMilestone, resolveActiveSkill, skillPreferredIntents, verifySkill, buildSkillRecord, appendSkillRecord,
@@ -139,6 +140,16 @@ const MISSION_FORBID = parseForbiddenKeys(process.env.MISSION_FORBID);
 const MISSION_FORBID_MAX_STEPS = +(process.env.MISSION_FORBID_MAX_STEPS || 6);
 // Diagnostica/anti-loop (0 disabilita il tetto; soglia in azioni consecutive).
 const MAX_OPTIONS = process.env.MAX_OPTIONS == null ? DEFAULT_MAX_OPTIONS : +(process.env.MAX_OPTIONS);
+// M25: il provider decisionale puo' rifiutare la richiesta perche' e' troppo
+// grande (`400 max_tokens_exceeded`, vivo 11/10/2026 con ~40 opzioni senza
+// tetto). La decisione si rifa' allora su una lista piu' corta — meta' per
+// volta, al massimo `DECISION_BUDGET_RETRIES` tagli — invece di far morire il
+// run: chiedere meno e' meglio che non decidere.
+const DECISION_BUDGET_RETRIES = +(process.env.DECISION_BUDGET_RETRIES || 2);
+const DECISION_BUDGET_MIN_OPTIONS = +(process.env.DECISION_BUDGET_MIN_OPTIONS || 4);
+// Quanto si puo' potato l'osservazione (M25): 1 = senza il modello del mondo,
+// 2 = solo corpo, pericoli e ordine. Vedi `slimObservation`.
+const DECISION_STATE_SLIM_MAX = +(process.env.DECISION_STATE_SLIM_MAX || 2);
 const ANTI_LOOP_THRESHOLD = +(process.env.ANTI_LOOP_THRESHOLD || DEFAULT_ANTI_LOOP_THRESHOLD);
 // Il harness esegue una sola azione alla volta: se il lock è occupato (tipico
 // dopo che un run è stato ucciso a metà di un'azione lunga) risponde `busy` in
@@ -1716,13 +1727,26 @@ async function maybeStoreEpilogue (goal, outcome) {
 }
 
 // ---- controller: Jev via TypeSafe or OpenRouter ---------------------------------------------
-async function jevDecide(observation, options, plan) {
+async function jevDecide(observation, options, plan, {slim = 0} = {}) {
   const criteria = buildCriteria(options);
-  const {answers, model, provider, usage, ms, attempts, retries} = await systemOneDecideWithRetry({
-    model: JEV_MODEL,
-    state: {...observation, plan: observation.plan ?? plan, recent: observation.recent?.slice(-4)},
-    questions: {action: {type: 'choice', instructions: buildDecisionInstructions(plan), criteria}},
-  });
+  const state = slimObservation({...observation, plan: observation.plan ?? plan, recent: observation.recent?.slice(-4)}, slim);
+  const stateBytes = JSON.stringify(state).length;
+  let outcome;
+  try {
+    outcome = await systemOneDecideWithRetry({
+      model: JEV_MODEL,
+      state,
+      questions: {action: {type: 'choice', instructions: buildDecisionInstructions(plan), criteria}},
+    });
+  } catch (error) {
+    // M25: chi ritenta con una richiesta piu' corta deve sapere quanto era
+    // grande questa e quanto era gia' stata potato.
+    error.stateBytes = stateBytes;
+    error.optionsCount = options.length;
+    error.slim = slim;
+    throw error;
+  }
+  const {answers, model, provider, usage, ms, attempts, retries} = outcome;
   const ans = answers.action;
   const idx = +ans.choice.slice(1);
   const chosen = options[idx];
@@ -1738,14 +1762,14 @@ async function jevDecide(observation, options, plan) {
     choice: ans.choice, key: chosen.key, probabilities, confidence: ans.confidence,
     cost: usage?.cost, ms, attempts: attempts ?? 1, retries: retries ?? 0,
     candidates,
-    selectedProbability: probabilityOf(ans.choice), optionsCount: options.length, objective: plan.objective,
+    selectedProbability: probabilityOf(ans.choice), optionsCount: options.length, stateBytes, slim, objective: plan.objective,
   });
   return {key: chosen.key, cost: usage?.cost ?? null};
 }
 
 // ---- controller: Hermes (fallback) ------------------------------------------------------------
-async function hermesDecide(observation, options, plan) {
-  const prompt = `Objective: ${plan.objective}\nObservation: ${JSON.stringify(observation)}\nValid actions:\n${options.map(o => `- ${o.key}: ${o.description}`).join('\n')}\nReply with ONLY the key of the single best action.`;
+async function hermesDecide(observation, options, plan, {slim = 0} = {}) {
+  const prompt = `Objective: ${plan.objective}\nObservation: ${JSON.stringify(slimObservation(observation, slim))}\nValid actions:\n${options.map(o => `- ${o.key}: ${o.description}`).join('\n')}\nReply with ONLY the key of the single best action.`;
   const started = Date.now();
   const out = (await runHermes(prompt))?.trim();
   const key = out
@@ -2728,6 +2752,30 @@ for (let step = 1; step <= maxSteps; step++) {
   } else if (!craftKey) {
     lastCraftKey = null;
   }
+  // M25 — una richiesta troppo grande non e' una condizione terminale: il
+  // provider risponde `400 max_tokens_exceeded` e la scelta si rifa' su una
+  // lista piu' corta (meta' per volta), invece di far morire il run. Ogni taglio
+  // lascia una riga di ledger: un degrado silenzioso sarebbe peggio del guasto.
+  const modelDecision = async () => {
+    let list = filtered.options;
+    let slim = 0;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await (CONTROLLER === 'jev' ? jevDecide(obs, list, decisionPlan, {slim}) : hermesDecide(obs, list, decisionPlan, {slim}));
+      } catch (error) {
+        // Due leve, in quest'ordine: la scelta (le opzioni) e poi lo stato. Il
+        // peso vero sta nello stato (~83 KB vivi l'11/10/2026), quindi il taglio
+        // delle opzioni da solo non basta: si scende di un gradino per volta.
+        const canShrinkOptions = list.length > DECISION_BUDGET_MIN_OPTIONS;
+        if (!isBudgetOverflow(error) || attempt >= DECISION_BUDGET_RETRIES || (!canShrinkOptions && slim >= DECISION_STATE_SLIM_MAX)) throw error;
+        const cap = Math.max(DECISION_BUDGET_MIN_OPTIONS, Math.floor(list.length / 2));
+        const tighter = filterOptions(options, history, {max: cap, threshold: ANTI_LOOP_THRESHOLD, targets: plan.targets, preferredIntents, planKeys, excludeKeys, forbidKeys: MISSION_FORBID});
+        slim = Math.min(slim + 1, DECISION_STATE_SLIM_MAX);
+        log('decision_budget_retry', {step, error: String(error.message ?? '').slice(0, 160), from: list.length, cap, to: tighter.options.length, stateBytes: error.stateBytes ?? null, slim, attempt: attempt + 1});
+        list = canShrinkOptions && tighter.options.length ? tighter.options : list.slice(0, cap);
+      }
+    }
+  };
   const decision = needKey
     ? {key: needKey, reason: 'survival_' + (needIntent || 'need') + ':' + needKey, source: 'survival_need'}
     : mountKey
@@ -2750,7 +2798,7 @@ for (let step = 1; step <= maxSteps; step++) {
     ? {key: farmKey, reason: `farm_order:${plan.farm?.crop ?? ''}:${farmAction?.phase ?? ''}`, source: 'farm_order'}
     : craftKey
     ? {key: craftKey, reason: `craft_source:${craftStep.source}:${craftKey}`, source: 'craft_source'}
-    : (CONTROLLER === 'jev' ? await jevDecide(obs, filtered.options, decisionPlan) : await hermesDecide(obs, filtered.options, decisionPlan));
+    : await modelDecision();
   const key = decision.key;
   if (typeof decision.cost === 'number') totalCost += decision.cost;
   runProgress.cost = totalCost;

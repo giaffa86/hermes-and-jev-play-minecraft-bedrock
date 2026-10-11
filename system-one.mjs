@@ -61,6 +61,24 @@ function isTransient (error) {
   return error?.code === 'network';
 }
 
+// M25 — il tetto dei token. Il provider decisionale risponde
+// `400 max_tokens_exceeded` quando la richiesta (le opzioni offerte, con le
+// loro descrizioni) non entra nel budget del modello: e' un guasto **della
+// richiesta**, non del provider, e l'unica cosa che il chiamante puo' togliere
+// e' scelta — quindi la decisione si rifa' su una lista piu' corta invece di
+// morire. Vivo 11/10/2026: ~40 opzioni (nessun tetto) al decimo passo del
+// tentativo 25, `GOAL g1 ERROR: System One HTTP 400 max_tokens_exceeded`.
+//
+// Deliberatamente stretto: un 400 che non nomina un budget resta definitivo
+// (come i 401/403/404), e i 5xx restano transitori.
+export const BUDGET_OVERFLOW_STATUS = new Set([400, 413, 422]);
+const BUDGET_OVERFLOW_PATTERN = /max_tokens|max_output_tokens|context_length|context window|prompt is too long|too many tokens|token limit|string_above_max_length|maximum context/i;
+
+export function isBudgetOverflow (error) {
+  if (error?.code !== 'http' || !BUDGET_OVERFLOW_STATUS.has(Number(error.status))) return false;
+  return BUDGET_OVERFLOW_PATTERN.test(String(error.message ?? ''));
+}
+
 // Attesa del tentativo `attempt` (0 = primo retry). Esportata perché è la parte
 // che i test devono poter fissare senza orologio vero.
 export function systemOneRetryDelay (policy, attempt, random = Math.random) {
@@ -78,8 +96,10 @@ export function systemOneConfig ({ model, url, key, timeoutMs } = {}) {
     key: apiKey,
     provider: typesafeKey && apiKey === typesafeKey ? 'typesafe' : 'openrouter',
     // TypeSafe's own endpoint is used when its key is the one in play; the same
-    // decisions API is also served by OpenRouter (alpha).
-    url: url ?? (typesafeKey ? 'https://api.typesafe.ai/v1/systemone' : 'https://openrouter.ai/api/alpha/decisions'),
+    // decisions API is also served by OpenRouter (alpha). `SYSTEM_ONE_URL`
+    // overrides both: serve a puntare le decisioni altrove (un endpoint locale)
+    // e a scriptare il decider nei test.
+    url: url ?? process.env.SYSTEM_ONE_URL ?? (typesafeKey ? 'https://api.typesafe.ai/v1/systemone' : 'https://openrouter.ai/api/alpha/decisions'),
     model: model ?? (process.env.JEV_MODEL || (typesafeKey ? 'jev-latest' : 'typesafe/jev-1.13')),
     timeoutMs: timeoutMs ?? null,
   };
