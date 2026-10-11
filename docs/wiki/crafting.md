@@ -85,53 +85,72 @@ in `item_stack_response`. Two consequences, both fixed on 06/10/2026 after
   `_resyncByReconnect` plus one attempt. This is safe because the `finally` of
   `_craftAttempt` returns the grid to the pack before the retry.
 
-The layout itself was never the bug: the stick recipe is a 1×2 in the same slots
-30/28 and crafted fine 40 ms before the failure.
+### Fixed (2026-10-11): the layout **was** the bug for the 1×2 family
 
-### Still open: `craft_torch` has never succeeded (status 35)
+The 2×2 grid has two vertical readings and the adapter was writing the wrong one.
+`_gridSlotFor` mapped the first cell of a shaped recipe (row 0, the **top** row) to
+slot 30 and the second row to slot 28: the grid went to the server **upside down**
+relative to the row-major `[28, 29, 30, 31]` the same adapter uses when it *reads*
+the window (`inventory_content`, `bedrock-adapter.mjs:1252-1259`) and relative to
+the table grid, which is `32 + proto` row-major. A recipe whose two cells hold
+**different** items is a different pattern when flipped, and the server answered
+the only thing it could answer: **35**, `ItemStackNetResult.MismatchedRecipeForInputGridItems`.
 
-Ten days later the mitigation above is **not enough**, and the ledger history says
-so plainly: across every run on VM 100 `craft_torch` was attempted **22 times and
-never succeeded**, `craft_boat` **23 / 0** and `craft_charcoal` **20 / 0**, while
-the same code crafts `iron_pickaxe` (3 ok), `diamond_pickaxe` (2 ok), `shield`,
-`bucket`, `spruce_planks` and the three wooden/stone tools:
-the defect is specific to some recipes, not to crafting.
+Why ten days of refusals stayed mysterious:
 
-Live evidence from `diamond-20261010-2` (three refusals, `events.jsonl`):
+- the **stick** recipe hid it — a 1×2 with the same item in both cells is the same
+grid read either way (8 ok / 0 failed), which is what made "the layout is not the
+bug" look safe;
+- the reading side of the same file (`[28, 29, 30, 31]`) and the table (`32 + proto`)
+were both row-major, so the flip lived only in the *writing* path;
+- the workbench case is not symmetric with the bucket: a 3×2 recipe is placed with
+`tableYOffset = 1` (bottom-aligned), which matches the vanilla bucket that *does*
+craft — so "the offset is wrong" was never the story either.
 
-| t | recipe | width×height | grid as placed | status |
-| --- | --- | --- | --- | --- |
-| 1791555317699 | `1897` `name:minecraft:charcoal` | 1×2 | `slot 30 charcoal` + `slot 28 stick` | **35** |
-| 1791555331978 | `1897` | 1×2 | `slot 30 charcoal` + `slot 28 stick` | **35** |
-| 1791555411709 | `1897` | 1×2 | `slot 30 charcoal` + `slot 28 stick` | **35** |
+Two consequences of the refusal are now part of the fix:
 
-What this rules out, one theory at a time:
+- **The refusal is evidence, so it is learned, not repeated.** On a 35 the adapter
+  flips the vertical reading, records it (`craft_layout_retry {order, next,
+  learned: true}`) and lets the retry path already present in `_craftItem` run
+  again; the winning order is kept for the session (`_craftGridOrder`) and the
+  orders already refused for that shape are remembered so the two readings cannot
+  ping-pong.
+- **A refused window is poisoned.** After the 35 the server answers **50**
+  (`FailedToValidateDstSlot`) to *every* following request in that window,
+  including the `take` of the ingredients (`cursor_take_failed {slotIndex: 2,
+  container: 'hotbar', status: 50}`): flipping inside the same window is
+  impossible and only the `_resyncByReconnect` that `_craftItem` already performs
+  clears it. The window is therefore opened **once per recipe variant**, not once
+  per arrangement.
 
-- **Not a mis-tracked cell.** Every `craft_grid_place` of the run carries
-  `echoed: true` — the server echoes the placement — and the detail now prints
-  the real names, not the `name: 0` of the 06/10 round.
-- **Not the layout.** Charcoal sits in slot 30 (top-left of the 2×2) and the stick
-  in slot 28 (below it): exactly the 1×2 vertical of the stick recipe that works.
-- **Not a stale stack id.** `craft_failed` is already in the `syncable` set of
-  `_craftItem`, so each refusal was followed by `_resyncByReconnect` and a fresh
-  attempt — the three rows above span those attempts and the controller's own
-  `REPLAN step_failed:craft_failed` retry.
+Live proof (`craft-proof-20261011-1`, harness on VM 100, `events.jsonl`):
 
-Hypotheses still untested (each needs a free harness window): **H1** the
-`craft_recipe` action must carry the recipe id the server unlocked *for the grid
-in use*, and the adapter sends the id read from `crafting_data` (possibly the
-table variant); **H2** the multi-candidate loop picks the wrong variant first
-(`name:charcoal` 1897 before `tag:coals` 1896) and the refusal leaves the grid in
-a state that poisons the sibling attempt — note the third `craft_grid_place` of
-each attempt re-uses slot 30 with **coal**; **H3** the `results_deprecated`
-descriptor count (torch yields 4) does not match what BDS expects for that
-recipe. The discriminating experiment is cheap: craft a `stick` (same 1×2 shape,
-same slots) and a torch from **coal** in a quiet window, and keep the full
-`item_stack_response` for the failing request instead of only the status.
+| t | what | evidence |
+| --- | --- | --- |
+| 1791718801349 | `craft_lever`, order 0 | `craft_failed_detail … status 35, order 0` |
+| 1791718801350 | the flip is learned | `craft_layout_retry {order: 0, next: 1, learned: true}` |
+| 1791718801491 | the window is dead | `inventory_resync {reason: slot ids stale after pickups}` → reconnect |
+| 1791718813790 | retry from the learned order | `inventory_resync_done {via: reconnect}`, then `{"ok":true,"crafted":"lever","count":1}` in 13.5 s |
+| — | `craft_torch`, order already learned | `{"ok":true,"crafted":"torch","count":4}` in **0.35 s** |
 
-Until then the expedition does not need the recipe: torches are **taken from a
-chest** (`take_torch` ok in 45.7 s and 0.3 s in the same run, the harvest chests
-hold `soul_torch 58` and `torch 19`), which is what the mission allows.
+The inventory deltas are coherent (`cobblestone 64→63`, `stick 4→2`, `coal 64→63`,
+`lever 1`, `torch 4`). Before the fix the same action was **48 attempts and zero
+successes** across every ledger on VM 100.
+
+Correction to the earlier reading of the history: `craft_boat` and `craft_charcoal`
+were **not** status 35 — their failures are `craft_recipe_missing` (20×) and
+`container_open_timeout` (20×), a different signature (recipe lookup by name and
+the container wedge), tracked separately in [open-questions](open-questions.md).
+
+Residuals: for a **table** recipe (`width > 2` or `height > 2`) only one
+arrangement is tried (`orders = [0]`), so a vertical mis-reading of the 3×3 grid
+would not be learned from a 35; the learned order and the refused-order memory are
+per session, not persisted; and the fix was proven on `lever` and `torch` — the
+family it explains — not on every 1×2 recipe in the game.
+
+The expedition never depended on the recipe: torches are **taken from a chest**
+(`take_torch` ok in 45.7 s and 0.3 s in the same run; the harvest chests hold
+`soul_torch 58` and `torch 19`). It does not have to any more.
 
 ## Food is not crafting
 

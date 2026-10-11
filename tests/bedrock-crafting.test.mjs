@@ -43,17 +43,28 @@ const recipe = (adapter, id) => adapter.craftingData.shaped_recipes.find(r => r.
 
 test('crafting grid slots follow the Bedrock inventory and table layouts', () => {
   const adapter = craftAdapter();
-  assert.equal(adapter._gridSlotFor(recipe(adapter, 715), 0, false), 30);
-  assert.equal(adapter._gridSlotFor(recipe(adapter, 1581), 0, false), 30);
-  assert.equal(adapter._gridSlotFor(recipe(adapter, 1581), 1, false), 28);
+  // Ordine 0 = la lettura row-major, la stessa che l'adapter usa leggendo la
+  // finestra (`[28, 29, 30, 31]`) e la stessa forma del banco (`32 + proto`);
+  // ordine 1 = la lettura ribaltata, quella che il BDS ha rifiutato con 35 fino
+  // all'11/10/2026 (live `diamond-20261010-2`, `craft_torch` 48 tentativi / 0 ok).
+  assert.equal(adapter._gridSlotFor(recipe(adapter, 715), 0, false), 28);
+  assert.equal(adapter._gridSlotFor(recipe(adapter, 1581), 0, false), 28);
+  assert.equal(adapter._gridSlotFor(recipe(adapter, 1581), 1, false), 30);
   assert.deepEqual(
     [0, 1, 2, 3].map(i => adapter._gridSlotFor(recipe(adapter, 1218), i, false)),
-    [30, 31, 28, 29],
+    [28, 29, 30, 31],
   );
   assert.deepEqual(
     [0, 1, 2, 4, 7].map(i => adapter._gridSlotFor(recipe(adapter, 1729), i, true)),
     [32, 33, 34, 36, 39],
   );
+  // L'altra lettura dell'ordine verticale della griglia 2x2 (il banco 3x3 non ha un ordine da ribaltare).
+  assert.deepEqual([0, 1].map(i => adapter._gridSlotFor(recipe(adapter, 1581), i, false, 1)), [30, 28]);
+  assert.deepEqual(
+    [0, 1, 2, 3].map(i => adapter._gridSlotFor(recipe(adapter, 1218), i, false, 1)),
+    [30, 31, 28, 29],
+  );
+  assert.equal(adapter._gridSlotFor(recipe(adapter, 1729), 0, true, 1), 32, 'il banco ignora l\'ordine della 2x2');
 });
 
 test('ingredient matching understands names and item tags', () => {
@@ -76,10 +87,12 @@ test('ingredient matching understands names and item tags', () => {
 test('the torch recipe lays the fuel over the stick in the inventory grid', () => {
   const adapter = craftAdapter();
   const torch = recipe(adapter, 1897);
-  assert.deepEqual([0, 1].map(i => adapter._gridSlotFor(torch, i, false)), [30, 28]);
+  // Row-major: la riga 0 della ricetta (il combustibile) va nella cella alta 28,
+  // la riga 1 (lo stecco) nella cella bassa 30.
+  assert.deepEqual([0, 1].map(i => adapter._gridSlotFor(torch, i, false)), [28, 30]);
   assert.deepEqual(
     adapter._planGrid(torch, false).map(({ gridSlot, ingredient }) => [gridSlot, ingredient.descriptor_type]),
-    [[30, 'name'], [28, 'name']],
+    [[28, 'name'], [30, 'name']],
   );
 });
 
@@ -325,6 +338,7 @@ test('a rejected craft reports the grid it built and the stack ids it consumed',
   assert.deepEqual(result, { ok: false, error: 'craft_failed', status: 35 });
   const detail = JSON.parse(logs.find(l => l.type === 'craft_failed_detail').detail);
   assert.equal(detail.status, 35);
+  assert.equal(detail.order, 0, 'il primo ordinamento provato è quello di sempre');
   assert.deepEqual(detail.grid.map(g => [g.slot, g.name, g.stack_id]), [[30, 'charcoal', 55], [28, 'stick', 57]]);
   assert.deepEqual(detail.consumeStackIds, [{ gridSlot: 30, stackId: 55 }, { gridSlot: 28, stackId: 57 }]);
 });
@@ -341,12 +355,141 @@ test('a rejected recipe variant does not stop the other variants of the same ite
   adapter._closeContainer = async () => {};
   adapter._placeGridIngredients = async () => new Map([[30, 55], [28, 57]]);
   let calls = 0;
-  adapter._sendStackRequest = async () => (++calls === 1
+  adapter._sendStackRequest = async () => (++calls <= 2
     ? { status: 35 }
     : { status: 'ok', containers: [{ slot_type: { container_id: 'crafting_output' }, slots: [{ slot: 50, count: 4, item_stack_id: 99 }] }] });
   const result = await adapter._craftAttempt('torch', adapter.recipes.get('torch'));
-  assert.equal(calls, 2, 'la seconda variante (tag coals) viene provata');
+  // Due chiamate per la prima variante (i due arrangiamenti della griglia 2x2,
+  // entrambi rifiutati) e la terza per la variante `tag:coals`, che passa.
+  assert.equal(calls, 3, 'la seconda variante (tag coals) viene provata');
   assert.deepEqual(result, { ok: true, crafted: 'torch', count: 4 });
+});
+
+// Le dipendenze che `_craftAttempt` tocca davvero: finestra, griglia, cursore.
+function mockCraftIo (adapter, onPlace = null) {
+  adapter._windowOpens = 0;
+  adapter._windowCloses = 0;
+  adapter._ensureInventoryOpen = async () => { adapter._windowOpens++; };
+  adapter._ensureCraftingTableOpen = async () => { adapter._windowOpens++; };
+  adapter._clearCraftingGrid = async () => { adapter._craftingGrid.clear(); };
+  adapter._returnCursorToInventory = async () => {};
+  adapter._closeContainer = async () => { adapter._windowCloses++; };
+  adapter._placeGridIngredients = async (recipe, table, order = 0) => {
+    if (onPlace) onPlace(recipe, table, order);
+    return new Map();
+  };
+}
+
+const craftOk = () => ({ status: 'ok', containers: [{ slot_type: { container_id: 'crafting_output' }, slots: [{ slot: 50, count: 4, item_stack_id: 99 }] }] });
+
+test('a grid refused for its shape flips the vertical order once, then remembers it', async () => {
+  const adapter = craftAdapter();
+  const logs = [];
+  adapter.log = (type, data) => logs.push({ type, ...data });
+  adapter.inventorySlots = [
+    { network_id: 303, name: 'charcoal', count: 1, stack_id: 11 },
+    { network_id: 323, name: 'stick', count: 2, stack_id: 12 },
+  ];
+  const orders = [];
+  mockCraftIo(adapter, (_recipe, _table, order) => orders.push(order));
+  let calls = 0;
+  adapter._sendStackRequest = async () => (++calls === 1 ? { status: 35 } : craftOk());
+  const result = await adapter._craftAttempt('torch', adapter.recipes.get('torch'));
+  assert.deepEqual(result, { ok: true, crafted: 'torch', count: 4 });
+  assert.deepEqual(orders, [0, 1], 'prima l\'ordine di sempre, poi il ribaltato');
+  assert.equal(calls, 2);
+  assert.equal(adapter._craftGridOrder, 1, 'l\'ordine che ha passato resta per la sessione');
+  assert.equal(logs.find(l => l.type === 'craft_layout_retry').order, 0);
+  assert.equal(JSON.parse(logs.find(l => l.type === 'craft_failed_detail').detail).order, 0);
+  const learned = logs.find(l => l.type === 'craft_layout_learned');
+  assert.deepEqual([learned.order, learned.previous], [1, 0]);
+});
+
+test('both layouts of the same variant are tried inside one window', async () => {
+  const adapter = craftAdapter();
+  const logs = [];
+  adapter.log = (type, data) => logs.push({ type, ...data });
+  adapter.inventorySlots = [
+    { network_id: 303, name: 'charcoal', count: 1, stack_id: 11 },
+    { network_id: 323, name: 'stick', count: 2, stack_id: 12 },
+  ];
+  const orders = [];
+  mockCraftIo(adapter, (_recipe, _table, order) => orders.push(order));
+  let calls = 0;
+  adapter._sendStackRequest = async () => (++calls === 1 ? { status: 35 } : craftOk());
+  const result = await adapter._craftAttempt('torch', adapter.recipes.get('torch'));
+  assert.equal(result.ok, true);
+  assert.deepEqual(orders, [0, 1]);
+  // Live 11/10/2026: il `finally` chiudeva la finestra dopo il rifiuto 35 e il
+  // secondo arrangiamento moriva su un `container_open_timeout`, senza piazzare
+  // niente. La finestra è una sola per variante.
+  assert.equal(adapter._windowOpens, 1, 'la finestra si apre una volta per variante');
+  assert.equal(adapter._windowCloses, 1);
+  assert.equal(logs.find(l => l.type === 'craft_layout_retry').next, 1);
+});
+
+test('a grid refused in a poisoned window is retried with the flipped layout', async () => {
+  const adapter = craftAdapter();
+  const logs = [];
+  adapter.log = (type, data) => logs.push({ type, ...data });
+  adapter.inventorySlots = [
+    { network_id: 303, name: 'charcoal', count: 1, stack_id: 21 },
+    { network_id: 323, name: 'stick', count: 2, stack_id: 22 },
+  ];
+  // Live 11/10/2026: dopo un rifiuto 35 la finestra è avvelenata — le richieste
+  // successive tornano 50 — e la cura è la riconnessione che `_craftItem` fa
+  // prima del retry. L'ordine nuovo deve essere già imparato, altrimenti il
+  // retry ripete l'arrangiamento che il server ha appena rifiutato.
+  let failFlip = true;
+  const orders = [];
+  mockCraftIo(adapter, (_recipe, _table, order) => {
+    orders.push(order);
+    if (order === 1 && failFlip) throw new Error('take_failed_50');
+  });
+  adapter._sendStackRequest = async () => ({ status: 35 });
+  const first = await adapter._craftAttempt('torch', adapter.recipes.get('torch'));
+  assert.equal(first.ok, false);
+  assert.equal(first.error, 'craft_failed');
+  assert.deepEqual(orders, [0, 1]);
+  assert.equal(adapter._craftGridOrder, 1, 'il ribaltamento si impara dal rifiuto');
+  assert.equal(logs.find(l => l.type === 'craft_layout_retry').learned, true);
+
+  failFlip = false;
+  orders.length = 0;
+  adapter._sendStackRequest = async () => craftOk();
+  const second = await adapter._craftAttempt('torch', adapter.recipes.get('torch'));
+  assert.equal(second.ok, true);
+  assert.deepEqual(orders, [1], 'il retry dopo la riconnessione parte dall\'ordine imparato');
+});
+
+test('the learned grid order is tried first on the next craft', async () => {
+  const adapter = craftAdapter();
+  adapter._craftGridOrder = 1;
+  adapter.inventorySlots = [
+    { network_id: 303, name: 'charcoal', count: 1, stack_id: 11 },
+    { network_id: 323, name: 'stick', count: 2, stack_id: 12 },
+  ];
+  const orders = [];
+  mockCraftIo(adapter, (_recipe, _table, order) => orders.push(order));
+  adapter._sendStackRequest = async () => craftOk();
+  const result = await adapter._craftAttempt('torch', adapter.recipes.get('torch'));
+  assert.equal(result.ok, true);
+  assert.deepEqual(orders, [1], 'nessun tentativo sprecato: l\'ordine appreso è il primo');
+});
+
+test('a table recipe refused for its shape does not flip the inventory grid', async () => {
+  const adapter = craftAdapter();
+  adapter.inventorySlots = [
+    { network_id: 5, name: 'oak_planks', count: 3, stack_id: 11 },
+    { network_id: 323, name: 'stick', count: 2, stack_id: 12 },
+  ];
+  const orders = [];
+  mockCraftIo(adapter, (_recipe, _table, order) => orders.push([_table, order]));
+  adapter._sendStackRequest = async () => ({ status: 35 });
+  const result = await adapter._craftAttempt('wooden_pickaxe', adapter.recipes.get('wooden_pickaxe'));
+  assert.deepEqual(result, { ok: false, error: 'craft_failed', status: 35 });
+  assert.deepEqual(orders, [[true, 0]], 'la griglia 3x3 non ha un ordine da ribaltare');
+  assert.equal(adapter._craftGridOrder, undefined);
 });
 
 test('craft does not reconnect when materials are genuinely missing', async () => {

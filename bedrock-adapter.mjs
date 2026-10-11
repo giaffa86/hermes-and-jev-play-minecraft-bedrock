@@ -488,6 +488,20 @@ const OFFHAND_SLOT = 1;
 // Un solo ripiego, bounded e documentato: se anche lo slot 1 viene rifiutato la
 // risposta va riportata così com'è, senza scavare oltre a tentativi ciechi.
 const OFFHAND_FALLBACK_SLOT = 0;
+// Le quattro celle della griglia 2x2 dello zaino (slot 28-31) si possono
+// numerare dal basso o dall'alto, e una ricetta 1x2 con item **diversi** se ne
+// accorge: `craft_torch` ha 48 tentativi live e 0 successi, tutti `craft_failed`
+// **status 35** = `MismatchedRecipeForInputGridItems` (la griglia non corrisponde
+// alla ricetta dichiarata), mentre lo stecco — la stessa 1x2 ma con lo stesso
+// item in entrambe le celle — passa 8 volte su 8. Un ribaltamento verticale
+// spiega entrambi. La lettura giusta e' il **row-major** `[28, 29, 30, 31]`: e' la
+// stessa che l'adapter usa quando **legge** la finestra (`inventory_content`) e la
+// stessa forma del banco (`32 + proto`), quindi e' quella che si prova per prima;
+// il server resta l'autorita' e un rifiuto per forma fa provare **una volta** la
+// lettura ribaltata, che poi viene ricordata dalla sessione (`_craftGridOrder`).
+const CRAFT_GRID_ORDERS_2X2 = [[28, 29, 30, 31], [30, 31, 28, 29]];
+// `ItemStackNetResult` 35: la griglia non corrisponde alla ricetta dichiarata.
+const CRAFT_STATUS_GRID_MISMATCH = 35;
 // M2: il conteggio della discesa vale per ogni lavoro sott'acqua (un blocco di
 // scavo a mani nude). I conduit si censisono in cache: un blocco non si sposta.
 const DIVE_WORK_SECONDS = +(process.env.DIVE_WORK_SECONDS || 3);
@@ -6661,22 +6675,29 @@ export class BedrockAdapter {
     return false;
   }
 
-  _gridSlotFor (recipe, inputIndex, table) {
+  _gridSlotFor (recipe, inputIndex, table, order = 0) {
     const width = recipe.width || 1;
     const x = inputIndex % width;
     const y = Math.floor(inputIndex / width);
-    const tableYOffset = table && (recipe.height || 1) < 3 ? 1 : 0;
-    const proto = (y + tableYOffset) * (table ? 3 : 2) + x;
-    return table ? 32 + proto : [30, 31, 28, 29][proto] ?? 30 + proto;
+    if (!table) {
+      // `order` sceglie fra le due letture possibili dell'ordine verticale (il
+      // commento su `CRAFT_GRID_ORDERS_2X2` racconta la torcia).
+      const cells = CRAFT_GRID_ORDERS_2X2[order] || CRAFT_GRID_ORDERS_2X2[0];
+      const proto = y * 2 + x;
+      return cells[proto] ?? 28 + proto;
+    }
+    const tableYOffset = (recipe.height || 1) < 3 ? 1 : 0;
+    const proto = (y + tableYOffset) * 3 + x;
+    return 32 + proto;
   }
 
-  _planGrid (recipe, table) {
+  _planGrid (recipe, table, order = 0) {
     const slots = [];
     const inputs = recipe.input || [];
     for (let i = 0; i < inputs.length; i++) {
       const ingredient = inputs[i];
       if (ingredient.type !== 'valid') continue;
-      slots.push({ gridSlot: this._gridSlotFor(recipe, i, table), ingredient });
+      slots.push({ gridSlot: this._gridSlotFor(recipe, i, table, order), ingredient });
     }
     return slots;
   }
@@ -6845,9 +6866,9 @@ export class BedrockAdapter {
     return this._returnCursorToInventory();
   }
 
-  async _placeGridIngredients (recipe, table) {
+  async _placeGridIngredients (recipe, table, order = 0) {
     const gridStackIds = new Map();
-    for (const { gridSlot, ingredient } of this._planGrid(recipe, table)) {
+    for (const { gridSlot, ingredient } of this._planGrid(recipe, table, order)) {
       const count = ingredient.count || 1;
       for (let unit = 0; unit < count; unit++) {
         const source = this._findSourceSlot(ingredient);
@@ -8958,35 +8979,75 @@ export class BedrockAdapter {
       const recipe = this._recipeBody(entry);
       if (!recipe || !this._hasMaterials(recipe)) continue;
       const table = (recipe.width || 1) > 2 || (recipe.height || 1) > 2;
+      // Lo stesso item può avere più varianti (`tag:coals` e `name:charcoal`,
+      // come per le assi) e la griglia 2x2 due letture dell'ordine verticale: si
+      // provano in quest'ordine e il rifiuto di una variante o di un
+      // arrangiamento non deve fermare la ricerca dell'altro. Il primo
+      // fallimento resta quello da riferire se nessuna passa.
+      const preferred = this._craftGridOrder ?? 0;
+      const orders = table ? [0] : [preferred, 1 - preferred];
+      // Gli arrangiamenti già rifiutati con 35 per questa forma: senza memoria il
+      // ribaltamento rimbalzerebbe fra le due letture a ogni rinvio.
+      const shapeKey = `${itemName}:${recipe.width || 1}x${recipe.height || 1}`;
+      this._craftGridRejected ??= new Map();
+      const rejected = this._craftGridRejected.get(shapeKey) ?? new Set();
+      this._craftGridRejected.set(shapeKey, rejected);
       try {
+        // La finestra si apre **una volta** per variante e il ciclo sugli
+        // arrangiamenti vive dentro la stessa finestra: chiuderla e riaprirla fra
+        // un tentativo e l'altro è la via più corta a un `container_open_timeout`
+        // che mangia il secondo tentativo senza piazzare niente (live
+        // 11/10/2026: `craft_lever` rifiutato 35 all'ordine 0 e poi muto, con la
+        // griglia vuota, perché il `finally` aveva chiuso la finestra).
         if (table) await this._ensureCraftingTableOpen();
         else await this._ensureInventoryOpen();
-        await this._clearCraftingGrid();
-        const gridStackIds = await this._placeGridIngredients(recipe, table);
-        const { actions, result } = this._craftActions(recipe, gridStackIds);
-        const response = await this._sendStackRequest(actions, { outputs: true });
-        const status = response.status;
-        if (String(status) !== 'ok' && status !== 0) {
-          const consumeStackIds = [...gridStackIds].map(([gridSlot, stackId]) => ({ gridSlot, stackId }));
-          this.log('craft_failed_detail', { detail: JSON.stringify({
-            item: itemName, network_id: recipe.network_id, width: recipe.width, height: recipe.height,
-            input: (recipe.input || []).map(i => i.type === 'valid' ? (i.descriptor_type === 'item_tag' ? `tag:${i.tag}` : `name:${i.name}`) : null),
-            grid: [...this._craftingGrid.entries()].map(([slot, entry]) => ({ slot, name: this.world.registry?.items[entry.network_id]?.name || entry.network_id, count: entry.count, stack_id: entry.stack_id ?? null })),
-            consumeStackIds,
-            status,
-          }) });
-          // Lo stesso item può avere più varianti (`tag:coals` e
-          // `name:charcoal`, come per le assi): il rifiuto di una variante non
-          // deve fermare la ricerca dell'altra. Il primo fallimento resta quello
-          // da riferire se nessuna passa.
-          failure ??= { ok: false, error: 'craft_failed', status };
-          continue;
+        for (let attempt = 0; attempt < orders.length; attempt++) {
+          const order = orders[attempt];
+          await this._clearCraftingGrid();
+          const gridStackIds = await this._placeGridIngredients(recipe, table, order);
+          const { actions, result } = this._craftActions(recipe, gridStackIds);
+          const response = await this._sendStackRequest(actions, { outputs: true });
+          const status = response.status;
+          if (String(status) !== 'ok' && status !== 0) {
+            const consumeStackIds = [...gridStackIds].map(([gridSlot, stackId]) => ({ gridSlot, stackId }));
+            this.log('craft_failed_detail', { detail: JSON.stringify({
+              item: itemName, network_id: recipe.network_id, width: recipe.width, height: recipe.height,
+              input: (recipe.input || []).map(i => i.type === 'valid' ? (i.descriptor_type === 'item_tag' ? `tag:${i.tag}` : `name:${i.name}`) : null),
+              grid: [...this._craftingGrid.entries()].map(([slot, entry]) => ({ slot, name: this.world.registry?.items[entry.network_id]?.name || entry.network_id, count: entry.count, stack_id: entry.stack_id ?? null })),
+              consumeStackIds,
+              status,
+              order,
+            }) });
+            failure ??= { ok: false, error: 'craft_failed', status };
+            // 35 = la griglia non corrisponde alla ricetta: è l'unico rifiuto che
+            // un altro arrangiamento delle stesse celle può spiegare. Il
+            // ribaltamento va imparato **subito**, non solo provato, perché il
+            // rifiuto avvelena la finestra (le richieste successive tornano 50,
+            // live 11/10/2026) e l'unica cura è la riconnessione: il retry di
+            // `_craftItem` deve ripartire dall'ordine nuovo, non ripetere quello
+            // che il server ha appena rifiutato.
+            if (Number(status) === CRAFT_STATUS_GRID_MISMATCH) {
+              const flip = 1 - order;
+              rejected.add(order);
+              if (attempt + 1 < orders.length && !rejected.has(flip)) {
+                this._craftGridOrder = flip;
+                this.log('craft_layout_retry', { item: itemName, order, next: flip, status, learned: true });
+                continue;
+              }
+            }
+            break;
+          }
+          if (!table && order !== preferred) {
+            this._craftGridOrder = order;
+            this.log('craft_layout_learned', { item: itemName, order, previous: preferred });
+          }
+          this._craftGridRejected.delete(shapeKey);
+          this._applyStackResponse(response, { networkId: result.network_id });
+          return { ok: true, crafted: itemName, count: result.count || 1 };
         }
-        this._applyStackResponse(response, { networkId: result.network_id });
-        return { ok: true, crafted: itemName, count: result.count || 1 };
       } catch (error) {
         failure ??= { ok: false, error: error.message };
-        continue;
+        break;
       } finally {
         await this._clearCraftingGrid().catch(() => {});
         await this._returnCursorToInventory().catch(() => {});

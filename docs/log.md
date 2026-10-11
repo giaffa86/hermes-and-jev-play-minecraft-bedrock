@@ -1,5 +1,44 @@
 # Log
 
+## [2026-10-11] fix | La griglia 2x2 si scriveva sottosopra: il rifiuto 35 e' un'informazione (M21)
+
+`craft_torch` aveva 48 tentativi live e zero successi su tutti i ledger di VM 100,
+ognuno `craft_failed` con **status 35**. Lo status 35 e' `MismatchedRecipeForInputGridItems`
+(la griglia non corrisponde alla ricetta), quindi non era un id di ricetta sbagliato
+ne' un materiale mancante: era la **disposizione**. `_gridSlotFor` mappava la riga 0
+della ricetta (il combustibile) sullo slot 30 e la riga 1 sullo slot 28, cioe' la
+griglia partiva ribaltata rispetto alla lettura row-major `[28, 29, 30, 31]` che lo
+stesso file usa leggendo la finestra (`inventory_content`) e rispetto al banco
+(`32 + proto`). Una 1x2 con due item **diversi** e' un disegno diverso se ribaltata;
+una 1x2 con lo **stesso** item no, ed e' esattamente il motivo per cui lo stecco
+passava 8 volte su 8 e il difetto e' rimasto invisibile per dieci giorni.
+
+La fix non si limita a riordinare la costante. Due proprieta' del rifiuto sono
+entrate nel codice: **(1)** un 35 e' **evidenza**, quindi l'adapter ribalta la
+lettura verticale una volta, la **ricorda** per la sessione (`_craftGridOrder`) e
+ricorda anche gli ordini gia' rifiutati per quella forma (`_craftGridRejected`),
+cosi' i due arrangiamenti non possono rimbalzarsi; **(2)** il 35 **avvelena la
+finestra**: dopo il rifiuto il server risponde 50 (`FailedToValidateDstSlot`) a
+ogni richiesta successiva, `take` degli ingredienti compreso
+(`cursor_take_failed {container: 'hotbar', status: 50}`), quindi la finestra si
+apre **una volta per variante di ricetta** (non una per arrangiamento) e dopo il
+ripristino della sessione si riparte dall'ordine imparato.
+
+La prova viva e' sul BDS reale (`craft-proof-20261011-1`): `craft_lever` — una 1x2
+con cobblestone e stecco, cioe' il caso discriminante — rifiutato 35 all'ordine 0
+(`craft_failed_detail` con `grid: [{"slot":30,"name":"stick"},{"slot":28,"name":"cobblestone"}], order 0`),
+poi **`{"ok":true,"crafted":"lever","count":1}`**; subito dopo `craft_torch`
+**`{"ok":true,"crafted":"torch","count":4}` in 0,35 s**, senza nessun rifiuto.
+Deltas coerenti (cobblestone 64>63, stick 4>2, coal 64>63). La costante e' ora
+`CRAFT_GRID_ORDERS_2X2 = [[28, 29, 30, 31], [30, 31, 28, 29]]`: la lettura
+row-major e' quella di sempre, il ribaltamento resta come seconda lettura possibile.
+Documentazione: [crafting](wiki/crafting.md) §The crafting grid is a model of the
+server's window, [verification](wiki/verification.md) riga 47.92,
+[open-questions](wiki/open-questions.md) (`craft-torch-status-35` chiuso, nuovo
+`craft-recipe-missing` per barca/carbone, firma diversa: `craft_recipe_missing`).
+Il residuo: per il banco si prova un solo arrangiamento, l'ordine imparato non e'
+persistito, e la prova live copre `lever` e `torch`, non ogni 1x2 del gioco.
+
 ## [2026-10-09] fix | Un harness cieco e' una fermata con un nome, non un budget speso (M20)
 
 Il tentativo 19 (`diamond-20261010-6`) si e' chiuso con
